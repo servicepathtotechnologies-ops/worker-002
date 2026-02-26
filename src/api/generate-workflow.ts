@@ -16,6 +16,7 @@ import { nodeLibrary } from '../services/nodes/node-library';
 import { WorkflowNode } from '../core/types/ai-types';
 import { config } from '../core/config';
 import { normalizeNodeType } from '../core/utils/node-type-normalizer';
+import { resolveNodeType } from '../core/utils/node-type-resolver-util';
 import { getMemoryManager, getReferenceBuilder } from '../memory';
 import { getSupabaseClient } from '../core/database/supabase-compat';
 import { ComprehensiveCredentialScanner } from '../services/ai/comprehensive-credential-scanner';
@@ -769,15 +770,23 @@ async function handlePhasedRefine(
     
     // Ensure resolved nodes are in workflow
     const resolvedNodeTypes = resolution.nodeIds;
-    const existingNodeTypes = validatedWorkflow.nodes.map((node: any) => 
-      node.data?.type || node.type
-    );
+    // Normalize existing node types to canonical forms for comparison
+    const existingNodeTypes = validatedWorkflow.nodes.map((node: any) => {
+      const normalized = normalizeNodeType(node);
+      // Also resolve aliases to canonical form (e.g., "gmail" → "google_gmail")
+      return resolveNodeType(normalized);
+    });
     
     // Add missing resolved nodes
     for (const nodeType of resolvedNodeTypes) {
-      if (!existingNodeTypes.includes(nodeType)) {
-        console.log(`[PHASE] NODE_RESOLUTION: Adding required node ${nodeType} from prompt resolution`);
-        const schema = nodeLibrary.getSchema(nodeType);
+      // Resolve nodeType to canonical form (handles aliases like "gmail" → "google_gmail")
+      const resolvedNodeType = resolveNodeType(nodeType);
+      
+      // Check if this canonical type already exists in the workflow
+      if (!existingNodeTypes.includes(resolvedNodeType)) {
+        console.log(`[PHASE] NODE_RESOLUTION: Adding required node ${nodeType} (canonical: ${resolvedNodeType}) from prompt resolution`);
+        // Use resolved canonical type for schema lookup
+        const schema = nodeLibrary.getSchema(resolvedNodeType);
         if (schema) {
           const { randomUUID } = require('crypto');
           const newNode = {
@@ -785,7 +794,7 @@ async function handlePhasedRefine(
             type: 'custom',
             position: { x: 0, y: 0 },
             data: {
-              type: nodeType,
+              type: resolvedNodeType, // Use canonical type, not alias
               label: schema.label,
               category: schema.category,
               config: {},
@@ -795,7 +804,11 @@ async function handlePhasedRefine(
             ...validatedWorkflow,
             nodes: [...validatedWorkflow.nodes, newNode],
           };
+          // Add to existingNodeTypes to prevent duplicates in same loop
+          existingNodeTypes.push(resolvedNodeType);
         }
+      } else {
+        console.log(`[PHASE] NODE_RESOLUTION: Skipping duplicate node ${nodeType} (canonical: ${resolvedNodeType}) - already exists in workflow`);
       }
     }
     
@@ -1664,6 +1677,84 @@ function checkMissingRequiredFields(workflow: { nodes: WorkflowNode[] }): {
 } {
   const questions: Array<{ id: string; text: string; type: string; nodeId: string; nodeLabel: string; fieldName: string; category: string; options?: Array<{ label: string; value: string }> }> = [];
   const credentialFields: string[] = [];
+
+  const pushQuestionIfMissing = (
+    nodeType: string,
+    schema: any,
+    nodeId: string,
+    nodeLabel: string,
+    config: Record<string, any>,
+    fieldName: string
+  ) => {
+    const value = config[fieldName];
+    const isEmpty =
+      value === undefined ||
+      value === null ||
+      (typeof value === 'string' &&
+        (value.trim() === '' ||
+          (value.includes('{{ENV.') && !value.includes('{{$json') && !value.includes('{{input') && !value.includes('{{trigger')) ||
+          value.toLowerCase().includes('placeholder') ||
+          value.toLowerCase().includes('enter ') ||
+          value.toLowerCase().includes('your ') ||
+          value.toLowerCase().includes('example') ||
+          value.toLowerCase().startsWith('https://example') ||
+          value.toLowerCase().startsWith('http://example') ||
+          (value.startsWith('{{') && value.endsWith('}}') && value.includes('ENV.'))));
+
+    if (!isEmpty) return;
+
+    // ✅ PRODUCTION: Use connector registry to determine if field should be skipped
+    const { connectorRegistry } = require('../services/connectors/connector-registry');
+    const connector = connectorRegistry.getConnectorByNodeType(nodeType);
+    if (connector) {
+      const credentialContract = connector.credentialContract;
+      const fieldNameLower = fieldName.toLowerCase();
+      if (
+        credentialContract.type === 'oauth' &&
+        (fieldNameLower.includes('smtp') ||
+          fieldNameLower.includes('host') ||
+          fieldNameLower.includes('username') ||
+          fieldNameLower.includes('password'))
+      ) {
+        console.log(`🔑 [Question Filter] Skipping SMTP field "${fieldName}" for ${nodeType} (connector uses ${credentialContract.type})`);
+        return;
+      }
+    }
+
+    const isCredential = isCredentialField(fieldName);
+    if (isCredential) credentialFields.push(fieldName);
+
+    const fieldInfo = schema.configSchema.optional?.[fieldName];
+    const fieldDescription = fieldInfo?.description || fieldName;
+    const fieldType = fieldInfo?.type || 'string';
+    const fieldExamples = fieldInfo?.examples || [];
+
+    const questionText = generateQuestionTextFromSchema(
+      nodeLabel,
+      fieldName,
+      fieldDescription,
+      fieldType,
+      fieldExamples,
+      schema.label
+    );
+    const inputType = isCredential ? 'password' : determineInputTypeFromSchema(fieldName, fieldType, fieldInfo);
+    const options = getFieldOptions(fieldInfo, fieldExamples);
+
+    // De-dupe same question id
+    const id = `req_${nodeId}_${fieldName}`;
+    if (questions.some(q => q.id === id)) return;
+
+    questions.push({
+      id,
+      text: questionText,
+      type: inputType,
+      nodeId,
+      nodeLabel,
+      fieldName,
+      category: isCredential ? 'credential' : 'configuration',
+      options: options.length > 0 ? options : undefined,
+    });
+  };
   
   for (const node of workflow.nodes || []) {
     // CRITICAL FIX: Use normalizeNodeType to get actual node type
@@ -1683,86 +1774,17 @@ function checkMissingRequiredFields(workflow: { nodes: WorkflowNode[] }): {
     
     // Check each required field using schema information (UNIVERSAL)
     for (const fieldName of requiredFields) {
-      const value = config[fieldName];
-      
-      // Check if field is empty or has invalid ENV placeholder
-      // CRITICAL: Also check for common placeholder patterns that indicate missing values
-      const isEmpty = value === undefined || 
-                     value === null || 
-                     (typeof value === 'string' && (
-                       value.trim() === '' || 
-                       // Check for ENV placeholders that aren't resolved
-                       (value.includes('{{ENV.') && !value.includes('{{$json') && !value.includes('{{input') && !value.includes('{{trigger')) ||
-                       // Check for common placeholder patterns
-                       value.toLowerCase().includes('placeholder') ||
-                       value.toLowerCase().includes('enter ') ||
-                       value.toLowerCase().includes('your ') ||
-                       value.toLowerCase().includes('example') ||
-                       value.toLowerCase().startsWith('https://example') ||
-                       value.toLowerCase().startsWith('http://example') ||
-                       // Check for empty template variables
-                       (value.startsWith('{{') && value.endsWith('}}') && value.includes('ENV.'))
-                     ));
-      
-      if (isEmpty) {
-        // ✅ PRODUCTION: Use connector registry to determine if field should be skipped
-        // This ensures strict connector isolation (no SMTP fields for OAuth connectors, etc.)
-        const { connectorRegistry } = require('../services/connectors/connector-registry');
-        const connector = connectorRegistry.getConnectorByNodeType(nodeType);
-        if (connector) {
-          const credentialContract = connector.credentialContract;
-          const fieldNameLower = fieldName.toLowerCase();
-          // Skip fields that don't match connector type
-          if (credentialContract.type === 'oauth' && 
-              (fieldNameLower.includes('smtp') || fieldNameLower.includes('host') || 
-               fieldNameLower.includes('username') || fieldNameLower.includes('password'))) {
-            console.log(`🔑 [Question Filter] Skipping SMTP field "${fieldName}" for ${nodeType} (connector uses ${credentialContract.type})`);
-            continue;
-          }
-        }
-        
-        // Check if this is a credential field
-        const isCredential = isCredentialField(fieldName);
-        
-        if (isCredential) {
-          // Track credential fields separately
-          credentialFields.push(fieldName);
-        }
-        
-        // Get field information from schema (UNIVERSAL - uses schema data)
-        const fieldInfo = schema.configSchema.optional?.[fieldName];
-        const fieldDescription = fieldInfo?.description || fieldName;
-        const fieldType = fieldInfo?.type || 'string';
-        const fieldExamples = fieldInfo?.examples || [];
-        
-        // Generate question text from schema (UNIVERSAL)
-        const questionText = generateQuestionTextFromSchema(
-          nodeLabel,
-          fieldName,
-          fieldDescription,
-          fieldType,
-          fieldExamples,
-          schema.label
-        );
-        
-        // Determine input type from schema (UNIVERSAL)
-        // Use password type for credential fields
-        const inputType = isCredential ? 'password' : determineInputTypeFromSchema(fieldName, fieldType, fieldInfo);
-        
-        // Get options if it's a select field (UNIVERSAL)
-        const options = getFieldOptions(fieldInfo, fieldExamples);
-        
-        questions.push({
-          id: `req_${nodeId}_${fieldName}`,
-          text: questionText,
-          type: inputType,
-          nodeId,
-          nodeLabel,
-          fieldName,
-          category: isCredential ? 'credential' : 'configuration',
-          options: options.length > 0 ? options : undefined,
-        });
-      }
+      pushQuestionIfMissing(nodeType, schema, nodeId, nodeLabel, config, fieldName);
+    }
+
+    // ✅ UNIVERSAL: Conditional required optional fields (schema-driven)
+    // Example: recipientEmails required when recipientSource == manual_entry
+    const optionalFields = schema.configSchema.optional || {};
+    for (const [fieldName, fieldInfo] of Object.entries(optionalFields)) {
+      const requiredIf = (fieldInfo as any)?.requiredIf as { field: string; equals: any } | undefined;
+      if (!requiredIf || typeof requiredIf.field !== 'string') continue;
+      if ((config as any)?.[requiredIf.field] !== requiredIf.equals) continue;
+      pushQuestionIfMissing(nodeType, schema, nodeId, nodeLabel, config, fieldName);
     }
   }
   

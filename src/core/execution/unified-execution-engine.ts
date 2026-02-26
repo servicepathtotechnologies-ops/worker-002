@@ -402,6 +402,15 @@ export function buildNodeInput(
     return defaultInput;
   }
 
+  // ✅ DETERMINISTIC FORWARDING (CORE CONTRACT)
+  // If there is exactly one upstream edge, forward the upstream output verbatim.
+  // This prevents shape changes (e.g., wrapping arrays/values) and ensures the
+  // downstream node receives the exact output produced by its upstream node.
+  if (incomingEdges.length === 1) {
+    const sourceOutput = nodeOutputs.get(incomingEdges[0].source);
+    return sourceOutput !== undefined ? sourceOutput : defaultInput;
+  }
+
   // ✅ Merge outputs from all source nodes
   // Use a clean merge strategy to avoid duplication
   const mergedInput: Record<string, unknown> = {};

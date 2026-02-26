@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { type WorkflowIntent, type IntentClassification } from './intent-classifier';
+import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 
 export interface CanonicalWorkflowExample {
   id: string;
@@ -70,18 +71,10 @@ function loadExamples(): CanonicalWorkflowExample[] {
 }
 
 function getTriggerType(example: CanonicalWorkflowExample): string | null {
-  const triggerTypes = new Set([
-    'chat_trigger',
-    'error_trigger',
-    'interval',
-    'manual_trigger',
-    'schedule',
-    'webhook',
-    'workflow_trigger',
-    'form',
-  ]);
-
-  const triggerNode = example.nodes.find((n) => triggerTypes.has(n.type));
+  const triggerNode = example.nodes.find((n) => {
+    const def = unifiedNodeRegistry.get(n.type);
+    return def?.category === 'trigger' || n.type.includes('trigger');
+  });
   return triggerNode ? triggerNode.type : null;
 }
 
@@ -106,56 +99,14 @@ function buildExampleKeywords(example: CanonicalWorkflowExample): Set<string> {
   for (const node of example.nodes) {
     add(node.type);
 
-    // Integration-specific keywords
-    if (node.type === 'slack_message') {
-      add('slack');
-      add('notification');
-      add('channel');
-    }
-    if (node.type === 'google_sheets') {
-      add('google');
-      add('sheets');
-      add('spreadsheet');
-    }
-    if (node.type === 'google_gmail') {
-      add('gmail');
-      add('email');
-      add('inbox');
-    }
-    if (node.type === 'stripe') {
-      add('stripe');
-      add('payments');
-      add('checkout');
-    }
-    if (node.type === 'hubspot') {
-      add('hubspot');
-      add('crm');
-      add('lead');
-    }
-    if (node.type === 'form') {
-      add('form');
-      add('submission');
-    }
-    if (node.type === 'chat_trigger' || node.type === 'ai_agent' || node.type === 'google_gemini') {
-      add('chatbot');
-      add('assistant');
-      add('ai');
-    }
-    if (node.type === 'mysql' || node.type === 'postgresql') {
-      add('database');
-      add('db');
-      add('backup');
-      add('etl');
-    }
-    if (node.type === 'google_bigquery') {
-      add('bigquery');
-      add('warehouse');
-      add('analytics');
-    }
-    if (node.type === 'google_doc') {
-      add('doc');
-      add('document');
-      add('template');
+    // Registry-driven keyword enrichment (single source of truth)
+    const def = unifiedNodeRegistry.get(node.type);
+    if (def) {
+      (def.tags || []).forEach((t) => add(t));
+      const crit = def.aiSelectionCriteria;
+      crit?.keywords?.forEach((k) => add(k));
+      crit?.useCases?.forEach((u) => add(u));
+      crit?.whenToUse?.forEach((w) => add(w));
     }
   }
 

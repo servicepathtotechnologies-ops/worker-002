@@ -7,3 +7,6 @@
 process.env.SUPABASE_URL ||= 'https://unit-test.supabase.co';
 process.env.SUPABASE_SERVICE_ROLE_KEY ||= 'unit-test-service-role-key';
 
+// Ensure NodeDefinitionRegistry is populated for unit tests that validate node schemas.
+// This module auto-registers all node definitions on import.
+import '../src/nodes/definitions';

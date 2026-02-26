@@ -44,6 +44,10 @@ export interface ConfigField {
   default?: any;
   examples?: any[];
   validation?: (value: any) => boolean | string;
+  // UI hint: render as select/radio using stable label/value options
+  options?: Array<{ label: string; value: string }>;
+  // Generic conditional-required contract (schema-driven)
+  requiredIf?: { field: string; equals: any };
 }
 
 export interface AISelectionCriteria {
@@ -81,7 +85,7 @@ export class NodeLibrary {
     // Check canonical node types directly (resolver will be initialized later)
     const criticalNodes = [
       // Removed: ai_service is now a capability, not a node type
-      'google_gmail', // Canonical type (gmail alias will be registered as virtual type)
+      'google_gmail', // Canonical type (gmail is NOT a virtual node - it's only a keyword/pattern)
     ];
     const missingNodes: string[] = [];
     
@@ -397,8 +401,8 @@ export class NodeLibrary {
       'notion',
       'airtable',
       'clickup',
-      'google_gmail',   // "gmail" in prompts
-      'gmail',          // ✅ Simplified gmail node
+      'google_gmail',   // "gmail" in prompts (gmail is NOT a separate node - it's an alias/keyword for google_gmail)
+      // Removed: 'gmail' - NOT a separate node type, only a keyword/alias for google_gmail
       // Removed: ai_service is now a capability, not a node type
       'outlook',        // ✅ Added: outlook node
       'slack_message',  // "slack" in prompts
@@ -2318,7 +2322,7 @@ export class NodeLibrary {
         'gmail.read',
       ],
       providers: ['google'],
-      keywords: ['gmail', 'google mail', 'google email', 'gmail them', 'send via gmail'],
+      keywords: ['gmail', 'google mail', 'google email', 'gmail them', 'send via gmail', 'mail via gmail'],
       configSchema: {
         // `operation` is a runtime/system field with a default ('send') and should not
         // be surfaced as a missing user input. Treating it as required causes
@@ -2328,7 +2332,16 @@ export class NodeLibrary {
         // (If operation is changed to list/get/search, these fields may be unused at runtime,
         // but we still want the UI to reliably ask for recipient/subject/body for workflows
         // that send email.)
-        required: ['to', 'subject', 'body'],
+        // ✅ Recipient strategy is required; actual `to` can be derived at runtime
+        // from intent or upstream sheet data, or manually supplied via recipientEmails.
+        // ✅ Systematic UI: keep base required minimal; enforce operation-specific requirements via `requiredIf`
+        // so the UI shows only what matters for the selected operation.
+        // ✅ CORE FIX: recipientSource removed from required — it is a UI hint, NOT an
+        // execution prerequisite. The recipient-resolver already handles all resolution
+        // strategies (manual, upstream, intent) at runtime. Making it required caused
+        // the placeholder filter to strip the empty-string value, which then failed
+        // validation and blocked Gmail execution for every AI-generated workflow.
+        required: [],
         optional: {
           credentialId: {
             type: 'string',
@@ -2344,11 +2357,32 @@ export class NodeLibrary {
             // It's a runtime field, not an input field
           },
           // ✅ CRITICAL: Gmail send node configurable inputs (for attach-inputs endpoint):
-          // ONLY: to, subject, body
+          // Recipient selection is now strategy-based:
+          // - recipientSource: how recipients are determined
+          // - recipientEmails: manual recipients (comma-separated)
+          // - to: optional explicit single recipient (advanced / backward compatible)
           // OAuth handled separately via attach-credentials
+          recipientSource: {
+            type: 'string',
+            description: 'How should recipient email(s) be determined?',
+            examples: ['manual_entry', 'extract_from_sheet'],
+            // UI hint: render as select/radio-style choice
+            options: [
+              { label: 'Manually enter recipient email(s)', value: 'manual_entry' },
+              { label: 'Extract recipient email(s) from Google Sheets output', value: 'extract_from_sheet' },
+            ],
+          },
+          recipientEmails: {
+            type: 'string',
+            description:
+              'Recipient email address(es) for manual entry. Supports comma-separated list (e.g., "a@x.com, b@y.com"). Required if recipientSource is manual_entry.',
+            examples: ['john@example.com', 'john@example.com, jane@example.com'],
+            // Generic conditional-required contract (handled by input discovery layer)
+            requiredIf: { field: 'recipientSource', equals: 'manual_entry' },
+          },
           to: {
             type: 'string',
-            description: 'Recipient email address (required for send operation)',
+            description: 'Recipient email address (optional). If omitted, the system resolves recipients using recipientSource/intent/upstream data.',
             examples: ['recipient@example.com', '{{$json.email}}'],
             // ✅ This is a configurable input field
           },
@@ -2357,12 +2391,14 @@ export class NodeLibrary {
             description: 'Email subject (required for send operation)',
             examples: ['Hello', '{{$json.subject}}'],
             // ✅ This is a configurable input field
+            requiredIf: { field: 'operation', equals: 'send' },
           },
           body: {
             type: 'string',
             description: 'Email body content (required for send operation)',
             examples: ['Email content', '{{$json.message}}'],
             // ✅ This is a configurable input field
+            requiredIf: { field: 'operation', equals: 'send' },
           },
           // ✅ CRITICAL: from is NOT a configurable input - OAuth account is used
           from: {
@@ -2378,12 +2414,14 @@ export class NodeLibrary {
             description: 'Gmail message ID (required ONLY for get operation, not for send)',
             examples: ['abc123def456'],
             // ✅ This is a runtime field, NOT a configurable input
+            requiredIf: { field: 'operation', equals: 'get' },
           },
           query: {
             type: 'string',
             description: 'Gmail search query (for list/search operations)',
             examples: ['from:example@gmail.com', 'subject:important'],
             // ✅ This is a runtime field, NOT a configurable input
+            requiredIf: { field: 'operation', equals: 'search' },
           },
           maxResults: {
             type: 'number',
@@ -2406,7 +2444,7 @@ export class NodeLibrary {
           'Generic email sending (use email node with SMTP)',
           'Other email providers',
         ],
-        keywords: ['gmail', 'google mail', 'google email', 'gmail them', 'send via gmail', 'email via gmail', 'email', 'send email', 'mail'],
+        keywords: ['gmail', 'google mail', 'google email', 'gmail them', 'send via gmail', 'email via gmail', 'mail via gmail', 'email', 'send email', 'mail'],
         useCases: ['Gmail notifications', 'Google Workspace integration', 'OAuth email sending', 'Email reading', 'Email searching'],
       },
       commonPatterns: [
@@ -7009,8 +7047,10 @@ export class NodeLibrary {
     console.log('[NodeLibrary] 🔗 Registering virtual node types (aliases)...');
     
     // Define alias mappings: alias → canonical type
+    // NOTE: "gmail" is NOT registered as a virtual node - it's only a keyword/pattern in google_gmail schema
+    // The node-type-resolver.ts handles "gmail" → "google_gmail" resolution via alias mapping
     const aliasMappings: Array<{ alias: string; canonical: string }> = [
-      { alias: 'gmail', canonical: 'google_gmail' },
+      // Removed: { alias: 'gmail', canonical: 'google_gmail' } - NOT a separate node type, only a keyword
       { alias: 'mail', canonical: 'email' },
       { alias: 'ai', canonical: 'ai_service' },
     ];

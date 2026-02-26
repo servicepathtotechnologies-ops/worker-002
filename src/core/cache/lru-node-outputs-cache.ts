@@ -22,7 +22,15 @@
 
 export interface CacheEntry {
   value: unknown;
+  /**
+   * Access timestamp (LRU): updated on get() and set()
+   */
   timestamp: number;
+  /**
+   * Set timestamp (dataflow): updated ONLY on set()
+   * Used to determine "previous node output" without being affected by reads (get()).
+   */
+  setTimestamp: number;
   persistent?: boolean; // If true, never evicted
 }
 
@@ -76,8 +84,20 @@ export class LRUNodeOutputsCache {
     if (this.cache.has(nodeId)) {
       const entry = this.cache.get(nodeId)!;
       entry.value = output;
-      entry.timestamp = Date.now();
+      const now = Date.now();
+      entry.timestamp = now;
+      entry.setTimestamp = now;
       entry.persistent = persistent || entry.persistent; // Can upgrade to persistent
+
+      // ✅ DETERMINISTIC "MOST RECENT" ORDERING (CORE DATAFLOW CONTRACT)
+      // Many parts of the engine interpret the "previous output" as the last entry
+      // in getAll() (which follows Map insertion order). Map insertion order does
+      // NOT change when you update an existing key, so without this, "previous output"
+      // can point to stale entries even when timestamps are updated.
+      //
+      // Move this key to the end to reflect "most recently set".
+      this.cache.delete(nodeId);
+      this.cache.set(nodeId, entry);
       return;
     }
 
@@ -99,9 +119,11 @@ export class LRUNodeOutputsCache {
     }
 
     // Add new entry
+    const now = Date.now();
     this.cache.set(nodeId, {
       value: output,
-      timestamp: Date.now(),
+      timestamp: now,
+      setTimestamp: now,
       persistent,
     });
   }
@@ -156,6 +178,31 @@ export class LRUNodeOutputsCache {
       result[key] = entry.value;
     });
     return result;
+  }
+
+  /**
+   * Get the most recently set entry (by timestamp), optionally excluding meta keys.
+   *
+   * ✅ CORE DATAFLOW CONTRACT:
+   * Many parts of the engine need the "previous node output". Using Map insertion order
+   * is not reliable once keys are updated (e.g., $json/json). This method provides a
+   * deterministic "most recent" selection based on timestamps.
+   */
+  getMostRecentOutput(excludeKeys: string[] = []): unknown | undefined {
+    const exclude = new Set(excludeKeys);
+    let newestTs = -1;
+    let newestValue: unknown | undefined = undefined;
+
+    for (const [key, entry] of this.cache.entries()) {
+      if (exclude.has(key)) continue;
+      const ts = entry.setTimestamp ?? entry.timestamp;
+      if (ts > newestTs) {
+        newestTs = ts;
+        newestValue = entry.value;
+      }
+    }
+
+    return newestValue;
   }
 
   /**
@@ -322,6 +369,7 @@ export class LRUNodeOutputsCache {
       this.cache.set(nodeId, {
         value: output,
         timestamp,
+        setTimestamp: timestamp,
         persistent,
       });
     }

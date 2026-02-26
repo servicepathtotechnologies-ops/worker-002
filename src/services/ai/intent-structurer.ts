@@ -56,6 +56,11 @@ export class IntentStructurer {
     // Note: Vague prompts will be handled by intent_auto_expander in the pipeline
     try {
       const structuredIntent = await this.extractStructuredIntent(userPrompt);
+
+      // ✅ CRITICAL: Normalize ambiguous email destination actions deterministically
+      // - If user mentions Gmail (including common typos like "gmali"), prefer google_gmail.
+      // - Only keep generic SMTP `email` when SMTP is explicitly mentioned.
+      this.normalizeEmailDestinations(structuredIntent, userPrompt);
       
       // ✅ DEFAULT TRIGGER POLICY:
       // If trigger is missing (or effectively unspecified), default to `schedule` for automation-style prompts.
@@ -86,6 +91,51 @@ export class IntentStructurer {
         requires_credentials: [],
       };
     }
+  }
+
+  /**
+   * Normalize ambiguous email destination actions based on the original prompt.
+   * Prevents generation bugs like: prompt mentions Gmail but action.type is "email".
+   */
+  private normalizeEmailDestinations(intent: StructuredIntent, userPrompt: string): void {
+    const p = (userPrompt || '').toLowerCase();
+    const mentionsGmail =
+      p.includes('gmail') ||
+      p.includes('google mail') ||
+      p.includes('google email') ||
+      p.includes('gmali') || // common typo
+      /\bgm(?:ai|ia)l\b/i.test(p);
+    const mentionsSmtp = p.includes('smtp') || p.includes('mail server') || p.includes('smtp host');
+
+    const normalizeAction = (a: { type: string; operation: string; config?: Record<string, any> }) => {
+      const t = (a.type || '').toLowerCase().trim();
+      const op = (a.operation || '').toLowerCase().trim();
+
+      // Only normalize send-email style actions
+      const isSend = op === 'send' || op.includes('send') || op.includes('notify');
+      if (!isSend) return;
+
+      // Explicit Gmail wins
+      if (t.includes('gmail') || t.includes('google_gmail') || t.includes('google mail') || t.includes('google_mail')) {
+        a.type = 'google_gmail';
+        return;
+      }
+
+      // Ambiguous "email" should map to Gmail if user mentioned Gmail
+      if ((t === 'email' || t === 'mail' || t.includes('email')) && mentionsGmail && !mentionsSmtp) {
+        a.type = 'google_gmail';
+        return;
+      }
+
+      // Explicit SMTP keeps generic email node
+      if ((t === 'email' || t.includes('email')) && mentionsSmtp && !mentionsGmail) {
+        a.type = 'email';
+      }
+    };
+
+    (intent.actions || []).forEach(normalizeAction as any);
+    (intent.dataSources || []).forEach(normalizeAction as any);
+    (intent.transformations || []).forEach(normalizeAction as any);
   }
 
   /**

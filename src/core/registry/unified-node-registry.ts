@@ -29,6 +29,8 @@ import {
 } from '../types/unified-node-contract';
 import { nodeLibrary } from '../../services/nodes/node-library';
 import { normalizeNodeType } from '../utils/node-type-normalizer';
+import { applyNodeDefinitionOverrides } from './unified-node-registry-overrides';
+import { executeViaLegacyExecutor } from './unified-node-registry-legacy-adapter';
 
 export class UnifiedNodeRegistry implements INodeRegistry {
   private static instance: UnifiedNodeRegistry;
@@ -57,7 +59,8 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     
     for (const schema of allSchemas) {
       try {
-        const definition = this.convertNodeLibrarySchemaToUnified(schema);
+        const baseDefinition = this.convertNodeLibrarySchemaToUnified(schema);
+        const definition = applyNodeDefinitionOverrides(baseDefinition, schema);
         this.register(definition);
       } catch (error) {
         console.error(`[UnifiedNodeRegistry] ⚠️  Failed to convert schema for ${schema.type}:`, error);
@@ -105,7 +108,7 @@ export class UnifiedNodeRegistry implements INodeRegistry {
         }
       }
     }
-    
+
     // Extract output schema
     const outputSchema: NodeOutputSchema = {
       default: {
@@ -163,177 +166,10 @@ export class UnifiedNodeRegistry implements INodeRegistry {
       };
     };
     
-    // Create execute function (delegates to legacy execution engine)
-    // NOTE: This calls executeNodeLegacy directly to avoid circular dependency
-    // executeNodeLegacy bypasses the dynamic executor and goes straight to switch statement
-    // 
-    // ✅ CORE ARCHITECTURE: Universal template resolution applied BEFORE execution
-    // This ensures ALL nodes get template resolution automatically
+    // Create execute function (delegates to legacy execution engine via adapter)
+    // Node-specific behavior must be implemented via per-node overrides (see unified-node-registry-overrides.ts)
     const execute = async (context: NodeExecutionContext) => {
-      try {
-        // Import legacy executor function directly (bypasses dynamic executor to avoid loop)
-        const { executeNodeLegacy } = await import('../../api/execute-workflow');
-        
-        // Create nodeOutputs cache from upstream outputs
-        const { LRUNodeOutputsCache } = await import('../../core/cache/lru-node-outputs-cache');
-        const nodeOutputs = new LRUNodeOutputsCache(100, false);
-        context.upstreamOutputs.forEach((output, nodeId) => {
-          nodeOutputs.set(nodeId, output, true);
-        });
-        
-        // ✅ UNIVERSAL TEMPLATE RESOLUTION (CORE ARCHITECTURE FIX)
-        // Resolve ALL template expressions in config BEFORE execution
-        // This ensures template resolution works for ALL nodes universally
-        // This is the SINGLE SOURCE OF TRUTH for template resolution
-        const { resolveConfigTemplates } = await import('../utils/universal-template-resolver');
-        const resolvedConfig = resolveConfigTemplates(context.config, nodeOutputs);
-        
-        // ✅ PLACEHOLDER FILTERING (CORE ARCHITECTURE FIX)
-        // Filter out placeholder values from config BEFORE execution
-        // This ensures placeholder values never appear in output JSON
-        const { filterPlaceholderValues } = await import('../utils/placeholder-filter');
-        const filteredConfig = filterPlaceholderValues(resolvedConfig);
-        
-        // ✅ CRITICAL FIX: Merge AI-resolved inputs into config
-        // AI Input Resolver generates values (e.g., prompt) and stores them in context.inputs
-        // But legacy executors read from config (e.g., config.prompt)
-        // So we need to merge context.inputs into config so executors can access them.
-        // ✅ CRITICAL: Inputs must NOT override user-provided config.
-        // The AI input resolver can "guess" values (sometimes from examples), so it must only
-        // act as a fallback when config is missing/empty/placeholder.
-        // We filter placeholders/empties from BOTH the base config and resolved config, then merge:
-        //   inputs (fallback) < base config < resolved config
-        const filteredBaseConfig = filterPlaceholderValues(context.config || {});
-        const configWithResolvedInputs = { ...context.inputs, ...filteredBaseConfig, ...filteredConfig };
-
-        // ✅ DEBUG (high-signal): For Google Sheets, log whether inputs tried to override spreadsheetId
-        if (context.nodeType === 'google_sheets') {
-          const cfgId = (configWithResolvedInputs as any)?.spreadsheetId;
-          const inputId = (context.inputs as any)?.spreadsheetId;
-          const baseId = (filteredBaseConfig as any)?.spreadsheetId;
-          if (inputId && baseId && inputId !== baseId) {
-            console.warn('[UnifiedNodeRegistry] ⚠️ google_sheets inputs attempted to override spreadsheetId; config wins', {
-              inputsSpreadsheetId: String(inputId).substring(0, 50),
-              configSpreadsheetId: String(baseId).substring(0, 50),
-              finalSpreadsheetId: String(cfgId).substring(0, 50),
-            });
-          }
-        }
-        
-        // ✅ DEBUG: Log resolved inputs for Ollama/AI nodes
-        if (context.nodeType === 'ollama' || context.nodeType === 'ai_chat_model') {
-          console.log('[UnifiedNodeRegistry] ✅ Ollama/AI Chat Model resolved inputs:', {
-            nodeId: context.nodeId,
-            nodeType: context.nodeType,
-            resolvedInputsKeys: Object.keys(context.inputs),
-            hasPrompt: 'prompt' in context.inputs,
-            promptLength: typeof context.inputs.prompt === 'string' ? context.inputs.prompt.length : 'N/A',
-            configPrompt: context.config.prompt,
-            mergedConfigHasPrompt: 'prompt' in configWithResolvedInputs,
-            mergedConfigPromptLength: typeof configWithResolvedInputs.prompt === 'string' 
-              ? configWithResolvedInputs.prompt.length 
-              : 'N/A',
-          });
-        }
-        
-        // Convert context to format expected by legacy executor
-        const node = {
-          id: context.nodeId,
-          type: context.nodeType,
-          data: {
-            label: context.nodeType,
-            type: context.nodeType,
-            category: schema.category,
-            config: configWithResolvedInputs, // Use config with resolved inputs merged in
-          },
-        };
-        
-        // ✅ UNIVERSAL DATA FORWARDING (CORE ARCHITECTURE FIX)
-        // Ensure input data is properly forwarded to execution
-        // For If/Else nodes: Forward full input data + condition metadata
-        // For Limit nodes: Resolve array field from templates
-        let executionInput = context.inputs;
-        
-        // ✅ CRITICAL FIX: For If/Else nodes, merge ALL upstream outputs into execution input
-        // If/Else nodes need the FULL upstream data (e.g., Google Sheets output with items array)
-        // NOT just the resolved input fields from resolveInputsWithAI
-        // resolveInputsWithAI only resolves fields in the input schema, but If/Else needs everything
-        if (context.nodeType === 'if_else' || context.nodeType === 'ifElse') {
-          // Merge all upstream outputs into execution input
-          // This ensures If/Else nodes receive complete data from upstream nodes
-          const mergedInput: Record<string, unknown> = { ...context.inputs };
-          
-          // Add all upstream outputs to merged input
-          context.upstreamOutputs.forEach((output, upstreamNodeId) => {
-            if (output && typeof output === 'object' && !Array.isArray(output)) {
-              Object.assign(mergedInput, output as Record<string, unknown>);
-            }
-          });
-          
-          executionInput = mergedInput;
-          
-          // ✅ DEBUG: Log merged input for If/Else nodes
-          console.log('[UnifiedNodeRegistry] ✅ If/Else merged input:', {
-            nodeId: context.nodeId,
-            resolvedInputsKeys: Object.keys(context.inputs),
-            upstreamNodeIds: Array.from(context.upstreamOutputs.keys()),
-            mergedInputKeys: Object.keys(mergedInput),
-            hasItems: 'items' in mergedInput,
-            itemsLength: Array.isArray(mergedInput.items) ? mergedInput.items.length : 'N/A',
-          });
-        }
-        
-        // Special handling for Limit nodes: Resolve array field from config
-        if (context.nodeType === 'limit' && resolvedConfig.array) {
-          // Array field is already resolved by resolveConfigTemplates
-          // Legacy executor will use it correctly
-        }
-        
-        // Call legacy executor directly (bypasses dynamic executor to avoid circular dependency)
-        const output = await executeNodeLegacy(
-          node as any,
-          executionInput,
-          nodeOutputs,
-          context.supabase,
-          context.workflowId,
-          context.userId,
-          context.currentUserId
-        );
-        
-        // ✅ CLEAN OUTPUT FROM CONFIG VALUES (CORE ARCHITECTURE FIX)
-        // Remove config values from output to ensure only actual output data is returned
-        // This prevents placeholder values and config fields from appearing in output JSON
-        const { cleanOutputFromConfig } = await import('../utils/placeholder-filter');
-        const cleanedOutput = cleanOutputFromConfig(output, filteredConfig);
-        
-        // ✅ UNIVERSAL DATA FORWARDING VERIFICATION
-        // For If/Else nodes: Verify that output contains input data
-        if ((context.nodeType === 'if_else' || context.nodeType === 'ifElse') && cleanedOutput) {
-          const outputObj = cleanedOutput as any;
-          // Ensure output contains input data (legacy executor should handle this)
-          // If not, merge input data into output
-          if (!outputObj.items && executionInput.items) {
-            return {
-              success: true,
-              output: { ...outputObj, ...executionInput },
-            };
-          }
-        }
-        
-        return {
-          success: true,
-          output: cleanedOutput,
-        };
-      } catch (error: any) {
-        return {
-          success: false,
-          error: {
-            code: 'EXECUTION_ERROR',
-            message: error.message || 'Node execution failed',
-            details: error,
-          },
-        };
-      }
+      return await executeViaLegacyExecutor({ context, schema });
     };
     
     return {

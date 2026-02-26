@@ -15,25 +15,16 @@
 
 import { LRUNodeOutputsCache } from '../cache/lru-node-outputs-cache';
 import { getNestedValue } from './object-utils';
-import { selectPropertyValuesFromOutput } from './intent-aware-property-selector';
+import { intentAwarePropertySelect } from './intent-aware-property-selector';
 
 /**
  * Get the most recent node output from cache
  * This is used as the $json context for template resolution
  */
 function getPreviousNodeOutput(nodeOutputs: LRUNodeOutputsCache): any {
-  const allOutputs = nodeOutputs.getAll();
-  
-  if (allOutputs && typeof allOutputs === 'object') {
-    const entries = Object.entries(allOutputs);
-    if (entries.length === 0) {
-      return undefined;
-    }
-    // Get the most recent output (last entry)
-    return entries[entries.length - 1][1];
-  }
-  
-  return undefined;
+  // ✅ Use timestamp-based most-recent output and ignore meta keys.
+  // This prevents $json/json/trigger/input from being treated as "previous output".
+  return nodeOutputs.getMostRecentOutput(['$json', 'json', 'trigger', 'input']);
 }
 
 /**
@@ -114,9 +105,10 @@ export function resolveUniversalTemplate(
         // Intent-aware selection: if referencing rows/items of object arrays, extract only requested column
         // when user intent specifies a property.
         if ((path === 'rows' || path === 'items') && root && typeof root === 'object') {
-          const selection = selectPropertyValuesFromOutput(intent, root, path);
-          if (selection.values) {
-            return selection.values;
+          const container = getNestedValue(root as any, path);
+          const selection = intentAwarePropertySelect(intent, container);
+          if (selection.mode === 'filtered') {
+            return selection.filteredData;
           }
         }
         if (root && typeof root === 'object') {

@@ -57,6 +57,13 @@ function toNodeDefinition(schema: NodeSchema): NodeDefinition {
       default: (v as any).default,
       examples: (v as any).examples,
       validation: (v as any).validation,
+      ui: {
+        options: (v as any).options,
+        requiredIf: (v as any).requiredIf,
+        widget: (v as any)?.requiredIf?.field?.toLowerCase?.().includes('recipient')
+          ? 'multi_email'
+          : undefined,
+      },
     };
   }
 

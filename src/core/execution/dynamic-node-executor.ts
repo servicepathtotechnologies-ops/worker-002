@@ -169,12 +169,26 @@ export async function executeNodeDynamically(
     node.data?.label
   );
   
+  // ✅ CRITICAL FIX: Store rawInput as 'input' in cache for {{input.*}} template resolution
+  // This ensures templates like {{input.response.subject}} resolve correctly for ALL nodes
+  if (input !== undefined && input !== null) {
+    nodeOutputs.set('input', input, true);
+    // Also set as $json for backward compatibility (if not already set)
+    if (!nodeOutputs.get('$json')) {
+      nodeOutputs.set('$json', input, true);
+    }
+    if (!nodeOutputs.get('json')) {
+      nodeOutputs.set('json', input, true);
+    }
+  }
+
   // Step 7: Create execution context
   const execContext: NodeExecutionContext = {
     nodeId: node.id,
     nodeType,
     config: migratedConfig,
     inputs: resolvedInputs,
+    rawInput: input,
     upstreamOutputs: new Map(),
     workflowId,
     userId,
@@ -329,19 +343,10 @@ async function resolveInputsWithAI(
  * Get previous node output from nodeOutputs cache
  */
 function getPreviousNodeOutput(nodeOutputs: LRUNodeOutputsCache): any {
-  const allOutputs = nodeOutputs.getAll();
-  
-  // getAll() returns Record<string, unknown>
-  if (allOutputs && typeof allOutputs === 'object') {
-    const entries = Object.entries(allOutputs);
-    if (entries.length === 0) {
-      return undefined;
-    }
-    // Get the most recent output (last entry)
-    return entries[entries.length - 1][1];
-  }
-  
-  return undefined;
+  // ✅ Use timestamp-based most-recent output and ignore meta keys.
+  // This makes AI input resolution deterministic and ensures it sees the actual
+  // upstream node output (e.g., Limit output), not $json/json/trigger/input.
+  return nodeOutputs.getMostRecentOutput(['$json', 'json', 'trigger', 'input']);
 }
 
 /**

@@ -5,6 +5,9 @@
  * This ensures consistency, validation, and deterministic execution.
  */
 
+import { unifiedNodeRegistry } from '../registry/unified-node-registry';
+import type { UnifiedNodeDefinition } from './unified-node-contract';
+
 export interface NodeInputSchema {
   [fieldName: string]: {
     type: 'string' | 'number' | 'boolean' | 'array' | 'object' | 'json';
@@ -13,6 +16,11 @@ export interface NodeInputSchema {
     default?: any;
     examples?: any[];
     validation?: (value: any) => boolean | string; // Return true if valid, or error message
+    ui?: {
+      options?: Array<{ label: string; value: string }>;
+      requiredIf?: { field: string; equals: any };
+      widget?: 'text' | 'textarea' | 'json' | 'multi_email';
+    };
   };
 }
 
@@ -85,29 +93,81 @@ export interface NodeExecutionContext {
  * Backend is the source of truth.
  */
 export class NodeDefinitionRegistry {
-  private definitions: Map<string, NodeDefinition> = new Map();
+  /**
+   * Compatibility shim.
+   *
+   * 🚨 Single Source of Truth: UnifiedNodeRegistry
+   * This legacy registry now delegates to `unifiedNodeRegistry` so ALL schemas/defaults/migrations
+   * come from one place for existing + future workflows.
+   */
 
-  register(definition: NodeDefinition): void {
-    if (this.definitions.has(definition.type)) {
-      console.warn(`[NodeRegistry] Overwriting existing definition for type: ${definition.type}`);
+  register(_definition: NodeDefinition): void {
+    // Legacy no-op: definitions must be registered in UnifiedNodeRegistry (or NodeLibrary feeding it).
+    // Kept to avoid breaking old imports that auto-register node definitions.
+  }
+
+  private toLegacy(def: UnifiedNodeDefinition): NodeDefinition {
+    const inputSchema: NodeInputSchema = {};
+    for (const [k, v] of Object.entries(def.inputSchema || {})) {
+      inputSchema[k] = {
+        type: v.type === 'expression' ? 'string' : (v.type as any),
+        description: v.description || '',
+        required: !!v.required,
+        default: v.default,
+        examples: v.examples,
+      };
     }
-    this.definitions.set(definition.type, definition);
+
+    const outputSchema: NodeOutputSchema = {};
+    for (const [port, pdef] of Object.entries(def.outputSchema || {})) {
+      outputSchema[port] = {
+        type: (pdef.schema?.type as any) || 'object',
+        description: pdef.description || '',
+      };
+    }
+
+    return {
+      type: def.type,
+      label: def.label,
+      category: def.category,
+      description: def.description,
+      icon: def.icon,
+      version: 1,
+      inputSchema,
+      outputSchema,
+      requiredInputs: def.requiredInputs || [],
+      outgoingPorts: def.outgoingPorts || ['default'],
+      incomingPorts: def.incomingPorts || ['default'],
+      isBranching: !!def.isBranching,
+      validateInputs: (inputs) => {
+        const res = def.validateConfig(inputs || {});
+        return { valid: res.valid, errors: res.errors };
+      },
+      defaultInputs: () => def.defaultConfig(),
+      credentialSchema: def.credentialSchema
+        ? {
+            providers: Array.from(new Set(def.credentialSchema.requirements.map((r) => r.provider))),
+            required: def.credentialSchema.requirements.filter((r) => r.required).map((r) => r.category),
+          }
+        : undefined,
+      migrations: undefined,
+      run: undefined,
+    };
   }
 
   get(type: string): NodeDefinition | undefined {
-    return this.definitions.get(type);
+    const def = unifiedNodeRegistry.get(type);
+    return def ? this.toLegacy(def) : undefined;
   }
 
   getAll(): NodeDefinition[] {
-    return Array.from(this.definitions.values());
+    return unifiedNodeRegistry.getAllTypes().map((t) => this.get(t)).filter(Boolean) as NodeDefinition[];
   }
 
   getAllByCategory(): Record<string, NodeDefinition[]> {
     const byCategory: Record<string, NodeDefinition[]> = {};
-    for (const def of this.definitions.values()) {
-      if (!byCategory[def.category]) {
-        byCategory[def.category] = [];
-      }
+    for (const def of this.getAll()) {
+      if (!byCategory[def.category]) byCategory[def.category] = [];
       byCategory[def.category].push(def);
     }
     return byCategory;
@@ -117,50 +177,25 @@ export class NodeDefinitionRegistry {
    * Migrate node inputs to latest version
    */
   migrateInputs(nodeType: string, inputs: Record<string, any>, fromVersion?: number): Record<string, any> {
-    const definition = this.get(nodeType);
-    if (!definition || !definition.migrations || definition.migrations.length === 0) {
-      return inputs; // No migrations needed
-    }
-
-    let currentInputs = inputs;
-    const startVersion = fromVersion || 1;
-    
-    // Apply migrations in order
-    for (const migration of definition.migrations) {
-      if (migration.version > startVersion) {
-        try {
-          currentInputs = migration.migrate(currentInputs);
-        } catch (error) {
-          console.error(`[NodeRegistry] Migration ${migration.version} failed for ${nodeType}:`, error);
-          // Continue with previous version
-        }
-      }
-    }
-
-    return currentInputs;
+    // UnifiedNodeRegistry owns migrations (string versioning).
+    // fromVersion is ignored here for compatibility; runtime always migrates to latest.
+    void fromVersion;
+    return unifiedNodeRegistry.migrateConfig(nodeType, inputs || {});
   }
 
   /**
    * Validate node inputs against schema
    */
   validateNodeInputs(nodeType: string, inputs: Record<string, any>): { valid: boolean; errors: string[] } {
-    const definition = this.get(nodeType);
-    if (!definition) {
-      return { valid: false, errors: [`Unknown node type: ${nodeType}`] };
-    }
-
-    return definition.validateInputs(inputs);
+    const res = unifiedNodeRegistry.validateConfig(nodeType, inputs || {});
+    return { valid: res.valid, errors: res.errors };
   }
 
   /**
    * Get default inputs for a node type
    */
   getDefaultInputs(nodeType: string): Record<string, any> {
-    const definition = this.get(nodeType);
-    if (!definition) {
-      return {};
-    }
-    return definition.defaultInputs();
+    return unifiedNodeRegistry.getDefaultConfig(nodeType) || {};
   }
 }
 

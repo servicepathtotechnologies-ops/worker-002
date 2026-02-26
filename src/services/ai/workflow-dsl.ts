@@ -566,14 +566,15 @@ export class DSLGenerator {
         categorized = true;
       } else if (this.isOutput(actionType, operation)) {
         const dslIndex = outputs.length;
+        const normalizedOutputType = this.normalizeOutputNodeType(actionType, operation, originalPrompt || '');
         outputs.push({
           id: `out_${stepCounter++}`,
-          type: actionType,
+          type: normalizedOutputType,
           operation: operation as any,
           config: action.config || {},
           description: action.config?.description,
         });
-        mappedActionsToOutputs.push({ actionType, operation, dslIndex });
+        mappedActionsToOutputs.push({ actionType: normalizedOutputType, operation, dslIndex });
         categorized = true;
       } else if (this.isDataSource(actionType, operation)) {
         const dslIndex = dataSources.length;
@@ -875,6 +876,46 @@ export class DSLGenerator {
       console.log(`[DSLGenerator] ℹ️  ${autoAddedTransformations} transformation(s) auto-added by TransformationDetector (total: ${breakdown.transformations}, from intent: ${intentActionsInTransformations})`);
     }
     return dsl;
+  }
+
+  /**
+   * Normalize output node types with prompt context (deterministic).
+   * Fixes critical ambiguity: StructuredIntent may emit `email` even when the user asked for Gmail.
+   */
+  private normalizeOutputNodeType(actionType: string, operation: string, originalPrompt: string): string {
+    const t = (actionType || '').toLowerCase().trim();
+    const op = (operation || '').toLowerCase().trim();
+    const p = (originalPrompt || '').toLowerCase();
+
+    const isSend = op === 'send' || op.includes('send') || op.includes('notify');
+    const mentionsGmail =
+      p.includes('gmail') ||
+      p.includes('google mail') ||
+      p.includes('google email') ||
+      p.includes('gmali') ||
+      /\bgm(?:ai|ia)l\b/i.test(p);
+    const mentionsSmtp = p.includes('smtp') || p.includes('mail server') || p.includes('smtp host');
+
+    if (isSend) {
+      // Explicit gmail-like action type
+      if (t.includes('gmail') || t.includes('google_gmail') || t.includes('google_mail') || t.includes('google mail')) {
+        return 'google_gmail';
+      }
+      // Ambiguous generic email: prefer Gmail unless SMTP explicitly requested
+      if ((t === 'email' || t === 'mail' || t.includes('email')) && mentionsGmail && !mentionsSmtp) {
+        return 'google_gmail';
+      }
+      // For generic "send email" without mention, default to Gmail (OAuth-first)
+      if ((t === 'email' || t === 'mail') && !mentionsSmtp) {
+        return 'google_gmail';
+      }
+      // Explicit SMTP requested
+      if ((t === 'email' || t.includes('email')) && mentionsSmtp && !mentionsGmail) {
+        return 'email';
+      }
+    }
+
+    return actionType;
   }
 
   /**

@@ -11,6 +11,7 @@ import { nodeEquivalenceMapper } from './node-equivalence-mapper';
 import { enhancedWorkflowAnalyzer } from './enhanced-workflow-analyzer';
 import { nodeLibrary } from '../nodes/node-library';
 import { nodeDefinitionRegistry } from '../../core/types/node-definition';
+import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 import { config } from '../../core/config';
 import type { IntentClassification } from './intent-classifier';
 import {
@@ -112,6 +113,20 @@ export class AgenticWorkflowBuilder {
   }
 
   /**
+   * Registry-driven node classification helpers (single source of truth).
+   * Avoid hardcoded node-type lists throughout the planner/builder.
+   */
+  private isTriggerNodeType(nodeType: string): boolean {
+    const def = unifiedNodeRegistry.get(nodeType);
+    return def?.category === 'trigger' || nodeType.includes('trigger');
+  }
+
+  private isInternalNodeType(nodeType: string): boolean {
+    const def = unifiedNodeRegistry.get(nodeType);
+    return (def?.tags || []).includes('internal');
+  }
+
+  /**
    * Build a lightweight WorkflowGenerationStructure from a canonical example.
    * The actual node configs will still be generated/customized later in the pipeline.
    */
@@ -133,18 +148,7 @@ export class AgenticWorkflowBuilder {
       };
     }
 
-    const triggerTypes = new Set([
-      'chat_trigger',
-      'error_trigger',
-      'interval',
-      'manual_trigger',
-      'schedule',
-      'webhook',
-      'workflow_trigger',
-      'form',
-    ]);
-
-    const triggerNode = example.nodes.find((n) => triggerTypes.has(n.type));
+    const triggerNode = example.nodes.find((n) => this.isTriggerNodeType(n.type));
     const effectiveTrigger = triggerOverride || (triggerNode ? triggerNode.type : null);
 
     const steps: WorkflowStepDefinition[] = [];
@@ -1286,8 +1290,10 @@ You are a workflow execution engine, not a diagram generator.`;
       // Only repair if the prompt clearly indicates the need (strict patterns)
       const promptLower = effectivePrompt.toLowerCase();
       const filteredMissingNodes = integrityCheck.missingNodes.filter(node => {
-        // Skip if_else injection if prompt doesn't have clear conditional patterns
-        if (node.type === 'if_else') {
+        // Skip branching-node injection if prompt doesn't have clear conditional patterns
+        // (registry-driven; no node-type hardcoding here)
+        const def = unifiedNodeRegistry.get(node.type);
+        if (def?.isBranching) {
           const hasClearConditional = 
             /\bif\s+(.+?)\s+then\b/i.test(effectivePrompt) ||
             /\bif\s+(.+?)\s+else\b/i.test(effectivePrompt) ||
@@ -1297,7 +1303,7 @@ You are a workflow execution engine, not a diagram generator.`;
             /\bage\s+(is|>|>=|<|<=|greater|less)/i.test(effectivePrompt);
           
           if (!hasClearConditional) {
-            console.log(`   ⚠️  Skipping if_else injection - no clear conditional pattern in prompt`);
+            console.log(`   ⚠️  Skipping branching node injection (${node.type}) - no clear conditional pattern in prompt`);
             return false;
           }
         }
@@ -6650,7 +6656,10 @@ Return JSON:
     // CRITICAL: Final deduplication - remove any duplicate nodes by type and label
     const uniqueNodes: WorkflowNode[] = [];
     const seenNodes = new Map<string, boolean>(); // Track seen node types + labels
-    const triggerTypes = ['manual_trigger', 'webhook', 'schedule', 'interval', 'chat_trigger', 'form', 'error_trigger'];
+    const isTriggerType = (t: string) => {
+      const def = unifiedNodeRegistry.get(t);
+      return def?.category === 'trigger' || t.includes('trigger');
+    };
     let firstTriggerSeen = false;
     let firstTriggerType: string | null = null;
     
@@ -6659,7 +6668,7 @@ Return JSON:
       const nodeLabel = (node.data?.label || '').toLowerCase();
       
       // CRITICAL: For triggers, only allow ONE trigger regardless of label
-      if (triggerTypes.includes(nodeType)) {
+      if (isTriggerType(nodeType)) {
         if (firstTriggerSeen) {
           // Already have a trigger, skip this duplicate
           console.warn(`⚠️  [NODE DEDUPLICATION] Removed duplicate trigger: ${nodeType} - "${node.data?.label}" (already have ${firstTriggerType})`);
@@ -6688,33 +6697,16 @@ Return JSON:
     
     // Note: Layout will be applied after edges are created in createConnections()
     
-    // CRITICAL FIX: Post-process nodes to ensure Google Sheets is used instead of database_read
-    // This fixes cases where AI selected wrong node type
-    const requirementsLower = (requirements.primaryGoal || '').toLowerCase();
-    const hasGoogleSheets = requirementsLower.includes('google sheet') || 
-                            requirementsLower.includes('spreadsheet') ||
-                            requirements.keySteps?.some(step => 
-                              step.toLowerCase().includes('google sheet') || 
-                              step.toLowerCase().includes('spreadsheet')
-                            );
-    
-    if (hasGoogleSheets) {
-      finalNodes.forEach(node => {
-        // Replace database_read/write with google_sheets if Google Sheets is mentioned
-        if ((node.type === 'database_read' || node.type === 'database_write') &&
-            (node.data.label?.toLowerCase().includes('google') || 
-             node.data.label?.toLowerCase().includes('sheet') ||
-             node.data.label?.toLowerCase().includes('spreadsheet'))) {
-          console.log(`✅ Post-processing: Correcting node ${node.id} from ${node.type} to google_sheets`);
-          node.type = 'google_sheets';
-          node.data.type = 'google_sheets';
-          // Update label if needed
-          if (!node.data.label?.toLowerCase().includes('sheet')) {
-            node.data.label = 'Google Sheets';
-          }
-        }
-      });
-    }
+    // Registry-driven normalization: apply deprecations/replacements universally
+    finalNodes.forEach((node) => {
+      const actualType = normalizeNodeType(node);
+      const def = unifiedNodeRegistry.get(actualType);
+      if (def?.deprecated && def.replacement) {
+        console.log(`✅ Post-processing: Normalizing deprecated node ${node.id} ${actualType} → ${def.replacement}`);
+        node.type = node.type === 'custom' ? 'custom' : def.replacement;
+        node.data.type = def.replacement;
+      }
+    });
     
     // 🔒 REMOVED: Heuristic Gmail post-processing hack
     // Node resolution is now handled deterministically by NodeResolver in generate-workflow.ts
@@ -7132,9 +7124,13 @@ Return JSON:
       }
     }
     
-    // STEP 8: CRITICAL - Ensure ai_agent userInput is ALWAYS populated
-    if (node.type === 'ai_agent' || node.type === 'openai_gpt' || node.type === 'anthropic_claude' || node.type === 'google_gemini') {
-      // CRITICAL: userInput must NEVER be empty
+    // STEP 8: CRITICAL - Ensure AI-like nodes that expose `userInput` always have it populated
+    // (registry-driven: check schema, not hardcoded node types)
+    const nodeActualType = normalizeNodeType(node) || node.type;
+    const nodeDef = unifiedNodeRegistry.get(nodeActualType);
+    const requiresUserInput = !!nodeDef?.inputSchema && 'userInput' in nodeDef.inputSchema;
+
+    if (requiresUserInput) {
       const hasUserInput = config.userInput && typeof config.userInput === 'string' && config.userInput.trim() !== '';
       if (!hasUserInput) {
         // Try to get from upstream nodes first
@@ -7147,12 +7143,16 @@ Return JSON:
             type: 'string'
           });
         } else {
-          // Use nodeDefaults system for guaranteed default
-          config.userInput = nodeDefaults.getDefaultValue(node.type, 'userInput', {
-            requirements,
-            previousNode,
-            workflowGoal: requirements.primaryGoal,
-          });
+          // Guaranteed default (registry defaults first, then workflow defaults system)
+          const registryDefaults = unifiedNodeRegistry.getDefaultConfig(nodeActualType) || {};
+          config.userInput =
+            typeof registryDefaults.userInput === 'string'
+              ? registryDefaults.userInput
+              : nodeDefaults.getDefaultValue(nodeActualType, 'userInput', {
+                  requirements,
+                  previousNode,
+                  workflowGoal: requirements.primaryGoal,
+                });
           dataContract.set('userInput', {
             sourceNode: 'trigger',
             sourceField: 'inputData',
@@ -7540,9 +7540,7 @@ Return JSON:
    * Get trigger payload fields
    */
   private getTriggerPayloadFields(upstreamNodes: WorkflowNode[]): string[] {
-    const triggerNode = upstreamNodes.find(n => 
-      ['manual_trigger', 'webhook', 'form', 'chat_trigger'].includes(n.type)
-    );
+    const triggerNode = upstreamNodes.find((n) => this.isTriggerNodeType(normalizeNodeType(n) || n.type));
     
     if (!triggerNode) {
       return [];
@@ -7550,17 +7548,11 @@ Return JSON:
     
     // Common trigger payload fields
     const commonFields = ['user_message', 'message', 'text', 'input', 'body', 'data', 'session_id'];
-    
-    // Add node-specific fields
-    if (triggerNode.type === 'webhook') {
-      return [...commonFields, 'query', 'params', 'headers'];
-    }
-    
-    if (triggerNode.type === 'form') {
-      return [...commonFields, 'form_data', 'submitted_at'];
-    }
-    
-    return commonFields;
+
+    // Registry-driven trigger payload fields: union with trigger output schema fields
+    const actualType = normalizeNodeType(triggerNode) || triggerNode.type;
+    const outputFields = this.getNodeOutputFields(actualType);
+    return Array.from(new Set([...commonFields, ...outputFields]));
   }
   
   /**
@@ -8412,573 +8404,80 @@ return {
     allNodes?: WorkflowNode[],
     nodeIndex?: number
   ): Promise<Record<string, unknown>> {
-    // Get node schema from NodeLibrary for better configuration
-    // CRITICAL FIX: Use normalizeNodeType to get actual node type
-    const actualNodeType = normalizeNodeType(node);
-    const nodeSchema = nodeLibrary.getSchema(actualNodeType);
-    
-    let config: Record<string, unknown> = {};
-    
-    // Extract values from configValues (user-provided credentials/URLs)
-    // configValues may contain credentials passed from constraints
-    const allConfigValues = { ...configValues };
-    
-    const getConfigValue = (key: string, fallback?: any): any => {
-      // Try exact match first in all config values (including credentials)
-      if (allConfigValues[key] !== undefined && allConfigValues[key] !== null && allConfigValues[key] !== '') {
-        return allConfigValues[key];
-      }
-      // Try case-insensitive match
-      const lowerKey = key.toLowerCase();
-      for (const [k, v] of Object.entries(allConfigValues)) {
-        if (k.toLowerCase() === lowerKey && v !== undefined && v !== null && v !== '') {
-          return v;
-        }
-      }
-      // Try credential keys (SLACK_TOKEN, API_KEY, etc.)
-      const credentialKey = key.toUpperCase();
-      if (allConfigValues[credentialKey] !== undefined && allConfigValues[credentialKey] !== null && allConfigValues[credentialKey] !== '') {
-        return allConfigValues[credentialKey];
-      }
-      // Try to get default from schema
-      if (nodeSchema?.configSchema?.optional?.[key]?.default !== undefined) {
-        return nodeSchema.configSchema.optional[key].default;
-      }
-      return fallback;
-    };
+    const actualNodeType = normalizeNodeType(node) || node.data?.type || node.type;
+    const def = unifiedNodeRegistry.get(actualNodeType);
+    const schema = nodeLibrary.getSchema(actualNodeType);
 
-    // Helper to extract from requirements arrays
-    const getFromRequirements = (type: 'urls' | 'apis' | 'credentials' | 'schedules' | 'platforms', index: number = 0): string | undefined => {
-      const arr = requirements[type] || [];
-      return arr[index] || undefined;
-    };
+    // Start from registry defaults (single source of truth)
+    const defaults = unifiedNodeRegistry.getDefaultConfig(actualNodeType) || {};
+    let config: Record<string, unknown> = { ...defaults };
 
-    // Apply common patterns from NodeLibrary if available
-    if (nodeSchema?.commonPatterns && nodeSchema.commonPatterns.length > 0) {
-      // Try to match a pattern based on requirements
-      const matchedPattern = nodeSchema.commonPatterns.find(pattern => {
-        // Simple matching logic - can be enhanced
-        return true; // For now, use first pattern
-      });
-      
-      if (matchedPattern) {
-        Object.assign(config, matchedPattern.config);
+    // Merge any provided values (constraints/credentials). Only keep values that exist in schema.
+    const allConfigValues = { ...(configValues || {}) };
+    const inputKeys = def ? Object.keys(def.inputSchema || {}) : Object.keys(schema?.configSchema?.optional || {});
+    for (const key of inputKeys) {
+      const v = (allConfigValues as any)[key];
+      if (v !== undefined && v !== null && v !== '') {
+        config[key] = v;
       }
     }
 
-    // Use utility functions for API key references and service URLs
-    const getSecureApiKeyRef = generateApiKeyRef;
-    const getServiceUrl = getServiceBaseUrl;
+    // Apply NodeLibrary "commonPatterns" as hints (still schema-driven)
+    const matchedPattern = schema?.commonPatterns?.[0];
+    if (matchedPattern && matchedPattern.config && typeof matchedPattern.config === 'object') {
+      config = { ...matchedPattern.config, ...config };
+    }
 
-    // Use AI to intelligently configure nodes based on type and requirements
-    // Following system prompt: ALL required fields filled, NO placeholders
-    try {
-      switch (node.type) {
-        case 'http_request':
-        case 'http_post':
-          config.method = node.type === 'http_post' ? 'POST' : 'GET';
-          // Auto-generate valid URL or use provided
-          config.url = getConfigValue('url') || getConfigValue('api_url') || getFromRequirements('urls', 0) || getServiceUrl('webhook');
-          
-          // Automatically add required headers
-          const headers: Record<string, string> = getConfigValue('headers') || {};
-          headers['Content-Type'] = headers['Content-Type'] || 'application/json';
-          
-          // Auto-add Authorization header if API key is needed
-          const apiKey = getConfigValue('api_key') || getFromRequirements('credentials', 0);
-          if (apiKey) {
-            headers['Authorization'] = `Bearer ${apiKey}`;
-          } else if (requirements.apis && requirements.apis.length > 0) {
-            // Use secure variable reference if API is mentioned but key not provided
-            headers['Authorization'] = `Bearer ${getSecureApiKeyRef('api')}`;
-          }
-          
-          config.headers = headers;
-          
-          // Apply safe defaults for pagination, limits, timeouts
-          config.timeout = getConfigValue('timeout') || 30000; // 30 seconds
-          config.retries = getConfigValue('retries') || 3;
-          config.limit = getConfigValue('limit') || 100;
-          break;
-        
-        case 'schedule':
-          const schedule = getFromRequirements('schedules', 0) || getConfigValue('schedule');
-          if (schedule) {
-            // Try to parse schedule string into cron format
-            config.cronExpression = this.parseScheduleToCron(schedule);
-          } else {
-            config.cronExpression = '0 9 * * *'; // Default: 9 AM daily
-          }
-          break;
-        
-        case 'interval':
-          config.interval = getConfigValue('interval') || 3600; // Default 1 hour
-          config.unit = getConfigValue('unit') || 'seconds';
-          break;
-        
-        case 'if_else':
-          // REQUIRED: condition must never be empty
-          // Try to extract condition from requirements or node label
-          let condition = getConfigValue('condition');
-          if (!condition || condition === '{{ $json }}') {
-            // Try to infer condition from requirements or node label
-            const nodeLabel = node.data?.label?.toLowerCase() || '';
-            const primaryGoal = requirements.primaryGoal?.toLowerCase() || '';
-            
-            // Look for comparison patterns in requirements
-            if (primaryGoal.includes('age') && primaryGoal.includes('>= 18')) {
-              condition = '{{age}} >= 18  // Example: Change field name (age) and threshold (18) as needed';
-            } else if (primaryGoal.includes('age') && primaryGoal.includes('>=')) {
-              const ageMatch = primaryGoal.match(/age.*?>=.*?(\d+)/);
-              if (ageMatch) {
-                condition = `{{age}} >= ${ageMatch[1]}  // Example: Change field name and threshold as needed`;
-              }
-            } else if (primaryGoal.includes('even') || primaryGoal.includes('odd')) {
-              // Even/odd check example
-              condition = '{{number}} % 2 === 0  // Example: Change field name (number) - checks if even';
-            } else if (nodeLabel.includes('eligibility') || nodeLabel.includes('check')) {
-              // Try to extract from keySteps
-              const keySteps = requirements.keySteps || [];
-              const eligibilityStep = keySteps.find(step => 
-                step.toLowerCase().includes('check') || 
-                step.toLowerCase().includes('validate') ||
-                step.toLowerCase().includes('>=')
-              );
-              if (eligibilityStep) {
-                // Try to extract condition from step description
-                const ageMatch = eligibilityStep.match(/(\w+)\s*(>=|>|==|<|<=)\s*(\d+)/);
-                if (ageMatch) {
-                  condition = `{{${ageMatch[1]}}} ${ageMatch[2]} ${ageMatch[3]}  // Example: Change field name and comparison as needed`;
-                }
-              }
-            }
-          }
-          // If still no condition, provide a helpful example
-          if (!condition || condition === '{{ $json }}') {
-            condition = '{{example_field}} >= 18  // Example: Change example_field to your field name and adjust condition';
-          }
-          config.condition = condition;
-          break;
-        
-        case 'set_variable':
-          // 🚨 CRITICAL: Auto-configure set_variable to extract email and name from webhook
-          // Check if this is for webhook data extraction
-          const nodeDescription = (node.data?.label?.toLowerCase() || '');
-          const primaryGoalLower = requirements.primaryGoal?.toLowerCase() || '';
-          
-          // Check if we need to extract email and name from webhook
-          if ((nodeDescription.includes('extract') && (nodeDescription.includes('email') || nodeDescription.includes('name'))) ||
-              (primaryGoalLower.includes('extract') && (primaryGoalLower.includes('email') || primaryGoalLower.includes('name')))) {
-            // Auto-configure to extract email and name from webhook body
-            config.variables = {
-              email: '{{$json.body.email}}',
-              name: '{{$json.body.name}}'
-            };
-            // Also try direct access (webhook may output body directly)
-            config.fields = {
-              email: '{{$json.email}}',
-              name: '{{$json.name}}'
-            };
-            console.log(`✅ [set_variable Auto-Config] Auto-configured email/name extraction from webhook`);
-            break;
-          }
-          
-          // REQUIRED: variables must be an array (even if empty)
-          // Try to extract variables from requirements
-          let variables = getConfigValue('variables');
-          if (!variables || !Array.isArray(variables) || variables.length === 0) {
-            // Try to infer from requirements
-            const primaryGoal = requirements.primaryGoal?.toLowerCase() || '';
-            const inputs = requirements.inputs || [];
-            const keySteps = requirements.keySteps || [];
-            
-            variables = {};
-            
-            // Extract common fields from prompt
-            if (primaryGoal.includes('age') || inputs.some(i => i.toLowerCase().includes('age'))) {
-              variables['age'] = '{{input.age}}';
-            }
-            if (primaryGoal.includes('amount') || primaryGoal.includes('total') || inputs.some(i => i.toLowerCase().includes('amount'))) {
-              variables['amount'] = '{{input.amount}}';
-            }
-            if (primaryGoal.includes('email') || inputs.some(i => i.toLowerCase().includes('email'))) {
-              variables['email'] = '{{input.email}}';
-            }
-            if (primaryGoal.includes('name') || inputs.some(i => i.toLowerCase().includes('name'))) {
-              variables['name'] = '{{input.name}}';
-            }
-            
-            // If no variables extracted, use default
-            if (Object.keys(variables).length === 0) {
-              variables = {};
-            }
-          }
-          config.variables = variables;
-          break;
-        
-        case 'openai_gpt':
-          config.model = getConfigValue('model') || 'gpt-3.5-turbo';
-          // REQUIRED: prompt must never be empty
-          config.prompt = getConfigValue('prompt') || requirements.primaryGoal || 'Process the input data and provide a response.';
-          // Use secure variable reference if API key not provided
-          config.apiKey = getConfigValue('openai_api_key') || getConfigValue('api_key') || getFromRequirements('credentials', 0) || getSecureApiKeyRef('openai');
-          config.temperature = getConfigValue('temperature') || 0.7;
-          config.maxTokens = getConfigValue('maxTokens') || 2000;
-          // Auto-add base URL
-          config.baseURL = getConfigValue('baseURL') || getServiceUrl('openai');
-          break;
-        
-        case 'anthropic_claude':
-          config.model = getConfigValue('model') || 'claude-3-sonnet-20240229';
-          // REQUIRED: prompt must never be empty
-          config.prompt = getConfigValue('prompt') || requirements.primaryGoal || 'Process the input data and provide a response.';
-          // Use secure variable reference if API key not provided
-          config.apiKey = getConfigValue('claude_api_key') || getConfigValue('api_key') || getFromRequirements('credentials', 0) || getSecureApiKeyRef('anthropic');
-          config.temperature = getConfigValue('temperature') || 0.7;
-          config.maxTokens = getConfigValue('maxTokens') || 2000;
-          // Auto-add base URL
-          config.baseURL = getConfigValue('baseURL') || getServiceUrl('anthropic');
-          break;
-        
-        case 'google_gemini':
-          config.model = getConfigValue('model') || 'gemini-pro';
-          // REQUIRED: prompt must never be empty
-          config.prompt = getConfigValue('prompt') || requirements.primaryGoal || 'Process the input data and provide a response.';
-          // Use secure variable reference if API key not provided
-          config.apiKey = getConfigValue('gemini_api_key') || getConfigValue('api_key') || getFromRequirements('credentials', 0) || getSecureApiKeyRef('gemini');
-          config.temperature = getConfigValue('temperature') || 0.7;
-          config.maxTokens = getConfigValue('maxTokens') || 2000;
-          // Auto-add base URL
-          config.baseURL = getConfigValue('baseURL') || getServiceUrl('gemini');
-          break;
-        
-        case 'google_sheets':
-          config.operation = getConfigValue('operation') || 'read';
-          // Extract spreadsheet ID from URL if provided
-          const sheetUrl = getConfigValue('google_sheet_url') || getConfigValue('url') || getFromRequirements('urls', 0) || '';
-          if (sheetUrl) {
-            const sheetIdMatch = sheetUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-            if (sheetIdMatch) {
-              config.spreadsheetId = sheetIdMatch[1];
-            } else {
-              config.spreadsheetId = sheetUrl; // Assume it's already an ID
-            }
-          } else {
-            // Don't use ENV placeholder - let missing fields check prompt user
-            config.spreadsheetId = getConfigValue('spreadsheetId') || getConfigValue('spreadsheet_id') || '';
-          }
-          // REQUIRED: sheetName must have a value
-          config.sheetName = getConfigValue('sheetName') || getConfigValue('sheet_name') || 'Sheet1';
-          config.range = getConfigValue('range') || 'A1:Z1000'; // Default range instead of empty
-          config.outputFormat = getConfigValue('outputFormat') || 'json';
-          break;
-        
-        case 'slack_message':
-          // Auto-generate webhook URL or use secure reference
-          // Prioritize webhook URL over token (webhook is simpler and sufficient)
-          const slackWebhook = getConfigValue('slack_webhook_url') || getConfigValue('webhook_url') || getFromRequirements('urls', 0) || getSecureApiKeyRef('slack', 'SLACK_WEBHOOK_URL');
-          config.webhookUrl = slackWebhook || getServiceUrl('webhook'); // Marked as configurable
-          config.channel = getConfigValue('slack_channel') || getConfigValue('channel') || '#general';
-          // REQUIRED: message must never be empty
-          config.message = getConfigValue('message') || requirements.primaryGoal || 'Workflow notification';
-          // Token is optional - webhook URL is preferred
-          config.token = getConfigValue('slack_token') || getConfigValue('token') || getFromRequirements('credentials', 0);
-          break;
-        
-        case 'discord':
-          // Auto-generate webhook URL or use secure reference
-          const discordWebhook = getConfigValue('discord_webhook_url') || getConfigValue('webhook_url') || getFromRequirements('urls', 0);
-          config.webhookUrl = discordWebhook || getServiceUrl('webhook'); // Marked as configurable
-          // REQUIRED: message must never be empty
-          config.message = getConfigValue('message') || requirements.primaryGoal || 'Workflow notification';
-          break;
-        
-        case 'email':
-          config.smtpHost = getConfigValue('smtp_host') || 'smtp.gmail.com';
-          config.smtpPort = getConfigValue('smtp_port') || 587;
-          config.username = getConfigValue('email') || getConfigValue('username') || '';
-          config.password = getConfigValue('email_password') || getConfigValue('password') || getFromRequirements('credentials', 0) || '';
-          config.to = getConfigValue('to') || '';
-          config.subject = getConfigValue('subject') || 'Workflow Notification';
-          config.body = getConfigValue('body') || requirements.primaryGoal || '';
-          break;
-        
-        case 'google_gmail':
-          config.operation = getConfigValue('operation') || 'send';
-          config.to = getConfigValue('to') || '';
-          config.subject = getConfigValue('subject') || 'Workflow Notification';
-          config.body = getConfigValue('body') || requirements.primaryGoal || '';
-          break;
-        
-        case 'webhook':
-          config.method = getConfigValue('method') || 'POST';
-          config.path = getConfigValue('path') || '/webhook';
-          break;
-        
-        case 'loop':
-          config.maxIterations = getConfigValue('maxIterations') || 100;
-          break;
-        
-        case 'wait':
-          config.duration = getConfigValue('duration') || 1000;
-          config.unit = getConfigValue('unit') || 'milliseconds';
-          break;
-        
-        case 'filter':
-          config.condition = getConfigValue('condition') || '{{ $json }}';
-          break;
-        
-        case 'javascript':
-          // REQUIRED: code must never be empty
-          // Try to generate meaningful code from requirements
-          let code = getConfigValue('code');
-          if (!code || code === 'return $input;') {
-            const primaryGoal = requirements.primaryGoal?.toLowerCase() || '';
-            const nodeLabel = node.data?.label?.toLowerCase() || '';
-            
-            // Generate code based on requirements
-            if (primaryGoal.includes('eligibility') || primaryGoal.includes('check') || nodeLabel.includes('eligibility')) {
-              // Voting eligibility or similar check
-              if (primaryGoal.includes('age') && primaryGoal.includes('>= 18')) {
-                code = `
-                  const age = parseInt(input.age) || 0;
-                  const threshold = 18;
-                  const eligible = age >= threshold;
-                  const reason = eligible 
-                    ? \`User is \${age} years old, which meets the \${threshold}+ requirement\`
-                    : \`User is \${age} years old, which is below the \${threshold} requirement\`;
-                  
-                  return {
-                    age: age,
-                    eligible: eligible,
-                    reason: reason,
-                    threshold: threshold,
-                    checkedAt: new Date().toISOString()
-                  };
-                `;
-              } else if (primaryGoal.includes('calculate') || primaryGoal.includes('total') || primaryGoal.includes('sum')) {
-                // Calculation logic
-                code = `
-                  const items = input.items || input.data || [];
-                  const total = items.reduce((sum, item) => sum + (parseFloat(item.amount || item.value || 0) || 0), 0);
-                  const count = items.length;
-                  const average = count > 0 ? total / count : 0;
-                  
-                  return {
-                    total: total,
-                    count: count,
-                    average: average,
-                    items: items
-                  };
-                `;
-              }
-            }
-          }
-          config.code = code || 'return $input;';
-          break;
-        
-        case 'text_formatter':
-          // REQUIRED: template must never be empty
-          // Try to generate meaningful template from requirements
-          let template = getConfigValue('template');
-          if (!template || template === '{{ $json }}') {
-            const primaryGoal = requirements.primaryGoal?.toLowerCase() || '';
-            const nodeLabel = node.data?.label?.toLowerCase() || '';
-            
-            // Generate template based on requirements
-            if (primaryGoal.includes('eligibility') || nodeLabel.includes('eligibility')) {
-              template = `Voting Eligibility Result:\n\nAge: {{age}}\nEligible: {{eligible ? 'YES' : 'NO'}}\nReason: {{reason}}\nRequired Age: {{threshold}}`;
-            } else if (primaryGoal.includes('report') || primaryGoal.includes('summary')) {
-              template = `Report:\n\n{{JSON.stringify($json, null, 2)}}`;
-            } else {
-              template = `Result: {{JSON.stringify($json, null, 2)}}`;
-            }
-          }
-          config.template = template || '{{ $json }}';
-          break;
-        
-        case 'hubspot':
-          // 🚨 CRITICAL: Auto-configure HubSpot operation and properties
-          const hubspotPrompt = requirements.primaryGoal?.toLowerCase() || '';
-          
-          // Auto-set operation to "create" if prompt mentions creating
-          if (!config.operation) {
-            if (hubspotPrompt.includes('create') || hubspotPrompt.includes('add') || hubspotPrompt.includes('new contact')) {
-              config.operation = 'create';
-              console.log(`✅ [HubSpot Auto-Config] Set operation to "create" based on prompt`);
-            } else {
-              config.operation = getConfigValue('operation') || 'get';
-            }
-          }
-          
-          // Auto-set resource to "contact" if prompt mentions contact
-          if (!config.resource) {
-            if (hubspotPrompt.includes('contact')) {
-              config.resource = 'contact';
-              console.log(`✅ [HubSpot Auto-Config] Set resource to "contact" based on prompt`);
-            } else {
-              config.resource = getConfigValue('resource') || 'contact';
-            }
-          }
-          
-          // Auto-populate Properties field when operation is "create" and we have email/name in flow
-          if (config.operation === 'create' && !config.properties) {
-            // Check if we have email and name in requirements
-            const hasEmail = hubspotPrompt.includes('email');
-            const hasName = hubspotPrompt.includes('name');
-            
-            if (hasEmail && hasName) {
-              // Auto-generate Properties JSON with template expressions
-              // These will be resolved from previous node (set_variable or webhook)
-              config.properties = {
-                email: '{{$json.email}}',
-                firstname: '{{$json.name}}'
-              };
-              console.log(`✅ [HubSpot Auto-Config] Auto-populated Properties field: ${JSON.stringify(config.properties)}`);
-            }
-          }
-          
-          // Set other HubSpot fields if not already set
-          config.id = getConfigValue('id') || getConfigValue('objectId') || '';
-          config.searchQuery = getConfigValue('searchQuery') || '';
-          config.limit = getConfigValue('limit') || 100;
-          break;
-        
-        case 'log_output':
-          // REQUIRED: message must never be empty
-          // Try to generate meaningful message from requirements
-          let logMessage = getConfigValue('message');
-          if (!logMessage || logMessage === 'Workflow execution completed') {
-            const primaryGoal = requirements.primaryGoal || '';
-            const nodeLabel = node.data?.label || '';
-            
-            // Generate specific message based on context
-            if (primaryGoal.includes('eligibility') || nodeLabel.includes('eligibility')) {
-              logMessage = 'Voting eligibility check completed';
-            } else if (primaryGoal.includes('calculate') || primaryGoal.includes('total')) {
-              logMessage = 'Calculation completed';
-            } else if (primaryGoal.includes('validate') || primaryGoal.includes('check')) {
-              logMessage = 'Validation completed';
-            } else {
-              logMessage = primaryGoal || 'Workflow execution completed';
-            }
-          }
-          config.message = logMessage;
-          
-          // Include data if available - ensure all result fields are included
-          if (!config.data) {
-            config.data = {};
-          }
-          // Try to include relevant fields from requirements
-          const inputs = requirements.inputs || [];
-          const outputs = requirements.outputs || [];
-          if (inputs.length > 0 || outputs.length > 0) {
-            // Include input/output fields in log data
-            const existingData = typeof config.data === 'object' && config.data !== null ? config.data : {};
-            config.data = {
-              ...(existingData as Record<string, any>),
-              inputs: inputs,
-              outputs: outputs,
-            };
-          }
-          break;
-        
-        case 'ai_agent':
-          // ✅ DEFAULT: AI Agent uses Ollama via connected chat_model node (created automatically)
-          // REQUIRED: systemPrompt must never be empty
-          // CRITICAL: Check if this is a chatbot workflow to use chatbot-specific prompt
-          const isChatbotWorkflow = this.detectChatbotIntent(requirements) || 
-                                   allNodes?.some(n => n.type === 'chat_trigger') ||
-                                   (requirements as any)?.trigger === 'chat_trigger';
-          
-          // Use chatbot-specific prompt for chatbot workflows
-          if (isChatbotWorkflow) {
-            config.systemPrompt = getConfigValue('systemPrompt') || 
-              'You are a helpful and friendly chatbot assistant. Your role is to have natural conversations with users.\n\n' +
-              'CRITICAL RULES:\n' +
-              '1. When a user sends you a message, respond DIRECTLY to that message in a conversational way.\n' +
-              '2. Do NOT explain how workflows work, do NOT describe workflow structures, and do NOT provide technical explanations about automation.\n' +
-              '3. Do NOT analyze JSON objects or data structures - just respond to the user\'s message as if you are having a friendly chat.\n' +
-              '4. If you receive a simple greeting like "Hello", respond with a friendly greeting like "Hi! How can I help you today?"\n' +
-              '5. Keep responses concise (1-3 sentences), helpful, and engaging.\n' +
-              '6. Be conversational and natural - act like a helpful assistant, not a technical documentation generator.\n\n' +
-              'Example: If user says "Hello", respond with "Hi! How can I help you today?" NOT with explanations about workflows or JSON structures.';
-          } else {
-            // ✅ DEFAULT: Generate intelligent prompt based on user's original request
-            const originalPrompt = ((requirements as any).originalPrompt || requirements.primaryGoal || '').toLowerCase();
-            if (originalPrompt.includes('summarize') || originalPrompt.includes('summary')) {
-              config.systemPrompt = getConfigValue('systemPrompt') || 
-                'You are an AI assistant that summarizes data concisely and accurately. Extract key points and provide clear summaries.';
-            } else if (originalPrompt.includes('analyze') || originalPrompt.includes('analysis')) {
-              config.systemPrompt = getConfigValue('systemPrompt') || 
-                'You are an AI assistant that analyzes data and provides key insights. Identify patterns, trends, and important information.';
-            } else if (originalPrompt.includes('extract')) {
-              config.systemPrompt = getConfigValue('systemPrompt') || 
-                'You are an AI assistant that extracts key information from data. Identify and return the most important details.';
-            } else {
-              config.systemPrompt = getConfigValue('systemPrompt') || requirements.primaryGoal || 
-                'You are an autonomous intelligent agent inside an automation workflow. Understand user input, reason over context, use available tools when needed, and produce structured responses.';
-            }
-          }
-          config.mode = getConfigValue('mode') || 'chat';
-          config.temperature = getConfigValue('temperature') || 0.7;
-          config.maxTokens = getConfigValue('maxTokens') || 2000;
-          console.log(`✅ [AI Agent Config] Configured AI AGENT node (will use Ollama via connected chat_model by default)`);
-          break;
+    const requiredFields = def?.requiredInputs || schema?.configSchema?.required || [];
+    const serviceName = extractServiceName(actualNodeType);
 
-        case 'chat_model':
-        case 'ai_chat_model':
-          // REQUIRED: provider, model, and prompt must never be empty
-          // ✅ CRITICAL: Default to Ollama (running on AWS) for all AI chat models
-          config.provider = getConfigValue('provider') || 'ollama';
-          config.model = getConfigValue('model') || 'qwen2.5:14b-instruct-q4_K_M';
-          // Ollama doesn't need API key - it's configured via OLLAMA_BASE_URL environment variable
-          // Remove apiKey requirement for Ollama
-          const originalPrompt = ((requirements as any).originalPrompt || requirements.primaryGoal || '').toLowerCase();
-          // Generate intelligent prompt based on user's original request
-          if (originalPrompt.includes('summarize') || originalPrompt.includes('summary')) {
-            config.prompt = getConfigValue('prompt') || 'Summarize the following data concisely and accurately:';
-          } else if (originalPrompt.includes('analyze') || originalPrompt.includes('analysis')) {
-            config.prompt = getConfigValue('prompt') || 'Analyze the following data and provide key insights:';
-          } else if (originalPrompt.includes('extract')) {
-            config.prompt = getConfigValue('prompt') || 'Extract key information from the following data:';
-          } else {
-            config.prompt = getConfigValue('prompt') || 'You are a helpful AI assistant that provides accurate and useful responses.';
-          }
-          config.temperature = getConfigValue('temperature') || 0.7;
-          console.log(`✅ [AI Config] Configured ${node.type || node.data?.type || 'ai_chat_model'} node with Ollama provider (model: ${config.model})`);
-          break;
-        
-        default:
-          // For unknown node types, try to fill common fields
-          // Ensure no empty required fields
-          if (requirements.primaryGoal) {
-            config.prompt = requirements.primaryGoal;
-          } else {
-            config.prompt = 'Process the input data';
-          }
-          break;
+    const inferValue = (fieldName: string): any => {
+      const f = fieldName.toLowerCase();
+      if (f.includes('url') || f.includes('endpoint')) {
+        return (requirements.urls && requirements.urls[0]) || getServiceBaseUrl(serviceName);
       }
-      
-      // Final validation: Remove any placeholder values using utility function
-      const serviceName = extractServiceName(node.type);
-      Object.keys(config).forEach(key => {
-        config[key] = sanitizeConfigValue(key, config[key], serviceName);
-      });
-      
-      // Apply safe defaults for the node type
-      config = applySafeDefaults(config, node.type);
-    } catch (error) {
-      console.error(`Error configuring node ${node.type}:`, error);
-      // Fallback: ensure basic required fields are set
-      if (requirements.primaryGoal) {
-        config.prompt = requirements.primaryGoal;
-      } else {
-        config.prompt = 'Process the input data';
+      if (f.includes('cron')) {
+        const schedule = (requirements.schedules && requirements.schedules[0]) || '';
+        return this.parseScheduleToCron(schedule || 'daily');
+      }
+      if (f.includes('interval')) return 3600;
+      if (f === 'unit') return 'seconds';
+      if (f.includes('headers')) return { 'Content-Type': 'application/json' };
+      if (f.includes('method')) return actualNodeType.toLowerCase().includes('post') ? 'POST' : 'GET';
+      if (f.includes('apikey') || f.includes('api_key') || f.endsWith('key') || f.includes('token')) {
+        return generateApiKeyRef(serviceName || 'api');
+      }
+      if (f.includes('sheetname')) return 'Sheet1';
+      if (f === 'range') return 'A1:Z1000';
+      if (f.includes('condition')) return 'true';
+      if (f.includes('prompt') || f.includes('message') || f.includes('body') || f.includes('text')) {
+        return requirements.primaryGoal || 'Process the input data';
+      }
+      if (f.includes('model')) return (schema as any)?.configSchema?.optional?.[fieldName]?.default;
+      return (schema as any)?.configSchema?.optional?.[fieldName]?.default ?? requirements.primaryGoal ?? 'value';
+    };
+
+    // Fill missing required fields deterministically
+    for (const fieldName of requiredFields) {
+      const v = (config as any)[fieldName];
+      const empty =
+        v === undefined ||
+        v === null ||
+        (typeof v === 'string' && v.trim() === '') ||
+        (Array.isArray(v) && v.length === 0);
+      if (empty) {
+        (config as any)[fieldName] = inferValue(fieldName);
       }
     }
-    
-    return config;
+
+    // Final guard: if any placeholders slipped in, replace with inferred values
+    for (const [k, v] of Object.entries(config)) {
+      if (isPlaceholder(v)) {
+        (config as any)[k] = inferValue(k);
+      }
+    }
+
+    return applySafeDefaults(config, actualNodeType);
   }
 
   /**
@@ -10247,35 +9746,11 @@ return {
       return outputFields[nodeType] || ['data', 'output'];
     };
 
-    // Helper function to get input fields for a node type
-    const getNodeInputFields = (nodeType: string): string[] => {
-      const inputFields: Record<string, string[]> = {
-        'ai_agent': ['userInput', 'chat_model', 'memory', 'tool'],
-        'http_request': ['url', 'method', 'headers', 'body', 'params'],
-        'http_post': ['url', 'headers', 'body'],
-        'slack_message': ['text', 'channel', 'username', 'webhookUrl'],
-        'email': ['to', 'subject', 'body', 'from'],
-        'discord': ['content', 'channel', 'username'],
-        'linkedin': ['text', 'content', 'visibility'],
-        'twitter': ['text', 'tweet'],
-        'instagram': ['image', 'caption', 'text'],
-        'google_sheets': ['spreadsheetId', 'range', 'values', 'data'],
-        'google_doc': ['documentId', 'content', 'text'],
-        'google_drive': ['folderId', 'fileName', 'fileContent'],
-        'google_gmail': ['to', 'subject', 'body', 'from'],
-        'javascript': ['code', 'input'],
-        'set_variable': ['input', 'data', 'values'],
-        'json_parser': ['json', 'data'],
-        'text_formatter': ['template', 'data'],
-        'database_read': ['query', 'sql', 'table'],
-        'database_write': ['query', 'sql', 'table', 'data'],
-        'supabase': ['table', 'data', 'query'],
-      };
-      return inputFields[nodeType] || ['input', 'data'];
-    };
+    // Helper function to get input fields for a node type (registry-driven)
+    const getNodeInputFields = (nodeType: string): string[] => this.getNodeInputFields(nodeType);
 
     // Helper function to map output to input based on node types
-    const mapOutputToInput = (sourceType: string, targetType: string): { outputField: string; inputField: string; targetHandle?: string } | null => {
+    const mapOutputToInputLegacy = (sourceType: string, targetType: string): { outputField: string; inputField: string; targetHandle?: string } | null => {
       // ✅ CRITICAL FIX: Handle all triggers that output 'inputData'
       if (sourceType === 'manual_trigger' || sourceType === 'workflow_trigger') {
         // Both manual_trigger and workflow_trigger output 'inputData'
@@ -10638,6 +10113,39 @@ return {
         inputField: targetInputs[0] || 'input' 
       };
     };
+
+    // Schema-driven mapping (replacement for legacy mapping table)
+    const mapOutputToInput = (
+      sourceType: string,
+      targetType: string
+    ): { outputField: string; inputField: string; targetHandle?: string } | null => {
+      const sourceOutputs = getNodeOutputFields(sourceType);
+      const targetInputs = getNodeInputFields(targetType);
+      if (sourceOutputs.length === 0 || targetInputs.length === 0) return null;
+
+      // Prefer exact name matches first.
+      for (const out of sourceOutputs) {
+        if (targetInputs.includes(out)) return { outputField: out, inputField: out };
+      }
+
+      const lowerSource = sourceOutputs.map((s) => s.toLowerCase());
+      const lowerTarget = targetInputs.map((s) => s.toLowerCase());
+
+      const pickByPriority = (candidates: string[], availableLower: string[], original: string[]) => {
+        const chosen = candidates.find((c) => availableLower.includes(c.toLowerCase()));
+        if (!chosen) return null;
+        const idx = availableLower.indexOf(chosen.toLowerCase());
+        return idx >= 0 ? original[idx] : null;
+      };
+
+      const outputPriority = ['message', 'response_text', 'text', 'body', 'content', 'data', 'items', 'output', 'result', 'value', 'inputdata'];
+      const inputPriority = ['userinput', 'message', 'text', 'body', 'content', 'data', 'input', 'value', 'inputdata'];
+
+      const outputField = pickByPriority(outputPriority, lowerSource, sourceOutputs) || sourceOutputs[0];
+      const inputField = pickByPriority(inputPriority, lowerTarget, targetInputs) || targetInputs[0];
+
+      return { outputField, inputField };
+    };
     
     // First, ensure all AI Agent nodes have Chat Model nodes connected
     const aiAgentNodes = finalNodes.filter(n => n.type === 'ai_agent');
@@ -10718,9 +10226,18 @@ return {
     }
     
     // PRIORITY 1 FIX: Use structure connections if available, otherwise fall back to sequential
-    const triggerNodes = finalNodes.filter(n => 
-      ['manual_trigger', 'webhook', 'schedule', 'interval', 'chat_trigger', 'workflow_trigger', 'form', 'error_trigger'].includes(n.type)
-    );
+    const isTriggerNode = (n: WorkflowNode) => {
+      const t = normalizeNodeType(n) || n.type;
+      const def = unifiedNodeRegistry.get(t);
+      return def?.category === 'trigger' || t.includes('trigger');
+    };
+    const isInternalNode = (n: WorkflowNode) => {
+      const t = normalizeNodeType(n) || n.type;
+      const def = unifiedNodeRegistry.get(t);
+      return (def?.tags || []).includes('internal');
+    };
+
+    const triggerNodes = finalNodes.filter(isTriggerNode);
     
     if (triggerNodes.length === 0) {
       console.warn('⚠️  No trigger node found, cannot create connections');
@@ -10728,10 +10245,7 @@ return {
     }
 
     // Define allNonTriggerNodes outside if/else for orphan node handling (used in both branches)
-    const allNonTriggerNodes = finalNodes.filter(n => 
-      n.type !== 'chat_model' && 
-      !['manual_trigger', 'webhook', 'schedule', 'interval', 'chat_trigger', 'workflow_trigger', 'form', 'error_trigger'].includes(n.type)
-    );
+    const allNonTriggerNodes = finalNodes.filter((n) => !isInternalNode(n) && !isTriggerNode(n));
 
     // Variables for sequential connection fallback (will be defined in else block if needed)
     let processingNodes: WorkflowNode[] = [];
@@ -10762,7 +10276,7 @@ return {
             // Match by order (skip trigger node)
             const actionNodes = finalNodes.filter(n => {
               const nodeType = normalizeNodeType(n);
-              return !['manual_trigger', 'webhook', 'schedule', 'form', 'chat_model'].includes(nodeType);
+              return !this.isTriggerNodeType(nodeType) && !this.isInternalNodeType(nodeType);
             });
             if (actionNodes[stepNum - 1] && actionNodes[stepNum - 1].id === n.id) {
               return true;
@@ -10771,7 +10285,7 @@ return {
           // If no match, try to match by order (skip trigger node)
           const actionNodeIndex = finalNodes.filter(n => {
             const nodeType = normalizeNodeType(n);
-            return !['manual_trigger', 'webhook', 'schedule', 'form', 'chat_model'].includes(nodeType);
+            return !this.isTriggerNodeType(nodeType) && !this.isInternalNodeType(nodeType);
           }).indexOf(n);
           return actionNodeIndex === index;
         });
@@ -11783,20 +11297,12 @@ return {
     nodes: WorkflowNode[],
     edges: WorkflowEdge[]
   ): { nodes: WorkflowNode[]; edges: WorkflowEdge[] } {
-    // Define output node types
-    const outputNodeTypes = [
-      'slack_message',
-      'email',
-      'discord',
-      'log_output',
-      'webhook_response',
-      'respond_to_webhook',
-      'google_gmail'
-    ];
-    
-    // Normalize trigger detection (nodes are often type="custom" with real type in data.type)
-    const triggerTypes = ['manual_trigger', 'webhook', 'schedule', 'interval', 'chat_trigger', 'workflow_trigger', 'form', 'error_trigger'];
-    const isTriggerNode = (n: WorkflowNode) => triggerTypes.includes(normalizeNodeType(n));
+    const isTriggerNode = (n: WorkflowNode) => this.isTriggerNodeType(normalizeNodeType(n));
+    const isOutputSinkNode = (n: WorkflowNode) => {
+      const t = normalizeNodeType(n);
+      const def = unifiedNodeRegistry.get(t);
+      return def?.category === 'communication' || (def?.tags || []).includes('sink') || (def?.tags || []).includes('output');
+    };
 
     // Find terminal nodes by graph topology (branch-aware): nodes with no outgoing edges
     const nodesWithOutgoingEdges = new Set(edges.map(edge => edge.source));
@@ -11809,7 +11315,7 @@ return {
 
     // If there is already a log_output node, make sure it is wired as the FINAL sink (not from trigger).
     const existingLogOutputs = nodes.filter(n => normalizeNodeType(n) === 'log_output');
-    const hasAnyOutputNode = terminalNonTriggerNodes.some(node => outputNodeTypes.includes(normalizeNodeType(node)));
+    const hasAnyOutputNode = terminalNonTriggerNodes.some(isOutputSinkNode);
 
     // We only auto-add/auto-rewire when workflow has no explicit output OR when there is an auto-injected log_output present.
     const shouldEnsureLog =
@@ -11865,7 +11371,7 @@ return {
         if (!src) return true;
         const srcType = normalizeNodeType(src);
         // Drop trigger→log_output edges so log_output sits at the end of actual branches
-        if (triggerTypes.includes(srcType)) {
+        if (this.isTriggerNodeType(srcType)) {
           console.warn(`⚠️  [ensureOutputNode] Removed trigger→log_output edge: ${srcType} (${e.source}) → log_output (${e.target})`);
           return false;
         }
@@ -12023,9 +11529,8 @@ return {
     const BRANCH_Y_OFFSET = 180;
     const START_X = 120;
 
-    // Identify trigger(s)
-    const triggerTypes = ['manual_trigger', 'webhook', 'schedule', 'interval', 'chat_trigger', 'workflow_trigger', 'form', 'error_trigger'];
-    const triggerNodes = nodes.filter(n => triggerTypes.includes(n.type));
+    // Identify trigger(s) (registry-driven)
+    const triggerNodes = nodes.filter(n => this.isTriggerNodeType(normalizeNodeType(n) || n.type));
     const triggerNode = triggerNodes[0] ?? nodes[0];
 
     // Build adjacency map
@@ -12172,113 +11677,11 @@ return {
         }
       });
       
-      // Validate specific node types have required fields
-      switch (node.type) {
-        case 'schedule':
-          if (!config.cronExpression || typeof config.cronExpression !== 'string' || config.cronExpression.trim() === '') {
-            errors.push(`Schedule node ${node.id} missing or empty cronExpression`);
-          }
-          break;
-        
-        case 'interval':
-          if (config.interval === undefined || config.interval === null || config.interval === '') {
-            errors.push(`Interval node ${node.id} missing interval value`);
-          }
-          if (!config.unit || typeof config.unit !== 'string') {
-            errors.push(`Interval node ${node.id} missing unit`);
-          }
-          break;
-        
-        case 'http_request':
-        case 'http_post':
-          if (!config.url || typeof config.url !== 'string' || config.url.trim() === '') {
-            errors.push(`HTTP node ${node.id} has empty URL (required field)`);
-          }
-          if (!config.headers || typeof config.headers !== 'object') {
-            errors.push(`HTTP node ${node.id} missing headers object`);
-          }
-          break;
-        
-        case 'google_sheets':
-          if (!config.spreadsheetId || typeof config.spreadsheetId !== 'string' || config.spreadsheetId.trim() === '') {
-            errors.push(`Google Sheets node ${node.id} missing spreadsheetId (required field)`);
-          }
-          if (!config.sheetName || typeof config.sheetName !== 'string' || config.sheetName.trim() === '') {
-            errors.push(`Google Sheets node ${node.id} missing sheetName (required field)`);
-          }
-          break;
-        
-        case 'slack_message':
-          const slackWebhookUrl = config.webhookUrl as string | undefined;
-          const slackToken = config.token as string | undefined;
-          // Webhook URL is preferred and sufficient - token is optional fallback
-          if ((!slackWebhookUrl || (typeof slackWebhookUrl === 'string' && slackWebhookUrl.trim() === '')) && 
-              (!slackToken || (typeof slackToken === 'string' && slackToken.trim() === ''))) {
-            errors.push(`Slack node ${node.id} missing webhookUrl (required) or token (optional fallback)`);
-          }
-          if (!config.message || typeof config.message !== 'string' || config.message.trim() === '') {
-            errors.push(`Slack node ${node.id} has empty message (required field)`);
-          }
-          break;
-        
-        case 'openai_gpt':
-        case 'anthropic_claude':
-        case 'google_gemini':
-          if (!config.prompt || typeof config.prompt !== 'string' || config.prompt.trim() === '') {
-            errors.push(`AI node ${node.id} has empty prompt (required field)`);
-          }
-          if (!config.apiKey || typeof config.apiKey !== 'string' || config.apiKey.trim() === '') {
-            errors.push(`AI node ${node.id} missing apiKey (required field)`);
-          }
-          break;
-        
-        case 'if_else':
-          if (!config.condition || typeof config.condition !== 'string' || config.condition.trim() === '') {
-            errors.push(`If/Else node ${node.id} missing condition (required field)`);
-          }
-          break;
-        
-        case 'set_variable':
-          if (!Array.isArray(config.variables)) {
-            errors.push(`Set Variable node ${node.id} variables must be an array`);
-          }
-          break;
-        
-        case 'javascript':
-          if (!config.code || typeof config.code !== 'string' || config.code.trim() === '') {
-            errors.push(`JavaScript node ${node.id} has empty code (required field)`);
-          }
-          break;
-        
-        case 'text_formatter':
-          if (!config.template || typeof config.template !== 'string' || config.template.trim() === '') {
-            errors.push(`Text Formatter node ${node.id} has empty template (required field)`);
-          }
-          break;
-        
-        case 'ai_agent':
-          if (!config.systemPrompt || typeof config.systemPrompt !== 'string' || config.systemPrompt.trim() === '') {
-            errors.push(`AI Agent node ${node.id} has empty systemPrompt (required field)`);
-          }
-          if (!config.mode || typeof config.mode !== 'string') {
-            errors.push(`AI Agent node ${node.id} missing mode (required field)`);
-          }
-          break;
-
-        case 'chat_model':
-          if (!config.provider || typeof config.provider !== 'string' || config.provider.trim() === '') {
-            errors.push(`Chat Model node ${node.id} missing provider (required field)`);
-          }
-          if (!config.model || typeof config.model !== 'string' || config.model.trim() === '') {
-            errors.push(`Chat Model node ${node.id} missing model (required field)`);
-          }
-          if (!config.apiKey || typeof config.apiKey !== 'string' || config.apiKey.trim() === '') {
-            errors.push(`Chat Model node ${node.id} missing apiKey (required field)`);
-          }
-          if (!config.prompt || typeof config.prompt !== 'string' || config.prompt.trim() === '') {
-            errors.push(`Chat Model node ${node.id} has empty prompt (required field)`);
-          }
-          break;
+      // Registry-driven validation (single source of truth)
+      const actualTypeForValidation = normalizeNodeType(node);
+      const registryValidation = unifiedNodeRegistry.validateConfig(actualTypeForValidation, config as any);
+      if (!registryValidation.valid) {
+        errors.push(`Node ${node.id} (${node.type}) invalid config: ${registryValidation.errors.join(', ')}`);
       }
     });
     
@@ -12304,7 +11707,8 @@ return {
     
     const orphanedNodes = workflow.nodes.filter(node => {
       // Trigger nodes don't need incoming connections
-      if (['manual_trigger', 'webhook', 'schedule', 'interval', 'chat_trigger', 'workflow_trigger', 'form', 'error_trigger'].includes(node.type)) {
+      const nt = normalizeNodeType(node) || node.type;
+      if (this.isTriggerNodeType(nt)) {
         return false;
       }
       return !connectedNodeIds.has(node.id);
@@ -12315,9 +11719,11 @@ return {
     }
     
     // Ensure workflow has at least one output or end node
-    const hasOutput = workflow.nodes.some(n => 
-      ['log_output', 'slack_message', 'email', 'discord', 'respond_to_webhook', 'webhook_response'].includes(n.type)
-    );
+    const hasOutput = workflow.nodes.some(n => {
+      const t = normalizeNodeType(n) || n.type;
+      const def = unifiedNodeRegistry.get(t);
+      return def?.category === 'communication' || (def?.tags || []).includes('sink') || (def?.tags || []).includes('output');
+    });
     if (!hasOutput && workflow.nodes.length > 1) {
       warnings.push('Workflow may benefit from an output node to see results');
     }
@@ -12450,199 +11856,36 @@ return {
         }
       });
 
-      // Second pass: Fill required fields based on node type
-      switch (node.type) {
-        case 'schedule':
-          if (!fixedConfig.cronExpression || typeof fixedConfig.cronExpression !== 'string' || fixedConfig.cronExpression.trim() === '') {
-            const schedule = requirements.schedules?.[0] || '';
-            fixedConfig.cronExpression = this.parseScheduleToCron(schedule);
-          }
-          break;
+      // Second pass: Fill required fields from registry schema/defaults (single source of truth)
+      const actualType = normalizeNodeType(node) || node.type;
+      const def = unifiedNodeRegistry.get(actualType);
+      const defaults = unifiedNodeRegistry.getDefaultConfig(actualType) || {};
 
-        case 'interval':
-          if (fixedConfig.interval === undefined || fixedConfig.interval === null || fixedConfig.interval === '') {
-            fixedConfig.interval = 3600;
-          }
-          if (!fixedConfig.unit || typeof fixedConfig.unit !== 'string') {
-            fixedConfig.unit = 'seconds';
-          }
-          break;
+      const inferValue = (fieldName: string) => {
+        const f = fieldName.toLowerCase();
+        const serviceName = extractServiceName(actualType);
+        if (f.includes('url') || f.includes('endpoint')) return requirements.urls?.[0] || getServiceUrl(serviceName || 'webhook');
+        if (f.includes('cron')) return this.parseScheduleToCron((requirements.schedules?.[0] || 'daily') as any);
+        if (f.includes('interval')) return 3600;
+        if (f === 'unit') return 'seconds';
+        if (f.includes('headers')) return { 'Content-Type': 'application/json' };
+        if (f.includes('condition')) return 'true';
+        if (f.includes('prompt') || f.includes('message') || f.includes('body') || f.includes('text')) return requirements.primaryGoal || 'Process the input data';
+        if (f.includes('apikey') || f.includes('api_key') || f.endsWith('key') || f.includes('token')) return getSecureApiKeyRef(serviceName || 'api');
+        return (defaults as any)[fieldName] ?? '';
+      };
 
-        case 'if_else':
-          if (!fixedConfig.condition || typeof fixedConfig.condition !== 'string' || fixedConfig.condition.trim() === '') {
-            fixedConfig.condition = '{{ $json }}';
-          }
-          break;
-
-        case 'set_variable':
-          if (!Array.isArray(fixedConfig.variables)) {
-            fixedConfig.variables = [];
-          }
-          break;
-
-        case 'openai_gpt':
-          if (!fixedConfig.prompt || typeof fixedConfig.prompt !== 'string' || fixedConfig.prompt.trim() === '') {
-            fixedConfig.prompt = requirements.primaryGoal || 'Process the input data and provide a response.';
-          }
-          if (!fixedConfig.apiKey || typeof fixedConfig.apiKey !== 'string' || fixedConfig.apiKey.trim() === '') {
-            fixedConfig.apiKey = getSecureApiKeyRef('openai');
-          }
-          if (!fixedConfig.model) {
-            fixedConfig.model = 'gpt-3.5-turbo';
-          }
-          if (!fixedConfig.temperature) {
-            fixedConfig.temperature = 0.7;
-          }
-          if (!fixedConfig.maxTokens) {
-            fixedConfig.maxTokens = 2000;
-          }
-          break;
-
-        case 'anthropic_claude':
-          if (!fixedConfig.prompt || typeof fixedConfig.prompt !== 'string' || fixedConfig.prompt.trim() === '') {
-            fixedConfig.prompt = requirements.primaryGoal || 'Process the input data and provide a response.';
-          }
-          if (!fixedConfig.apiKey || typeof fixedConfig.apiKey !== 'string' || fixedConfig.apiKey.trim() === '') {
-            fixedConfig.apiKey = getSecureApiKeyRef('anthropic');
-          }
-          if (!fixedConfig.model) {
-            fixedConfig.model = 'claude-3-sonnet-20240229';
-          }
-          if (!fixedConfig.temperature) {
-            fixedConfig.temperature = 0.7;
-          }
-          if (!fixedConfig.maxTokens) {
-            fixedConfig.maxTokens = 2000;
-          }
-          break;
-
-        case 'google_gemini':
-          if (!fixedConfig.prompt || typeof fixedConfig.prompt !== 'string' || fixedConfig.prompt.trim() === '') {
-            fixedConfig.prompt = requirements.primaryGoal || 'Process the input data and provide a response.';
-          }
-          if (!fixedConfig.apiKey || typeof fixedConfig.apiKey !== 'string' || fixedConfig.apiKey.trim() === '') {
-            fixedConfig.apiKey = getSecureApiKeyRef('gemini');
-          }
-          if (!fixedConfig.model) {
-            fixedConfig.model = 'gemini-pro';
-          }
-          if (!fixedConfig.temperature) {
-            fixedConfig.temperature = 0.7;
-          }
-          if (!fixedConfig.maxTokens) {
-            fixedConfig.maxTokens = 2000;
-          }
-          break;
-
-        case 'http_request':
-        case 'http_post':
-          if (!fixedConfig.url || typeof fixedConfig.url !== 'string' || fixedConfig.url.trim() === '') {
-            fixedConfig.url = requirements.urls?.[0] || getServiceUrl('webhook');
-          }
-          if (!fixedConfig.headers || typeof fixedConfig.headers !== 'object') {
-            fixedConfig.headers = { 'Content-Type': 'application/json' };
-          }
-          if (!fixedConfig.timeout) {
-            fixedConfig.timeout = 30000;
-          }
-          if (!fixedConfig.retries) {
-            fixedConfig.retries = 3;
-          }
-          break;
-
-        case 'google_sheets':
-          if (!fixedConfig.spreadsheetId || typeof fixedConfig.spreadsheetId !== 'string' || fixedConfig.spreadsheetId.trim() === '') {
-            // Try to extract from URLs
-            const sheetUrl = requirements.urls?.find((u: string) => u.includes('spreadsheets') || u.includes('sheets')) || '';
-            if (sheetUrl) {
-              const match = sheetUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-              if (match) {
-                fixedConfig.spreadsheetId = match[1];
-              }
-            }
-            // Don't use ENV placeholder - let missing fields check prompt user
-            if (!fixedConfig.spreadsheetId) {
-              fixedConfig.spreadsheetId = '';
-            }
-          }
-          if (!fixedConfig.sheetName || typeof fixedConfig.sheetName !== 'string' || fixedConfig.sheetName.trim() === '') {
-            fixedConfig.sheetName = 'Sheet1';
-          }
-          if (!fixedConfig.operation) {
-            fixedConfig.operation = 'read';
-          }
-          if (!fixedConfig.range) {
-            fixedConfig.range = 'A1:Z1000';
-          }
-          if (!fixedConfig.outputFormat) {
-            fixedConfig.outputFormat = 'json';
-          }
-          break;
-
-        case 'slack_message':
-          if (!fixedConfig.message || typeof fixedConfig.message !== 'string' || fixedConfig.message.trim() === '') {
-            fixedConfig.message = requirements.primaryGoal || 'Workflow notification';
-          }
-          const fixedWebhookUrl = fixedConfig.webhookUrl as string | undefined;
-          const fixedToken = fixedConfig.token as string | undefined;
-          // Prioritize webhook URL - it's simpler and sufficient
-          if ((!fixedWebhookUrl || (typeof fixedWebhookUrl === 'string' && fixedWebhookUrl.trim() === '')) && 
-              (!fixedToken || (typeof fixedToken === 'string' && fixedToken.trim() === ''))) {
-            // Try to get webhook URL from credentials first
-            fixedConfig.webhookUrl = getSecureApiKeyRef('slack', 'SLACK_WEBHOOK_URL') || getServiceUrl('webhook');
-            // Token is optional fallback
-            fixedConfig.token = getSecureApiKeyRef('slack', 'SLACK_TOKEN');
-          }
-          if (!fixedConfig.channel) {
-            fixedConfig.channel = '#general';
-          }
-          break;
-
-        case 'javascript':
-          if (!fixedConfig.code || typeof fixedConfig.code !== 'string' || fixedConfig.code.trim() === '') {
-            fixedConfig.code = 'return $input;';
-          }
-          break;
-
-        case 'text_formatter':
-          if (!fixedConfig.template || typeof fixedConfig.template !== 'string' || fixedConfig.template.trim() === '') {
-            fixedConfig.template = '{{ $json }}';
-          }
-          break;
-
-        case 'ai_agent':
-          if (!fixedConfig.systemPrompt || typeof fixedConfig.systemPrompt !== 'string' || fixedConfig.systemPrompt.trim() === '') {
-            fixedConfig.systemPrompt = requirements.primaryGoal || 'You are an autonomous intelligent agent inside an automation workflow. Understand user input, reason over context, use available tools when needed, and produce structured responses.';
-          }
-          if (!fixedConfig.mode || typeof fixedConfig.mode !== 'string') {
-            fixedConfig.mode = 'chat';
-          }
-          if (!fixedConfig.temperature) {
-            fixedConfig.temperature = 0.7;
-          }
-          if (!fixedConfig.maxTokens) {
-            fixedConfig.maxTokens = 2000;
-          }
-          break;
-
-        case 'chat_model':
-          if (!fixedConfig.provider || typeof fixedConfig.provider !== 'string') {
-            fixedConfig.provider = 'ollama';
-          }
-          if (!fixedConfig.model || typeof fixedConfig.model !== 'string' || fixedConfig.model.trim() === '') {
-            fixedConfig.model = 'qwen2.5:14b-instruct-q4_K_M';
-          }
-          // Ollama doesn't need API key - remove apiKey requirement
-          if (fixedConfig.apiKey) {
-            delete fixedConfig.apiKey; // Remove API key field for Ollama
-          }
-          if (!fixedConfig.prompt || typeof fixedConfig.prompt !== 'string' || fixedConfig.prompt.trim() === '') {
-            fixedConfig.prompt = 'You are a helpful AI assistant that provides accurate and useful responses.';
-          }
-          if (!fixedConfig.temperature) {
-            fixedConfig.temperature = 0.7;
-          }
-          break;
+      const required = def?.requiredInputs || [];
+      for (const fieldName of required) {
+        const v = (fixedConfig as any)[fieldName];
+        const empty =
+          v === undefined ||
+          v === null ||
+          (typeof v === 'string' && v.trim() === '') ||
+          (Array.isArray(v) && v.length === 0);
+        if (empty) {
+          (fixedConfig as any)[fieldName] = (defaults as any)[fieldName] ?? inferValue(fieldName);
+        }
       }
 
       return {
@@ -12988,20 +12231,6 @@ Identify what needs to be changed. Respond with JSON:
     
     // ✅ ARCHITECTURAL FIX: Strict validation - no generic fallbacks
     if (!sourceOutputs.includes(sourceField)) {
-      // Special case: manual_trigger only has inputData, not data
-      if (sourceActualType === 'manual_trigger' && sourceField === 'inputData') {
-        return { valid: true };
-      }
-      // Special case: chat_trigger ONLY has message, userId, sessionId, timestamp fields
-      if (sourceActualType === 'chat_trigger') {
-        if (sourceField === 'message' || sourceField === 'userId' || sourceField === 'sessionId' || sourceField === 'timestamp') {
-          return { valid: true };
-        }
-        return { 
-          valid: false, 
-          reason: `chat_trigger does not have output field '${sourceField}'. Available fields: ${sourceOutputs.join(', ')}. Use 'message' instead.` 
-        };
-      }
       // ✅ STRICT: Fail if field doesn't exist - no generic fallbacks
       return { 
         valid: false, 
@@ -13011,46 +12240,33 @@ Identify what needs to be changed. Respond with JSON:
     
     // Get available input fields from target node
     // ✅ Already normalized above, reuse targetActualType
+    const registryDef = unifiedNodeRegistry.get(targetActualType);
     const targetSchema = nodeLibrary.getSchema(targetActualType);
-    if (targetSchema?.configSchema) {
-      const requiredFields = targetSchema.configSchema.required || [];
-      const optionalFields = Object.keys(targetSchema.configSchema.optional || {});
-      const allInputFields = [...requiredFields, ...optionalFields];
-      
-      // Special handling for ai_agent node
-      if (targetNode.type === 'ai_agent') {
-        const aiAgentFields = ['userInput', 'chat_model', 'memory', 'tool'];
-        const hasValidField = aiAgentFields.some(f => 
-          f.toLowerCase() === targetField.toLowerCase()
+    const requiredFields = targetSchema?.configSchema?.required || [];
+    const optionalFields = Object.keys(targetSchema?.configSchema?.optional || {});
+    const allInputFields = registryDef ? Object.keys(registryDef.inputSchema || {}) : [...requiredFields, ...optionalFields];
+
+    if (allInputFields.length > 0) {
+      // RELAXED: Check if target has the input field (case-insensitive, with flexible matching)
+      const targetHasField = allInputFields.some(f => 
+        f.toLowerCase() === targetField.toLowerCase() ||
+        f.toLowerCase().includes(targetField.toLowerCase()) ||
+        targetField.toLowerCase().includes(f.toLowerCase())
+      );
+      if (!targetHasField && targetField) {
+        // RELAXED: Allow connection to generic 'input' or 'data' field if available
+        const genericFields = ['input', 'data', 'value', 'message', 'text'];
+        const hasGenericField = allInputFields.some(f => 
+          genericFields.includes(f.toLowerCase())
         );
-        if (!hasValidField && targetField && !allInputFields.some(f => f.toLowerCase() === targetField.toLowerCase())) {
-          return { 
-            valid: false, 
-            reason: `Target node ${targetNode.type} does not have input field '${targetField}'. Available: ${aiAgentFields.join(', ')}` 
-          };
+        if (hasGenericField) {
+          console.log(`⚠️  Target field '${targetField}' not found in ${targetNode.type}, using generic field`);
+          return { valid: true }; // Allow connection with generic field
         }
-      } else {
-        // RELAXED: Check if target has the input field (case-insensitive, with flexible matching)
-        const targetHasField = allInputFields.some(f => 
-          f.toLowerCase() === targetField.toLowerCase() ||
-          f.toLowerCase().includes(targetField.toLowerCase()) ||
-          targetField.toLowerCase().includes(f.toLowerCase())
-        );
-        if (!targetHasField && targetField) {
-          // RELAXED: Allow connection to generic 'input' or 'data' field if available
-          const genericFields = ['input', 'data', 'value', 'message', 'text'];
-          const hasGenericField = allInputFields.some(f => 
-            genericFields.includes(f.toLowerCase())
-          );
-          if (hasGenericField) {
-            console.log(`⚠️  Target field '${targetField}' not found in ${targetNode.type}, using generic field`);
-            return { valid: true }; // Allow connection with generic field
-          }
-          return { 
-            valid: false, 
-            reason: `Target node ${targetNode.type} does not have input field '${targetField}'. Available: ${allInputFields.join(', ')}` 
-          };
-        }
+        return { 
+          valid: false, 
+          reason: `Target node ${targetNode.type} does not have input field '${targetField}'. Available: ${allInputFields.join(', ')}` 
+        };
       }
     }
     
@@ -13064,28 +12280,31 @@ Identify what needs to be changed. Respond with JSON:
     const questions: string[] = [];
     
     nodes.forEach(node => {
-      const schema = getNodeOutputSchema(node.type);
+      const actualType = normalizeNodeType(node) || node.type;
+      const def = unifiedNodeRegistry.get(actualType);
+      const schema = getNodeOutputSchema(actualType);
       
       // Ask about output format if multiple options (especially for AI nodes)
-      if (node.type === 'ai_agent' && !node.data.config.outputFormat) {
-        questions.push(`Should the AI agent output plain text or structured JSON? (Current: not specified)`);
+      if (def?.inputSchema && 'outputFormat' in def.inputSchema && !node.data.config.outputFormat) {
+        questions.push(`Should "${node.data.label || actualType}" output plain text or structured JSON? (outputFormat not specified)`);
       }
       
       // Ask about array handling for data source nodes
       if (schema?.type === 'array' && !node.data.config.limit && !node.data.config.maxItems) {
-        if (node.type === 'google_sheets' || node.type === 'database_read') {
-          questions.push(`How many items should ${node.data.label || node.type} process at once? (Leave empty for all items)`);
+        const supportsLimit = def?.inputSchema && ('limit' in def.inputSchema || 'maxItems' in def.inputSchema);
+        if (supportsLimit) {
+          questions.push(`How many items should "${node.data.label || actualType}" process at once? (Leave empty for all items)`);
         }
       }
       
       // Ask about text formatting for text_formatter
-      if (node.type === 'text_formatter' && !node.data.config.template) {
-        questions.push(`What template format should ${node.data.label || 'Text Formatter'} use? (e.g., "Hello {{name}}!")`);
+      if (def?.inputSchema && 'template' in def.inputSchema && !node.data.config.template) {
+        questions.push(`What template should "${node.data.label || actualType}" use? (e.g., "Hello {{name}}!")`);
       }
       
       // Ask about output type for javascript nodes
-      if (node.type === 'javascript' && !node.data.config.returnType) {
-        questions.push(`What type should the JavaScript node return? (string, object, array, or number)`);
+      if (def?.inputSchema && 'returnType' in def.inputSchema && !node.data.config.returnType) {
+        questions.push(`What type should "${node.data.label || actualType}" return? (string, object, array, or number)`);
       }
     });
     
@@ -13887,7 +13106,6 @@ Identify what needs to be changed. Respond with JSON:
    */
   private validateAllNodesConnected(nodes: WorkflowNode[], edges: WorkflowEdge[]): void {
     const nodeIds = new Set(nodes.map(n => n.id));
-    const triggerTypes = ['manual_trigger', 'webhook', 'schedule', 'form', 'interval', 'chat_trigger', 'error_trigger'];
     
     // Build connection maps
     const incomingConnections = new Map<string, number>();
@@ -13906,8 +13124,9 @@ Identify what needs to be changed. Respond with JSON:
     
     nodes.forEach(node => {
       const nodeType = normalizeNodeType(node);
-      const isTrigger = triggerTypes.includes(nodeType);
-      const isTerminal = ['log_output', 'respond_to_webhook'].includes(nodeType);
+      const isTrigger = this.isTriggerNodeType(nodeType);
+      const def = unifiedNodeRegistry.get(nodeType);
+      const isTerminal = def?.category === 'communication' || (def?.tags || []).includes('sink') || (def?.tags || []).includes('output');
       
       const incoming = incomingConnections.get(node.id) || 0;
       const outgoing = outgoingConnections.get(node.id) || 0;

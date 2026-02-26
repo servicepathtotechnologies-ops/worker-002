@@ -2,6 +2,9 @@
 // Helper functions for workflow generation and validation
 
 import { WorkflowNode, WorkflowEdge } from '../../core/types/ai-types';
+import { validateNodeConfig as validateNodeConfigFromRegistry } from '../../core/validation/schema-based-validator';
+import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
+import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
 
 /**
  * Check if a value is a placeholder (not allowed in production workflows)
@@ -95,92 +98,14 @@ export function validateNodeConfig(node: WorkflowNode): {
       errors.push(`Field "${key}" contains placeholder value: "${value}"`);
     }
   });
-  
-  // Node-specific validation
-  switch (node.type) {
-    case 'schedule':
-      if (!config.cronExpression || typeof config.cronExpression !== 'string' || config.cronExpression.trim() === '') {
-        errors.push('Missing or empty cronExpression');
-      }
-      break;
-    
-    case 'interval':
-      if (config.interval === undefined || config.interval === null) {
-        errors.push('Missing interval value');
-      }
-      if (!config.unit || typeof config.unit !== 'string') {
-        errors.push('Missing unit');
-      }
-      break;
-    
-    case 'http_request':
-    case 'http_post':
-      if (!config.url || typeof config.url !== 'string' || config.url.trim() === '') {
-        errors.push('Missing or empty URL');
-      }
-      if (!config.headers || typeof config.headers !== 'object') {
-        errors.push('Missing headers object');
-      }
-      break;
-    
-    case 'openai_gpt':
-    case 'anthropic_claude':
-    case 'google_gemini':
-      if (!config.prompt || typeof config.prompt !== 'string' || config.prompt.trim() === '') {
-        errors.push('Missing or empty prompt');
-      }
-      if (!config.apiKey || typeof config.apiKey !== 'string' || config.apiKey.trim() === '') {
-        errors.push('Missing or empty API key');
-      }
-      break;
-    
-    case 'google_sheets':
-      if (!config.spreadsheetId || typeof config.spreadsheetId !== 'string' || config.spreadsheetId.trim() === '') {
-        errors.push('Missing or empty spreadsheetId');
-      }
-      if (!config.sheetName || typeof config.sheetName !== 'string' || config.sheetName.trim() === '') {
-        errors.push('Missing or empty sheetName');
-      }
-      break;
-    
-    case 'slack_message':
-      const webhookUrl = config.webhookUrl as string | undefined;
-      const token = config.token as string | undefined;
-      if ((!webhookUrl || (typeof webhookUrl === 'string' && webhookUrl.trim() === '')) && 
-          (!token || (typeof token === 'string' && token.trim() === ''))) {
-        errors.push('Missing webhookUrl or token (at least one required)');
-      }
-      if (!config.message || typeof config.message !== 'string' || config.message.trim() === '') {
-        errors.push('Missing or empty message');
-      }
-      break;
-    
-    case 'if_else':
-      if (!config.condition || typeof config.condition !== 'string' || config.condition.trim() === '') {
-        errors.push('Missing or empty condition');
-      }
-      break;
-    
-    case 'javascript':
-      if (!config.code || typeof config.code !== 'string' || config.code.trim() === '') {
-        errors.push('Missing or empty code');
-      }
-      break;
-    
-    case 'text_formatter':
-      if (!config.template || typeof config.template !== 'string' || config.template.trim() === '') {
-        errors.push('Missing or empty template');
-      }
-      break;
-    
-    case 'ai_agent':
-      if (!config.systemPrompt || typeof config.systemPrompt !== 'string' || config.systemPrompt.trim() === '') {
-        errors.push('Missing or empty systemPrompt');
-      }
-      if (!config.mode || typeof config.mode !== 'string') {
-        errors.push('Missing mode');
-      }
-      break;
+
+  // Registry-driven validation (single source of truth)
+  const registryValidation = validateNodeConfigFromRegistry(node);
+  if (!registryValidation.valid) {
+    errors.push(...registryValidation.errors);
+  }
+  if (registryValidation.warnings && registryValidation.warnings.length > 0) {
+    warnings.push(...registryValidation.warnings);
   }
   
   return {
@@ -221,14 +146,15 @@ export function validateWorkflowConnections(
   });
   
   // Check for orphaned nodes
-  const triggerTypes = [
-    'manual_trigger', 'webhook', 'schedule', 'interval',
-    'chat_trigger', 'workflow_trigger', 'form', 'error_trigger'
-  ];
+  const isTriggerNodeType = (t: string) => {
+    const def = unifiedNodeRegistry.get(t);
+    return def?.category === 'trigger' || t.includes('trigger');
+  };
   
   nodes.forEach(node => {
     // Trigger nodes don't need incoming connections
-    if (triggerTypes.includes(node.type)) {
+    const actualType = normalizeNodeType(node) || node.type;
+    if (isTriggerNodeType(actualType)) {
       return;
     }
     
@@ -240,7 +166,7 @@ export function validateWorkflowConnections(
   });
   
   // Check for trigger node
-  const hasTrigger = nodes.some(n => triggerTypes.includes(n.type));
+  const hasTrigger = nodes.some(n => isTriggerNodeType(normalizeNodeType(n) || n.type));
   if (!hasTrigger) {
     errors.push('Workflow must have at least one trigger node');
   }
@@ -286,58 +212,8 @@ export function applySafeDefaults(
   config: Record<string, any>,
   nodeType: string
 ): Record<string, any> {
-  const defaults: Record<string, Record<string, any>> = {
-    http_request: {
-      timeout: 30000,
-      retries: 3,
-      limit: 100,
-      headers: { 'Content-Type': 'application/json' },
-    },
-    http_post: {
-      timeout: 30000,
-      retries: 3,
-      headers: { 'Content-Type': 'application/json' },
-    },
-    openai_gpt: {
-      model: 'gpt-3.5-turbo',
-      temperature: 0.7,
-      maxTokens: 2000,
-    },
-    anthropic_claude: {
-      model: 'claude-3-sonnet-20240229',
-      temperature: 0.7,
-      maxTokens: 2000,
-    },
-    google_gemini: {
-      model: 'gemini-pro',
-      temperature: 0.7,
-      maxTokens: 2000,
-    },
-    ai_agent: {
-      mode: 'chat',
-      temperature: 0.7,
-      maxTokens: 2000,
-    },
-    interval: {
-      interval: 3600,
-      unit: 'seconds',
-    },
-    schedule: {
-      cronExpression: '0 9 * * *', // Daily at 9 AM
-    },
-    google_sheets: {
-      operation: 'read',
-      sheetName: 'Sheet1',
-      range: 'A1:Z1000',
-      outputFormat: 'json',
-    },
-    slack_message: {
-      channel: '#general',
-    },
-  };
-  
-  const nodeDefaults = defaults[nodeType] || {};
-  return { ...nodeDefaults, ...config };
+  const defaults = unifiedNodeRegistry.getDefaultConfig(nodeType) || {};
+  return { ...defaults, ...config };
 }
 
 /**

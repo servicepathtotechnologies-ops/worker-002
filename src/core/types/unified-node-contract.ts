@@ -64,9 +64,11 @@ export interface NodeExecutionContext {
   nodeType: string;
   config: Record<string, any>;
   inputs: Record<string, any>; // Resolved input values
+  rawInput: unknown; // Raw incoming data payload from upstream (what the node "receives")
   upstreamOutputs: Map<string, any>; // nodeId -> output
   workflowId: string;
   userId?: string;
+  currentUserId?: string;
   supabase: any; // Supabase client
   [key: string]: any; // Additional context
 }

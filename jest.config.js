@@ -9,6 +9,8 @@ module.exports = {
     '!src/**/*.d.ts',
     '!src/**/__tests__/**',
     '!src/index.ts',
+    // Exclude extremely large files from coverage instrumentation (can cause babel/istanbul parse issues)
+    '!src/api/execute-workflow.ts',
   ],
   coverageDirectory: 'coverage',
   coverageReporters: ['text', 'lcov', 'html'],

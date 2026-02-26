@@ -11,11 +11,29 @@ import { Request, Response } from 'express';
 import attachInputsHandler from '../attach-inputs';
 import { getSupabaseClient } from '../../core/database/supabase-compat';
 
+const mkNode = (
+  id: string,
+  type: string,
+  label?: string,
+  category: string = 'utility',
+  config: Record<string, unknown> = {}
+) => ({
+  id,
+  type,
+  data: {
+    type,
+    label: label || type,
+    category,
+    config,
+  },
+});
+
 // Mock dependencies
 jest.mock('../../core/database/supabase-compat');
 jest.mock('../../core/utils/workflow-cloner');
-jest.mock('../../core/validation/workflow-save-validator');
-jest.mock('../../core/utils/workflow-graph-normalizer');
+// These tests validate normalization/validation behavior, so use real implementations.
+jest.mock('../../core/validation/workflow-save-validator', () => jest.requireActual('../../core/validation/workflow-save-validator'));
+jest.mock('../../core/utils/workflow-graph-normalizer', () => jest.requireActual('../../core/utils/workflow-graph-normalizer'));
 jest.mock('../../services/ai/credential-discovery-phase');
 
 describe('Attach Inputs - Normalization and Validation', () => {
@@ -40,9 +58,9 @@ describe('Attach Inputs - Normalization and Validation', () => {
     };
 
     mockResponse = {
-      status: jest.fn().mockReturnThis(),
-      json: jest.fn().mockReturnThis(),
-    };
+      status: (jest.fn().mockReturnThis() as any),
+      json: (jest.fn().mockReturnThis() as any),
+    } as any;
   });
 
   describe('Normalization Behavior', () => {
@@ -50,10 +68,10 @@ describe('Attach Inputs - Normalization and Validation', () => {
       const { normalizeWorkflowForSave } = await import('../../core/validation/workflow-save-validator');
       
       const nodes = [
-        { id: 'trigger1', type: 'manual_trigger', data: { type: 'manual_trigger', label: 'Trigger 1' } },
-        { id: 'trigger2', type: 'manual_trigger', data: { type: 'manual_trigger', label: 'Trigger 2' } },
-        { id: 'trigger3', type: 'manual_trigger', data: { type: 'manual_trigger', label: 'Trigger 3' } },
-        { id: 'node1', type: 'log_output', data: { type: 'log_output', label: 'Log' } },
+        mkNode('trigger1', 'manual_trigger', 'Trigger 1', 'triggers'),
+        mkNode('trigger2', 'manual_trigger', 'Trigger 2', 'triggers'),
+        mkNode('trigger3', 'manual_trigger', 'Trigger 3', 'triggers'),
+        mkNode('node1', 'log_output', 'Log', 'output'),
       ];
       
       const edges = [
@@ -73,8 +91,8 @@ describe('Attach Inputs - Normalization and Validation', () => {
       const { normalizeWorkflowForSave } = await import('../../core/validation/workflow-save-validator');
       
       const nodes = [
-        { id: 'trigger1', type: 'manual_trigger', data: { type: 'manual_trigger' } },
-        { id: 'node1', type: 'log_output', data: { type: 'log_output' } },
+        mkNode('trigger1', 'manual_trigger', 'Trigger', 'triggers'),
+        mkNode('node1', 'log_output', 'Log', 'output'),
       ];
       
       const edges = [
@@ -95,8 +113,8 @@ describe('Attach Inputs - Normalization and Validation', () => {
       const { normalizeWorkflowForSave } = await import('../../core/validation/workflow-save-validator');
       
       const nodes = [
-        { id: 'trigger1', type: 'manual_trigger', data: { type: 'manual_trigger' } },
-        { id: 'node1', type: 'log_output', data: { type: 'log_output' } },
+        mkNode('trigger1', 'manual_trigger', 'Trigger', 'triggers'),
+        mkNode('node1', 'log_output', 'Log', 'output'),
       ];
       
       const edges = [
@@ -116,9 +134,9 @@ describe('Attach Inputs - Normalization and Validation', () => {
       const { normalizeWorkflowForSave } = await import('../../core/validation/workflow-save-validator');
       
       const nodes = [
-        { id: 'node1', type: 'log_output', data: { type: 'log_output', label: 'Log 1' } },
-        { id: 'node1', type: 'log_output', data: { type: 'log_output', label: 'Log 2' } }, // Duplicate ID
-        { id: 'node2', type: 'log_output', data: { type: 'log_output', label: 'Log 3' } },
+        mkNode('node1', 'log_output', 'Log 1', 'output'),
+        mkNode('node1', 'log_output', 'Log 2', 'output'), // Duplicate ID
+        mkNode('node2', 'log_output', 'Log 3', 'output'),
       ];
       
       const edges: any[] = [];
@@ -139,8 +157,8 @@ describe('Attach Inputs - Normalization and Validation', () => {
       
       // Workflow with multiple triggers (should be normalized first)
       const nodes = [
-        { id: 'trigger1', type: 'manual_trigger', data: { type: 'manual_trigger' } },
-        { id: 'trigger2', type: 'manual_trigger', data: { type: 'manual_trigger' } },
+        mkNode('trigger1', 'manual_trigger', 'Trigger 1', 'triggers'),
+        mkNode('trigger2', 'manual_trigger', 'Trigger 2', 'triggers'),
       ];
       const edges: any[] = [];
 
@@ -167,9 +185,9 @@ describe('Attach Inputs - Normalization and Validation', () => {
       const { normalizeWorkflowForSave, validateWorkflowForSave } = await import('../../core/validation/workflow-save-validator');
       
       const nodes = [
-        { id: 'trigger1', type: 'manual_trigger', data: { type: 'manual_trigger' } },
-        { id: 'trigger2', type: 'manual_trigger', data: { type: 'manual_trigger' } },
-        { id: 'node1', type: 'log_output', data: { type: 'log_output' } },
+        mkNode('trigger1', 'manual_trigger', 'Trigger 1', 'triggers'),
+        mkNode('trigger2', 'manual_trigger', 'Trigger 2', 'triggers'),
+        mkNode('node1', 'log_output', 'Log', 'output'),
       ];
       const edges = [
         { id: 'e1', source: 'trigger1', target: 'node1' },
@@ -192,9 +210,9 @@ describe('Attach Inputs - Normalization and Validation', () => {
       const { normalizeWorkflowForSave } = await import('../../core/validation/workflow-save-validator');
       
       const originalNodes = [
-        { id: 'trigger1', type: 'manual_trigger', data: { type: 'manual_trigger' } },
-        { id: 'trigger2', type: 'manual_trigger', data: { type: 'manual_trigger' } },
-        { id: 'node1', type: 'log_output', data: { type: 'log_output' } },
+        mkNode('trigger1', 'manual_trigger', 'Trigger 1', 'triggers'),
+        mkNode('trigger2', 'manual_trigger', 'Trigger 2', 'triggers'),
+        mkNode('node1', 'log_output', 'Log', 'output'),
       ];
       const originalEdges = [
         { id: 'e1', source: 'trigger1', target: 'node1' },

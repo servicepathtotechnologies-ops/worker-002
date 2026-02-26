@@ -36,24 +36,42 @@ export function evaluateCondition(
     ? resolveTypedValue(condition.rightValue, context)
     : condition.rightValue;
   
+  // ✅ CORE FIX: coerce numeric/boolean literal strings (e.g. "10", "0", "true")
+  // resolveTypedValue() returns non-template strings as-is, so numeric literals would otherwise
+  // be treated as strings and ">" comparisons would incorrectly return false.
+  const leftCoerced = coerceLiteralScalar(leftRaw);
+  const rightCoerced = coerceLiteralScalar(rightRaw);
+
   // Determine types and compare
-  const leftType = inferType(leftRaw);
-  const rightType = inferType(rightRaw);
+  const leftType = inferType(leftCoerced);
+  const rightType = inferType(rightCoerced);
   
   // If both are numbers, compare as numbers
   if (leftType === 'number' && rightType === 'number') {
     return compareNumbers(
-      leftRaw as number,
-      rightRaw as number,
+      leftCoerced as number,
+      rightCoerced as number,
       condition.operation
     );
   }
   
   // If both are strings, compare as strings
   if (leftType === 'string' && rightType === 'string') {
+    // ✅ TYPE SAFETY (CORE CONTRACT)
+    // Do not perform lexicographic ordering for "greater/less than" comparisons on strings.
+    // Strings should use equals/contains semantics; ordering comparisons are undefined/unsafe.
+    if (
+      condition.operation === 'greater_than' ||
+      condition.operation === 'less_than' ||
+      condition.operation === 'greater_than_or_equal' ||
+      condition.operation === 'less_than_or_equal'
+    ) {
+      return false;
+    }
+
     return compareStrings(
-      leftRaw as string,
-      rightRaw as string,
+      leftCoerced as string,
+      rightCoerced as string,
       condition.operation
     );
   }
@@ -61,15 +79,15 @@ export function evaluateCondition(
   // If both are booleans, compare as booleans
   if (leftType === 'boolean' && rightType === 'boolean') {
     return compareBooleans(
-      leftRaw as boolean,
-      rightRaw as boolean,
+      leftCoerced as boolean,
+      rightCoerced as boolean,
       condition.operation
     );
   }
   
   // Mixed types - convert to strings for comparison
-  const leftStr = String(leftRaw);
-  const rightStr = String(rightRaw);
+  const leftStr = String(leftCoerced);
+  const rightStr = String(rightCoerced);
   return compareStrings(leftStr, rightStr, condition.operation);
 }
 
@@ -195,24 +213,24 @@ function evaluateStringExpression(
   // Handle simple boolean strings
   if (expr === 'true' || expr === '1') return true;
   if (expr === 'false' || expr === '0') return false;
+
+  // ✅ MODULO FIRST (CORE CORRECTNESS)
+  // Expressions like "20 % 2 === 0" were being mis-parsed as a plain equality with a left operand
+  // of "20 % 2", which then got coerced incorrectly. Handle modulo before generic comparisons.
+  if (expr.includes('%')) {
+    const modResult = evaluateModuloExpression(expr, context);
+    // If it matched a modulo pattern, return the evaluated result; otherwise continue parsing.
+    // (evaluateModuloExpression returns false when it can't match)
+    if (/[%].*(===|==|!==|!=|>|<|>=|<=)/.test(expr)) {
+      return modResult;
+    }
+  }
   
   // Try to parse as comparison expression
   const comparison = parseComparison(expr);
   if (comparison) {
-    const left = resolveTypedValue(comparison.left, context);
-    const right = resolveTypedValue(comparison.right, context);
-    
-    // ✅ FIX: Always try to convert to numbers first if both sides look numeric
-    // This ensures "12 > 20" compares as numbers (false) not strings (lexicographic)
-    const leftNum = toNumber(left);
-    const rightNum = toNumber(right);
-    
-    // If both can be converted to numbers, compare as numbers
-    if (!isNaN(leftNum) && !isNaN(rightNum) && 
-        (typeof left === 'string' || typeof left === 'number') &&
-        (typeof right === 'string' || typeof right === 'number')) {
-      return compareNumbers(leftNum, rightNum, comparison.op);
-    }
+    const left = coerceLiteralScalar(resolveTypedValue(comparison.left, context));
+    const right = coerceLiteralScalar(resolveTypedValue(comparison.right, context));
     
     const leftType = inferType(left);
     const rightType = inferType(right);
@@ -224,25 +242,27 @@ function evaluateStringExpression(
     
     // String comparison
     if (leftType === 'string' && rightType === 'string') {
+      // ✅ TYPE SAFETY (CORE CONTRACT)
+      // Do not perform lexicographic ordering for "greater/less than" comparisons on strings.
+      // Users should use equals/contains for strings. This prevents surprising behavior like:
+      // "20" > "10" === true (lexicographic) when values are strings.
+      if (
+        comparison.op === 'greater_than' ||
+        comparison.op === 'less_than' ||
+        comparison.op === 'greater_than_or_equal' ||
+        comparison.op === 'less_than_or_equal'
+      ) {
+        return false;
+      }
       return compareStrings(left as string, right as string, comparison.op);
     }
-    
-    // Mixed - convert to numbers if possible (already tried above, but keep for other types)
-    if (!isNaN(leftNum) && !isNaN(rightNum)) {
-      return compareNumbers(leftNum, rightNum, comparison.op);
-    }
-    
+
     // Fallback to string comparison
     return compareStrings(String(left), String(right), comparison.op);
   }
   
   // If parseComparison failed, log a warning
   console.warn('[ConditionEvaluator] Could not parse comparison expression:', expr);
-  
-  // Try modulo operations (e.g., "20 % 2 === 0")
-  if (expr.includes('%')) {
-    return evaluateModuloExpression(expr, context);
-  }
   
   // Last resort: safe eval
   try {
@@ -276,6 +296,32 @@ function evaluateStringExpression(
     console.warn('[ConditionEvaluator] Failed to evaluate expression:', expr, error);
     return false;
   }
+}
+
+/**
+ * Coerce scalar literal strings into native types when safe.
+ *
+ * IMPORTANT: This only coerces when the entire string is a literal (e.g. "10", "-3.14", "true").
+ * It will NOT coerce quoted strings (e.g. "\"10\"") or mixed strings (e.g. "10px").
+ */
+function coerceLiteralScalar(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  if (trimmed === '') return value;
+
+  const lower = trimmed.toLowerCase();
+  if (lower === 'true') return true;
+  if (lower === 'false') return false;
+  if (lower === 'null') return null;
+  if (lower === 'undefined') return undefined;
+
+  // Strict numeric literal (int/float). Avoid coercing things like "01-02" or "10px".
+  if (/^-?\d+(?:\.\d+)?$/.test(trimmed)) {
+    const num = Number(trimmed);
+    return Number.isFinite(num) ? num : value;
+  }
+
+  return value;
 }
 
 /**

@@ -2,6 +2,8 @@
 // In-workflow intelligence with node suggestions and code assist
 
 import { ollamaOrchestrator } from './ollama-orchestrator';
+import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
+import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
 
 interface WorkflowNode {
   id: string;
@@ -233,7 +235,11 @@ Suggest 3-5 improvements or alternative approaches. Respond with JSON:
     const optimizations: any[] = [];
     
     // Check for common optimization patterns
-    if (node.type === 'http_request') {
+    const actualType = normalizeNodeType(node as any) || node.data?.type || node.type;
+    const def = unifiedNodeRegistry.get(actualType);
+
+    const isHttpLike = !!def?.inputSchema && ('url' in def.inputSchema || 'endpoint' in def.inputSchema);
+    if (isHttpLike) {
       optimizations.push({
         type: 'caching',
         suggestion: 'Consider adding caching for repeated requests',
@@ -241,7 +247,8 @@ Suggest 3-5 improvements or alternative approaches. Respond with JSON:
       });
     }
     
-    if (node.type === 'javascript' || node.type === 'code') {
+    const isCodeLike = !!def?.inputSchema && ('code' in def.inputSchema || 'script' in def.inputSchema);
+    if (isCodeLike) {
       optimizations.push({
         type: 'performance',
         suggestion: 'Review code for performance bottlenecks',
@@ -257,10 +264,13 @@ Suggest 3-5 improvements or alternative approaches. Respond with JSON:
     workflow: Workflow
   ): string[] {
     const warnings: string[] = [];
+    const actualType = normalizeNodeType(node as any) || node.data?.type || node.type;
+    const def = unifiedNodeRegistry.get(actualType);
+    const isTrigger = def?.category === 'trigger' || actualType.includes('trigger');
     
     // Check for common issues
     const incomingEdges = workflow.edges.filter(e => e.target === node.id);
-    if (incomingEdges.length === 0 && node.type !== 'trigger') {
+    if (incomingEdges.length === 0 && !isTrigger) {
       warnings.push('Node has no input connections');
     }
     
@@ -270,12 +280,16 @@ Suggest 3-5 improvements or alternative approaches. Respond with JSON:
     }
     
     // Check for error handling
-    if (node.type === 'http_request' && !workflow.nodes.some(n => 
-      n.type === 'error_handler' && workflow.edges.some(e => 
-        e.source === node.id && e.target === n.id
-      )
-    )) {
-      warnings.push('HTTP request node lacks error handling');
+    const isHttpLike = !!def?.inputSchema && ('url' in def.inputSchema || 'endpoint' in def.inputSchema);
+    if (isHttpLike) {
+      const hasErrorHandlingNode = workflow.nodes.some((n) => {
+        const nt = normalizeNodeType(n as any) || (n as any).data?.type || n.type;
+        const nd = unifiedNodeRegistry.get(nt);
+        return (nd?.tags || []).some((t) => String(t).toLowerCase().includes('error'));
+      });
+      if (!hasErrorHandlingNode) {
+        warnings.push('HTTP-like node may benefit from explicit error handling (retry/fallback path)');
+      }
     }
     
     return warnings;

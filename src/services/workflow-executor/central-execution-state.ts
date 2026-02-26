@@ -286,14 +286,20 @@ export class CentralExecutionState {
   async updateStatus(
     status: 'running' | 'success' | 'failed' | 'waiting',
     output?: unknown,
-    error?: string
+    error?: string,
+    meta?: {
+      logs?: unknown;
+      durationMs?: number | null;
+      lastHeartbeat?: string;
+    }
   ): Promise<void> {
     this.state.status = status;
     await this.persistentLayer.updateExecutionStatus(
       this.executionId,
       status,
       output,
-      error
+      error,
+      meta
     );
   }
 

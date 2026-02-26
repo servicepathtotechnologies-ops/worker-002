@@ -13,6 +13,7 @@
 import { WorkflowNode, Workflow } from '../../core/types/ai-types';
 import { nodeLibrary } from '../nodes/node-library';
 import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 import { getQuestionConfig, getOrderedQuestions } from './node-question-order';
 
 export interface ComprehensiveNodeQuestion {
@@ -124,16 +125,13 @@ export function generateComprehensiveNodeQuestions(
   
   // Define node type priority for ordering (lower = earlier)
   const getNodeTypePriority = (nodeType: string): number => {
-    const triggerTypes = ['webhook', 'chat_trigger', 'form', 'schedule', 'manual_trigger', 'interval', 'workflow_trigger', 'error_trigger'];
-    const logicTypes = ['if_else', 'if', 'switch', 'set', 'set_variable', 'function', 'merge', 'wait', 'javascript', 'code'];
-    const httpAiTypes = ['http_request', 'ai_chat_model', 'ai_agent'];
-    const integrationTypes = ['hubspot', 'zoho_crm', 'pipedrive', 'notion', 'airtable', 'clickup', 'google_gmail', 'outlook', 'slack_message', 'telegram', 'google_calendar', 'linkedin', 'github', 'google_sheets'];
-    
-    if (triggerTypes.includes(nodeType)) return 0;
-    if (logicTypes.includes(nodeType)) return 1;
-    if (httpAiTypes.includes(nodeType)) return 2;
-    if (integrationTypes.includes(nodeType)) return 3;
-    return 4; // Outputs and others
+    const def = unifiedNodeRegistry.get(nodeType);
+    const cat = def?.category;
+    if (cat === 'trigger' || nodeType.includes('trigger')) return 0;
+    if (cat === 'logic') return 1;
+    if (cat === 'ai') return 2;
+    if (cat === 'data' || cat === 'communication') return 3;
+    return 4;
   };
   
   // ✅ CRITICAL: Deduplicate questions by fieldName within each node

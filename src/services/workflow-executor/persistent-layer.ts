@@ -253,7 +253,12 @@ export class PersistentLayer {
     executionId: string,
     status: 'running' | 'success' | 'failed' | 'waiting',
     output?: unknown,
-    error?: string
+    error?: string,
+    meta?: {
+      logs?: unknown;
+      durationMs?: number | null;
+      lastHeartbeat?: string;
+    }
   ): Promise<void> {
     try {
       const updateData: any = {
@@ -279,6 +284,21 @@ export class PersistentLayer {
 
       if (status === 'success' || status === 'failed') {
         updateData.finished_at = new Date().toISOString();
+      }
+
+      // Persist execution logs when provided (UI reads executions.logs)
+      if (meta?.logs !== undefined) {
+        updateData.logs = meta.logs;
+      }
+
+      // Persist duration for UI
+      if (meta?.durationMs !== undefined) {
+        updateData.duration_ms = meta.durationMs;
+      }
+
+      // Keep heartbeat fresh for long-running executions
+      if (meta?.lastHeartbeat) {
+        updateData.last_heartbeat = meta.lastHeartbeat;
       }
 
       const { error: updateError } = await this.supabase

@@ -282,6 +282,18 @@ export class IntentConstraintEngine {
     const actionType = action.type.toLowerCase();
     const operation = action.operation?.toLowerCase() || '';
 
+    // ✅ CRITICAL: Disambiguate email destinations early (before "type exists in library" short-circuit)
+    // Default behavior: sending email should prefer Gmail (google_gmail) unless SMTP is explicitly requested.
+    if ((actionType === 'gmail' || actionType.includes('gmail') || actionType.includes('google_mail') || actionType.includes('google mail')) && operation.includes('send')) {
+      return ['google_gmail'];
+    }
+    if ((actionType === 'email' || actionType === 'mail') && operation.includes('send')) {
+      // If user explicitly indicated SMTP, keep generic SMTP `email` node.
+      if (actionType.includes('smtp')) return ['email'];
+      // Otherwise prefer Gmail for enterprise default (OAuth is the primary email integration).
+      return ['google_gmail'];
+    }
+
     // STEP 1: Check if it's a capability (not a direct node type)
     if (capabilityResolver.isCapability(actionType)) {
       // ✅ IMPORTANT: For workflow graph requirements, map AI capabilities to the canonical LLM node

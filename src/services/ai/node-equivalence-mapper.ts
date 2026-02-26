@@ -306,6 +306,9 @@ export class NodeEquivalenceMapper {
         "store", "save to", "save in", "persist", "record to", "save data to",
         "database", "db", "postgres", "mysql", "supabase", "mongodb",
         "store in database", "save to database", "store data", "save data",
+        // Common user phrasing (without the word "data")
+        "save customer", "save customers", "save user", "save users",
+        "store customer", "store customers", "store user", "store users",
         "query", "table", "retrieve from", "fetch from"
         // Note: "data" alone is too generic - removed to avoid false positives
       ],

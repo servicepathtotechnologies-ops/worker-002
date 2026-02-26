@@ -1,178 +1,300 @@
 /**
- * Intent-Aware Property Selector (Deterministic)
+ * Intent-Aware Property Selector
  *
- * Given a user intent (usually the original prompt) and a node output payload,
- * select only the relevant property values when the intent specifies a field/column.
+ * Goal: Given the user's intent (prompt) and upstream JSON, select the most relevant
+ * property/properties to summarize. This is deterministic and schema-agnostic.
  *
- * This is deterministic (no LLM calls) and schema-agnostic.
+ * - If intent mentions a specific property (e.g. "resume", "roll number"), select that field.
+ * - If not, return the full dataset (usually items/rows).
+ *
+ * This is used by AI nodes BEFORE calling the LLM to prevent blindly summarizing full JSON
+ * when a user asked for a specific field.
  */
 
-import { getNestedValue } from './object-utils';
-
-export interface PropertySelectionResult {
-  /** The matched key from the runtime data (exact key from objects) */
-  matchedKey: string | null;
-  /** Extracted values for the matched key (e.g., ["101", "102"]) */
-  values: unknown[] | null;
-  /** Human-readable reason (for debugging) */
-  reason: string;
+export interface IntentAwareSelectionResult {
+  mode: 'filtered' | 'full';
+  matchedProperties: string[];
+  extractedProperties: string[];
+  filteredData: unknown;
+  explanation: string;
 }
 
-function normalizeToken(s: string): string {
-  return String(s || '')
-    .trim()
-    .toLowerCase()
-    .replace(/[\s\-_]+/g, '') // collapse separators
-    .replace(/[^a-z0-9]/g, ''); // strip punctuation
+export interface IntentAwareSelectorOptions {
+  maxRecordsToScan?: number;
+  minMatchScore?: number; // 0..1
 }
 
-function tokenizeCandidate(s: string): string[] {
-  const cleaned = String(s || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9_\-\s]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  if (!cleaned) return [];
-  // keep both phrase and words
-  const parts = cleaned.split(' ').filter(Boolean);
-  return Array.from(new Set([cleaned, ...parts]));
-}
+const DEFAULT_OPTIONS: Required<IntentAwareSelectorOptions> = {
+  maxRecordsToScan: 10,
+  minMatchScore: 0.84,
+};
 
-// Deterministic similarity: Dice coefficient over bigrams
-function diceCoefficient(a: string, b: string): number {
-  const A = normalizeToken(a);
-  const B = normalizeToken(b);
-  if (!A || !B) return 0;
-  if (A === B) return 1;
-  if (A.length < 2 || B.length < 2) return A === B ? 1 : 0;
+export function intentAwarePropertySelect(
+  userPrompt: string,
+  upstreamJson: unknown,
+  options: IntentAwareSelectorOptions = {}
+): IntentAwareSelectionResult {
+  const opts = { ...DEFAULT_OPTIONS, ...options };
+  const prompt = (userPrompt || '').trim();
 
-  const bigrams = (s: string) => {
-    const res: string[] = [];
-    for (let i = 0; i < s.length - 1; i++) res.push(s.slice(i, i + 2));
-    return res;
+  const dataset = pickDatasetRoot(upstreamJson);
+  const records = Array.isArray(dataset) ? dataset : null;
+
+  // Extract candidate intent terms from prompt (deterministic heuristics)
+  const intentTerms = extractCandidatePropertyTerms(prompt);
+
+  // Extract available properties
+  const availableProps = records
+    ? extractRecordKeys(records, opts.maxRecordsToScan)
+    : extractObjectKeys(dataset);
+
+  // If no intent terms, or no available properties, fall back to full dataset
+  if (intentTerms.length === 0 || availableProps.length === 0) {
+    return {
+      mode: 'full',
+      matchedProperties: [],
+      extractedProperties: availableProps,
+      filteredData: dataset,
+      explanation:
+        intentTerms.length === 0
+          ? 'No specific property requested in user intent; using full dataset.'
+          : 'No properties found in upstream data; using full dataset.',
+    };
+  }
+
+  // Match intent terms to available properties
+  const scored = scoreMatches(intentTerms, availableProps);
+  const best = scored
+    .filter(s => s.score >= opts.minMatchScore)
+    .sort((a, b) => b.score - a.score);
+
+  if (best.length === 0) {
+    return {
+      mode: 'full',
+      matchedProperties: [],
+      extractedProperties: availableProps,
+      filteredData: dataset,
+      explanation: `No property matched intent terms (${intentTerms.join(', ')}); using full dataset.`,
+    };
+  }
+
+  // Choose all properties that are "close enough" to the best score (within 0.03)
+  const topScore = best[0].score;
+  const matched = best
+    .filter(b => b.score >= topScore - 0.03)
+    .map(b => b.property);
+
+  const filtered = filterDatasetByProperties(dataset, matched, opts.maxRecordsToScan);
+
+  return {
+    mode: 'filtered',
+    matchedProperties: matched,
+    extractedProperties: availableProps,
+    filteredData: filtered,
+    explanation: `Matched properties (${matched.join(', ')}) from intent terms (${intentTerms.join(', ')}).`,
   };
+}
 
-  const aBigrams = bigrams(A);
-  const bBigrams = bigrams(B);
-  const aCounts = new Map<string, number>();
-  aBigrams.forEach(bg => aCounts.set(bg, (aCounts.get(bg) || 0) + 1));
+function pickDatasetRoot(upstreamJson: unknown): unknown {
+  if (!upstreamJson || typeof upstreamJson !== 'object') return upstreamJson;
+  const obj = upstreamJson as Record<string, unknown>;
 
-  let intersection = 0;
-  for (const bg of bBigrams) {
-    const count = aCounts.get(bg) || 0;
-    if (count > 0) {
-      intersection++;
-      aCounts.set(bg, count - 1);
+  // Prefer tabular datasets commonly produced by spreadsheet nodes
+  if (Array.isArray(obj.items)) return obj.items;
+  if (Array.isArray(obj.rows)) return obj.rows;
+  if (Array.isArray(obj.values)) return obj.values;
+
+  return upstreamJson;
+}
+
+function extractRecordKeys(records: unknown[], maxScan: number): string[] {
+  const keys = new Set<string>();
+  const scan = records.slice(0, Math.max(1, maxScan));
+  for (const r of scan) {
+    if (r && typeof r === 'object' && !Array.isArray(r)) {
+      Object.keys(r as Record<string, unknown>).forEach(k => keys.add(k));
     }
   }
-  return (2 * intersection) / (aBigrams.length + bBigrams.length);
+  return Array.from(keys);
 }
 
-/**
- * Extract candidate field names from a user intent string.
- * Examples:
- * - "Get resume column and summarize it" -> ["resume", "resume column"]
- * - "Get roll number from sheets" -> ["roll number", "roll", "number"]
- */
-export function extractFieldCandidatesFromIntent(intent: unknown): string[] {
-  const text = typeof intent === 'string' ? intent : '';
-  const lower = text.toLowerCase();
+function extractObjectKeys(value: unknown): string[] {
+  const keys = new Set<string>();
+  if (!value || typeof value !== 'object') return [];
+  const walk = (v: unknown) => {
+    if (!v || typeof v !== 'object') return;
+    if (Array.isArray(v)) {
+      for (const item of v.slice(0, 5)) walk(item);
+      return;
+    }
+    const o = v as Record<string, unknown>;
+    for (const k of Object.keys(o)) {
+      keys.add(k);
+      walk(o[k]);
+    }
+  };
+  walk(value);
+  return Array.from(keys);
+}
 
-  const candidates: string[] = [];
+function extractCandidatePropertyTerms(prompt: string): string[] {
+  if (!prompt) return [];
+  const p = prompt.toLowerCase();
 
-  // Common patterns: "<field> column/field/property"
-  const patterns: RegExp[] = [
-    /\b(?:get|fetch|read|extract|summarize|send)\s+(?:the\s+)?(.+?)\s+(?:column|field|property|key|attribute)s?\b/i,
-    /\b(?:column|field|property|key|attribute)\s+(?:named|called)?\s*["']?([a-z0-9 _-]+?)["']?\b/i,
-    /\bfrom\s+the\s+(.+?)\s+(?:column|field|property)\b/i,
+  // Try to capture phrases after verbs that indicate selection
+  const patterns = [
+    /summari[sz]e\s+(?:the\s+)?(.+?)(?:\s+from|\s+in|\s+of|\s+using|\s+into|\s+to|\s*$)/,
+    /extract\s+(?:the\s+)?(.+?)(?:\s+from|\s+in|\s+of|\s+using|\s+into|\s+to|\s*$)/,
+    /list\s+(?:the\s+)?(.+?)(?:\s+from|\s+in|\s+of|\s+using|\s+into|\s+to|\s*$)/,
+    /show\s+(?:the\s+)?(.+?)(?:\s+from|\s+in|\s+of|\s+using|\s+into|\s+to|\s*$)/,
   ];
 
+  let captured: string | null = null;
   for (const re of patterns) {
-    const m = text.match(re);
-    if (m && m[1]) {
-      tokenizeCandidate(m[1]).forEach(c => candidates.push(c));
+    const m = p.match(re);
+    if (m?.[1]) {
+      captured = m[1];
+      break;
     }
   }
 
-  // If no explicit pattern matched, fall back to a small set of salient tokens
-  // (helps for prompts like "summarize resume" or "email rollnumber summary")
-  if (candidates.length === 0) {
-    const hints = ['resume', 'roll number', 'rollnumber', 'email', 'country', 'segment', 'name'];
-    for (const h of hints) {
-      if (lower.includes(h)) tokenizeCandidate(h).forEach(c => candidates.push(c));
-    }
+  // If nothing captured, look for "only <x>" / "just <x>"
+  if (!captured) {
+    const m = p.match(/\b(?:only|just)\s+(.+?)(?:\s+from|\s+in|\s+of|\s+using|\s+into|\s+to|\s*$)/);
+    if (m?.[1]) captured = m[1];
   }
 
-  return Array.from(new Set(candidates)).filter(Boolean);
+  if (!captured) return [];
+
+  // Split into candidate terms
+  const raw = captured
+    .split(/,|and|&|\//g)
+    .map(s => s.trim())
+    .filter(Boolean);
+
+  // Remove generic words that should not be treated as properties
+  const stop = new Set([
+    'data',
+    'sheet',
+    'spreadsheet',
+    'rows',
+    'row',
+    'items',
+    'item',
+    'values',
+    'value',
+    'records',
+    'record',
+    'table',
+    'tables',
+    'information',
+    'details',
+    'content',
+  ]);
+
+  return raw
+    .map(t => t.replace(/[^\w\s-]/g, '').trim())
+    .filter(t => t.length >= 3)
+    .filter(t => !stop.has(t));
 }
 
-/**
- * Given an array of objects, determine the best matching key based on intent.
- */
-export function matchIntentToObjectKey(
-  intent: unknown,
-  items: Array<Record<string, unknown>>
-): { key: string | null; score: number; candidate?: string } {
-  if (!Array.isArray(items) || items.length === 0) return { key: null, score: 0 };
-  const sample = items.find(v => v && typeof v === 'object' && !Array.isArray(v)) || items[0];
-  const keys = Object.keys(sample || {});
-  if (keys.length === 0) return { key: null, score: 0 };
-
-  const candidates = extractFieldCandidatesFromIntent(intent);
-  if (candidates.length === 0) return { key: null, score: 0 };
-
-  let bestKey: string | null = null;
-  let bestScore = 0;
-  let bestCandidate: string | undefined;
-
-  for (const candidate of candidates) {
-    for (const key of keys) {
-      const score = diceCoefficient(candidate, key);
-      if (score > bestScore) {
-        bestScore = score;
-        bestKey = key;
-        bestCandidate = candidate;
-      }
+function scoreMatches(intentTerms: string[], properties: string[]) {
+  const results: Array<{ property: string; score: number; term: string }> = [];
+  for (const prop of properties) {
+    let best = { score: 0, term: '' };
+    for (const term of intentTerms) {
+      const s = similarityScore(term, prop);
+      if (s > best.score) best = { score: s, term };
     }
+    results.push({ property: prop, score: best.score, term: best.term });
   }
-
-  return { key: bestKey, score: bestScore, candidate: bestCandidate };
+  return results;
 }
 
-/**
- * Select a single property (column) from a node output that contains `items` / `rows`.
- * Returns null when intent doesn't specify a property confidently.
- */
-export function selectPropertyValuesFromOutput(
-  intent: unknown,
-  output: unknown,
-  containerPath: string
-): PropertySelectionResult {
-  // Resolve container (e.g., "rows" or "items") from output
-  const container = (output && typeof output === 'object')
-    ? getNestedValue(output as Record<string, unknown>, containerPath)
-    : undefined;
+function normalize(s: string): string {
+  const t = (s || '').toLowerCase().trim().replace(/[^a-z0-9]/g, '');
+  // light stemming: remove trailing plural 's' for longer tokens
+  if (t.length > 3 && t.endsWith('s')) return t.slice(0, -1);
+  return t;
+}
 
-  if (!Array.isArray(container)) {
-    return { matchedKey: null, values: null, reason: `Container ${containerPath} is not an array` };
-  }
+function similarityScore(a: string, b: string): number {
+  const A = normalize(a);
+  const B = normalize(b);
+  if (!A || !B) return 0;
+  if (A === B) return 1;
+  if (A.includes(B) || B.includes(A)) return 0.92;
 
-  const objects = container.filter(v => v && typeof v === 'object' && !Array.isArray(v)) as Array<Record<string, unknown>>;
-  if (objects.length === 0) {
-    return { matchedKey: null, values: null, reason: `Container ${containerPath} has no object rows` };
-  }
+  // token overlap on word boundaries (helps: "roll number" vs "rollNumber")
+  const aw = (a || '').toLowerCase().split(/\s+/).map(normalize).filter(Boolean);
+  const bw = (b || '').toLowerCase().split(/\s+/).map(normalize).filter(Boolean);
+  const aSet = new Set(aw);
+  const bSet = new Set(bw);
+  let inter = 0;
+  for (const t of aSet) if (bSet.has(t)) inter++;
+  const union = new Set([...aSet, ...bSet]).size;
+  const jaccard = union > 0 ? inter / union : 0;
 
-  const match = matchIntentToObjectKey(intent, objects);
-  // Threshold tuned to avoid accidental matches; deterministic.
-  if (!match.key || match.score < 0.62) {
-    return { matchedKey: null, values: null, reason: 'No confident key match from intent' };
-  }
+  // char trigram Dice coefficient (simple, deterministic)
+  const dice = diceCoefficient(A, B);
 
-  const values = objects.map(obj => (match.key! in obj ? (obj as any)[match.key!] : null)).filter(v => v !== null && v !== undefined);
-  return {
-    matchedKey: match.key,
-    values,
-    reason: `Matched intent to key "${match.key}" (score=${match.score.toFixed(3)}; candidate="${match.candidate || ''}")`,
+  return Math.max(jaccard, dice);
+}
+
+function diceCoefficient(a: string, b: string): number {
+  if (a.length < 3 || b.length < 3) return 0;
+  const grams = (s: string) => {
+    const out = new Map<string, number>();
+    for (let i = 0; i < s.length - 2; i++) {
+      const g = s.slice(i, i + 3);
+      out.set(g, (out.get(g) || 0) + 1);
+    }
+    return out;
   };
+  const A = grams(a);
+  const B = grams(b);
+  let matches = 0;
+  for (const [g, c] of A.entries()) {
+    const c2 = B.get(g) || 0;
+    matches += Math.min(c, c2);
+  }
+  const total = Array.from(A.values()).reduce((x, y) => x + y, 0) + Array.from(B.values()).reduce((x, y) => x + y, 0);
+  return total > 0 ? (2 * matches) / total : 0;
 }
 
+function filterDatasetByProperties(dataset: unknown, properties: string[], maxScan: number): unknown {
+  if (!dataset) return dataset;
+  if (Array.isArray(dataset)) {
+    const records = dataset.slice(0, Math.max(1, maxScan));
+    const isRecordObjects = records.every(r => r && typeof r === 'object' && !Array.isArray(r));
+    if (!isRecordObjects) {
+      // If it's not an array of objects, we can't select object properties
+      return dataset;
+    }
+
+    if (properties.length === 1) {
+      const key = properties[0];
+      return dataset.map((r: any) => (r && typeof r === 'object' ? (r as any)[key] : undefined));
+    }
+
+    return dataset.map((r: any) => {
+      if (!r || typeof r !== 'object') return r;
+      const out: Record<string, unknown> = {};
+      for (const k of properties) out[k] = (r as any)[k];
+      return out;
+    });
+  }
+
+  // For objects, return a reduced object containing matched keys at top-level when possible
+  if (typeof dataset === 'object') {
+    const o = dataset as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const k of properties) {
+      if (k in o) out[k] = o[k];
+    }
+    // If nothing matched at top-level, leave dataset unchanged (avoid losing structure)
+    return Object.keys(out).length > 0 ? out : dataset;
+  }
+
+  return dataset;
+}

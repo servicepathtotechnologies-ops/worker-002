@@ -2461,8 +2461,19 @@ export async function executeNodeLegacy(
         model,
         prompt,
       };
-      return await executeNode(
-        { ...node, data: { ...node.data, config: nextConfig } } as any,
+      // ✅ CRITICAL: avoid re-entering dynamic executor (prevents infinite/log spam loop)
+      // Calling executeNode() from inside executeNodeLegacy() causes:
+      // DynamicExecutor → Registry.execute → executeNodeLegacy('ollama') → executeNode() → DynamicExecutor → ...
+      // Instead, call executeNodeLegacy directly with an ai_chat_model node config.
+      // IMPORTANT: executeNodeLegacy() uses normalizeNodeType(node) which prefers top-level node.type.
+      // So we must set BOTH node.type and node.data.type to the canonical type to avoid recursion.
+      const nextNode = {
+        ...node,
+        type: 'ai_chat_model',
+        data: { ...node.data, type: 'ai_chat_model', config: nextConfig },
+      } as any;
+      return await executeNodeLegacy(
+        nextNode,
         input,
         nodeOutputs,
         supabase,
@@ -2482,8 +2493,13 @@ export async function executeNodeLegacy(
         provider: 'ollama',
         prompt,
       };
-      return await executeNode(
-        { ...node, data: { ...node.data, config: nextConfig } } as any,
+      const nextNode = {
+        ...node,
+        type: 'ai_chat_model',
+        data: { ...node.data, type: 'ai_chat_model', config: nextConfig },
+      } as any;
+      return await executeNodeLegacy(
+        nextNode,
         input,
         nodeOutputs,
         supabase,
@@ -2498,8 +2514,13 @@ export async function executeNodeLegacy(
       const text = getStringProperty(config, 'text', '');
       const prompt = `Analyze the sentiment of the following text. Return JSON with keys: sentiment (positive|neutral|negative), score (0-1), summary.\n\nText:\n${text}`;
       const nextConfig = { ...config, provider: 'ollama', prompt, responseFormat: 'json' };
-      return await executeNode(
-        { ...node, data: { ...node.data, config: nextConfig } } as any,
+      const nextNode = {
+        ...node,
+        type: 'ai_chat_model',
+        data: { ...node.data, type: 'ai_chat_model', config: nextConfig },
+      } as any;
+      return await executeNodeLegacy(
+        nextNode,
         input,
         nodeOutputs,
         supabase,
@@ -2527,8 +2548,13 @@ export async function executeNodeLegacy(
         maxTokens,
         prompt: effectivePrompt,
       };
-      return await executeNode(
-        { ...node, data: { ...node.data, config: nextConfig } } as any,
+      const nextNode = {
+        ...node,
+        type: 'ai_chat_model',
+        data: { ...node.data, type: 'ai_chat_model', config: nextConfig },
+      } as any;
+      return await executeNodeLegacy(
+        nextNode,
         input,
         nodeOutputs,
         supabase,
@@ -3460,8 +3486,15 @@ export async function executeNodeLegacy(
     case 'http_post': {
       // Alias for http_request with POST method
       const nextConfig = { ...config, method: 'POST' };
-      return await executeNode(
-        { ...node, data: { ...node.data, config: nextConfig } } as any,
+      // Avoid re-entering dynamic executor from legacy executor.
+      // Rewrite both node.type and node.data.type to the canonical node type.
+      const nextNode = {
+        ...node,
+        type: 'http_request',
+        data: { ...node.data, type: 'http_request', config: nextConfig },
+      } as any;
+      return await executeNodeLegacy(
+        nextNode,
         input,
         nodeOutputs,
         supabase,
@@ -3497,8 +3530,13 @@ export async function executeNodeLegacy(
 
       const body = JSON.stringify({ query: resolvedQuery, variables });
       const nextConfig = { ...config, method: 'POST', url: resolvedUrl, headers: headersJson, body };
-      return await executeNode(
-        { ...node, data: { ...node.data, config: nextConfig } } as any,
+      const nextNode = {
+        ...node,
+        type: 'http_request',
+        data: { ...node.data, type: 'http_request', config: nextConfig },
+      } as any;
+      return await executeNodeLegacy(
+        nextNode,
         input,
         nodeOutputs,
         supabase,
@@ -12547,17 +12585,40 @@ export default async function executeWorkflowHandler(req: Request, res: Response
     }, null, 2));
 
     // ✅ ARCHITECTURAL REFACTOR: Store user intent in global context for AI Input Resolver
-    // This allows AI resolver to understand user's original intent when generating inputs
+    // This allows AI resolver to understand user's original intent when generating inputs.
+    // IMPORTANT: Do not rely only on workflows.user_prompt (may not exist / may be empty).
+    // Fallback to workflow.description and execution input (trigger/inputData) deterministically.
     try {
-      const workflowData = await supabase.from('workflows').select('user_prompt, description').eq('id', workflowId).single();
-      if (workflowData.data) {
-        const userIntent = workflowData.data.user_prompt || workflowData.data.description || 'Process workflow data';
+      const workflowData = await supabase
+        .from('workflows')
+        .select('user_prompt, description, name')
+        .eq('id', workflowId)
+        .single();
+
+      const fromDb =
+        (workflowData.data as any)?.user_prompt ||
+        (workflowData.data as any)?.description ||
+        (workflowData.data as any)?.name ||
+        '';
+
+      const fromInput =
+        (executionInput as any)?.inputData?.workflowIntent ||
+        (executionInput as any)?.inputData?.description ||
+        (executionInput as any)?.description ||
+        '';
+
+      const userIntent = String(fromDb || fromInput || 'Process workflow data').trim();
         (global as any).currentWorkflowIntent = userIntent;
         console.log(`[ExecuteWorkflow] ✅ Stored user intent for AI Input Resolver: "${userIntent.substring(0, 100)}..."`);
-      }
     } catch (error) {
-      console.warn('[ExecuteWorkflow] ⚠️  Could not retrieve user intent, using default');
-      (global as any).currentWorkflowIntent = 'Process workflow data';
+      const fromInput =
+        (executionInput as any)?.inputData?.workflowIntent ||
+        (executionInput as any)?.inputData?.description ||
+        (executionInput as any)?.description ||
+        '';
+      const userIntent = String(fromInput || 'Process workflow data').trim();
+      console.warn('[ExecuteWorkflow] ⚠️  Could not retrieve user intent from DB, using fallback');
+      (global as any).currentWorkflowIntent = userIntent;
     }
 
     // ✅ FIX: Use executionInput (which may contain form submission data when resuming)
@@ -12582,14 +12643,14 @@ export default async function executeWorkflowHandler(req: Request, res: Response
       
       const log: ExecutionLog = {
         nodeId: node.id,
-        nodeName: node.data.label,
+        nodeName: node.data?.label || node.id,
         status: 'running',
         startedAt: new Date().toISOString(),
       };
       
       // ✅ CRITICAL: Log trigger node execution start explicitly
       if (isTriggerNode) {
-        console.log(`[ExecuteWorkflow] 🎯 Trigger node execution: ${node.data.label} (${nodeType})`);
+        console.log(`[ExecuteWorkflow] 🎯 Trigger node execution: ${node.data?.label || node.id} (${nodeType})`);
       }
 
       try {
@@ -12604,6 +12665,19 @@ export default async function executeWorkflowHandler(req: Request, res: Response
         // ✅ CORE ARCHITECTURE FIX: Build node input from incoming edges FIRST
         // This merges outputs from all upstream nodes correctly
         let nodeInput = buildNodeInput(node, edges, nodeOutputs, input);
+
+        // ✅ TEMPLATE CONTEXT (CORE CONTRACT)
+        // Ensure {{$json}} / {{json}} always reference the *current node input*.
+        // This prevents stale template resolution (e.g., AI prompt referencing {{google_sheets.rows}}
+        // while $json points to an older node's output).
+        if (nodeInput && typeof nodeInput === 'object' && nodeInput !== null && !Array.isArray(nodeInput)) {
+          nodeOutputs.set('$json', nodeInput, true);
+          nodeOutputs.set('json', nodeInput, true);
+        } else {
+          const wrapped = { value: nodeInput, data: nodeInput };
+          nodeOutputs.set('$json', wrapped, true);
+          nodeOutputs.set('json', wrapped, true);
+        }
         
         // Skip this node if it's on the wrong conditional path
         if (skipNode) {
@@ -12857,10 +12931,13 @@ export default async function executeWorkflowHandler(req: Request, res: Response
         if (executionId) {
           try {
             const runningLogs = [...logs, log];
-            await supabase
+            const { error: runningLogsError } = await supabase
               .from('executions')
               .update({ logs: runningLogs })
               .eq('id', executionId);
+            if (runningLogsError) {
+              throw runningLogsError;
+            }
           } catch (logUpdateError) {
             // Log error but don't break execution
             console.error(`[Workflow ${workflowId}] [Node ${node.id}] Failed to update execution logs:`, logUpdateError);
@@ -13017,10 +13094,10 @@ export default async function executeWorkflowHandler(req: Request, res: Response
           try {
             await logExecutionEvent(supabase, executionId, workflowId, 'NODE_STARTED', {
               nodeId: node.id,
-              nodeName: node.data.label,
+              nodeName: node.data?.label || node.id,
               nodeType,
               sequence: i + 1,
-            }, node.id, node.data.label, i + 1);
+            }, node.id, node.data?.label || node.id, i + 1);
           } catch (eventErr: any) {
             // Non-fatal - log but continue
             console.warn('[ExecuteWorkflow] ⚠️ NODE_STARTED event failed (non-fatal):', eventErr?.message);
@@ -13042,18 +13119,18 @@ export default async function executeWorkflowHandler(req: Request, res: Response
 
           if (existingStep && existingStep.status === 'completed' && existingStep.output_json) {
             // Node already completed - use cached output (resume)
-            console.log(`[Resume] Node ${node.id} (${node.data.label}) already completed - using cached output`);
+            console.log(`[Resume] Node ${node.id} (${node.data?.label || node.id}) already completed - using cached output`);
             output = existingStep.output_json;
             
             // Log resume event
             await logExecutionEvent(supabase, executionId, workflowId, 'NODE_FINISHED', {
               nodeId: node.id,
-              nodeName: node.data.label,
+              nodeName: node.data?.label || node.id,
               nodeType,
               sequence: i + 1,
               resumed: true,
               success: true,
-            }, node.id, node.data.label, i + 1);
+            }, node.id, node.data?.label || node.id, i + 1);
             
             // Skip to next node
             nodeOutputs.set(node.id, output);
@@ -13073,11 +13150,46 @@ export default async function executeWorkflowHandler(req: Request, res: Response
             continue;
           }
 
+          // ✅ CORE FIX: Create execution_step with 'running' status BEFORE execution.
+          // Without this, the frontend sees no step during long-running nodes and
+          // defaults to "running / null output" indefinitely (especially visible on
+          // manual_trigger which is the very first node polled by the UI).
+          // Placed AFTER resume check so we never overwrite a completed step.
+          try {
+            await supabase
+              .from('execution_steps')
+              .upsert({
+                execution_id: executionId,
+                node_id: node.id,
+                node_name: node.data?.label || node.id,
+                node_type: nodeType,
+                input_json: nodeInput,
+                output_json: null,
+                status: 'running',
+                sequence: i + 1,
+                state_snapshot: { nodeId: node.id, nodeType, startedAt: new Date().toISOString() },
+              }, { onConflict: 'execution_id,node_id' });
+          } catch (_e) { /* best-effort */ }
+
           // ✅ CRITICAL: Execute node with retry policy
           const { getRetryConfig, calculateBackoff, shouldRetry } = await import('../services/execution/retry-policy');
           const retryConfig = getRetryConfig(node.data?.config || {});
 
           while (retryAttempt <= retryConfig.maxRetries) {
+            try {
+              // ✅ HEARTBEAT KEEPALIVE (CORE RELIABILITY)
+              // Long-running nodes (e.g., Ollama) can exceed stale_heartbeat threshold.
+              // Keep heartbeat updated while the node is executing to prevent false timeouts.
+              const heartbeatIntervalMs = 60_000;
+              const heartbeatTimer = setInterval(() => {
+                // Best-effort, fire-and-forget. Avoid chaining .catch() here because
+                // supabase typings can surface as PromiseLike in ts-jest transforms.
+                void supabase
+                  .from('executions')
+                  .update({ last_heartbeat: new Date().toISOString() })
+                  .eq('id', executionId);
+              }, heartbeatIntervalMs);
+
             try {
               // Execute node
               output = await executeNode(
@@ -13089,21 +13201,26 @@ export default async function executeWorkflowHandler(req: Request, res: Response
                 workflow.user_id,
                 currentUserId
               );
+              } finally {
+                clearInterval(heartbeatTimer);
+              }
 
               // Success - break retry loop
               if (retryAttempt > 0) {
                 // Log successful retry
                 await logExecutionEvent(supabase, executionId, workflowId, 'NODE_FINISHED', {
                   nodeId: node.id,
-                  nodeName: node.data.label,
+                  nodeName: node.data?.label || node.id,
                   retryAttempt,
                   success: true,
-                }, node.id, node.data.label, i + 1);
+                }, node.id, node.data?.label || node.id, i + 1);
               }
               break;
             } catch (error: any) {
               lastError = error;
               retryAttempt++;
+              // Best-effort stop heartbeat timer if executeNode throws synchronously
+              // (Timer is function-scoped in try; if not created, this is a no-op)
 
               // Check if should retry
               if (!shouldRetry(error, retryAttempt - 1, retryConfig)) {
@@ -13118,11 +13235,11 @@ export default async function executeWorkflowHandler(req: Request, res: Response
                 // Log retry event
                 await logExecutionEvent(supabase, executionId, workflowId, 'NODE_RETRY', {
                   nodeId: node.id,
-                  nodeName: node.data.label,
+                  nodeName: node.data?.label || node.id,
                   retryAttempt,
                   backoffMs,
                   error: error.message || String(error),
-                }, node.id, node.data.label, i + 1);
+                }, node.id, node.data?.label || node.id, i + 1);
 
                 // Update execution_steps with retry info
                 try {
@@ -13183,7 +13300,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
             .upsert({
               execution_id: executionId,
               node_id: node.id,
-              node_name: node.data.label,
+              node_name: node.data?.label || node.id,
               node_type: nodeType,
               input_json: nodeInput,
               output_json: output,
@@ -13211,7 +13328,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
             if (stepError) {
               console.warn(`[Resume] Failed to persist execution step for node ${node.id}:`, stepError);
             } else {
-              console.log(`[Resume] ✅ Persisted execution step for node ${node.id} (${node.data.label})`);
+              console.log(`[Resume] ✅ Persisted execution step for node ${node.id} (${node.data?.label || node.id})`);
             }
           } catch (stepPersistError) {
             console.warn(`[Resume] Failed to persist execution step:`, stepPersistError);
@@ -13325,6 +13442,69 @@ export default async function executeWorkflowHandler(req: Request, res: Response
             const outputObj = output as Record<string, unknown>;
             if (outputObj.matchedCase !== undefined) {
               switchResults[node.id] = outputObj.matchedCase as string | null;
+            }
+          }
+
+          // ============================================
+          // ✅ CORE ARCHITECTURE FIX: Detect soft errors
+          // ============================================
+          // The dynamic executor returns { _error: "..." } instead of throwing.
+          // Without this check, the loop treats it as success, downstream nodes
+          // still execute, and overall status is "success" despite real failures.
+          //
+          // Fix: detect _error in output → mark node as failed →
+          //       add to skippedNodeIds so shouldSkipNode() recursively
+          //       prevents ALL downstream nodes from executing →
+          //       set hasError so overall status = 'failed'.
+          // ============================================
+          if (output && typeof output === 'object' && !Array.isArray(output)) {
+            const outputObj = output as Record<string, unknown>;
+            if (typeof outputObj._error === 'string' && outputObj._error.length > 0) {
+              const softErrorMsg = outputObj._error;
+              console.error(
+                `[ExecuteWorkflow] ❌ Node returned soft error: ${node.data.label} (${nodeType}): ${softErrorMsg}`
+              );
+
+              // 1. Add to skippedNodeIds → shouldSkipNode will recursively skip downstream
+              skippedNodeIds.add(node.id);
+
+              // 2. Mark overall workflow as failed
+              hasError = true;
+              errorMessage = `Node "${node.data.label}" failed: ${softErrorMsg}`;
+
+              // 3. Persist step as 'error'
+              try {
+                await supabase
+                  .from('execution_steps')
+                  .update({ status: 'error', last_error: softErrorMsg })
+                  .eq('execution_id', executionId)
+                  .eq('node_id', node.id);
+              } catch (_e) { /* best-effort */ }
+
+              // 4. Log and push
+              log.output = output;
+              log.status = 'failed';
+              log.error = softErrorMsg;
+              log.finishedAt = new Date().toISOString();
+              logs.push(log);
+
+              await logExecutionEvent(supabase, executionId, workflowId, 'NODE_FAILED', {
+                nodeId: node.id,
+                nodeName: node.data.label,
+                nodeType,
+                sequence: i + 1,
+                error: softErrorMsg,
+                softError: true,
+              }, node.id, node.data.label, i + 1);
+
+              // 5. Update incremental logs for real-time frontend progress
+              if (executionId) {
+                try {
+                  await supabase.from('executions').update({ logs }).eq('id', executionId);
+                } catch (_e) { /* best-effort */ }
+              }
+
+              continue; // Skip to next node - shouldSkipNode handles downstream
             }
           }
 
@@ -13452,10 +13632,13 @@ export default async function executeWorkflowHandler(req: Request, res: Response
       // Update execution logs incrementally so frontend can see progress in real-time
       if (executionId) {
         try {
-          await supabase
+          const { error: incrementalLogsError } = await supabase
             .from('executions')
             .update({ logs })
             .eq('id', executionId);
+          if (incrementalLogsError) {
+            throw incrementalLogsError;
+          }
         } catch (logUpdateError) {
           // Log error but don't break execution - logs will be saved at the end anyway
           console.error('Failed to update execution logs incrementally:', logUpdateError);
@@ -13538,7 +13721,12 @@ export default async function executeWorkflowHandler(req: Request, res: Response
       await centralState.updateStatus(
         finalStatus,
         finalOutput,
-        hasError ? errorMessage : undefined
+        hasError ? errorMessage : undefined,
+        {
+          logs,
+          durationMs,
+          lastHeartbeat: finishedAt,
+        }
       );
       console.log(`[EnterpriseState] ✅ Updated execution ${executionId} to ${finalStatus}`);
     } catch (updateError) {

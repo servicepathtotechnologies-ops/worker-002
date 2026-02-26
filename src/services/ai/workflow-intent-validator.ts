@@ -14,6 +14,7 @@ import { StructuredIntent } from './intent-structurer';
 import { Workflow, WorkflowNode, WorkflowEdge } from '../../core/types/ai-types';
 import { getRequiredNodes } from './intent-constraint-engine';
 import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+import { isTriggerNodeType } from '../../core/utils/node-role';
 import { nodeLibrary } from '../nodes/node-library';
 
 export interface ValidationResult {
@@ -482,6 +483,17 @@ export class WorkflowIntentValidator {
    */
   private mapActionToNodeTypes(action: StructuredIntent['actions'][0]): string[] {
     const actionType = action.type.toLowerCase();
+    const operation = action.operation?.toLowerCase() || '';
+
+    // ✅ CRITICAL: Disambiguate email destinations early (before "type exists in library" short-circuit)
+    // Default behavior: sending email should prefer Gmail (google_gmail) unless SMTP is explicitly requested.
+    if ((actionType === 'gmail' || actionType.includes('gmail') || actionType.includes('google_mail') || actionType.includes('google mail')) && operation.includes('send')) {
+      return ['google_gmail'];
+    }
+    if ((actionType === 'email' || actionType === 'mail') && operation.includes('send')) {
+      if (actionType.includes('smtp')) return ['email'];
+      return ['google_gmail'];
+    }
     
     // Direct node type match
     const normalized = normalizeNodeType({ type: 'custom', data: { type: actionType } });
@@ -511,17 +523,7 @@ export class WorkflowIntentValidator {
    * Check if node is a trigger node
    */
   private isTriggerNode(nodeType: string): boolean {
-    const triggerTypes = [
-      'manual_trigger',
-      'schedule',
-      'webhook',
-      'form',
-      'chat_trigger',
-      'interval',
-      'error_trigger',
-    ];
-
-    return triggerTypes.includes(nodeType) || nodeType.includes('trigger');
+    return isTriggerNodeType(nodeType);
   }
 
   /**

@@ -24,6 +24,7 @@ import { StructuredIntent } from './intent-structurer';
 import { Workflow, WorkflowNode, WorkflowEdge } from '../../core/types/ai-types';
 import { getRequiredNodes } from './intent-constraint-engine';
 import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+import { isTriggerNodeType } from '../../core/utils/node-role';
 import { nodeLibrary } from '../nodes/node-library';
 import { resolveCompatibleHandles } from './schema-driven-connection-resolver';
 import { randomUUID } from 'crypto';
@@ -75,6 +76,16 @@ export class MinimalWorkflowPolicy {
     const requiredNodeTypes = getRequiredNodes(intent, originalPrompt);
     const requiredNodeTypesSet = new Set(requiredNodeTypes);
     console.log(`[MinimalWorkflowPolicy] Required node types: ${requiredNodeTypes.join(', ')}`);
+
+    // ✅ CRITICAL: Preserve auto-injected nodes from DSL metadata (e.g., guaranteed ai_chat_model)
+    // The DSL compiler stores `dsl.metadata` into `workflow.metadata`, so we can trust it here.
+    const autoInjectedNodes = (workflow as any)?.metadata?.autoInjectedNodes;
+    if (Array.isArray(autoInjectedNodes) && autoInjectedNodes.length > 0) {
+      autoInjectedNodes.forEach((t: any) => {
+        if (typeof t === 'string' && t.trim()) requiredNodeTypesSet.add(t.trim());
+      });
+      console.log(`[MinimalWorkflowPolicy] ✅ Preserving auto-injected node types from metadata: ${autoInjectedNodes.join(', ')}`);
+    }
 
     // STEP 2: Check for forbidden nodes
     const { filteredNodes: nodesAfterForbidden, forbiddenViolations } = this.removeForbiddenNodes(
@@ -562,17 +573,7 @@ export class MinimalWorkflowPolicy {
    * Check if node is a trigger node
    */
   private isTriggerNode(nodeType: string): boolean {
-    const triggerTypes = [
-      'manual_trigger',
-      'schedule',
-      'webhook',
-      'form',
-      'chat_trigger',
-      'interval',
-      'error_trigger',
-    ];
-
-    return triggerTypes.includes(nodeType) || nodeType.includes('trigger');
+    return isTriggerNodeType(nodeType);
   }
 
   /**

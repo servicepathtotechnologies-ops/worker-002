@@ -5,7 +5,9 @@
  * Ensures save-time validation guarantees run-time success.
  */
 
-import { nodeDefinitionRegistry } from '../types/node-definition';
+import { validateNodeConfig as validateNodeConfigFromRegistry } from './schema-based-validator';
+import { unifiedNodeRegistry } from '../registry/unified-node-registry';
+import { normalizeNodeType } from '../utils/node-type-normalizer';
 
 export interface WorkflowNode {
   id: string;
@@ -47,60 +49,21 @@ export function validateAllNodeInputs(nodes: WorkflowNode[]): ValidationResult {
   const warnings: string[] = [];
 
   for (const node of nodes) {
-    const nodeType = node.data?.type || node.type;
-    const definition = nodeDefinitionRegistry.get(nodeType);
-
-    if (!definition) {
+    const nodeType = normalizeNodeType(node as any) || node.data?.type || node.type;
+    const def = unifiedNodeRegistry.get(nodeType);
+    if (!def) {
       warnings.push(`Node ${node.id} has unknown type: ${nodeType}`);
       continue;
     }
 
-    // Get inputs from node config
-    const inputs = node.data?.config || {};
-
-    // Validate inputs against schema
-    const validation = definition.validateInputs(inputs);
+    const validation = validateNodeConfigFromRegistry(node as any);
     if (!validation.valid) {
       for (const errorMsg of validation.errors) {
         errors.push({
           code: 'INVALID_NODE_INPUTS',
           message: errorMsg,
           nodeId: node.id,
-          field: errorMsg.includes('conditions') ? 'conditions' : undefined,
         });
-      }
-    }
-
-    // Check required inputs with conditional validation
-    for (const requiredField of definition.requiredInputs) {
-      // ✅ CRITICAL: Conditional validation for Gmail node
-      // messageId is only required when operation === 'get', not for 'send'
-      if (nodeType === 'google_gmail' && requiredField === 'messageId') {
-        const operation = inputs.operation || 'send';
-        if (operation !== 'get') {
-          console.log(`[ValidateAllNodeInputs] Skipping messageId validation for Gmail - operation is '${operation}', not 'get'`);
-          continue; // Skip messageId validation for non-get operations
-        }
-      }
-
-      const value = inputs[requiredField];
-      if (value === undefined || value === null || value === '') {
-        // Check if it's an array that's empty
-        if (Array.isArray(value) && value.length === 0) {
-          errors.push({
-            code: 'MISSING_REQUIRED_INPUT',
-            message: `Node "${node.data?.label || node.id}" is missing required input: ${requiredField}`,
-            nodeId: node.id,
-            field: requiredField,
-          });
-        } else if (!Array.isArray(value)) {
-          errors.push({
-            code: 'MISSING_REQUIRED_INPUT',
-            message: `Node "${node.data?.label || node.id}" is missing required input: ${requiredField}`,
-            nodeId: node.id,
-            field: requiredField,
-          });
-        }
       }
     }
   }

@@ -22,6 +22,7 @@ import { workflowValidator, ValidationResult } from './ai/workflow-validator';
 import { connectorRegistry } from './connectors/connector-registry';
 import { nodeLibrary } from './nodes/node-library';
 import { normalizeNodeType } from '../core/utils/node-type-normalizer';
+import { resolveNodeType } from '../core/utils/node-type-resolver-util';
 import { NodeResolver } from './ai/node-resolver';
 import { getSupabaseClient } from '../core/database/supabase-compat';
 import { planWorkflowSpecFromPrompt } from './ai/smart-planner-adapter';
@@ -396,14 +397,22 @@ export class WorkflowLifecycleManager {
     // STEP 1.5b: Ensure all resolved nodes are in the workflow
     // This fixes cases where the workflow builder's node filter removed required nodes
     if (resolution.success && resolution.nodeIds.length > 0) {
-      const existingNodeTypes = workflow.nodes.map((node: any) => 
-        normalizeNodeType(node)
-      );
+      // Normalize existing node types to canonical forms for comparison
+      const existingNodeTypes = workflow.nodes.map((node: any) => {
+        const normalized = normalizeNodeType(node);
+        // Also resolve aliases to canonical form (e.g., "gmail" → "google_gmail")
+        return resolveNodeType(normalized);
+      });
       
       for (const nodeType of resolution.nodeIds) {
-        if (!existingNodeTypes.includes(nodeType)) {
-          console.log(`[WorkflowLifecycle] Adding missing resolved node: ${nodeType}`);
-          const schema = nodeLibrary.getSchema(nodeType);
+        // Resolve nodeType to canonical form (handles aliases like "gmail" → "google_gmail")
+        const resolvedNodeType = resolveNodeType(nodeType);
+        
+        // Check if this canonical type already exists in the workflow
+        if (!existingNodeTypes.includes(resolvedNodeType)) {
+          console.log(`[WorkflowLifecycle] Adding missing resolved node: ${nodeType} (canonical: ${resolvedNodeType})`);
+          // Use resolved canonical type for schema lookup
+          const schema = nodeLibrary.getSchema(resolvedNodeType);
           if (schema) {
             const { randomUUID } = require('crypto');
             const newNode: WorkflowNode = {
@@ -411,7 +420,7 @@ export class WorkflowLifecycleManager {
               type: 'custom',
               position: { x: 0, y: 0 },
               data: {
-                type: nodeType,
+                type: resolvedNodeType, // Use canonical type, not alias
                 label: schema.label,
                 category: schema.category,
                 config: {},
@@ -421,13 +430,22 @@ export class WorkflowLifecycleManager {
               ...workflow,
               nodes: [...workflow.nodes, newNode],
             };
+            // Add to existingNodeTypes to prevent duplicates in same loop
+            existingNodeTypes.push(resolvedNodeType);
           }
+        } else {
+          console.log(`[WorkflowLifecycle] Skipping duplicate node: ${nodeType} (canonical: ${resolvedNodeType}) - already exists in workflow`);
         }
       }
     }
 
-    // STEP 2: Normalize all node types to canonical forms (replace aliases)
-    console.log('[WorkflowLifecycle] Step 2: Normalizing all node types to canonical forms...');
+    // STEP 2: Deduplicate nodes by canonical type BEFORE normalization
+    // This prevents duplicate nodes like "gmail" and "google_gmail" from existing simultaneously
+    console.log('[WorkflowLifecycle] Step 2: Deduplicating nodes by canonical type...');
+    workflow = this.deduplicateNodesByCanonicalType(workflow);
+    
+    // STEP 2.1: Normalize all node types to canonical forms (replace aliases)
+    console.log('[WorkflowLifecycle] Step 2.1: Normalizing all node types to canonical forms...');
     workflow = this.normalizeAllNodeTypesToCanonical(workflow);
     
     // STEP 2.5: Validate workflow structure
@@ -546,6 +564,63 @@ export class WorkflowLifecycleManager {
    * @param workflow - Workflow to normalize
    * @returns Workflow with all node types normalized to canonical forms
    */
+  /**
+   * Deduplicate nodes by canonical type
+   * Removes duplicate nodes that resolve to the same canonical type (e.g., "gmail" and "google_gmail")
+   * Keeps the first occurrence and removes subsequent duplicates
+   */
+  private deduplicateNodesByCanonicalType(workflow: Workflow): Workflow {
+    const seenCanonicalTypes = new Map<string, string>(); // canonicalType -> nodeId (first occurrence)
+    const nodesToKeep: WorkflowNode[] = [];
+    const nodesToRemove: string[] = [];
+    let duplicateCount = 0;
+
+    for (const node of workflow.nodes) {
+      const nodeType = normalizeNodeType(node);
+      if (!nodeType || nodeType === 'custom') {
+        // Keep nodes without valid types (they'll be handled elsewhere)
+        nodesToKeep.push(node);
+        continue;
+      }
+
+      // Resolve to canonical type (handles aliases like "gmail" → "google_gmail")
+      const canonicalType = resolveNodeType(nodeType);
+      
+      if (seenCanonicalTypes.has(canonicalType)) {
+        // Duplicate found - mark for removal
+        const firstNodeId = seenCanonicalTypes.get(canonicalType)!;
+        nodesToRemove.push(node.id);
+        duplicateCount++;
+        console.log(
+          `[WorkflowLifecycle] 🚫 Removing duplicate node: ${node.id} (type: "${nodeType}" → canonical: "${canonicalType}") ` +
+          `- keeping first occurrence: ${firstNodeId}`
+        );
+      } else {
+        // First occurrence of this canonical type - keep it
+        seenCanonicalTypes.set(canonicalType, node.id);
+        nodesToKeep.push(node);
+      }
+    }
+
+    if (duplicateCount > 0) {
+      console.log(`[WorkflowLifecycle] ✅ Deduplicated ${duplicateCount} duplicate node(s) by canonical type`);
+      
+      // Remove edges connected to duplicate nodes
+      const nodesToRemoveSet = new Set(nodesToRemove);
+      const filteredEdges = workflow.edges.filter(
+        (edge: any) => !nodesToRemoveSet.has(edge.source) && !nodesToRemoveSet.has(edge.target)
+      );
+
+      return {
+        ...workflow,
+        nodes: nodesToKeep,
+        edges: filteredEdges,
+      };
+    }
+
+    return workflow;
+  }
+
   private normalizeAllNodeTypesToCanonical(workflow: Workflow): Workflow {
     let normalizedCount = 0;
     
@@ -556,12 +631,15 @@ export class WorkflowLifecycleManager {
       }
       
       // ✅ CRITICAL: Force canonicalization even when alias schemas are registered.
-      // `resolveNodeType()` can return the alias itself (e.g., "gmail") because it's a
-      // virtual node type registered in NodeLibrary. Here we *must* collapse aliases
-      // to canonical types for downstream connector logic and APIs (attach-inputs,
-      // execution, credential discovery) that key off canonical types like "google_gmail".
+      // `resolveNodeType()` resolves aliases like "gmail" → "google_gmail" using the
+      // NodeTypeResolver which has the alias mapping. This ensures all aliases are
+      // collapsed to canonical types for downstream connector logic and APIs.
       const canonicalFromLibrary = nodeLibrary.getCanonicalType(originalType);
-      const canonicalType = canonicalFromLibrary || originalType;
+      const canonicalFromResolver = resolveNodeType(originalType);
+      // Use resolver result if it's different (resolved an alias), otherwise use library result
+      const canonicalType = (canonicalFromResolver !== originalType) 
+        ? canonicalFromResolver 
+        : (canonicalFromLibrary || originalType);
       
       // Only update if type changed (was an alias)
       if (canonicalType !== originalType) {
@@ -822,6 +900,15 @@ export class WorkflowLifecycleManager {
       for (const [fieldName, fieldInfo] of Object.entries(optionalFields)) {
         const existingValue = existingConfig[fieldName];
 
+        // ✅ UNIVERSAL: Conditional required fields (schema-driven)
+        // If a field has `requiredIf: { field, equals }` and the condition is met,
+        // treat it as required and prompt when missing.
+        const requiredIf = (fieldInfo as any)?.requiredIf as { field: string; equals: any } | undefined;
+        const isConditionallyRequired =
+          !!requiredIf &&
+          typeof requiredIf.field === 'string' &&
+          (existingConfig as any)?.[requiredIf.field] === requiredIf.equals;
+
         // Skip if field already has concrete value
         // SPECIAL CASE: For google_sheets, treat expression values like {{output}} as NOT satisfied
         if (
@@ -850,6 +937,7 @@ export class WorkflowLifecycleManager {
           fieldNameLower.includes('body') ||
           fieldNameLower.includes('message') ||
           fieldNameLower.includes('prompt') ||
+          fieldNameLower.includes('recipient') || // recipientSource / recipientEmails
           (fieldNameLower === 'to' && nodeType === 'google_gmail') || // Gmail: 'to' is input
           (fieldNameLower === 'subject' && nodeType === 'google_gmail') || // Gmail: 'subject' is input
           (fieldNameLower === 'body' && nodeType === 'google_gmail') || // Gmail: 'body' is input
@@ -867,7 +955,7 @@ export class WorkflowLifecycleManager {
           // LinkedIn: mediaUrl should always be surfaced as a configurable input
           (nodeType === 'linkedin' && fieldNameLower === 'mediaurl');
 
-        if (isUserConfigurable && !existingConfig[fieldName]) {
+        if ((isUserConfigurable || isConditionallyRequired) && !existingConfig[fieldName]) {
           if (!nodeMissingFields.includes(fieldName)) {
             nodeMissingFields.push(fieldName);
           }
@@ -879,7 +967,7 @@ export class WorkflowLifecycleManager {
             fieldName,
             fieldType: (fieldInfo as any)?.type || 'string',
             description: (fieldInfo as any)?.description || fieldName,
-            required: false,
+            required: isConditionallyRequired,
             defaultValue: (fieldInfo as any)?.default,
             examples: (fieldInfo as any)?.examples,
           });

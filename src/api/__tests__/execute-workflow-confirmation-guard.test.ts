@@ -19,7 +19,8 @@ jest.mock('../../core/database/supabase-compat', () => ({
 // Mock other dependencies
 jest.mock('../../services/ai/credential-discovery-phase', () => ({
   credentialDiscoveryPhase: {
-    discoverCredentials: jest.fn().mockResolvedValue({
+    // Cast to any to avoid overly-strict inferred jest mock typings (can resolve to `never`)
+    discoverCredentials: (jest.fn() as any).mockResolvedValue({
       requiredCredentials: [],
       missingCredentials: [],
     }),

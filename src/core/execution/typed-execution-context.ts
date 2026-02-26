@@ -95,6 +95,29 @@ export function getContextValue(
   if (path in context.variables) {
     return context.variables[path];
   }
+
+  // ✅ NODE OUTPUT LOOKUP (CORE CONTRACT)
+  // Support references like {{nodeId.field}} by reading from the isolated nodeOutputs map.
+  // This preserves the "no root-level merge" rule while still allowing templates to access
+  // upstream node outputs deterministically.
+  const dotIdx = path.indexOf('.');
+  if (dotIdx > 0) {
+    const rootKey = path.slice(0, dotIdx);
+    const nestedPath = path.slice(dotIdx + 1);
+    const nodeOut = context.nodeOutputs.get(rootKey);
+    if (nodeOut !== undefined) {
+      if (nodeOut && typeof nodeOut === 'object') {
+        const nested = getNestedValue(nodeOut as any, nestedPath);
+        if (nested !== undefined) return nested;
+      }
+      // If output is primitive, no nested access possible
+      return undefined;
+    }
+  } else {
+    // Direct node output reference: {{nodeId}}
+    const directNodeOut = context.nodeOutputs.get(path);
+    if (directNodeOut !== undefined) return directNodeOut;
+  }
   
   // Try nested access
   return getNestedValue(context.variables, path) 
