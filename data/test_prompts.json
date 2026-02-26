@@ -1,0 +1,54 @@
+{
+  "test_prompts": [
+    {
+      "id": "test_1",
+      "name": "Simple Form to Sheets",
+      "prompt": "When a form is submitted with name and email, save it to Google Sheets in a sheet called 'Submissions'.",
+      "expected_complexity": "simple",
+      "expected_nodes": ["form", "google_sheets"],
+      "expected_credentials": ["google_sheets"]
+    },
+    {
+      "id": "test_2",
+      "name": "Scheduled API Check with Conditional Alert",
+      "prompt": "Every hour, check the status of https://api.example.com/health. If the status is not 'ok', send a Slack message to #alerts with the error message.",
+      "expected_complexity": "medium",
+      "expected_nodes": ["schedule", "http_request", "if", "slack"],
+      "expected_credentials": ["slack"]
+    },
+    {
+      "id": "test_3",
+      "name": "Webhook to Multiple Integrations",
+      "prompt": "When a webhook receives a new customer signup (with fields: name, email, company), create a contact in HubSpot, add a row to Airtable in the 'Customers' table, and send a welcome email via Gmail.",
+      "expected_complexity": "medium",
+      "expected_nodes": ["webhook", "hubspot", "airtable", "gmail"],
+      "expected_credentials": ["hubspot", "airtable", "gmail"]
+    },
+    {
+      "id": "test_4",
+      "name": "Complex Multi-Step with Logic",
+      "prompt": "Every Monday at 9 AM, fetch all open GitHub issues from repo 'myorg/myproject'. Filter issues that are labeled 'bug' and have been open for more than 7 days. For each matching issue, create a task in ClickUp with high priority, add it to a Notion database called 'Critical Bugs', and notify the team on Telegram channel #urgent-bugs.",
+      "expected_complexity": "complex",
+      "expected_nodes": ["schedule", "github", "filter", "clickup", "notion", "telegram"],
+      "expected_credentials": ["github", "clickup", "notion", "telegram"]
+    },
+    {
+      "id": "test_5",
+      "name": "Chat Trigger with AI Processing",
+      "prompt": "When someone sends a message in a Telegram group asking for a summary, use an AI chat model to generate a concise summary of the message and reply back to the group.",
+      "expected_complexity": "simple",
+      "expected_nodes": ["chat_trigger", "ai_chat_model", "telegram"],
+      "expected_credentials": ["telegram"]
+    },
+    {
+      "id": "test_comprehensive",
+      "name": "Comprehensive Workflow Builder Test",
+      "prompt": "Every day at 8 AM, fetch the latest news from https://api.news.com/latest. If the news contains the word 'urgent', use an AI agent to analyze the content and extract the key points. Then check if the score is greater than 7. If yes, send a formatted message to Slack channel #alerts with the title and summary, save the details to Google Sheets in a sheet called 'Urgent News', and also send an email via Gmail to admin@example.com. If the score is 7 or less, just log the news title. Make sure all data flows correctly between nodes using field mappings.",
+      "expected_complexity": "complex",
+      "expected_nodes": ["schedule", "http_request", "if", "ai_agent", "if", "slack", "google_sheets", "gmail", "log_output"],
+      "expected_credentials": ["slack", "google_sheets", "gmail"],
+      "test_purpose": "Comprehensive test that verifies: scheduled triggers, HTTP requests, conditional logic (nested if statements), AI integration, data transformation, multiple integrations, field mappings, and proper node connections."
+    }
+  ],
+  "usage_instructions": "Use these prompts to test the autonomous workflow builder. Each prompt tests different aspects:\n- Test 1: Simple linear flow\n- Test 2: Conditional logic with HTTP\n- Test 3: Multi-destination branching\n- Test 4: Complex filtering and multi-service integration\n- Test 5: AI-powered chat response\n- Test Comprehensive: Full system test with multiple node types, nested logic, and data flow verification"
+}

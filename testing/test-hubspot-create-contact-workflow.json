@@ -1,0 +1,103 @@
+{
+  "id": "test-hubspot-contact-workflow",
+  "name": "Test: Create HubSpot Contact from Webhook",
+  "description": "Test workflow to create a contact in HubSpot from webhook data",
+  "nodes": [
+    {
+      "id": "trigger_webhook",
+      "type": "webhook",
+      "data": {
+        "type": "webhook",
+        "label": "Webhook Trigger",
+        "config": {
+          "path": "/webhook/contact",
+          "httpMethod": "POST",
+          "responseMode": "json"
+        }
+      },
+      "position": { "x": 100, "y": 200 }
+    },
+    {
+      "id": "extract_data",
+      "type": "custom",
+      "data": {
+        "type": "set_variable",
+        "label": "Extract email and name",
+        "config": {
+          "variables": {
+            "email": "{{$json.body.email}}",
+            "name": "{{$json.body.name}}"
+          },
+          "fields": {
+            "email": "{{$json.email}}",
+            "name": "{{$json.name}}"
+          }
+        }
+      },
+      "position": { "x": 400, "y": 200 }
+    },
+    {
+      "id": "hubspot_create",
+      "type": "custom",
+      "data": {
+        "type": "hubspot",
+        "label": "HubSpot",
+        "config": {
+          "operation": "create",
+          "resource": "contact",
+          "apiKey": "HUBSPOT_API_KEY_REPLACE_ME",
+          "accessToken": "HUBSPOT_ACCESS_TOKEN_REPLACE_ME",
+          "properties": {
+            "email": "{{$json.email}}",
+            "firstname": "{{$json.name}}"
+          }
+        }
+      },
+      "position": { "x": 700, "y": 200 }
+    },
+    {
+      "id": "log_result",
+      "type": "custom",
+      "data": {
+        "type": "log_output",
+        "label": "Log Output",
+        "config": {
+          "message": "Contact created successfully",
+          "data": "{{$json}}"
+        }
+      },
+      "position": { "x": 1000, "y": 200 }
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge_webhook_to_extract",
+      "source": "trigger_webhook",
+      "target": "extract_data",
+      "sourceHandle": "main",
+      "targetHandle": "main",
+      "type": "default"
+    },
+    {
+      "id": "edge_extract_to_hubspot",
+      "source": "extract_data",
+      "target": "hubspot_create",
+      "sourceHandle": "main",
+      "targetHandle": "main",
+      "type": "default"
+    },
+    {
+      "id": "edge_hubspot_to_log",
+      "source": "hubspot_create",
+      "target": "log_result",
+      "sourceHandle": "main",
+      "targetHandle": "main",
+      "type": "default"
+    }
+  ],
+  "metadata": {
+    "version": "1.0",
+    "createdAt": "2026-02-17T10:00:00Z",
+    "description": "Test workflow for HubSpot contact creation"
+  }
+}

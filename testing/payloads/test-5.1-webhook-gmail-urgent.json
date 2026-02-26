@@ -1,0 +1,9 @@
+{
+  "messageId": "msg_12345",
+  "subject": "URGENT: Server Down - Immediate Action Required",
+  "from": "alerts@system.com",
+  "to": "admin@company.com",
+  "body": "Our production server is down. Please investigate immediately.",
+  "date": "2024-01-15T18:00:00Z",
+  "timestamp": "2024-01-15T18:00:00Z"
+}

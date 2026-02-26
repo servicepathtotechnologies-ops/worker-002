@@ -1,0 +1,48 @@
+{
+  "id": "docs_doc_generation_from_template_v1",
+  "category": "docs",
+  "useCase": "doc_generation",
+  "title": "Google Doc Generation from Template",
+  "description": "Generate a Google Doc from a template using data from a webhook payload.",
+  "nodes": [
+    {
+      "id": "webhook_1",
+      "type": "webhook",
+      "config": {
+        "method": "POST"
+      },
+      "credentials": [],
+      "requiredFields": ["method"]
+    },
+    {
+      "id": "doc_1",
+      "type": "google_doc",
+      "config": {
+        "operation": "generateFromTemplate",
+        "templateId": "{{TEMPLATE_ID}}",
+        "destinationFolderId": "{{DESTINATION_FOLDER_ID}}",
+        "variables": {
+          "name": "{{webhook_1.body.name}}",
+          "company": "{{webhook_1.body.company}}",
+          "date": "{{webhook_1.body.date}}"
+        }
+      },
+      "credentials": ["GOOGLE_OAUTH2"],
+      "requiredFields": ["operation", "templateId", "destinationFolderId", "variables"]
+    },
+    {
+      "id": "log_1",
+      "type": "log_output",
+      "config": {
+        "message": "Generated doc {{doc_1.documentId}} for {{webhook_1.body.email}}"
+      },
+      "credentials": [],
+      "requiredFields": ["message"]
+    }
+  ],
+  "edges": [
+    { "source": "webhook_1", "target": "doc_1" },
+    { "source": "doc_1", "target": "log_1" }
+  ]
+}
+

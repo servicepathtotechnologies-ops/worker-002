@@ -1,0 +1,223 @@
+{
+  "product": {
+    "name": "CtrlChecks",
+    "category": "Visual AI Workflow Automation",
+    "tagline": "Build automations that think. Connect anything. Automate everything.",
+    "description": "CtrlChecks is an AI-native workflow automation platform that lets you visually build workflows to connect apps, automate tasks, and deploy AI-powered automations without coding. Think of it as Zapier or n8n, but built from the ground up with AI capabilities integrated into every workflow node."
+  },
+  "features": {
+    "core": [
+      {
+        "name": "Drag-and-Drop Workflow Builder",
+        "description": "Visually design workflows with an intuitive interface. No coding required, but code support available for advanced users."
+      },
+      {
+        "name": "300+ App Integrations",
+        "description": "Connect with popular apps like Google Workspace, Slack, Salesforce, HubSpot, GitHub, and many more. We're constantly adding new integrations."
+      },
+      {
+        "name": "Built-in AI Nodes",
+        "description": "Access GPT, Gemini, and custom AI models directly in your workflows. AI capabilities are native to the platform."
+      },
+      {
+        "name": "Multiple Deployment Options",
+        "description": "Deploy workflows as APIs, chatbots, or scheduled jobs. Choose the format that works best for your use case."
+      },
+      {
+        "name": "No-Code with Code Support",
+        "description": "Start with no-code simplicity, but add custom code when you need advanced logic or integrations."
+      }
+    ],
+    "technical": [
+      "Real-time workflow execution",
+      "Error handling and retry logic",
+      "Workflow versioning",
+      "Team collaboration features",
+      "API access",
+      "Webhook support"
+    ]
+  },
+  "pricing": {
+    "plans": [
+      {
+        "name": "Free",
+        "price": "$0",
+        "runs": "500 runs/month",
+        "features": ["All core features", "Community support", "Public templates"]
+      },
+      {
+        "name": "Pro",
+        "price": "$29/month",
+        "runs": "10,000 runs/month",
+        "features": ["Everything in Free", "Priority support", "Private workflows", "Advanced AI nodes"]
+      },
+      {
+        "name": "Business",
+        "price": "$99/month",
+        "runs": "100,000 runs/month",
+        "features": ["Everything in Pro", "Team collaboration", "Custom integrations", "Dedicated support"]
+      },
+      {
+        "name": "Enterprise",
+        "price": "Custom",
+        "runs": "Unlimited",
+        "features": ["Everything in Business", "Self-hosting option", "Custom security", "SLA guarantee", "Dedicated account manager"]
+      }
+    ],
+    "note": "All plans include access to all integrations and the workflow builder. Upgrade anytime."
+  },
+  "differentiation": {
+    "vs_zapier": [
+      "More flexible workflow logic",
+      "AI-native architecture",
+      "Better pricing for high-volume users",
+      "More deployment options (API, chatbot, scheduled)"
+    ],
+    "vs_n8n": [
+      "More intuitive user interface",
+      "Better AI integration",
+      "Easier onboarding",
+      "Managed cloud option"
+    ],
+    "unique": [
+      "AI capabilities built into every node",
+      "Deploy workflows as chatbots",
+      "Visual workflow builder optimized for AI workflows",
+      "Affordable pricing with generous free tier"
+    ]
+  },
+  "use_cases": [
+    {
+      "category": "Marketing",
+      "examples": [
+        "Lead enrichment workflows",
+        "Social media posting schedules",
+        "Email campaign automation",
+        "Content distribution"
+      ]
+    },
+    {
+      "category": "Sales",
+      "examples": [
+        "CRM data synchronization",
+        "Lead scoring automation",
+        "Follow-up email sequences",
+        "Sales report generation"
+      ]
+    },
+    {
+      "category": "Operations",
+      "examples": [
+        "Customer onboarding processes",
+        "Automated reporting systems",
+        "Data processing pipelines",
+        "Notification systems"
+      ]
+    },
+    {
+      "category": "Development",
+      "examples": [
+        "CI/CD automation",
+        "Code deployment workflows",
+        "Issue tracking automation",
+        "API integrations"
+      ]
+    }
+  ],
+  "faqs": [
+    {
+      "question": "What can I build with CtrlChecks?",
+      "answer": "You can build almost any automation! Common examples include lead enrichment workflows, customer onboarding processes, social media posting schedules, automated reporting systems, data synchronization between apps, and AI-powered content generation. The possibilities are endless - if you can imagine it, you can likely build it with CtrlChecks.",
+      "keywords": ["build", "create", "make", "do", "automate", "workflow"]
+    },
+    {
+      "question": "How is CtrlChecks different from Zapier or n8n?",
+      "answer": "CtrlChecks is AI-native, meaning AI capabilities are built into every workflow node - not added as an afterthought. Compared to n8n, we have a more intuitive interface that's easier for non-technical users. Compared to Zapier, we offer more flexibility in workflow logic and better pricing for high-volume users. Plus, you can deploy workflows as APIs, chatbots, or scheduled jobs - giving you more deployment options.",
+      "keywords": ["different", "vs", "compare", "zapier", "n8n", "better", "versus"]
+    },
+    {
+      "question": "Is there a free plan?",
+      "answer": "Yes! Our free plan includes 500 runs per month, which is perfect for getting started, testing workflows, and building small automations. You get access to all core features, including the drag-and-drop builder and all integrations.",
+      "keywords": ["free", "plan", "pricing", "cost", "price", "trial"]
+    },
+    {
+      "question": "Do I need to know how to code?",
+      "answer": "Not at all! CtrlChecks is designed as a no-code platform. You can build complex workflows using our visual drag-and-drop interface. However, if you're a developer or want to add custom logic, we do offer optional code support for advanced use cases.",
+      "keywords": ["code", "coding", "programming", "technical", "developer", "no-code"]
+    },
+    {
+      "question": "What apps and services can I connect?",
+      "answer": "We support 300+ popular applications including Google Workspace (Gmail, Sheets, Drive), Slack, Salesforce, HubSpot, GitHub, Notion, Airtable, and many more. We're constantly adding new integrations based on user requests. If you need a specific integration, let us know!",
+      "keywords": ["apps", "integrations", "connect", "services", "supported", "compatible"]
+    },
+    {
+      "question": "Is my data secure?",
+      "answer": "Absolutely. We take data security very seriously. All data is encrypted at rest and in transit. We follow industry best practices for security. Enterprise plans include additional security features, compliance certifications, and the option for self-hosting if you need complete control over your data.",
+      "keywords": ["security", "secure", "data", "privacy", "safe", "encryption", "compliance"]
+    },
+    {
+      "question": "How do I get started?",
+      "answer": "Getting started is easy! Simply sign up for a free account - no credit card required. Once you're in, you can start building workflows immediately using our drag-and-drop editor. We also have a template library with pre-built workflows you can use as starting points. Check out our demo videos if you want to see it in action first!",
+      "keywords": ["start", "begin", "get started", "sign up", "tutorial", "how to", "beginner"]
+    },
+    {
+      "question": "Can I deploy workflows as APIs?",
+      "answer": "Yes! One of CtrlChecks' unique features is that you can deploy your workflows in multiple ways: as REST APIs, as chatbots, or as scheduled jobs. This gives you flexibility in how you use your automations - call them from your apps, embed them as chatbots, or run them on a schedule.",
+      "keywords": ["api", "deploy", "deployment", "rest", "endpoint"]
+    },
+    {
+      "question": "What kind of AI models can I use?",
+      "answer": "CtrlChecks supports multiple AI models including GPT (OpenAI), Gemini (Google), and you can also connect custom AI models. AI capabilities are built into workflow nodes, so you can easily add AI processing to any step of your automation.",
+      "keywords": ["ai", "gpt", "gemini", "models", "artificial intelligence", "machine learning"]
+    }
+  ],
+  "escalation": {
+    "triggers": [
+      "enterprise pricing",
+      "custom pricing",
+      "security audit",
+      "compliance",
+      "soc 2",
+      "gdpr",
+      "hipaa",
+      "custom development",
+      "talk to sales",
+      "speak with sales",
+      "contact sales",
+      "enterprise plan",
+      "self-hosting",
+      "on-premise"
+    ],
+    "response": "I'd love to help, but for detailed information about {topic}, I think it's best if you speak directly with our team. Please contact our sales team at sales@ctrlchecks.com - they'll be able to provide you with all the details and answer any specific questions you have!"
+  },
+  "personality": {
+    "tone": "friendly, helpful, professional, approachable",
+    "style": "conversational but clear, encouraging, non-pushy",
+    "greeting": "Hi there! 👋 I'm here to help you learn about CtrlChecks. Feel free to ask me anything - whether it's about features, pricing, how to get started, or what you can build. What would you like to know?",
+    "fallback": "Hmm, I'm not sure I have that specific information right now. But I'd be happy to help with other questions about CtrlChecks! You could ask about our features, pricing, how to get started, or what you can build. Or feel free to contact our team at support@ctrlchecks.com for more detailed help.",
+    "encouragement": [
+      "Great question!",
+      "I'd be happy to help!",
+      "That's a common question!",
+      "Let me explain that for you."
+    ]
+  },
+  "conversion": {
+    "suggestions": {
+      "pricing": ["Try free plan", "View all plans", "Compare features"],
+      "features": ["View templates", "Watch demo", "See use cases"],
+      "getting_started": ["Sign up free", "Try free plan", "Watch demo", "View templates"],
+      "general": ["Try free plan", "View templates", "Watch demo", "See pricing"]
+    },
+    "cta_phrases": [
+      "Ready to get started?",
+      "Want to try it out?",
+      "Interested in giving it a try?"
+    ]
+  },
+  "contact": {
+    "support_email": "support@ctrlchecks.com",
+    "sales_email": "sales@ctrlchecks.com",
+    "website": "https://ctrlchecks.com"
+  }
+}

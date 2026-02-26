@@ -1,0 +1,45 @@
+{
+  "id": "sheets_scheduled_api_to_sheets_v1",
+  "category": "sheets",
+  "useCase": "spreadsheet_logging",
+  "title": "Scheduled API Data to Google Sheets",
+  "description": "Fetch data from an HTTP API on a schedule and append it to Google Sheets.",
+  "nodes": [
+    {
+      "id": "schedule_1",
+      "type": "schedule",
+      "config": {
+        "cronExpression": "0 0 * * *"
+      },
+      "credentials": [],
+      "requiredFields": ["cronExpression"]
+    },
+    {
+      "id": "http_1",
+      "type": "http_request",
+      "config": {
+        "method": "GET",
+        "url": "https://api.example.com/data"
+      },
+      "credentials": [],
+      "requiredFields": ["method", "url"]
+    },
+    {
+      "id": "sheets_1",
+      "type": "google_sheets",
+      "config": {
+        "operation": "append",
+        "spreadsheetId": "{{SPREADSHEET_ID}}",
+        "range": "A1",
+        "values": "{{http_1.response.data}}"
+      },
+      "credentials": ["GOOGLE_OAUTH2"],
+      "requiredFields": ["operation", "spreadsheetId", "range", "values"]
+    }
+  ],
+  "edges": [
+    { "source": "schedule_1", "target": "http_1" },
+    { "source": "http_1", "target": "sheets_1" }
+  ]
+}
+

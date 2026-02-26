@@ -1,0 +1,15 @@
+{
+  "orderId": "ORD-2024-001",
+  "customerEmail": "customer@example.com",
+  "customerName": "Customer Name",
+  "subtotal": 1000.00,
+  "items": [
+    {
+      "productId": "PROD-001",
+      "productName": "Product A",
+      "quantity": 2,
+      "price": 500.00
+    }
+  ],
+  "timestamp": "2024-01-15T13:00:00Z"
+}

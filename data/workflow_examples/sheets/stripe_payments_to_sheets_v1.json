@@ -1,0 +1,50 @@
+{
+  "id": "sheets_stripe_payments_to_sheets_v1",
+  "category": "sheets",
+  "useCase": "stripe_to_sheets",
+  "title": "Stripe Payments to Google Sheets",
+  "description": "Append Stripe payment events to a Google Sheets spreadsheet via webhook.",
+  "nodes": [
+    {
+      "id": "webhook_1",
+      "type": "webhook",
+      "config": {
+        "method": "POST"
+      },
+      "credentials": [],
+      "requiredFields": ["method"]
+    },
+    {
+      "id": "stripe_1",
+      "type": "stripe",
+      "config": {
+        "operation": "retrievePayment",
+        "paymentId": "{{webhook_1.body.data.object.id}}"
+      },
+      "credentials": ["STRIPE_API_KEY"],
+      "requiredFields": ["operation", "paymentId"]
+    },
+    {
+      "id": "sheets_1",
+      "type": "google_sheets",
+      "config": {
+        "operation": "append",
+        "spreadsheetId": "{{SPREADSHEET_ID}}",
+        "range": "A1",
+        "values": [
+          "{{stripe_1.amount}}",
+          "{{stripe_1.currency}}",
+          "{{stripe_1.customer_email}}",
+          "{{stripe_1.status}}"
+        ]
+      },
+      "credentials": ["GOOGLE_OAUTH2"],
+      "requiredFields": ["operation", "spreadsheetId", "range", "values"]
+    }
+  ],
+  "edges": [
+    { "source": "webhook_1", "target": "stripe_1" },
+    { "source": "stripe_1", "target": "sheets_1" }
+  ]
+}
+

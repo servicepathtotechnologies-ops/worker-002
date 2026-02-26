@@ -1,0 +1,11 @@
+{
+  "data": {
+    "message": "Test data for passthrough",
+    "value": 123,
+    "items": ["item1", "item2", "item3"]
+  },
+  "metadata": {
+    "source": "test",
+    "timestamp": "2024-01-15T14:00:00Z"
+  }
+}

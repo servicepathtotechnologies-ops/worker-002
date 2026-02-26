@@ -1,0 +1,96 @@
+COMPREHENSIVE WORKFLOW BUILDER TEST PROMPT
+===========================================
+
+Use this prompt to verify that the workflow builder is functioning correctly:
+
+PROMPT:
+-------
+Every day at 8 AM, fetch the latest news from https://api.news.com/latest. If the news contains the word 'urgent', use an AI agent to analyze the content and extract the key points. Then check if the score is greater than 7. If yes, send a formatted message to Slack channel #alerts with the title and summary, save the details to Google Sheets in a sheet called 'Urgent News', and also send an email via Gmail to admin@example.com. If the score is 7 or less, just log the news title. Make sure all data flows correctly between nodes using field mappings.
+
+WHAT THIS TESTS:
+----------------
+✅ Scheduled Trigger (daily at 8 AM)
+✅ HTTP Request (fetching from API)
+✅ Conditional Logic (if news contains 'urgent')
+✅ AI Integration (AI agent for analysis)
+✅ Nested Conditional Logic (if score > 7)
+✅ Multiple Integrations (Slack, Google Sheets, Gmail)
+✅ Data Transformation (formatting messages)
+✅ Field Mappings (data flow between nodes)
+✅ Multiple Output Paths (different actions based on conditions)
+✅ Logging (for lower priority items)
+
+EXPECTED WORKFLOW STRUCTURE:
+----------------------------
+1. Schedule Trigger (daily, 8 AM)
+   ↓
+2. HTTP Request (GET https://api.news.com/latest)
+   ↓
+3. If Node (check if news contains 'urgent')
+   ├─ TRUE → 4. AI Agent (analyze content, extract key points, get score)
+   │            ↓
+   │         5. If Node (check if score > 7)
+   │            ├─ TRUE → 6a. Slack (send to #alerts)
+   │            │         6b. Google Sheets (save to 'Urgent News')
+   │            │         6c. Gmail (send to admin@example.com)
+   │            └─ FALSE → 7. Log Output (log news title)
+   └─ FALSE → (end or log)
+
+EXPECTED NODES:
+---------------
+- schedule (or interval_trigger)
+- http_request
+- if (conditional logic)
+- ai_agent (or ai_chat_model)
+- if (nested conditional)
+- slack
+- google_sheets
+- gmail
+- log_output
+
+EXPECTED CREDENTIALS:
+---------------------
+- slack
+- google_sheets
+- gmail
+
+VALIDATION CHECKLIST:
+--------------------
+□ All nodes are present
+□ All nodes are connected (no orphan nodes)
+□ Field mappings use {{field}} syntax
+□ Schedule is configured for daily at 8 AM
+□ HTTP request URL is set correctly
+□ If conditions are properly configured
+□ AI agent has proper input/output mappings
+□ Slack channel is set to #alerts
+□ Google Sheets sheet name is 'Urgent News'
+□ Gmail recipient is admin@example.com
+□ All required credentials are identified
+□ Workflow passes validation
+□ No broken connections
+□ Data flows logically from node to node
+
+HOW TO USE:
+-----------
+1. Copy the prompt above
+2. Paste it into the workflow builder
+3. Generate the workflow
+4. Verify each item in the validation checklist
+5. Check that the workflow structure matches the expected structure
+6. Verify all field mappings use {{field}} syntax
+7. Ensure all nodes are properly connected
+
+IF WORKFLOW GENERATES CORRECTLY:
+- ✅ Workflow builder is functioning properly
+- ✅ Node selection is working
+- ✅ Connection logic is working
+- ✅ Field mapping is working
+- ✅ Validation is working
+
+IF WORKFLOW HAS ISSUES:
+- Check logs for errors
+- Verify node library is loaded
+- Check if all required nodes exist
+- Verify credentials are properly configured
+- Review validation errors

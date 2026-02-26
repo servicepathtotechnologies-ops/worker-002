@@ -1,0 +1,272 @@
+{
+  "chat_trigger": {
+    "description": "Trigger from chat/AI/UI interactions",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "trigger", "key_properties": []}
+  },
+  "error_trigger": {
+    "description": "Trigger when any node fails",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "trigger", "key_properties": []}
+  },
+  "interval": {
+    "description": "Run at fixed intervals (e.g., \"30s\", \"5m\", \"1h\")",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "trigger", "key_properties": ["Interval"]}
+  },
+  "manual_trigger": {
+    "description": "Manual execution for testing",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "trigger", "key_properties": []}
+  },
+  "schedule": {
+    "description": "Execute at specific times (daily)",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "trigger", "key_properties": ["Time", "Timezone"]}
+  },
+  "webhook": {
+    "description": "Trigger from HTTP requests",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "trigger", "key_properties": ["Method"]}
+  },
+  "workflow_trigger": {
+    "description": "Trigger from another workflow",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "trigger", "key_properties": ["Source Workflow ID"]}
+  },
+  "form": {
+    "description": "Trigger from form submissions",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "trigger", "key_properties": ["Allow Multiple", "Require Auth", "Enable CAPTCHA"]}
+  },
+  "if_else": {
+    "description": "Conditional branching (true/false paths)",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "logic", "key_properties": ["Condition"]}
+  },
+  "switch": {
+    "description": "Multiple case branching",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "logic", "key_properties": ["Expression", "Cases"]}
+  },
+  "loop": {
+    "description": "Iterate over array items",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "logic", "key_properties": ["Array Expression", "Max Iterations"]}
+  },
+  "wait": {
+    "description": "Pause execution for duration",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "logic", "key_properties": ["Duration (ms)"]}
+  },
+  "error_handler": {
+    "description": "Handle errors with retries",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "logic", "key_properties": ["Max Retries", "Retry Delay"]}
+  },
+  "filter": {
+    "description": "Filter array items by condition",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "logic", "key_properties": ["Array Expression", "Filter Condition"]}
+  },
+  "merge": {
+    "description": "Merge multiple inputs into one",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "logic", "key_properties": ["Mode"]}
+  },
+  "noop": {
+    "description": "Pass-through node (no operation)",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "logic", "key_properties": []}
+  },
+  "javascript": {
+    "description": "Run custom JavaScript code",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "data", "key_properties": ["JavaScript Code", "Timeout"]}
+  },
+  "json_parser": {
+    "description": "Extract data from JSON using JSONPath",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "data", "key_properties": ["JSONPath Expression"]}
+  },
+  "text_formatter": {
+    "description": "Format text with template variables",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "data", "key_properties": ["Template"]}
+  },
+  "set": {
+    "description": "Set/update field values",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "data", "key_properties": ["Fields (JSON)"]}
+  },
+  "set_variable": {
+    "description": "Store value in workflow variable",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "data", "key_properties": ["Variable Name", "Value"]}
+  },
+  "aggregate": {
+    "description": "Aggregate operations (sum, avg, count, min, max)",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "data", "key_properties": ["Operation", "Field"]}
+  },
+  "sort": {
+    "description": "Sort array items",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "data", "key_properties": ["Field", "Direction"]}
+  },
+  "limit": {
+    "description": "Limit array size (keep first N items)",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "data", "key_properties": ["Limit"]}
+  },
+  "database_read": {
+    "description": "Read from Supabase database",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "database", "key_properties": ["Table Name", "Filters", "Limit"]}
+  },
+  "database_write": {
+    "description": "Write to Supabase database",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "database", "key_properties": ["Table Name", "Operation", "Data Template"]}
+  },
+  "supabase": {
+    "description": "Query Supabase (optimized)",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "database", "key_properties": ["Operation", "Table Name", "SQL Query"]}
+  },
+  "postgresql": {
+    "description": "Advanced PostgreSQL operations",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "database", "key_properties": ["Operation", "Table Name", "SQL Query"]}
+  },
+  "http_request": {
+    "description": "Make HTTP API calls",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "http", "key_properties": ["URL", "Method", "Headers", "Body"]}
+  },
+  "graphql": {
+    "description": "Execute GraphQL queries",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "http", "key_properties": ["Endpoint", "Query", "Variables"]}
+  },
+  "respond_to_webhook": {
+    "description": "Send HTTP response to webhook caller",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "http", "key_properties": ["Status Code", "Response Body"]}
+  },
+  "slack_message": {
+    "description": "Send rich Slack messages",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "communication", "key_properties": ["Webhook URL", "Channel", "Message"]}
+  },
+  "slack_webhook": {
+    "description": "Simple Slack webhook",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "communication", "key_properties": ["Webhook URL", "Message"]}
+  },
+  "discord_webhook": {
+    "description": "Send Discord messages",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "communication", "key_properties": ["Webhook URL", "Message"]}
+  },
+  "log_output": {
+    "description": "Log data for debugging",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "communication", "key_properties": ["Log Message", "Log Level"]}
+  },
+  "openai_gpt": {
+    "description": "OpenAI GPT models (GPT-4o, GPT-4o Mini)",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "ai", "key_properties": ["API Key", "Model", "System Prompt"]}
+  },
+  "anthropic_claude": {
+    "description": "Anthropic Claude models",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "ai", "key_properties": ["API Key", "Model", "System Prompt"]}
+  },
+  "google_gemini": {
+    "description": "Google Gemini models",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "ai", "key_properties": ["API Key", "Model", "System Prompt"]}
+  },
+  "ollama": {
+    "description": "Local LLMs via Ollama",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "ai", "key_properties": ["Server URL", "Model Name", "Prompt"]}
+  },
+  "memory": {
+    "description": "Store/retrieve conversation memory",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "ai", "key_properties": ["Operation", "Memory Type"]}
+  },
+  "google_gmail": {
+    "description": "Send/search Gmail messages",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "google", "key_properties": ["Operation", "To", "Subject", "Body"]}
+  },
+  "google_sheets": {
+    "description": "Read/write Google Sheets",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "google", "key_properties": ["Operation", "Spreadsheet ID", "Range"]}
+  },
+  "google_doc": {
+    "description": "Read/create/update Google Docs",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "google", "key_properties": ["Operation", "Document ID", "Content"]}
+  },
+  "google_drive": {
+    "description": "Manage Google Drive files",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "google", "key_properties": ["Operation", "File ID"]}
+  },
+  "google_calendar": {
+    "description": "Manage calendar events",
+    "inputs": [],
+    "outputs": [],
+    "config": {"category": "google", "key_properties": ["Operation", "Event Title", "Start Time", "End Time"]}
+  }
+}

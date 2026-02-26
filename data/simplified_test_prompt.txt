@@ -1,0 +1,50 @@
+SIMPLIFIED TEST PROMPT (Step-by-Step)
+======================================
+
+Test the workflow builder with simpler prompts first to identify where it's failing:
+
+TEST 1: Basic HTTP Request
+--------------------------
+Prompt: "Every day at 8 AM, fetch data from https://api.news.com/latest"
+
+Expected:
+- Schedule Trigger
+- HTTP Request
+
+TEST 2: Basic Conditional
+--------------------------
+Prompt: "When data is received, if it contains the word 'urgent', send a Slack message"
+
+Expected:
+- Trigger (webhook or manual)
+- If Node
+- Slack
+
+TEST 3: AI Integration
+----------------------
+Prompt: "Use an AI agent to analyze text and extract key points"
+
+Expected:
+- Trigger
+- AI Agent
+
+TEST 4: Multiple Integrations
+-----------------------------
+Prompt: "Save data to Google Sheets and send an email via Gmail"
+
+Expected:
+- Trigger
+- Google Sheets
+- Gmail
+
+TEST 5: Nested Conditional
+--------------------------
+Prompt: "If condition A is true, then check if condition B is true, and if both are true, send a message"
+
+Expected:
+- Trigger
+- If Node
+  └─ If Node (nested)
+     └─ Output Node
+
+Use these simpler tests to identify which aspect of the workflow builder is failing.

@@ -1,0 +1,44 @@
+{
+  "id": "email_gmail_webhook_notification_v1",
+  "category": "email",
+  "useCase": "gmail_automation",
+  "title": "Webhook to Gmail Notification",
+  "description": "Send a Gmail email when a webhook event is received.",
+  "nodes": [
+    {
+      "id": "webhook_1",
+      "type": "webhook",
+      "config": {
+        "method": "POST"
+      },
+      "credentials": [],
+      "requiredFields": ["method"]
+    },
+    {
+      "id": "gmail_1",
+      "type": "google_gmail",
+      "config": {
+        "operation": "sendEmail",
+        "to": "{{webhook_1.body.email}}",
+        "subject": "New webhook event received",
+        "body": "Payload: {{webhook_1.body}}"
+      },
+      "credentials": ["GOOGLE_OAUTH2"],
+      "requiredFields": ["operation", "to", "subject", "body"]
+    },
+    {
+      "id": "log_1",
+      "type": "log_output",
+      "config": {
+        "message": "Sent Gmail notification to {{webhook_1.body.email}}"
+      },
+      "credentials": [],
+      "requiredFields": ["message"]
+    }
+  ],
+  "edges": [
+    { "source": "webhook_1", "target": "gmail_1" },
+    { "source": "gmail_1", "target": "log_1" }
+  ]
+}
+

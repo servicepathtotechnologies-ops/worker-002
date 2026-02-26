@@ -1,0 +1,44 @@
+{
+  "id": "database_db_to_bigquery_etl_v1",
+  "category": "database",
+  "useCase": "db_to_warehouse_etl",
+  "title": "Database to BigQuery ETL",
+  "description": "Scheduled ETL pipeline loading relational DB data into Google BigQuery.",
+  "nodes": [
+    {
+      "id": "schedule_1",
+      "type": "schedule",
+      "config": {
+        "cronExpression": "0 1 * * *"
+      },
+      "credentials": [],
+      "requiredFields": ["cronExpression"]
+    },
+    {
+      "id": "postgres_1",
+      "type": "postgresql",
+      "config": {
+        "query": "SELECT * FROM analytics_events WHERE created_at >= NOW() - INTERVAL '1 day'"
+      },
+      "credentials": ["DATABASE_CONNECTION_STRING"],
+      "requiredFields": ["query"]
+    },
+    {
+      "id": "bq_1",
+      "type": "google_bigquery",
+      "config": {
+        "operation": "insert",
+        "dataset": "analytics",
+        "table": "daily_events",
+        "rows": "{{postgres_1.rows}}"
+      },
+      "credentials": ["GOOGLE_OAUTH2"],
+      "requiredFields": ["operation", "dataset", "table", "rows"]
+    }
+  ],
+  "edges": [
+    { "source": "schedule_1", "target": "postgres_1" },
+    { "source": "postgres_1", "target": "bq_1" }
+  ]
+}
+

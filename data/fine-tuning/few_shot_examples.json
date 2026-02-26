@@ -1,0 +1,648 @@
+[
+  {
+    "prompt": "When a new form is submitted, save to Google Sheets and send a Slack message to #general.",
+    "workflow": {
+      "summary": "Save form submissions to Google Sheets and notify Slack",
+      "nodes": [
+        {
+          "id": "form_trigger",
+          "type": "form",
+          "config": {
+            "fields": [
+              {
+                "key": "name",
+                "label": "Name",
+                "type": "string",
+                "required": true
+              },
+              {
+                "key": "email",
+                "label": "Email",
+                "type": "string",
+                "required": true
+              }
+            ]
+          }
+        },
+        {
+          "id": "sheets_save",
+          "type": "google_sheets",
+          "config": {
+            "spreadsheet_id": "default",
+            "sheet_name": "Sheet1",
+            "row_data": {
+              "name": "{{form_trigger.output.name}}",
+              "email": "{{form_trigger.output.email}}"
+            }
+          }
+        },
+        {
+          "id": "slack_notify",
+          "type": "slack",
+          "config": {
+            "channel": "#general",
+            "text": "New form submission: {{form_trigger.output.name}} ({{form_trigger.output.email}})"
+          }
+        }
+      ],
+      "connections": [
+        {
+          "source": "form_trigger",
+          "target": "sheets_save",
+          "source_output": "output",
+          "target_input": "input"
+        },
+        {
+          "source": "form_trigger",
+          "target": "slack_notify",
+          "source_output": "output",
+          "target_input": "input"
+        }
+      ],
+      "required_credentials": [
+        "google_sheets",
+        "slack"
+      ],
+      "validation_status": "valid"
+    }
+  },
+  {
+    "prompt": "When a webhook is received, parse the JSON and send an email via Gmail.",
+    "workflow": {
+      "summary": "Webhook to email automation",
+      "nodes": [
+        {
+          "id": "webhook_trigger",
+          "type": "webhook",
+          "config": {
+            "method": "POST",
+            "path": "/webhook"
+          }
+        },
+        {
+          "id": "json_parser",
+          "type": "json_parser",
+          "config": {
+            "json": "{{webhook_trigger.output.body}}"
+          }
+        },
+        {
+          "id": "gmail_send",
+          "type": "gmail",
+          "config": {
+            "to": "{{json_parser.output.email}}",
+            "subject": "{{json_parser.output.subject}}",
+            "body": "{{json_parser.output.message}}"
+          }
+        }
+      ],
+      "connections": [
+        {
+          "source": "webhook_trigger",
+          "target": "json_parser",
+          "source_output": "output",
+          "target_input": "input"
+        },
+        {
+          "source": "json_parser",
+          "target": "gmail_send",
+          "source_output": "output",
+          "target_input": "input"
+        }
+      ],
+      "required_credentials": [
+        "gmail"
+      ],
+      "validation_status": "valid"
+    }
+  },
+  {
+    "prompt": "Every day at 8 AM, create a task in ClickUp with today's agenda.",
+    "workflow": {
+      "summary": "Daily scheduled task creation in ClickUp",
+      "nodes": [
+        {
+          "id": "schedule_trigger",
+          "type": "schedule",
+          "config": {
+            "cron": "0 8 * * *",
+            "timezone": "UTC"
+          }
+        },
+        {
+          "id": "clickup_create",
+          "type": "clickup",
+          "config": {
+            "list_id": "default",
+            "name": "Daily Agenda - {{new Date().toISOString().split('T')[0]}}",
+            "description": "Today's agenda items"
+          }
+        }
+      ],
+      "connections": [
+        {
+          "source": "schedule_trigger",
+          "target": "clickup_create",
+          "source_output": "trigger",
+          "target_input": "input"
+        }
+      ],
+      "required_credentials": [
+        "clickup"
+      ],
+      "validation_status": "valid"
+    }
+  },
+  {
+    "prompt": "When a chat message arrives, use AI to generate a response and send it back.",
+    "workflow": {
+      "summary": "Chatbot with AI response generation",
+      "nodes": [
+        {
+          "id": "chat_trigger",
+          "type": "chat_trigger",
+          "config": {}
+        },
+        {
+          "id": "ai_chat",
+          "type": "ai_chat_model",
+          "config": {
+            "model": "gpt-4",
+            "prompt": "{{chat_trigger.output.message}}",
+            "temperature": 0.7
+          }
+        },
+        {
+          "id": "chat_response",
+          "type": "chat_trigger",
+          "config": {
+            "response": "{{ai_chat.output.response}}"
+          }
+        }
+      ],
+      "connections": [
+        {
+          "source": "chat_trigger",
+          "target": "ai_chat",
+          "source_output": "output",
+          "target_input": "input"
+        },
+        {
+          "source": "ai_chat",
+          "target": "chat_response",
+          "source_output": "output",
+          "target_input": "input"
+        }
+      ],
+      "required_credentials": [
+        "openai"
+      ],
+      "validation_status": "valid"
+    }
+  },
+  {
+    "prompt": "When a new contact is added in HubSpot, create a corresponding deal in Pipedrive.",
+    "workflow": {
+      "summary": "Sync HubSpot contacts to Pipedrive deals",
+      "nodes": [
+        {
+          "id": "hubspot_trigger",
+          "type": "hubspot",
+          "config": {
+            "event": "contact.created",
+            "output_fields": [
+              "email",
+              "firstname",
+              "lastname",
+              "company"
+            ]
+          }
+        },
+        {
+          "id": "set_variables",
+          "type": "set",
+          "config": {
+            "variables": {
+              "contact_name": "{{hubspot_trigger.output.firstname}} {{hubspot_trigger.output.lastname}}",
+              "deal_name": "Deal for {{hubspot_trigger.output.company}}"
+            }
+          }
+        },
+        {
+          "id": "pipedrive_create",
+          "type": "pipedrive",
+          "config": {
+            "resource": "deals",
+            "data": {
+              "title": "{{set_variables.output.deal_name}}",
+              "person_id": "{{hubspot_trigger.output.email}}"
+            }
+          }
+        }
+      ],
+      "connections": [
+        {
+          "source": "hubspot_trigger",
+          "target": "set_variables",
+          "source_output": "output",
+          "target_input": "input"
+        },
+        {
+          "source": "set_variables",
+          "target": "pipedrive_create",
+          "source_output": "output",
+          "target_input": "input"
+        }
+      ],
+      "required_credentials": [
+        "hubspot",
+        "pipedrive"
+      ],
+      "validation_status": "valid"
+    }
+  },
+  {
+    "prompt": "Every Monday at 9 AM, fetch the top story from Hacker News and post it to Slack #news if the score is above 100.",
+    "workflow": {
+      "summary": "Weekly Hacker News top story check and post to Slack based on score",
+      "nodes": [
+        {
+          "id": "trigger_schedule",
+          "type": "schedule",
+          "config": {
+            "cron": "0 9 * * 1",
+            "timezone": "UTC"
+          }
+        },
+        {
+          "id": "http_fetch_top",
+          "type": "http_request",
+          "config": {
+            "method": "GET",
+            "url": "https://hacker-news.firebaseio.com/v0/topstories.json",
+            "response_format": "json"
+          }
+        },
+        {
+          "id": "http_fetch_item",
+          "type": "http_request",
+          "config": {
+            "method": "GET",
+            "url": "https://hacker-news.firebaseio.com/v0/item/{{http_fetch_top.output[0]}}.json",
+            "response_format": "json"
+          }
+        },
+        {
+          "id": "if_score",
+          "type": "if",
+          "config": {
+            "condition": "{{http_fetch_item.output.score}} > 100"
+          }
+        },
+        {
+          "id": "slack_message",
+          "type": "slack",
+          "config": {
+            "channel": "#news",
+            "text": "Top story: {{http_fetch_item.output.title}} ({{http_fetch_item.output.url}})"
+          }
+        }
+      ],
+      "connections": [
+        {
+          "source": "trigger_schedule",
+          "target": "http_fetch_top",
+          "source_output": "trigger",
+          "target_input": "input"
+        },
+        {
+          "source": "http_fetch_top",
+          "target": "http_fetch_item",
+          "source_output": "output",
+          "target_input": "input"
+        },
+        {
+          "source": "http_fetch_item",
+          "target": "if_score",
+          "source_output": "output",
+          "target_input": "input"
+        },
+        {
+          "source": "if_score",
+          "target": "slack_message",
+          "source_output": "true",
+          "target_input": "input"
+        }
+      ],
+      "required_credentials": [
+        "slack"
+      ],
+      "validation_status": "valid"
+    }
+  },
+  {
+    "prompt": "When a new contact is added in HubSpot, check if they are from the US. If yes, add them to a Google Sheet and send them a welcome email via Gmail. Also post to a Telegram channel.",
+    "workflow": {
+      "summary": "HubSpot contact processing with conditional logic, storage, and multi-channel notifications",
+      "nodes": [
+        {
+          "id": "hubspot_trigger",
+          "type": "hubspot",
+          "config": {
+            "event": "contact.created",
+            "output_fields": [
+              "email",
+              "firstname",
+              "lastname",
+              "country"
+            ]
+          }
+        },
+        {
+          "id": "if_us_country",
+          "type": "if",
+          "config": {
+            "condition": "{{hubspot_trigger.output.country}} === 'United States'"
+          }
+        },
+        {
+          "id": "sheets_add",
+          "type": "google_sheets",
+          "config": {
+            "spreadsheet_id": "default",
+            "sheet_name": "US Contacts",
+            "row_data": {
+              "email": "{{hubspot_trigger.output.email}}",
+              "firstname": "{{hubspot_trigger.output.firstname}}",
+              "lastname": "{{hubspot_trigger.output.lastname}}"
+            }
+          }
+        },
+        {
+          "id": "gmail_send",
+          "type": "gmail",
+          "config": {
+            "to": "{{hubspot_trigger.output.email}}",
+            "subject": "Welcome!",
+            "body": "Hi {{hubspot_trigger.output.firstname}}, welcome to our service!"
+          }
+        },
+        {
+          "id": "telegram_post",
+          "type": "telegram",
+          "config": {
+            "chat_id": "@mygroup",
+            "text": "New US contact: {{hubspot_trigger.output.firstname}} {{hubspot_trigger.output.lastname}} ({{hubspot_trigger.output.email}})"
+          }
+        }
+      ],
+      "connections": [
+        {
+          "source": "hubspot_trigger",
+          "target": "if_us_country",
+          "source_output": "output",
+          "target_input": "input"
+        },
+        {
+          "source": "if_us_country",
+          "target": "sheets_add",
+          "source_output": "true",
+          "target_input": "input"
+        },
+        {
+          "source": "if_us_country",
+          "target": "gmail_send",
+          "source_output": "true",
+          "target_input": "input"
+        },
+        {
+          "source": "if_us_country",
+          "target": "telegram_post",
+          "source_output": "true",
+          "target_input": "input"
+        }
+      ],
+      "required_credentials": [
+        "hubspot",
+        "google_sheets",
+        "gmail",
+        "telegram"
+      ],
+      "validation_status": "valid"
+    }
+  },
+  {
+    "prompt": "When a new issue is created in GitHub, if it's labeled 'bug', create a task in Notion and notify the team on Telegram.",
+    "workflow": {
+      "summary": "GitHub issue to Notion task with Telegram notification",
+      "nodes": [
+        {
+          "id": "github_trigger",
+          "type": "github",
+          "config": {
+            "event": "issues.opened",
+            "repo": "my-org/my-repo"
+          }
+        },
+        {
+          "id": "if_bug_label",
+          "type": "if",
+          "config": {
+            "condition": "{{github_trigger.output.labels}}.some(label => label.name === 'bug')"
+          }
+        },
+        {
+          "id": "notion_create",
+          "type": "notion",
+          "config": {
+            "database_id": "default",
+            "properties": {
+              "title": "{{github_trigger.output.title}}",
+              "url": "{{github_trigger.output.html_url}}"
+            }
+          }
+        },
+        {
+          "id": "telegram_notify",
+          "type": "telegram",
+          "config": {
+            "chat_id": "@team",
+            "text": "New bug issue: {{github_trigger.output.title}}"
+          }
+        }
+      ],
+      "connections": [
+        {
+          "source": "github_trigger",
+          "target": "if_bug_label",
+          "source_output": "output",
+          "target_input": "input"
+        },
+        {
+          "source": "if_bug_label",
+          "target": "notion_create",
+          "source_output": "true",
+          "target_input": "input"
+        },
+        {
+          "source": "if_bug_label",
+          "target": "telegram_notify",
+          "source_output": "true",
+          "target_input": "input"
+        }
+      ],
+      "required_credentials": [
+        "github",
+        "notion",
+        "telegram"
+      ],
+      "validation_status": "valid"
+    }
+  },
+  {
+    "prompt": "When a new row is added to Airtable, if the status is 'active', add it to Google Sheets and send a LinkedIn post.",
+    "workflow": {
+      "summary": "Airtable to Sheets sync with LinkedIn posting",
+      "nodes": [
+        {
+          "id": "airtable_trigger",
+          "type": "airtable",
+          "config": {
+            "base_id": "default",
+            "table_name": "Records",
+            "event": "record.created"
+          }
+        },
+        {
+          "id": "if_active",
+          "type": "if",
+          "config": {
+            "condition": "{{airtable_trigger.output.status}} === 'active'"
+          }
+        },
+        {
+          "id": "sheets_add",
+          "type": "google_sheets",
+          "config": {
+            "spreadsheet_id": "default",
+            "sheet_name": "Active Records",
+            "row_data": {
+              "name": "{{airtable_trigger.output.name}}",
+              "status": "{{airtable_trigger.output.status}}"
+            }
+          }
+        },
+        {
+          "id": "linkedin_post",
+          "type": "linkedin",
+          "config": {
+            "text": "New active record: {{airtable_trigger.output.name}}"
+          }
+        }
+      ],
+      "connections": [
+        {
+          "source": "airtable_trigger",
+          "target": "if_active",
+          "source_output": "output",
+          "target_input": "input"
+        },
+        {
+          "source": "if_active",
+          "target": "sheets_add",
+          "source_output": "true",
+          "target_input": "input"
+        },
+        {
+          "source": "if_active",
+          "target": "linkedin_post",
+          "source_output": "true",
+          "target_input": "input"
+        }
+      ],
+      "required_credentials": [
+        "airtable",
+        "google_sheets",
+        "linkedin"
+      ],
+      "validation_status": "valid"
+    }
+  },
+  {
+    "prompt": "Every hour, make an HTTP request to an API, parse the response, and if the value is greater than 100, send an alert to Slack.",
+    "workflow": {
+      "summary": "Hourly API check with conditional Slack alert",
+      "nodes": [
+        {
+          "id": "schedule_hourly",
+          "type": "schedule",
+          "config": {
+            "cron": "0 * * * *",
+            "timezone": "UTC"
+          }
+        },
+        {
+          "id": "http_request",
+          "type": "http_request",
+          "config": {
+            "method": "GET",
+            "url": "https://api.example.com/metrics",
+            "response_format": "json"
+          }
+        },
+        {
+          "id": "json_parse",
+          "type": "json_parser",
+          "config": {
+            "json": "{{http_request.output.body}}"
+          }
+        },
+        {
+          "id": "if_threshold",
+          "type": "if",
+          "config": {
+            "condition": "{{json_parse.output.value}} > 100"
+          }
+        },
+        {
+          "id": "slack_alert",
+          "type": "slack",
+          "config": {
+            "channel": "#alerts",
+            "text": "Alert: Value is {{json_parse.output.value}} (threshold: 100)"
+          }
+        }
+      ],
+      "connections": [
+        {
+          "source": "schedule_hourly",
+          "target": "http_request",
+          "source_output": "trigger",
+          "target_input": "input"
+        },
+        {
+          "source": "http_request",
+          "target": "json_parse",
+          "source_output": "output",
+          "target_input": "input"
+        },
+        {
+          "source": "json_parse",
+          "target": "if_threshold",
+          "source_output": "output",
+          "target_input": "input"
+        },
+        {
+          "source": "if_threshold",
+          "target": "slack_alert",
+          "source_output": "true",
+          "target_input": "input"
+        }
+      ],
+      "required_credentials": [
+        "slack"
+      ],
+      "validation_status": "valid"
+    }
+  }
+]

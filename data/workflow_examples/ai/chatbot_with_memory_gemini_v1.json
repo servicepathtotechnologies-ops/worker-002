@@ -1,0 +1,53 @@
+{
+  "id": "ai_chatbot_with_memory_gemini_v1",
+  "category": "ai",
+  "useCase": "ai_chatbot",
+  "title": "AI Chatbot with Memory (Gemini)",
+  "description": "Chat workflow using Google Gemini with conversation memory.",
+  "nodes": [
+    {
+      "id": "chat_trigger_1",
+      "type": "chat_trigger",
+      "config": {},
+      "credentials": [],
+      "requiredFields": []
+    },
+    {
+      "id": "memory_1",
+      "type": "memory",
+      "config": {
+        "operation": "store",
+        "key": "conversation_history"
+      },
+      "credentials": [],
+      "requiredFields": ["operation", "key"]
+    },
+    {
+      "id": "gemini_1",
+      "type": "google_gemini",
+      "config": {
+        "model": "gemini-pro",
+        "prompt": "{{inputs.message}}",
+        "context": "{{memory_1.conversation_history}}"
+      },
+      "credentials": ["GOOGLE_GEMINI_API_KEY"],
+      "requiredFields": ["model", "prompt"]
+    },
+    {
+      "id": "agent_1",
+      "type": "ai_agent",
+      "config": {
+        "model": "google_gemini",
+        "systemPrompt": "You are a helpful assistant with conversation memory."
+      },
+      "credentials": ["GOOGLE_GEMINI_API_KEY"],
+      "requiredFields": ["model", "systemPrompt"]
+    }
+  ],
+  "edges": [
+    { "source": "chat_trigger_1", "target": "memory_1" },
+    { "source": "memory_1", "target": "gemini_1" },
+    { "source": "gemini_1", "target": "agent_1" }
+  ]
+}
+

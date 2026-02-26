@@ -1,0 +1,52 @@
+{
+  "id": "crm_lead_capture_hubspot_v1",
+  "category": "crm",
+  "useCase": "lead_capture",
+  "title": "Lead Capture to HubSpot",
+  "description": "Capture leads from a form and create contacts in HubSpot CRM.",
+  "nodes": [
+    {
+      "id": "form_1",
+      "type": "form",
+      "config": {
+        "fields": [
+          { "key": "name", "label": "Name", "type": "string", "required": true },
+          { "key": "email", "label": "Email", "type": "string", "required": true },
+          { "key": "company", "label": "Company", "type": "string", "required": false },
+          { "key": "phone", "label": "Phone", "type": "string", "required": false }
+        ]
+      },
+      "credentials": [],
+      "requiredFields": ["fields"]
+    },
+    {
+      "id": "hubspot_1",
+      "type": "hubspot",
+      "config": {
+        "operation": "createContact",
+        "properties": {
+          "firstname": "{{inputs.name}}",
+          "email": "{{inputs.email}}",
+          "company": "{{inputs.company}}",
+          "phone": "{{inputs.phone}}"
+        }
+      },
+      "credentials": ["HUBSPOT_API_KEY"],
+      "requiredFields": ["operation", "properties"]
+    },
+    {
+      "id": "log_1",
+      "type": "log_output",
+      "config": {
+        "message": "Created HubSpot contact {{hubspot_1.id}} for {{inputs.email}}"
+      },
+      "credentials": [],
+      "requiredFields": ["message"]
+    }
+  ],
+  "edges": [
+    { "source": "form_1", "target": "hubspot_1" },
+    { "source": "hubspot_1", "target": "log_1" }
+  ]
+}
+

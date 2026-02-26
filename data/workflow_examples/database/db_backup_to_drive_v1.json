@@ -1,0 +1,44 @@
+{
+  "id": "database_db_backup_to_drive_v1",
+  "category": "database",
+  "useCase": "backup",
+  "title": "Database Backup to Google Drive",
+  "description": "Scheduled database export and upload to Google Drive.",
+  "nodes": [
+    {
+      "id": "schedule_1",
+      "type": "schedule",
+      "config": {
+        "cronExpression": "0 2 * * *"
+      },
+      "credentials": [],
+      "requiredFields": ["cronExpression"]
+    },
+    {
+      "id": "mysql_1",
+      "type": "mysql",
+      "config": {
+        "operation": "export",
+        "query": "SELECT * FROM all_tables"
+      },
+      "credentials": ["MYSQL_CONNECTION"],
+      "requiredFields": ["operation", "query"]
+    },
+    {
+      "id": "drive_1",
+      "type": "google_drive",
+      "config": {
+        "operation": "upload",
+        "fileName": "backup_{{timestamp}}.sql",
+        "content": "{{mysql_1.export}}"
+      },
+      "credentials": ["GOOGLE_OAUTH2"],
+      "requiredFields": ["operation", "fileName", "content"]
+    }
+  ],
+  "edges": [
+    { "source": "schedule_1", "target": "mysql_1" },
+    { "source": "mysql_1", "target": "drive_1" }
+  ]
+}
+

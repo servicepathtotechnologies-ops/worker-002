@@ -1,0 +1,47 @@
+{
+  "id": "email_form_to_email_confirmation_v1",
+  "category": "email",
+  "useCase": "email_automation",
+  "title": "Form Submission to Email Confirmation",
+  "description": "Send an email confirmation when a user submits a form.",
+  "nodes": [
+    {
+      "id": "form_1",
+      "type": "form",
+      "config": {
+        "fields": [
+          { "key": "name", "label": "Name", "type": "string", "required": true },
+          { "key": "email", "label": "Email", "type": "string", "required": true },
+          { "key": "message", "label": "Message", "type": "string", "required": true }
+        ]
+      },
+      "credentials": [],
+      "requiredFields": ["fields"]
+    },
+    {
+      "id": "email_1",
+      "type": "email",
+      "config": {
+        "to": "{{inputs.email}}",
+        "subject": "Form Submission Confirmation",
+        "body": "Thank you {{inputs.name}} for your submission: {{inputs.message}}"
+      },
+      "credentials": ["SMTP_CONFIG"],
+      "requiredFields": ["to", "subject", "body"]
+    },
+    {
+      "id": "log_1",
+      "type": "log_output",
+      "config": {
+        "message": "Sent confirmation email to {{inputs.email}}"
+      },
+      "credentials": [],
+      "requiredFields": ["message"]
+    }
+  ],
+  "edges": [
+    { "source": "form_1", "target": "email_1" },
+    { "source": "email_1", "target": "log_1" }
+  ]
+}
+

@@ -1,0 +1,196 @@
+# DEPLOYMENT CHECKLIST - Production-Ready Workflow Compiler
+phases:
+  phase_1_lock_library:
+    completed: false
+    tasks:
+      - task: "Deploy node-library.v1.json"
+        owner: "backend"
+        deadline: "Day 1"
+        validation:
+          - "All nodes have requiredConfig"
+          - "No custom nodes in library"
+          - "Version field set to 1.0.0"
+        files:
+          - "worker/data/node-library.v1.json"
+      
+      - task: "Update GET /api/node-contract endpoint"
+        owner: "api"
+        deadline: "Day 1"
+        validation:
+          - "Endpoint returns canonical library"
+          - "CORS headers set"
+          - "Cache-control: immutable"
+        endpoint: "/api/node-contract"
+  
+  phase_2_pure_assembler:
+    completed: false
+    tasks:
+      - task: "Replace Stage-5 LLM with assembler.ts"
+        owner: "ai_team"
+        deadline: "Day 2"
+        validation:
+          - "Zero LLM calls in assembler"
+          - "All patterns implemented"
+          - "Deterministic output for same input"
+        files:
+          - "worker/src/services/ai/workflow-assembler.ts"
+      
+      - task: "Add assembler to CI/CD"
+        owner: "devops"
+        deadline: "Day 2"
+        validation:
+          - "Unit tests pass"
+          - "Performance < 100ms per assembly"
+        test_command: "npm test -- workflow-assembler"
+  
+  phase_3_test_coverage:
+    completed: false
+    tasks:
+      - task: "Run golden test suite"
+        owner: "qa"
+        deadline: "Day 3"
+        validation:
+          - "All 50 tests pass"
+          - "Coverage > 95%"
+          - "No regressions from manual testing"
+        files:
+          - "worker/test/golden-test-suite.ts"
+        test_command: "npm test -- golden-test-suite"
+      
+      - task: "Set up automated regression testing"
+        owner: "devops"
+        deadline: "Day 3"
+        validation:
+          - "Tests run on every commit"
+          - "Slack alerts for failures"
+          - "Historical accuracy tracking"
+        ci_config: ".github/workflows/golden-tests.yml"
+  
+  phase_4_smart_ux:
+    completed: false
+    tasks:
+      - task: "Deploy smart-block-ux.ts"
+        owner: "frontend"
+        deadline: "Day 4"
+        validation:
+          - "UX renders for all block reasons"
+          - "Alternatives are relevant"
+          - "Mobile responsive"
+        files:
+          - "worker/src/services/ai/smart-block-ux.ts"
+      
+      - task: "A/B test block UX vs error message"
+        owner: "product"
+        deadline: "Day 5"
+        metrics:
+          - "User satisfaction increase"
+          - "Retry rate improvement"
+          - "Fallback selection rate"
+        analytics: "PostHog"
+  
+  phase_5_versioning:
+    completed: false
+    tasks:
+      - task: "Deploy versioning system"
+        owner: "backend"
+        deadline: "Day 6"
+        validation:
+          - "Workflow hashing works"
+          - "Version retrieval API"
+          - "Diff endpoint functional"
+        files:
+          - "worker/src/services/ai/workflow-versioning.ts"
+      
+      - task: "Add version headers to all responses"
+        owner: "api"
+        deadline: "Day 6"
+        validation:
+          - "X-Workflow-Version header"
+          - "Backward compatibility check"
+          - "Migration endpoint"
+        headers:
+          - "X-Workflow-Version: 1.0.0"
+          - "X-Node-Library-Version: 1.0.0"
+
+monitoring:
+  alerts:
+    - name: "Accuracy drops below 99%"
+      threshold: 0.99
+      channel: "slack#alerts"
+    
+    - name: "Assembler latency > 200ms"
+      threshold: 200
+      unit: "ms"
+      channel: "slack#performance"
+    
+    - name: "Block rate > 10%"
+      threshold: 0.10
+      channel: "slack#product"
+    
+    - name: "Library validation failures"
+      threshold: 0
+      channel: "slack#critical"
+  
+  dashboards:
+    - name: "Real-time accuracy"
+      tools: ["Prometheus", "Grafana"]
+      metrics:
+        - "workflow_validity_rate"
+        - "node_library_hits"
+        - "assembly_success_rate"
+    
+    - name: "User satisfaction"
+      tools: ["PostHog"]
+      metrics:
+        - "user_satisfaction_score"
+        - "retry_rate"
+        - "alternative_selection_rate"
+    
+    - name: "Performance"
+      tools: ["Datadog APM"]
+      metrics:
+        - "assembly_latency_p50"
+        - "assembly_latency_p95"
+        - "assembly_latency_p99"
+  
+  sla_targets:
+    - metric: "workflow_validity"
+      target: "99.9%"
+      measurement: "percentage"
+    
+    - metric: "assembly_time"
+      target: "< 150ms"
+      measurement: "p95_latency"
+    
+    - metric: "custom_node_usage"
+      target: "0%"
+      measurement: "percentage"
+    
+    - metric: "deterministic_builds"
+      target: "100%"
+      measurement: "percentage"
+
+rollback_plan:
+  triggers:
+    - "Accuracy drops below 95%"
+    - "Critical validation failures"
+    - "User complaints > 5%"
+  
+  steps:
+    - "Revert to previous system prompt"
+    - "Restore previous node library version"
+    - "Disable new assembler, use LLM fallback"
+    - "Notify team via Slack"
+  
+  rollback_files:
+    - "worker/data/n8n-accurate-autonomous-workflow-agent-prompt.md"
+    - "worker/data/node-library.v1.json"
+    - "worker/src/services/ai/workflow-assembler.ts"
+
+success_criteria:
+  - "All golden tests pass"
+  - "Zero custom node usage"
+  - "100% deterministic builds"
+  - "User satisfaction > 4.5/5"
+  - "Assembly time < 150ms p95"
+  - "Workflow validity > 99.9%"

@@ -1,0 +1,30 @@
+QUICK WORKFLOW BUILDER TEST PROMPT
+===================================
+
+Simple prompt to quickly verify the workflow builder is working:
+
+PROMPT:
+-------
+When a webhook receives data with a 'status' field, check if the status equals 'error'. If it does, send a Slack message to #errors with the error details. Otherwise, save the data to Google Sheets.
+
+WHAT THIS TESTS:
+----------------
+✅ Webhook Trigger
+✅ Conditional Logic (if/else)
+✅ Multiple Integrations (Slack, Google Sheets)
+✅ Field Mappings
+✅ Basic Data Flow
+
+EXPECTED NODES:
+---------------
+- webhook
+- if (conditional)
+- slack
+- google_sheets
+
+EXPECTED CREDENTIALS:
+---------------------
+- slack
+- google_sheets
+
+This is a simpler test for quick verification.

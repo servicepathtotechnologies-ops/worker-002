@@ -1,0 +1,9 @@
+{
+  "dealId": "deal_12345",
+  "dealName": "Enterprise Contract",
+  "dealValue": 50000,
+  "stage": "qualified",
+  "contactId": "contact_67890",
+  "createdAt": "2024-01-15T09:00:00Z",
+  "timestamp": "2024-01-15T09:00:00Z"
+}

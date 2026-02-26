@@ -1,0 +1,4 @@
+cd worker
+npm run dev
+# Then in another terminal:
+npm run test:run

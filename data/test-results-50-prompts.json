@@ -1,0 +1,760 @@
+{
+  "timestamp": "2026-02-07T00:49:48.357Z",
+  "total": 50,
+  "statistics": {
+    "correct": 0,
+    "partial": 7,
+    "incorrect": 17,
+    "notTested": 26,
+    "accuracy": "0.0%"
+  },
+  "results": [
+    {
+      "prompt": "post to linkedin daily",
+      "expectedTrigger": "schedule",
+      "expectedNodes": [
+        "linkedin"
+      ],
+      "accuracy": "not_tested",
+      "issues": [
+        "Worker not running - could not test"
+      ]
+    },
+    {
+      "prompt": "schedule linkedin posts weekly",
+      "expectedTrigger": "schedule",
+      "expectedNodes": [
+        "linkedin"
+      ],
+      "actualTrigger": "manual_trigger",
+      "actualNodes": [
+        "linkedin",
+        "log_output",
+        "manual_trigger",
+        "manual_trigger",
+        "manual_trigger"
+      ],
+      "accuracy": "incorrect",
+      "issues": [
+        "Wrong trigger: expected \"schedule\", got \"manual_trigger\""
+      ]
+    },
+    {
+      "prompt": "post content to linkedin",
+      "expectedTrigger": "manual_trigger",
+      "expectedNodes": [
+        "linkedin"
+      ],
+      "actualTrigger": "manual_trigger",
+      "actualNodes": [
+        "linkedin",
+        "log_output",
+        "log_output",
+        "manual_trigger",
+        "manual_trigger",
+        "manual_trigger"
+      ],
+      "accuracy": "partial"
+    },
+    {
+      "prompt": "automated linkedin posting",
+      "expectedTrigger": "manual_trigger",
+      "expectedNodes": [
+        "linkedin"
+      ],
+      "accuracy": "not_tested",
+      "issues": [
+        "Worker not running - could not test"
+      ]
+    },
+    {
+      "prompt": "daily linkedin post automation",
+      "expectedTrigger": "schedule",
+      "expectedNodes": [
+        "linkedin"
+      ],
+      "accuracy": "not_tested",
+      "issues": [
+        "Worker not running - could not test"
+      ]
+    },
+    {
+      "prompt": "post to twitter daily",
+      "expectedTrigger": "schedule",
+      "expectedNodes": [
+        "twitter"
+      ],
+      "accuracy": "not_tested",
+      "issues": [
+        "Worker not running - could not test"
+      ]
+    },
+    {
+      "prompt": "schedule instagram posts",
+      "expectedTrigger": "schedule",
+      "expectedNodes": [
+        "instagram"
+      ],
+      "actualTrigger": "manual_trigger",
+      "actualNodes": [
+        "instagram",
+        "log_output",
+        "manual_trigger",
+        "manual_trigger",
+        "manual_trigger"
+      ],
+      "accuracy": "incorrect",
+      "issues": [
+        "Wrong trigger: expected \"schedule\", got \"manual_trigger\""
+      ]
+    },
+    {
+      "prompt": "post to linkedin from google sheets",
+      "expectedTrigger": "manual_trigger",
+      "expectedNodes": [
+        "google_sheets",
+        "linkedin"
+      ],
+      "actualTrigger": "manual_trigger",
+      "actualNodes": [
+        "google_sheets",
+        "javascript",
+        "linkedin",
+        "slack_message",
+        "manual_trigger",
+        "manual_trigger",
+        "manual_trigger"
+      ],
+      "accuracy": "partial"
+    },
+    {
+      "prompt": "linkedin posting workflow",
+      "expectedTrigger": "manual_trigger",
+      "expectedNodes": [
+        "linkedin"
+      ],
+      "accuracy": "not_tested",
+      "issues": [
+        "Worker not running - could not test"
+      ]
+    },
+    {
+      "prompt": "share content on linkedin",
+      "expectedTrigger": "manual_trigger",
+      "expectedNodes": [
+        "linkedin"
+      ],
+      "actualTrigger": "manual_trigger",
+      "actualNodes": [
+        "linkedin",
+        "log_output",
+        "log_output",
+        "manual_trigger",
+        "manual_trigger",
+        "manual_trigger"
+      ],
+      "accuracy": "partial"
+    },
+    {
+      "prompt": "send daily report to email",
+      "expectedTrigger": "schedule",
+      "expectedNodes": [
+        "email"
+      ],
+      "actualTrigger": "manual_trigger",
+      "actualNodes": [
+        "log_output",
+        "manual_trigger",
+        "manual_trigger",
+        "manual_trigger"
+      ],
+      "accuracy": "incorrect",
+      "issues": [
+        "Wrong trigger: expected \"schedule\", got \"manual_trigger\"",
+        "Missing nodes: email"
+      ]
+    },
+    {
+      "prompt": "daily slack notification",
+      "expectedTrigger": "schedule",
+      "expectedNodes": [
+        "slack_message"
+      ],
+      "actualTrigger": "manual_trigger",
+      "actualNodes": [
+        "javascript",
+        "log_output",
+        "manual_trigger",
+        "manual_trigger",
+        "manual_trigger"
+      ],
+      "accuracy": "incorrect",
+      "issues": [
+        "Wrong trigger: expected \"schedule\", got \"manual_trigger\"",
+        "Missing nodes: slack_message"
+      ]
+    },
+    {
+      "prompt": "hourly data sync",
+      "expectedTrigger": "schedule",
+      "expectedNodes": [
+        "database_write"
+      ],
+      "accuracy": "not_tested",
+      "issues": [
+        "Worker not running - could not test"
+      ]
+    },
+    {
+      "prompt": "weekly backup to sheets",
+      "expectedTrigger": "schedule",
+      "expectedNodes": [
+        "google_sheets"
+      ],
+      "actualTrigger": "manual_trigger",
+      "actualNodes": [
+        "google_sheets",
+        "log_output",
+        "manual_trigger",
+        "manual_trigger",
+        "manual_trigger"
+      ],
+      "accuracy": "incorrect",
+      "issues": [
+        "Wrong trigger: expected \"schedule\", got \"manual_trigger\""
+      ]
+    },
+    {
+      "prompt": "schedule email every morning",
+      "expectedTrigger": "schedule",
+      "expectedNodes": [
+        "email"
+      ],
+      "actualTrigger": "manual_trigger",
+      "actualNodes": [
+        "log_output",
+        "manual_trigger",
+        "manual_trigger",
+        "manual_trigger"
+      ],
+      "accuracy": "incorrect",
+      "issues": [
+        "Wrong trigger: expected \"schedule\", got \"manual_trigger\"",
+        "Missing nodes: email"
+      ]
+    },
+    {
+      "prompt": "daily reminder to slack",
+      "expectedTrigger": "schedule",
+      "expectedNodes": [
+        "slack_message"
+      ],
+      "actualTrigger": "manual_trigger",
+      "actualNodes": [
+        "slack_message",
+        "log_output",
+        "slack_message",
+        "manual_trigger",
+        "manual_trigger",
+        "manual_trigger"
+      ],
+      "accuracy": "incorrect",
+      "issues": [
+        "Wrong trigger: expected \"schedule\", got \"manual_trigger\""
+      ]
+    },
+    {
+      "prompt": "send weekly summary",
+      "expectedTrigger": "schedule",
+      "expectedNodes": [
+        "slack_message"
+      ],
+      "actualTrigger": "manual_trigger",
+      "actualNodes": [
+        "log_output",
+        "log_output",
+        "manual_trigger",
+        "manual_trigger",
+        "manual_trigger"
+      ],
+      "accuracy": "incorrect",
+      "issues": [
+        "Wrong trigger: expected \"schedule\", got \"manual_trigger\"",
+        "Missing nodes: slack_message"
+      ]
+    },
+    {
+      "prompt": "hourly health check",
+      "expectedTrigger": "schedule",
+      "expectedNodes": [
+        "slack_message"
+      ],
+      "accuracy": "not_tested",
+      "issues": [
+        "Worker not running - could not test"
+      ]
+    },
+    {
+      "prompt": "daily metrics report",
+      "expectedTrigger": "schedule",
+      "expectedNodes": [
+        "slack_message"
+      ],
+      "accuracy": "not_tested",
+      "issues": [
+        "Worker not running - could not test"
+      ]
+    },
+    {
+      "prompt": "schedule notification at 9am",
+      "expectedTrigger": "schedule",
+      "expectedNodes": [
+        "slack_message"
+      ],
+      "accuracy": "not_tested",
+      "issues": [
+        "Worker not running - could not test"
+      ]
+    },
+    {
+      "prompt": "save form data to sheets",
+      "expectedTrigger": "form",
+      "expectedNodes": [
+        "google_sheets"
+      ],
+      "accuracy": "not_tested",
+      "issues": [
+        "Worker not running - could not test"
+      ]
+    },
+    {
+      "prompt": "form submission to email",
+      "expectedTrigger": "form",
+      "expectedNodes": [
+        "email"
+      ],
+      "actualTrigger": "manual_trigger",
+      "actualNodes": [
+        "log_output",
+        "manual_trigger",
+        "manual_trigger",
+        "manual_trigger"
+      ],
+      "accuracy": "incorrect",
+      "issues": [
+        "Wrong trigger: expected \"form\", got \"manual_trigger\"",
+        "Missing nodes: email"
+      ]
+    },
+    {
+      "prompt": "form to slack notification",
+      "expectedTrigger": "form",
+      "expectedNodes": [
+        "slack_message"
+      ],
+      "actualTrigger": "manual_trigger",
+      "actualNodes": [
+        "javascript",
+        "slack_message",
+        "slack_message",
+        "manual_trigger",
+        "manual_trigger",
+        "manual_trigger"
+      ],
+      "accuracy": "incorrect",
+      "issues": [
+        "Wrong trigger: expected \"form\", got \"manual_trigger\""
+      ]
+    },
+    {
+      "prompt": "form data to database",
+      "expectedTrigger": "form",
+      "expectedNodes": [
+        "database_write"
+      ],
+      "actualTrigger": "manual_trigger",
+      "actualNodes": [
+        "log_output",
+        "slack_message",
+        "manual_trigger",
+        "manual_trigger",
+        "manual_trigger"
+      ],
+      "accuracy": "incorrect",
+      "issues": [
+        "Wrong trigger: expected \"form\", got \"manual_trigger\"",
+        "Missing nodes: database_write"
+      ]
+    },
+    {
+      "prompt": "form submission confirmation",
+      "expectedTrigger": "form",
+      "expectedNodes": [
+        "google_sheets"
+      ],
+      "actualTrigger": "manual_trigger",
+      "actualNodes": [
+        "log_output",
+        "manual_trigger",
+        "manual_trigger",
+        "manual_trigger"
+      ],
+      "accuracy": "incorrect",
+      "issues": [
+        "Wrong trigger: expected \"form\", got \"manual_trigger\"",
+        "Missing nodes: google_sheets"
+      ]
+    },
+    {
+      "prompt": "webhook to sheets",
+      "expectedTrigger": "webhook",
+      "expectedNodes": [
+        "google_sheets"
+      ],
+      "actualTrigger": "manual_trigger",
+      "actualNodes": [
+        "log_output",
+        "log_output",
+        "manual_trigger",
+        "manual_trigger",
+        "manual_trigger"
+      ],
+      "accuracy": "incorrect",
+      "issues": [
+        "Wrong trigger: expected \"webhook\", got \"manual_trigger\"",
+        "Missing nodes: google_sheets"
+      ]
+    },
+    {
+      "prompt": "webhook to slack",
+      "expectedTrigger": "webhook",
+      "expectedNodes": [
+        "slack_message"
+      ],
+      "actualTrigger": "manual_trigger",
+      "actualNodes": [
+        "javascript",
+        "log_output",
+        "manual_trigger",
+        "manual_trigger",
+        "manual_trigger"
+      ],
+      "accuracy": "incorrect",
+      "issues": [
+        "Wrong trigger: expected \"webhook\", got \"manual_trigger\"",
+        "Missing nodes: slack_message"
+      ]
+    },
+    {
+      "prompt": "webhook data processing",
+      "expectedTrigger": "webhook",
+      "expectedNodes": [
+        "slack_message"
+      ],
+      "actualTrigger": "manual_trigger",
+      "actualNodes": [
+        "log_output",
+        "manual_trigger",
+        "manual_trigger",
+        "manual_trigger"
+      ],
+      "accuracy": "incorrect",
+      "issues": [
+        "Wrong trigger: expected \"webhook\", got \"manual_trigger\"",
+        "Missing nodes: slack_message"
+      ]
+    },
+    {
+      "prompt": "webhook to database",
+      "expectedTrigger": "webhook",
+      "expectedNodes": [
+        "database_write"
+      ],
+      "actualTrigger": "manual_trigger",
+      "actualNodes": [
+        "log_output",
+        "manual_trigger",
+        "manual_trigger",
+        "manual_trigger"
+      ],
+      "accuracy": "incorrect",
+      "issues": [
+        "Wrong trigger: expected \"webhook\", got \"manual_trigger\"",
+        "Missing nodes: database_write"
+      ]
+    },
+    {
+      "prompt": "webhook notification",
+      "expectedTrigger": "webhook",
+      "expectedNodes": [
+        "slack_message"
+      ],
+      "actualTrigger": "manual_trigger",
+      "actualNodes": [
+        "javascript",
+        "log_output",
+        "manual_trigger",
+        "manual_trigger",
+        "manual_trigger"
+      ],
+      "accuracy": "incorrect",
+      "issues": [
+        "Wrong trigger: expected \"webhook\", got \"manual_trigger\"",
+        "Missing nodes: slack_message"
+      ]
+    },
+    {
+      "prompt": "transform data with javascript",
+      "expectedTrigger": "form",
+      "expectedNodes": [
+        "google_sheets"
+      ],
+      "accuracy": "not_tested",
+      "issues": [
+        "Worker not running - could not test"
+      ]
+    },
+    {
+      "prompt": "read from database",
+      "expectedTrigger": "manual_trigger",
+      "expectedNodes": [
+        "database_read"
+      ],
+      "accuracy": "not_tested",
+      "issues": [
+        "Worker not running - could not test"
+      ]
+    },
+    {
+      "prompt": "write to database",
+      "expectedTrigger": "manual_trigger",
+      "expectedNodes": [
+        "database_write"
+      ],
+      "accuracy": "not_tested",
+      "issues": [
+        "Worker not running - could not test"
+      ]
+    },
+    {
+      "prompt": "database to sheets sync",
+      "expectedTrigger": "schedule",
+      "expectedNodes": [
+        "database_read",
+        "google_sheets"
+      ],
+      "accuracy": "not_tested",
+      "issues": [
+        "Worker not running - could not test"
+      ]
+    },
+    {
+      "prompt": "data transformation pipeline",
+      "expectedTrigger": "form",
+      "expectedNodes": [
+        "google_sheets"
+      ],
+      "accuracy": "not_tested",
+      "issues": [
+        "Worker not running - could not test"
+      ]
+    },
+    {
+      "prompt": "ai chatbot workflow",
+      "expectedTrigger": "chat_trigger",
+      "expectedNodes": [
+        "ai_agent"
+      ],
+      "actualTrigger": "chat_trigger",
+      "actualNodes": [
+        "ai_agent",
+        "log_output",
+        "manual_trigger",
+        "manual_trigger",
+        "manual_trigger"
+      ],
+      "accuracy": "partial"
+    },
+    {
+      "prompt": "ai content generation",
+      "expectedTrigger": "manual_trigger",
+      "expectedNodes": [
+        "ai_agent"
+      ],
+      "actualTrigger": "manual_trigger",
+      "actualNodes": [
+        "log_output",
+        "manual_trigger",
+        "manual_trigger",
+        "manual_trigger"
+      ],
+      "accuracy": "partial",
+      "issues": [
+        "Missing nodes: ai_agent"
+      ]
+    },
+    {
+      "prompt": "ai email summarization",
+      "expectedTrigger": "manual_trigger",
+      "expectedNodes": [
+        "ai_agent",
+        "email"
+      ],
+      "accuracy": "not_tested",
+      "issues": [
+        "Worker not running - could not test"
+      ]
+    },
+    {
+      "prompt": "ai data analysis",
+      "expectedTrigger": "manual_trigger",
+      "expectedNodes": [
+        "ai_agent"
+      ],
+      "accuracy": "not_tested",
+      "issues": [
+        "Worker not running - could not test"
+      ]
+    },
+    {
+      "prompt": "ai workflow automation",
+      "expectedTrigger": "manual_trigger",
+      "expectedNodes": [
+        "ai_agent"
+      ],
+      "actualTrigger": "manual_trigger",
+      "actualNodes": [
+        "log_output",
+        "manual_trigger",
+        "manual_trigger",
+        "manual_trigger"
+      ],
+      "accuracy": "partial",
+      "issues": [
+        "Missing nodes: ai_agent"
+      ]
+    },
+    {
+      "prompt": "sheets to gmail",
+      "expectedTrigger": "manual_trigger",
+      "expectedNodes": [
+        "ai_agent"
+      ],
+      "actualTrigger": "manual_trigger",
+      "actualNodes": [
+        "google_sheets",
+        "javascript",
+        "log_output",
+        "manual_trigger",
+        "manual_trigger",
+        "manual_trigger"
+      ],
+      "accuracy": "partial",
+      "issues": [
+        "Missing nodes: ai_agent"
+      ]
+    },
+    {
+      "prompt": "api to sheets",
+      "expectedTrigger": "schedule",
+      "expectedNodes": [
+        "http_request",
+        "google_sheets"
+      ],
+      "accuracy": "not_tested",
+      "issues": [
+        "Worker not running - could not test"
+      ]
+    },
+    {
+      "prompt": "database to slack",
+      "expectedTrigger": "schedule",
+      "expectedNodes": [
+        "database_read",
+        "slack_message"
+      ],
+      "accuracy": "not_tested",
+      "issues": [
+        "Worker not running - could not test"
+      ]
+    },
+    {
+      "prompt": "sheets to multiple channels",
+      "expectedTrigger": "manual_trigger",
+      "expectedNodes": [
+        "slack_message"
+      ],
+      "accuracy": "not_tested",
+      "issues": [
+        "Worker not running - could not test"
+      ]
+    },
+    {
+      "prompt": "multi-service integration",
+      "expectedTrigger": "manual_trigger",
+      "expectedNodes": [
+        "slack_message"
+      ],
+      "accuracy": "not_tested",
+      "issues": [
+        "Worker not running - could not test"
+      ]
+    },
+    {
+      "prompt": "slack notification on error",
+      "expectedTrigger": "webhook",
+      "expectedNodes": [
+        "slack_message"
+      ],
+      "accuracy": "not_tested",
+      "issues": [
+        "Worker not running - could not test"
+      ]
+    },
+    {
+      "prompt": "email alert on condition",
+      "expectedTrigger": "manual_trigger",
+      "expectedNodes": [
+        "ai_agent",
+        "email"
+      ],
+      "accuracy": "not_tested",
+      "issues": [
+        "Worker not running - could not test"
+      ]
+    },
+    {
+      "prompt": "discord notification",
+      "expectedTrigger": "webhook",
+      "expectedNodes": [
+        "discord"
+      ],
+      "accuracy": "not_tested",
+      "issues": [
+        "Worker not running - could not test"
+      ]
+    },
+    {
+      "prompt": "multi-channel alert",
+      "expectedTrigger": "manual_trigger",
+      "expectedNodes": [
+        "slack_message"
+      ],
+      "accuracy": "not_tested",
+      "issues": [
+        "Worker not running - could not test"
+      ]
+    },
+    {
+      "prompt": "notification workflow",
+      "expectedTrigger": "manual_trigger",
+      "expectedNodes": [
+        "slack_message"
+      ],
+      "accuracy": "not_tested",
+      "issues": [
+        "Worker not running - could not test"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "timestamp": "2026-02-07T00:27:03.445Z",
+  "analysis": {
+    "total": 50,
+    "correct": 0,
+    "partial": 0,
+    "incorrect": 27,
+    "notTested": 23,
+    "accuracy": 0,
+    "issues": {
+      "wrongTrigger": 27,
+      "missingNodes": 27,
+      "extraNodes": 0,
+      "platformNodesMissing": 8
+    },
+    "recommendations": [
+      "🚨 CRITICAL: 8 platform nodes (LinkedIn, Twitter, Instagram) are missing. Fix: Improve enforcePlatformNodeSelection() to check full prompt, not just primaryGoal.",
+      "⚠️  27 workflows have wrong trigger selection. Fix: Improve trigger detection logic - \"daily\" should always use \"schedule\" trigger.",
+      "⚠️  27 workflows are missing required nodes. Fix: Check filterUnmentionedNodes() - it might be removing nodes that should be kept.",
+      "❌ Overall accuracy is 0.0% - very low. Fix: Train model with more examples, improve system prompts, fix node selection logic."
+    ]
+  }
+}

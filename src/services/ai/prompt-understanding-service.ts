@@ -1,0 +1,445 @@
+/**
+ * Prompt Understanding Service
+ * 
+ * Improves understanding of vague prompts by:
+ * 1. Inferring typical workflows from context
+ * 2. Asking clarification if confidence < 0.8
+ * 3. Never guessing tools blindly
+ * 4. Never auto-confirming without user approval
+ * 
+ * Returns:
+ * - inferred workflow
+ * - confidence score
+ * - missing intent fields
+ */
+
+import { StructuredIntent } from './intent-structurer';
+import { ollamaOrchestrator } from './ollama-orchestrator';
+import { nodeLibrary } from '../nodes/node-library';
+
+export interface PromptUnderstandingResult {
+  inferredIntent: StructuredIntent;
+  confidence: number;
+  missingFields: string[];
+  clarificationQuestions?: string[];
+  requiresClarification: boolean;
+  reasoning: string;
+}
+
+export interface WorkflowInference {
+  trigger: string;
+  actions: Array<{ type: string; operation: string; description: string }>;
+  confidence: number;
+  reasoning: string;
+}
+
+/**
+ * Prompt Understanding Service
+ * Infers workflows from vague prompts and determines when clarification is needed
+ */
+export class PromptUnderstandingService {
+  // ✅ FIXED: Updated thresholds
+  // - BUILD_ALLOWED: confidence >= 0.6 → allow build (tolerate partial understanding)
+  // - BLOCK_BUILD: confidence < 0.5 → block build (too low confidence)
+  // - CLARIFICATION: confidence < 0.5 → require clarification
+  private readonly BUILD_ALLOWED_THRESHOLD = 0.6; // Allow build if confidence >= 60%
+  private readonly BLOCK_BUILD_THRESHOLD = 0.5; // Block build if confidence < 50%
+  
+  /**
+   * Understand vague prompt and infer workflow
+   * 
+   * @param userPrompt - User's prompt (may be vague)
+   * @returns Understanding result with inferred intent, confidence, and missing fields
+   */
+  async understandPrompt(userPrompt: string): Promise<PromptUnderstandingResult> {
+    console.log(`[PromptUnderstandingService] Understanding prompt: "${userPrompt}"`);
+    
+    // Step 1: Analyze prompt for vagueness
+    const vaguenessAnalysis = this.analyzeVagueness(userPrompt);
+    
+    // Step 2: Infer typical workflow from context
+    const workflowInference = await this.inferTypicalWorkflow(userPrompt, vaguenessAnalysis);
+    
+    // Step 3: Build structured intent from inference
+    const inferredIntent = this.buildStructuredIntentFromInference(workflowInference, userPrompt);
+    
+    // Step 4: Identify missing fields
+    const missingFields = this.identifyMissingFields(inferredIntent);
+    
+    // Step 5: Calculate confidence score
+    const confidence = this.calculateConfidence(workflowInference, missingFields);
+    
+    // Step 6: Determine if clarification is needed
+    // ✅ FIXED: Only require clarification if confidence < 50% (too low)
+    const requiresClarification = confidence < this.BLOCK_BUILD_THRESHOLD;
+    
+    // Step 7: Generate clarification questions if needed
+    const clarificationQuestions = requiresClarification
+      ? this.generateClarificationQuestions(inferredIntent, missingFields, userPrompt)
+      : undefined;
+    
+    const result: PromptUnderstandingResult = {
+      inferredIntent,
+      confidence,
+      missingFields,
+      clarificationQuestions,
+      requiresClarification,
+      reasoning: workflowInference.reasoning,
+    };
+    
+    console.log(`[PromptUnderstandingService] ✅ Understanding complete:`);
+    console.log(`  - Confidence: ${(confidence * 100).toFixed(1)}%`);
+    console.log(`  - Missing fields: ${missingFields.join(', ') || 'none'}`);
+    console.log(`  - Requires clarification: ${requiresClarification}`);
+    
+    return result;
+  }
+  
+  /**
+   * Analyze prompt for vagueness indicators
+   */
+  private analyzeVagueness(prompt: string): {
+    isVague: boolean;
+    indicators: string[];
+    wordCount: number;
+  } {
+    const wordCount = prompt.split(/\s+/).filter(w => w.length > 0).length;
+    const indicators: string[] = [];
+    
+    // Vague indicators
+    const vaguePatterns = [
+      /^(sales|marketing|customer|support|agent|workflow|automation)$/i,
+      /^(create|build|make|do|help|assist)/i,
+      /^(something|anything|whatever)/i,
+    ];
+    
+    let isVague = false;
+    for (const pattern of vaguePatterns) {
+      if (pattern.test(prompt.trim())) {
+        isVague = true;
+        indicators.push('Single word or generic term');
+        break;
+      }
+    }
+    
+    // Low word count is often vague
+    if (wordCount <= 3) {
+      isVague = true;
+      indicators.push(`Low word count: ${wordCount}`);
+    }
+    
+    // Missing action verbs
+    const actionVerbs = ['get', 'fetch', 'read', 'write', 'send', 'create', 'update', 'delete', 'analyze', 'summarize'];
+    const hasActionVerb = actionVerbs.some(verb => prompt.toLowerCase().includes(verb));
+    if (!hasActionVerb && wordCount > 0) {
+      isVague = true;
+      indicators.push('Missing action verb');
+    }
+    
+    // Missing data sources
+    const dataSources = ['sheets', 'database', 'api', 'email', 'slack', 'gmail'];
+    const hasDataSource = dataSources.some(source => prompt.toLowerCase().includes(source));
+    if (!hasDataSource && wordCount > 0) {
+      isVague = true;
+      indicators.push('Missing data source');
+    }
+    
+    return {
+      isVague,
+      indicators,
+      wordCount,
+    };
+  }
+  
+  /**
+   * Infer typical workflow from vague prompt using LLM
+   */
+  private async inferTypicalWorkflow(
+    prompt: string,
+    vaguenessAnalysis: { isVague: boolean; indicators: string[]; wordCount: number }
+  ): Promise<WorkflowInference> {
+    console.log(`[PromptUnderstandingService] Inferring typical workflow from vague prompt...`);
+    
+    // Get available node types for context
+    const availableNodes = this.getAvailableNodeTypes();
+    
+    const systemPrompt = `You are a workflow inference engine. Your task is to infer a typical workflow from a vague user prompt.
+
+Rules:
+1. NEVER guess tools blindly - only infer workflows that make logical sense
+2. Use common patterns and best practices
+3. Infer typical workflows based on the prompt context
+4. If the prompt is too vague, infer a minimal, safe workflow
+5. Always include a trigger (default to manual_trigger if unclear)
+
+Available node types (use only these):
+${availableNodes.map((node, idx) => `  ${idx + 1}. ${node}`).join('\n')}
+
+User prompt: "${prompt}"
+
+Analyze the prompt and infer a typical workflow. Return ONLY valid JSON:
+{
+  "trigger": "manual_trigger | schedule | webhook",
+  "actions": [
+    { "type": "google_sheets", "operation": "read", "description": "..." },
+    { "type": "text_summarizer", "operation": "summarize", "description": "..." }
+  ],
+  "confidence": 0.0-1.0,
+  "reasoning": "Brief explanation of why this workflow was inferred"
+}
+
+CRITICAL: 
+- Use ONLY node types from the available list
+- Do NOT invent new node types
+- If unsure, use minimal workflow (trigger + one safe action)
+- Confidence should reflect certainty (lower for vague prompts)`;
+
+    try {
+      // Use processRequest with prompt object (system + user prompt)
+      const response = await ollamaOrchestrator.processRequest(
+        'workflow-generation',
+        {
+          prompt: prompt,
+          system: systemPrompt,
+        },
+        {
+          temperature: 0.3, // Lower temperature for more deterministic inference
+          max_tokens: 500,
+        }
+      );
+      
+      // Parse JSON response (handle both string and object responses)
+      const responseText = typeof response === 'string' ? response : (response?.content || JSON.stringify(response));
+      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        throw new Error('No JSON found in LLM response');
+      }
+      
+      const inference: WorkflowInference = JSON.parse(jsonMatch[0]);
+      
+      // Validate inference
+      this.validateInference(inference, availableNodes);
+      
+      console.log(`[PromptUnderstandingService] ✅ Workflow inferred: ${inference.actions.length} actions, confidence: ${(inference.confidence * 100).toFixed(1)}%`);
+      
+      return inference;
+    } catch (error) {
+      console.error(`[PromptUnderstandingService] ❌ Failed to infer workflow: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      
+      // Fallback: Return minimal safe workflow
+      return {
+        trigger: 'manual_trigger',
+        actions: [],
+        confidence: 0.3,
+        reasoning: 'Failed to infer workflow - prompt too vague or inference failed',
+      };
+    }
+  }
+  
+  /**
+   * Build structured intent from workflow inference
+   * ✅ FIXED: Automatically default to manual_trigger if trigger missing
+   */
+  private buildStructuredIntentFromInference(
+    inference: WorkflowInference,
+    originalPrompt: string
+  ): StructuredIntent {
+    // ✅ DEFAULT TRIGGER POLICY:
+    // Default to schedule for automation prompts unless user explicitly asked for webhook/chat/form/manual.
+    const trigger = inference.trigger || this.inferDefaultTrigger(originalPrompt);
+    
+    if (!inference.trigger) {
+      console.log(`[PromptUnderstandingService] ⚠️  No trigger specified, defaulting to ${trigger}`);
+    }
+    
+    return {
+      trigger,
+      trigger_config: trigger === 'schedule' ? this.inferDefaultScheduleConfig(originalPrompt) : undefined,
+      actions: inference.actions.map(action => ({
+        type: action.type,
+        operation: action.operation || 'read',
+        config: action.description ? { description: action.description } : undefined,
+      })),
+      conditions: [],
+      requires_credentials: [],
+    };
+  }
+
+  private inferDefaultTrigger(prompt: string): StructuredIntent['trigger'] {
+    const p = (prompt || '').toLowerCase();
+    if (p.includes('webhook') || p.includes('http request') || p.includes('api call')) return 'webhook';
+    if (p.includes('form') || p.includes('submitted') || p.includes('submission')) return 'form';
+    if (p.includes('chat') || p.includes('bot')) return 'chat_trigger';
+    if (p.includes('manual') || p.includes('on demand') || p.includes('run now') || p.includes('click a button')) return 'manual_trigger';
+    return 'schedule';
+  }
+
+  private inferDefaultScheduleConfig(prompt: string): StructuredIntent['trigger_config'] {
+    const p = (prompt || '').toLowerCase();
+    const interval =
+      p.includes('hourly') ? 'hourly' :
+      p.includes('weekly') ? 'weekly' :
+      p.includes('monthly') ? 'monthly' :
+      'daily';
+    const cron =
+      interval === 'hourly' ? '0 * * * *' :
+      interval === 'weekly' ? '0 9 * * 1' :
+      interval === 'monthly' ? '0 9 1 * *' :
+      '0 9 * * *';
+    return { interval, cron, timezone: 'UTC' };
+  }
+  
+  /**
+   * Identify missing fields in structured intent
+   * ✅ FIXED: Don't mark trigger as missing - manual_trigger is automatically injected as default
+   */
+  private identifyMissingFields(intent: StructuredIntent): string[] {
+    const missing: string[] = [];
+    
+    // ✅ FIXED: Never mark trigger as missing - manual_trigger is automatically injected as default
+    // If trigger is missing, it will be defaulted to manual_trigger, so it's not a missing field
+    // Do not add 'trigger_type' to missing fields
+    
+    // Check for missing actions
+    if (!intent.actions || intent.actions.length === 0) {
+      missing.push('actions');
+    }
+    
+    // Check for missing data sources
+    const hasDataSource = intent.actions?.some(action => 
+      action.type.includes('sheets') || 
+      action.type.includes('database') || 
+      action.type.includes('api')
+    );
+    if (!hasDataSource && intent.actions && intent.actions.length > 0) {
+      missing.push('data_source');
+    }
+    
+    // Check for missing output actions
+    const hasOutput = intent.actions?.some(action =>
+      action.type.includes('gmail') ||
+      action.type.includes('email') ||
+      action.type.includes('slack') ||
+      action.type.includes('notification')
+    );
+    if (!hasOutput && intent.actions && intent.actions.length > 0) {
+      missing.push('output_action');
+    }
+    
+    return missing;
+  }
+  
+  /**
+   * Calculate confidence score
+   */
+  private calculateConfidence(
+    inference: WorkflowInference,
+    missingFields: string[]
+  ): number {
+    // Start with inference confidence
+    let confidence = inference.confidence;
+    
+    // Reduce confidence for missing fields
+    const fieldPenalty = missingFields.length * 0.15;
+    confidence = Math.max(0, confidence - fieldPenalty);
+    
+    // Reduce confidence if no actions inferred
+    if (inference.actions.length === 0) {
+      confidence = Math.max(0, confidence - 0.3);
+    }
+    
+    // Reduce confidence if only trigger inferred
+    if (inference.actions.length === 0 && inference.trigger === 'manual_trigger') {
+      confidence = Math.max(0, confidence - 0.2);
+    }
+    
+    return Math.min(1.0, Math.max(0.0, confidence));
+  }
+  
+  /**
+   * Generate clarification questions
+   */
+  private generateClarificationQuestions(
+    intent: StructuredIntent,
+    missingFields: string[],
+    originalPrompt: string
+  ): string[] {
+    const questions: string[] = [];
+    
+    // Generate questions based on missing fields
+    if (missingFields.includes('actions')) {
+      questions.push('What actions should this workflow perform? (e.g., read data, send email, analyze)');
+    }
+    
+    if (missingFields.includes('data_source')) {
+      questions.push('Where should the workflow get data from? (e.g., Google Sheets, database, API)');
+    }
+    
+    if (missingFields.includes('output_action')) {
+      questions.push('What should the workflow do with the results? (e.g., send email, post to Slack, save to database)');
+    }
+    
+    if (missingFields.includes('trigger_type')) {
+      questions.push('When should this workflow run? (e.g., manually, on schedule, when webhook is called)');
+    }
+    
+    // Add context-specific questions
+    if (originalPrompt.toLowerCase().includes('sales') || originalPrompt.toLowerCase().includes('agent')) {
+      questions.push('What specific sales tasks should be automated? (e.g., lead follow-up, report generation, data sync)');
+    }
+    
+    if (originalPrompt.toLowerCase().includes('marketing')) {
+      questions.push('What marketing activities should be automated? (e.g., campaign tracking, email sending, analytics)');
+    }
+    
+    // If no specific questions, add generic one
+    if (questions.length === 0) {
+      questions.push('Can you provide more details about what this workflow should do?');
+    }
+    
+    return questions;
+  }
+  
+  /**
+   * Get available node types for context
+   */
+  private getAvailableNodeTypes(): string[] {
+    const allSchemas = nodeLibrary.getAllSchemas();
+    return allSchemas.map(schema => schema.type).slice(0, 50); // Limit to first 50 for prompt size
+  }
+  
+  /**
+   * Validate inference result
+   */
+  private validateInference(inference: WorkflowInference, availableNodes: string[]): void {
+    // Validate trigger
+    const validTriggers = ['manual_trigger', 'schedule', 'webhook', 'form', 'chat_trigger'];
+    if (!validTriggers.includes(inference.trigger)) {
+      console.warn(`[PromptUnderstandingService] ⚠️  Invalid trigger: ${inference.trigger}, defaulting to manual_trigger`);
+      inference.trigger = 'manual_trigger';
+    }
+    
+    // Validate actions
+    inference.actions = inference.actions.filter(action => {
+      const isValid = availableNodes.includes(action.type);
+      if (!isValid) {
+        console.warn(`[PromptUnderstandingService] ⚠️  Invalid node type: ${action.type}, removing from inference`);
+      }
+      return isValid;
+    });
+    
+    // Validate confidence
+    if (inference.confidence < 0 || inference.confidence > 1) {
+      console.warn(`[PromptUnderstandingService] ⚠️  Invalid confidence: ${inference.confidence}, clamping to [0, 1]`);
+      inference.confidence = Math.max(0, Math.min(1, inference.confidence));
+    }
+  }
+}
+
+// Export singleton instance
+export const promptUnderstandingService = new PromptUnderstandingService();
+
+// Export convenience function
+export async function understandPrompt(userPrompt: string): Promise<PromptUnderstandingResult> {
+  return promptUnderstandingService.understandPrompt(userPrompt);
+}

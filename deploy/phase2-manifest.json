@@ -1,0 +1,22 @@
+{
+    "version":  "2.0.0",
+    "timestamp":  "2026-02-01T12:02:14Z",
+    "files":  [
+                  "dist\\core\\cache\\lru-node-outputs-cache.js",
+                  "dist\\api\\execute-workflow.js",
+                  "dist\\index.js"
+              ],
+    "environment_vars":  [
+                             "LRU_CACHE_SIZE",
+                             "LRU_CACHE_ENABLED"
+                         ],
+    "rollback_script":  "deploy\\rollback-phase2.ps1",
+    "phase":  "Phase 2",
+    "deployment_hash":  "6B712F51BF81A2C270DF89359F28BC3E4BC832DC824C25E8C1E623EFCF382E70",
+    "changes":  [
+                    "LRU cache implementation for node outputs",
+                    "Memory leak prevention",
+                    "Bounded memory usage",
+                    "Cache eviction logic"
+                ]
+}

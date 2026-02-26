@@ -1,0 +1,10 @@
+{
+  "event": "deal.stageChange",
+  "dealId": "deal_pd_12345",
+  "dealName": "Q1 Enterprise Deal",
+  "oldStage": "qualified",
+  "newStage": "negotiation",
+  "dealValue": 75000,
+  "ownerId": "user_123",
+  "timestamp": "2024-01-15T16:00:00Z"
+}

@@ -1,0 +1,12 @@
+{
+  "default": {
+    "type": "trigger_workflow",
+    "workflow_id": "",
+    "description": "Default webhook trigger config"
+  },
+  "update_record": {
+    "type": "update_record",
+    "table": "records",
+    "description": "Update a record based on webhook payload"
+  }
+}

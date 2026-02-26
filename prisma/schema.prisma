@@ -1,0 +1,104 @@
+// Prisma Schema for n8n-style Memory System
+// PostgreSQL with JSONB and Vector support
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["multiSchema"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  schemas  = ["public", "auth"]
+}
+
+// Workflow Definitions
+model Workflow {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String   @db.VarChar(255)
+  definition Json    // Full workflow structure (nodes, edges, etc.)
+  tags      Json     @default("[]")
+  version   Int      @default(1)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamp(6)
+  isActive  Boolean  @default(true) @map("is_active")
+  settings  Json     @default("{}")
+
+  // Relations
+  executions      Execution[]
+  memoryReferences MemoryReference[]
+
+  @@index([isActive])
+  @@index([createdAt])
+  @@index([updatedAt])
+  @@schema("public")
+  @@map("memory_workflows")
+}
+
+// Execution Records
+model Execution {
+  id            String   @id @default(uuid()) @db.Uuid
+  workflowId    String   @map("workflow_id") @db.Uuid
+  status        String   @db.VarChar(50) // 'running', 'success', 'error', 'waiting'
+  inputData     Json?    @map("input_data")
+  resultData    Json?    @map("result_data")
+  startedAt     DateTime @map("started_at") @db.Timestamp(6)
+  finishedAt    DateTime? @map("finished_at") @db.Timestamp(6)
+  executionTime Int?     @map("execution_time") // milliseconds
+  errorMessage  String?  @map("error_message") @db.Text
+  context       Json     @default("{}")
+
+  // Relations
+  workflow      Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  nodeExecutions NodeExecution[]
+
+  @@index([workflowId])
+  @@index([status])
+  @@index([startedAt])
+  @@schema("public")
+  @@map("memory_executions")
+}
+
+// Node Execution Data
+model NodeExecution {
+  id          String    @id @default(uuid()) @db.Uuid
+  executionId String    @map("execution_id") @db.Uuid
+  nodeId      String    @map("node_id") @db.VarChar(100)
+  nodeType    String    @map("node_type") @db.VarChar(100)
+  inputData   Json?     @map("input_data")
+  outputData  Json?     @map("output_data")
+  status      String    @db.VarChar(50)
+  error       String?   @db.Text
+  duration    Int?      // milliseconds
+  sequence    Int
+  metadata    Json?
+
+  // Relations
+  execution   Execution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+
+  @@index([executionId])
+  @@index([nodeId])
+  @@index([sequence])
+  @@schema("public")
+  @@map("memory_node_executions")
+}
+
+// Memory References (For AI context)
+model MemoryReference {
+  id            String    @id @default(uuid()) @db.Uuid
+  workflowId    String?   @map("workflow_id") @db.Uuid
+  referenceType String    @map("reference_type") @db.VarChar(50) // 'example', 'template', 'pattern', 'documentation'
+  content       String    @db.Text
+  embedding     Unsupported("vector(1536)")? // pgvector - stored as text in Prisma, handled in application
+  metadata      Json?
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamp(6)
+
+  // Relations
+  workflow      Workflow? @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+
+  @@index([workflowId])
+  @@index([referenceType])
+  @@index([createdAt])
+  @@schema("public")
+  @@map("memory_references")
+}

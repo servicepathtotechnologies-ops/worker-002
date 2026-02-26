@@ -1,0 +1,32 @@
+{
+  "chatbot_basic": {
+    "exampleId": "ai_chatbot_with_memory_gemini_v1",
+    "name": "Basic Chatbot",
+    "description": "A simple chatbot workflow with memory using Google Gemini."
+  },
+  "webhook_to_slack": {
+    "exampleId": "webhook_to_slack_notification_v1",
+    "name": "Webhook to Slack",
+    "description": "Receive webhook data and notify Slack."
+  },
+  "crm_lead_capture_hubspot": {
+    "exampleId": "crm_lead_capture_hubspot_v1",
+    "name": "Lead Capture to HubSpot",
+    "description": "Capture leads from a form and create contacts in HubSpot CRM."
+  },
+  "email_form_confirmation": {
+    "exampleId": "email_form_to_email_confirmation_v1",
+    "name": "Form Submission Email Confirmation",
+    "description": "Send a confirmation email when a user submits a form."
+  },
+  "sheets_scheduled_api_to_sheets": {
+    "exampleId": "sheets_scheduled_api_to_sheets_v1",
+    "name": "Scheduled API to Google Sheets",
+    "description": "Fetch API data on a schedule and append it to Google Sheets."
+  },
+  "database_db_backup_to_drive": {
+    "exampleId": "database_db_backup_to_drive_v1",
+    "name": "Database Backup to Google Drive",
+    "description": "Nightly export of database contents into Google Drive."
+  }
+}

@@ -1,0 +1,327 @@
+{
+  "version": "1.0.0",
+  "schema_version": "2024-01",
+  "last_updated": "2024-01-15T10:00:00Z",
+  "total_nodes": 24,
+  "nodes": {
+    "scheduleTrigger": {
+      "nodeType": "n8n-nodes-base.scheduleTrigger",
+      "displayName": "Schedule Trigger",
+      "category": "core",
+      "subcategory": "trigger",
+      "description": "Triggers workflow on a schedule using cron",
+      "capabilities": ["trigger", "time_based"],
+      "requiredConfig": {
+        "rule": {
+          "type": "object",
+          "required": ["cronExpression"],
+          "properties": {
+            "cronExpression": {
+              "type": "string",
+              "description": "Cron expression (e.g., '0 9 * * *' for 9 AM daily)",
+              "pattern": "^([0-9]|,|\\*|\\/|-|\\?) ([0-9]|,|\\*|\\/|-|\\?) ([0-9]|,|\\*|\\/|-|\\?) ([0-9]|,|\\*|\\/|-|\\?) ([0-9]|,|\\*|\\/|-|\\?)$",
+              "default": "0 9 * * *"
+            }
+          }
+        }
+      },
+      "inputs": [],
+      "outputs": ["main"],
+      "outputSchema": {
+        "main": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "timestamp": {"type": "string", "format": "date-time"},
+              "executionId": {"type": "string"}
+            }
+          }
+        }
+      },
+      "credentials": [],
+      "uiSafe": true
+    },
+    "aiAgent": {
+      "nodeType": "@n8n/n8n-nodes-langchain.agent",
+      "displayName": "AI Agent",
+      "category": "ai",
+      "subcategory": "agent",
+      "description": "LangChain agent with tool calling capabilities",
+      "capabilities": ["ai", "tools", "reasoning"],
+      "requiredConfig": {
+        "agent": {
+          "type": "string",
+          "enum": ["openai", "anthropic", "azure_openai"],
+          "default": "openai"
+        },
+        "model": {
+          "type": "string",
+          "default": "gpt-4-turbo-preview"
+        },
+        "temperature": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 2,
+          "default": 0.1
+        },
+        "maxTokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096,
+          "default": 1024
+        }
+      },
+      "inputs": ["main", "tools"],
+      "outputs": ["main", "tool"],
+      "credentials": [
+        {
+          "type": "openAiApi",
+          "required": true
+        }
+      ]
+    },
+    "httpRequest": {
+      "nodeType": "n8n-nodes-base.httpRequest",
+      "displayName": "HTTP Request",
+      "category": "core",
+      "subcategory": "communication",
+      "description": "Make HTTP requests to APIs",
+      "capabilities": ["api", "rest", "webhook"],
+      "requiredConfig": {
+        "method": {
+          "type": "string",
+          "enum": ["GET", "POST", "PUT", "DELETE", "PATCH"],
+          "default": "GET"
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Full URL endpoint"
+        },
+        "authentication": {
+          "type": "string",
+          "enum": ["none", "genericCredentialType", "predefinedCredentialType"],
+          "default": "none"
+        }
+      },
+      "inputs": ["main"],
+      "outputs": ["main"],
+      "credentials": [
+        {
+          "type": "httpBasicAuth",
+          "required": false
+        },
+        {
+          "type": "httpHeaderAuth",
+          "required": false
+        },
+        {
+          "type": "oauth2Api",
+          "required": false
+        }
+      ]
+    },
+    "slack": {
+      "nodeType": "n8n-nodes-base.slack",
+      "displayName": "Slack",
+      "category": "communication",
+      "subcategory": "chat",
+      "description": "Send messages to Slack channels",
+      "capabilities": ["notification", "messaging"],
+      "requiredConfig": {
+        "resource": {
+          "type": "string",
+          "enum": ["channel", "message"],
+          "default": "message"
+        },
+        "operation": {
+          "type": "string",
+          "enum": ["post", "update", "delete"],
+          "default": "post"
+        },
+        "channel": {
+          "type": "string",
+          "description": "Slack channel ID or name"
+        },
+        "text": {
+          "type": "string",
+          "description": "Message text"
+        }
+      },
+      "inputs": ["main"],
+      "outputs": ["main"],
+      "credentials": [
+        {
+          "type": "slackApi",
+          "required": true
+        }
+      ]
+    },
+    "googleSheets": {
+      "nodeType": "n8n-nodes-base.googleSheets",
+      "displayName": "Google Sheets",
+      "category": "data",
+      "subcategory": "spreadsheet",
+      "description": "Read/write to Google Sheets",
+      "capabilities": ["storage", "spreadsheet"],
+      "requiredConfig": {
+        "resource": {
+          "type": "string",
+          "enum": ["spreadsheet", "sheet"],
+          "default": "spreadsheet"
+        },
+        "operation": {
+          "type": "string",
+          "enum": ["append", "read", "update"],
+          "default": "append"
+        },
+        "sheetId": {
+          "type": "string",
+          "description": "Google Sheets ID"
+        },
+        "range": {
+          "type": "string",
+          "default": "A:Z"
+        }
+      },
+      "inputs": ["main"],
+      "outputs": ["main"],
+      "credentials": [
+        {
+          "type": "googleSheetsOAuth2Api",
+          "required": true
+        }
+      ]
+    },
+    "if": {
+      "nodeType": "n8n-nodes-base.if",
+      "displayName": "IF",
+      "category": "core",
+      "subcategory": "logic",
+      "description": "Conditional branching",
+      "capabilities": ["conditional", "branching"],
+      "requiredConfig": {
+        "conditions": {
+          "type": "object",
+          "required": ["conditions"],
+          "properties": {
+            "conditions": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "leftValue": {"type": "string"},
+                  "operator": {
+                    "type": "string",
+                    "enum": ["equals", "notEquals", "contains", "notContains"]
+                  },
+                  "rightValue": {"type": "string"}
+                }
+              }
+            }
+          }
+        }
+      },
+      "inputs": ["main"],
+      "outputs": ["true", "false"],
+      "credentials": []
+    },
+    "webhook": {
+      "nodeType": "n8n-nodes-base.webhook",
+      "displayName": "Webhook",
+      "category": "core",
+      "subcategory": "trigger",
+      "description": "Trigger workflow via HTTP webhook",
+      "capabilities": ["trigger", "webhook"],
+      "requiredConfig": {
+        "httpMethod": {
+          "type": "string",
+          "enum": ["GET", "POST", "PUT"],
+          "default": "POST"
+        },
+        "path": {
+          "type": "string",
+          "description": "Webhook path"
+        }
+      },
+      "inputs": [],
+      "outputs": ["main"],
+      "credentials": []
+    },
+    "emailSend": {
+      "nodeType": "n8n-nodes-base.emailSend",
+      "displayName": "Send Email",
+      "category": "communication",
+      "subcategory": "email",
+      "description": "Send email messages",
+      "capabilities": ["notification", "email"],
+      "requiredConfig": {
+        "to": {
+          "type": "string",
+          "format": "email",
+          "description": "Recipient email address"
+        },
+        "subject": {
+          "type": "string",
+          "description": "Email subject"
+        },
+        "text": {
+          "type": "string",
+          "description": "Email body text"
+        }
+      },
+      "inputs": ["main"],
+      "outputs": ["main"],
+      "credentials": [
+        {
+          "type": "smtp",
+          "required": true
+        }
+      ]
+    },
+    "manualTrigger": {
+      "nodeType": "n8n-nodes-base.manualTrigger",
+      "displayName": "Manual Trigger",
+      "category": "core",
+      "subcategory": "trigger",
+      "description": "Manually trigger workflow execution",
+      "capabilities": ["trigger", "manual"],
+      "requiredConfig": {},
+      "inputs": [],
+      "outputs": ["main"],
+      "credentials": []
+    },
+    "set": {
+      "nodeType": "n8n-nodes-base.set",
+      "displayName": "Set",
+      "category": "core",
+      "subcategory": "transform",
+      "description": "Set values on items",
+      "capabilities": ["transform", "data"],
+      "requiredConfig": {
+        "values": {
+          "type": "object",
+          "description": "Key-value pairs to set"
+        }
+      },
+      "inputs": ["main"],
+      "outputs": ["main"],
+      "credentials": []
+    }
+  },
+  "categories": {
+    "core": ["trigger", "logic", "communication"],
+    "ai": ["agent", "embeddings", "vector"],
+    "communication": ["chat", "email", "sms"],
+    "data": ["storage", "database", "spreadsheet"],
+    "productivity": ["calendar", "task", "document"]
+  },
+  "patterns": {
+    "cron_automation": ["scheduleTrigger", "aiAgent", "action_node"],
+    "webhook_api": ["webhook", "httpRequest", "if", "action_node"],
+    "ai_agent_with_tools": ["scheduleTrigger", "aiAgent", "tool", "action_node"],
+    "data_sync": ["scheduleTrigger", "source", "transform", "destination"]
+  },
+  "forbidden_nodes": ["custom", "twitter", "linkedin", "log", "console", "instagram_post", "facebook"]
+}

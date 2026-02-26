@@ -1,0 +1,21 @@
+{
+  "orderId": "ORD-2024-002",
+  "customerEmail": "customer2@example.com",
+  "customerName": "Customer Two",
+  "subtotal": 2500.00,
+  "items": [
+    {
+      "productId": "PROD-002",
+      "productName": "Product B",
+      "quantity": 5,
+      "price": 500.00
+    }
+  ],
+  "shippingAddress": {
+    "street": "123 Main St",
+    "city": "New York",
+    "state": "NY",
+    "zip": "10001"
+  },
+  "timestamp": "2024-01-15T20:00:00Z"
+}

@@ -1,0 +1,32 @@
+# Python files (old backend)
+app/
+venv/
+*.py
+requirements.txt
+gunicorn.conf.py
+pytest.ini
+
+# Node.js
+node_modules/
+dist/
+*.log
+.env
+.env.local
+
+# Documentation
+*.md
+!README.md
+
+# Tests
+tests/
+__pycache__/
+*.pyc
+
+# IDE
+.vscode/
+.idea/
+
+# Other
+.DS_Store
+*.swp
+*.swo

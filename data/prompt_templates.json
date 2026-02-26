@@ -1,0 +1,6 @@
+{
+  "workflow_generation": "You are a workflow automation expert. Use only the available nodes below.\n\nAvailable Nodes:\n{reference_guide}\n\nReturn JSON with keys: nodes, edges, explanation.\nUser request: {user_prompt}",
+  "requirement_analysis": "Analyze workflow prompt and return JSON with key requirements (array). Each requirement: key, label, type, description, required. If none, return {\"requirements\": []}. User: {user_prompt}",
+  "chat_assistant": "You are a helpful assistant for CtrlChecks. Use this knowledge base only:\n{knowledge}\n\nAnswer the user clearly and concisely. If unsure, use the fallback response.",
+  "agent_execution": "You are an execution agent. Goal: {goal}\nInput: {input}\nReturn a concise result or next action."
+}

@@ -1,0 +1,56 @@
+{
+  "timestamp": "2026-02-16T08:06:47.380Z",
+  "apiUrl": "http://localhost:3001",
+  "results": [
+    {
+      "testId": "test_1",
+      "testName": "Simple Form to Sheets",
+      "prompt": "When a form is submitted with name and email, save it to Google Sheets in a sheet called 'Submissions'.",
+      "success": false,
+      "observations": {},
+      "errors": [
+        "fetch failed"
+      ]
+    },
+    {
+      "testId": "test_2",
+      "testName": "Scheduled API Check with Conditional Alert",
+      "prompt": "Every hour, check the status of https://api.example.com/health. If the status is not 'ok', send a Slack message to #alerts with the error message.",
+      "success": false,
+      "observations": {},
+      "errors": [
+        "fetch failed"
+      ]
+    },
+    {
+      "testId": "test_3",
+      "testName": "Webhook to Multiple Integrations",
+      "prompt": "When a webhook receives a new customer signup (with fields: name, email, company), create a contact in HubSpot, add a row to Airtable in the 'Customers' table, and send a welcome email via Gmail.",
+      "success": false,
+      "observations": {},
+      "errors": [
+        "fetch failed"
+      ]
+    },
+    {
+      "testId": "test_4",
+      "testName": "Complex Multi-Step with Logic",
+      "prompt": "Every Monday at 9 AM, fetch all open GitHub issues from repo 'myorg/myproject'. Filter issues that are labeled 'bug' and have been open for more than 7 days. For each matching issue, create a task in ClickUp with high priority, add it to a Notion database called 'Critical Bugs', and notify the team on Telegram channel #urgent-bugs.",
+      "success": false,
+      "observations": {},
+      "errors": [
+        "fetch failed"
+      ]
+    },
+    {
+      "testId": "test_5",
+      "testName": "Chat Trigger with AI Processing",
+      "prompt": "When someone sends a message in a Telegram group asking for a summary, use an AI chat model to generate a concise summary of the message and reply back to the group.",
+      "success": false,
+      "observations": {},
+      "errors": [
+        "fetch failed"
+      ]
+    }
+  ]
+}

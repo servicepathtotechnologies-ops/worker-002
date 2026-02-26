@@ -1,0 +1,33 @@
+{
+  "id": "webhook_to_slack_notification_v1",
+  "category": "webhook",
+  "useCase": "webhook_pipeline",
+  "title": "Webhook to Slack Notification",
+  "description": "Receive webhook data and send a formatted notification to Slack.",
+  "nodes": [
+    {
+      "id": "webhook_1",
+      "type": "webhook",
+      "config": {
+        "method": "POST"
+      },
+      "credentials": [],
+      "requiredFields": ["method"]
+    },
+    {
+      "id": "slack_1",
+      "type": "slack_message",
+      "config": {
+        "webhookUrl": "{{SLACK_WEBHOOK_URL}}",
+        "channel": "#notifications",
+        "message": "New webhook payload: {{webhook_1.body}}"
+      },
+      "credentials": ["SLACK_WEBHOOK_URL"],
+      "requiredFields": ["webhookUrl", "channel", "message"]
+    }
+  ],
+  "edges": [
+    { "source": "webhook_1", "target": "slack_1" }
+  ]
+}
+

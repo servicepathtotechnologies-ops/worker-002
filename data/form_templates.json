@@ -1,0 +1,11 @@
+{
+  "contact_form": {
+    "title": "Contact Us",
+    "description": "Collect basic contact info",
+    "fields": [
+      {"key": "name", "label": "Name", "type": "text", "required": true},
+      {"key": "email", "label": "Email", "type": "email", "required": true},
+      {"key": "message", "label": "Message", "type": "textarea", "required": true}
+    ]
+  }
+}

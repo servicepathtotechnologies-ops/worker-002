@@ -1,0 +1,16 @@
+[Unit]
+Description=CtrlChecks FastAPI Backend
+After=network.target
+
+[Service]
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/ctrlchecks/worker
+Environment="PATH=/opt/ctrlchecks/venv/bin"
+EnvironmentFile=/opt/ctrlchecks/.env
+ExecStart=/opt/ctrlchecks/venv/bin/gunicorn app.main:app -c gunicorn.conf.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,913 @@
+{
+  "timestamp": "2026-02-24T12:05:38.601Z",
+  "testMethod": "direct",
+  "results": [
+    {
+      "testId": "test_1",
+      "testName": "Simple Form to Sheets",
+      "prompt": "When a form is submitted with name and email, save it to Google Sheets in a sheet called 'Submissions'.",
+      "success": true,
+      "observations": {
+        "nodeCount": 3,
+        "nodeTypes": [
+          "manual_trigger",
+          "google_sheets",
+          "log_output"
+        ],
+        "connectionCount": 0,
+        "credentials": [
+          "SMTP_HOST",
+          "SMTP_USERNAME",
+          "SMTP_PASSWORD"
+        ],
+        "validationStatus": "needs_attention",
+        "matchesExpected": false
+      },
+      "responseTime": 60105,
+      "workflow": {
+        "workflow": {
+          "nodes": [
+            {
+              "id": "b2a81d22-f774-4967-9f6e-3a2799e2ce7d",
+              "type": "custom",
+              "position": {
+                "x": 120,
+                "y": 120
+              },
+              "data": {
+                "type": "manual_trigger",
+                "label": "Manual Trigger",
+                "category": "triggers",
+                "config": {
+                  "outputType": "object"
+                },
+                "autoConfigured": true,
+                "autoConfigConfidence": 1
+              }
+            },
+            {
+              "id": "step_1",
+              "type": "custom",
+              "position": {
+                "x": 440,
+                "y": 120
+              },
+              "data": {
+                "type": "google_sheets",
+                "label": "Save form submission",
+                "category": "google",
+                "icon": "Table",
+                "config": {
+                  "operation": "{{b2a81d22-f774-4967-9f6e-3a2799e2ce7d.type}}",
+                  "spreadsheetId": "{{b2a81d22-f774-4967-9f6e-3a2799e2ce7d.type}}",
+                  "data": "{{b2a81d22-f774-4967-9f6e-3a2799e2ce7d.type}}",
+                  "outputFormat": "json"
+                },
+                "autoConfigured": true,
+                "autoConfigConfidence": 0.8999999999999999
+              }
+            },
+            {
+              "id": "3aad506c-a589-460a-be18-e2ec89c9fc85",
+              "type": "custom",
+              "position": {
+                "x": 760,
+                "y": 120
+              },
+              "data": {
+                "type": "log_output",
+                "label": "Output from google_sheets",
+                "category": "output",
+                "config": {
+                  "message": "{{step_1.type}}",
+                  "level": "info"
+                },
+                "autoConfigured": true,
+                "autoConfigConfidence": 1
+              }
+            }
+          ],
+          "edges": [],
+          "metadata": {
+            "generatedFrom": "When a form is submitted with name and email, save it to Google Sheets in a sheet called 'Submissions'.",
+            "systemPrompt": "System Prompt: \"Save form submissions containing name and email to a Google Sheets sheet named 'Submissions'.\" (13 words) Build an",
+            "requirements": {
+              "primaryGoal": "save form submissions containing name and email to google sheets",
+              "keySteps": [],
+              "inputs": [],
+              "outputs": [],
+              "constraints": [],
+              "complexity": "medium",
+              "urls": [],
+              "apis": [],
+              "credentials": [],
+              "schedules": [],
+              "platforms": [
+                "Google Sheets"
+              ],
+              "originalPrompt": "When a form is submitted with name and email, save it to Google Sheets in a sheet called 'Submissions'.",
+              "trigger": "form",
+              "planner_used": true,
+              "ir_used": true,
+              "ir_validation": {
+                "valid": true,
+                "errors": [],
+                "warnings": []
+              },
+              "planner_trigger": "form",
+              "planner_steps_count": 1,
+              "planner_confidence": 0.95
+            },
+            "validation": {
+              "valid": false,
+              "errors": [],
+              "warnings": []
+            },
+            "productionReady": false,
+            "timestamp": "2026-02-24T12:01:31.579Z",
+            "confidenceScore": {
+              "overall": 0.85,
+              "components": {}
+            },
+            "intent": "write_workflow",
+            "buildMode": "safe",
+            "repairAttempted": false
+          }
+        },
+        "documentation": "# Generated Workflow\n\n## Goal\nsave form submissions containing name and email to google sheets\n\n## Steps\n\n\n## Nodes\n- Manual Trigger (manual_trigger)\n- Save form submission (custom)\n- Output from google_sheets (custom)\n\n## Connections\n\n\nGenerated on: 2026-02-24T12:01:31.574Z\n",
+        "suggestions": [
+          {
+            "type": "error_handling",
+            "suggestion": "Add error handling nodes for better reliability",
+            "priority": "high"
+          },
+          {
+            "type": "logging",
+            "suggestion": "Add logging nodes for debugging",
+            "priority": "medium"
+          }
+        ],
+        "estimatedComplexity": "simple",
+        "systemPrompt": "System Prompt: \"Save form submissions containing name and email to a Google Sheets sheet named 'Submissions'.\" (13 words) Build an",
+        "requirements": {
+          "primaryGoal": "save form submissions containing name and email to google sheets",
+          "keySteps": [],
+          "inputs": [],
+          "outputs": [],
+          "constraints": [],
+          "complexity": "medium",
+          "urls": [],
+          "apis": [],
+          "credentials": [],
+          "schedules": [],
+          "platforms": [
+            "Google Sheets"
+          ],
+          "originalPrompt": "When a form is submitted with name and email, save it to Google Sheets in a sheet called 'Submissions'.",
+          "trigger": "form",
+          "planner_used": true,
+          "ir_used": true,
+          "ir_validation": {
+            "valid": true,
+            "errors": [],
+            "warnings": []
+          },
+          "planner_trigger": "form",
+          "planner_steps_count": 1,
+          "planner_confidence": 0.95
+        },
+        "requiredCredentials": [
+          "SMTP_HOST",
+          "SMTP_USERNAME",
+          "SMTP_PASSWORD"
+        ]
+      }
+    },
+    {
+      "testId": "test_2",
+      "testName": "Scheduled API Check with Conditional Alert",
+      "prompt": "Every hour, check the status of https://api.example.com/health. If the status is not 'ok', send a Slack message to #alerts with the error message.",
+      "success": true,
+      "observations": {
+        "nodeCount": 4,
+        "nodeTypes": [
+          "schedule",
+          "if_else",
+          "http_request",
+          "log_output"
+        ],
+        "connectionCount": 1,
+        "credentials": [
+          "SLACK_WEBHOOK_URL"
+        ],
+        "validationStatus": "needs_attention",
+        "matchesExpected": false
+      },
+      "responseTime": 72699,
+      "workflow": {
+        "workflow": {
+          "nodes": [
+            {
+              "id": "3a645a1c-bff0-4c20-bd8a-d6edd9935367",
+              "type": "custom",
+              "position": {
+                "x": 120,
+                "y": 120
+              },
+              "data": {
+                "type": "schedule",
+                "label": "Schedule Trigger",
+                "category": "triggers",
+                "config": {
+                  "timezone": "{{input.timezone}}",
+                  "cronExpression": "0 9 * * *",
+                  "cron": "{{input.cron}}"
+                }
+              }
+            },
+            {
+              "id": "step_2",
+              "type": "custom",
+              "position": {
+                "x": 440,
+                "y": 120
+              },
+              "data": {
+                "type": "if_else",
+                "label": "Evaluate if status",
+                "category": "logic",
+                "icon": "GitBranch",
+                "config": {
+                  "conditions": "{{3a645a1c-bff0-4c20-bd8a-d6edd9935367.type}}",
+                  "combineOperation": "AND"
+                },
+                "autoConfigured": true,
+                "autoConfigConfidence": 0.8999999999999999
+              }
+            },
+            {
+              "id": "step_1",
+              "type": "custom",
+              "position": {
+                "x": 760,
+                "y": 300
+              },
+              "data": {
+                "type": "http_request",
+                "label": "Check status of",
+                "category": "http_api",
+                "icon": "Globe",
+                "config": {
+                  "operation": "GET",
+                  "url": "{{step_2.type}}",
+                  "body": "{{step_2.type}}",
+                  "method": "GET",
+                  "timeout": 10000,
+                  "retryOnFail": true,
+                  "maxRetries": 3
+                },
+                "autoConfigured": true,
+                "autoConfigConfidence": 0.8999999999999999
+              }
+            },
+            {
+              "id": "836948da-5de7-4a97-a661-c9ab314a4218",
+              "type": "custom",
+              "position": {
+                "x": 1080,
+                "y": 120
+              },
+              "data": {
+                "type": "log_output",
+                "label": "Output from if_else",
+                "category": "output",
+                "config": {
+                  "message": "{{step_1.type}}",
+                  "level": "info"
+                },
+                "autoConfigured": true,
+                "autoConfigConfidence": 1
+              }
+            }
+          ],
+          "edges": [
+            {
+              "id": "706ea717-140d-4653-9450-eedad57733a0",
+              "source": "step_2",
+              "target": "step_1",
+              "type": "default",
+              "sourceHandle": "true",
+              "targetHandle": "input"
+            }
+          ],
+          "metadata": {
+            "generatedFrom": "Every hour, check the status of https://api.example.com/health. If the status is not 'ok', send a Slack message to #alerts with the error message.",
+            "systemPrompt": "System Prompt: \"Monitor API health hourly; alert Slack #alerts on status failures with error details.\" (14 words) Build an automated",
+            "requirements": {
+              "primaryGoal": "Every hour, check the status of https://api.example.com/health. If the status is not 'ok', send a Slack message to #alerts with the error message",
+              "keySteps": [],
+              "inputs": [],
+              "outputs": [],
+              "constraints": [],
+              "complexity": "medium",
+              "urls": [],
+              "apis": [],
+              "credentials": [],
+              "schedules": [],
+              "platforms": [
+                "Slack"
+              ],
+              "originalPrompt": "Every hour, check the status of https://api.example.com/health. If the status is not 'ok', send a Slack message to #alerts with the error message.",
+              "trigger": "schedule",
+              "planner_used": true,
+              "ir_used": true,
+              "ir_validation": {
+                "valid": true,
+                "errors": [],
+                "warnings": []
+              },
+              "planner_trigger": "schedule",
+              "planner_steps_count": 2,
+              "planner_confidence": 0.95
+            },
+            "validation": {
+              "valid": true,
+              "errors": [],
+              "warnings": []
+            },
+            "productionReady": false,
+            "timestamp": "2026-02-24T12:02:46.281Z",
+            "confidenceScore": {
+              "overall": 0.85,
+              "components": {}
+            },
+            "intent": "write_workflow",
+            "buildMode": "safe",
+            "repairAttempted": false
+          }
+        },
+        "documentation": "# Generated Workflow\n\n## Goal\nEvery hour, check the status of https://api.example.com/health. If the status is not 'ok', send a Slack message to #alerts with the error message\n\n## Steps\n\n\n## Nodes\n- Schedule Trigger (schedule)\n- Evaluate if status (custom)\n- Check status of (custom)\n- Output from if_else (custom)\n\n## Connections\nstep_2 → step_1\n\nGenerated on: 2026-02-24T12:02:46.277Z\n",
+        "suggestions": [
+          {
+            "type": "error_handling",
+            "suggestion": "Add error handling nodes for better reliability",
+            "priority": "high"
+          },
+          {
+            "type": "logging",
+            "suggestion": "Add logging nodes for debugging",
+            "priority": "medium"
+          }
+        ],
+        "estimatedComplexity": "medium",
+        "systemPrompt": "System Prompt: \"Monitor API health hourly; alert Slack #alerts on status failures with error details.\" (14 words) Build an automated",
+        "requirements": {
+          "primaryGoal": "Every hour, check the status of https://api.example.com/health. If the status is not 'ok', send a Slack message to #alerts with the error message",
+          "keySteps": [],
+          "inputs": [],
+          "outputs": [],
+          "constraints": [],
+          "complexity": "medium",
+          "urls": [],
+          "apis": [],
+          "credentials": [],
+          "schedules": [],
+          "platforms": [
+            "Slack"
+          ],
+          "originalPrompt": "Every hour, check the status of https://api.example.com/health. If the status is not 'ok', send a Slack message to #alerts with the error message.",
+          "trigger": "schedule",
+          "planner_used": true,
+          "ir_used": true,
+          "ir_validation": {
+            "valid": true,
+            "errors": [],
+            "warnings": []
+          },
+          "planner_trigger": "schedule",
+          "planner_steps_count": 2,
+          "planner_confidence": 0.95
+        },
+        "requiredCredentials": [
+          "SLACK_WEBHOOK_URL"
+        ]
+      }
+    },
+    {
+      "testId": "test_3",
+      "testName": "Webhook to Multiple Integrations",
+      "prompt": "When a webhook receives a new customer signup (with fields: name, email, company), create a contact in HubSpot, add a row to Airtable in the 'Customers' table, and send a welcome email via Gmail.",
+      "success": true,
+      "observations": {
+        "nodeCount": 5,
+        "nodeTypes": [
+          "manual_trigger",
+          "airtable",
+          "hubspot",
+          "google_gmail",
+          "google_gmail"
+        ],
+        "connectionCount": 2,
+        "credentials": [],
+        "validationStatus": "needs_attention",
+        "matchesExpected": false
+      },
+      "responseTime": 76728,
+      "workflow": {
+        "workflow": {
+          "nodes": [
+            {
+              "id": "6ab29a0e-0907-4c2f-b267-c5c99b053a54",
+              "type": "custom",
+              "position": {
+                "x": 120,
+                "y": 120
+              },
+              "data": {
+                "type": "manual_trigger",
+                "label": "Manual Trigger",
+                "category": "triggers",
+                "config": {
+                  "outputType": "object"
+                },
+                "autoConfigured": true,
+                "autoConfigConfidence": 1
+              }
+            },
+            {
+              "id": "step_2",
+              "type": "custom",
+              "position": {
+                "x": 440,
+                "y": 120
+              },
+              "data": {
+                "type": "airtable",
+                "label": "Add row Airtable",
+                "category": "database",
+                "icon": "Database",
+                "config": {
+                  "operation": "{{6ab29a0e-0907-4c2f-b267-c5c99b053a54.type}}",
+                  "baseId": "{{6ab29a0e-0907-4c2f-b267-c5c99b053a54.type}}",
+                  "tableId": "{{6ab29a0e-0907-4c2f-b267-c5c99b053a54.type}}"
+                },
+                "autoConfigured": true,
+                "autoConfigConfidence": 0.8999999999999999
+              }
+            },
+            {
+              "id": "step_1",
+              "type": "custom",
+              "position": {
+                "x": 760,
+                "y": 120
+              },
+              "data": {
+                "type": "hubspot",
+                "label": "Create contact HubSpot",
+                "category": "crm",
+                "icon": "Box",
+                "config": {
+                  "operation": "{{step_2.output}}",
+                  "resource": "{{step_2.output}}",
+                  "limit": 10
+                },
+                "autoConfigured": true,
+                "autoConfigConfidence": 0.8999999999999999
+              }
+            },
+            {
+              "id": "step_3",
+              "type": "custom",
+              "position": {
+                "x": 1080,
+                "y": 120
+              },
+              "data": {
+                "type": "google_gmail",
+                "label": "Send welcome email",
+                "category": "google",
+                "icon": "Mail",
+                "config": {
+                  "operation": "send",
+                  "body": "{{step_1.output}}",
+                  "to": "{{step_1.output}}",
+                  "subject": "{{step_1.output}}",
+                  "maxResults": 10
+                },
+                "autoConfigured": true,
+                "autoConfigConfidence": 1
+              }
+            },
+            {
+              "id": "991607f6-9c4a-4cff-8c63-7c4aac496168",
+              "type": "custom",
+              "position": {
+                "x": 1400,
+                "y": 120
+              },
+              "data": {
+                "type": "google_gmail",
+                "label": "Output from google_gmail",
+                "category": "output",
+                "config": {
+                  "operation": "send",
+                  "body": "{{step_3.type}}",
+                  "to": "{{step_3.type}}",
+                  "subject": "{{step_3.type}}",
+                  "maxResults": 10
+                },
+                "autoConfigured": true,
+                "autoConfigConfidence": 1
+              }
+            }
+          ],
+          "edges": [
+            {
+              "id": "d4476418-8881-4b39-b83b-6190e6c53dd0",
+              "source": "step_1",
+              "target": "step_3",
+              "type": "default",
+              "sourceHandle": "data",
+              "targetHandle": "input"
+            },
+            {
+              "id": "365e4030-41ee-4d17-8747-1588dff754e9",
+              "source": "step_3",
+              "target": "991607f6-9c4a-4cff-8c63-7c4aac496168",
+              "type": "default",
+              "sourceHandle": "output",
+              "targetHandle": "input"
+            }
+          ],
+          "metadata": {
+            "generatedFrom": "When a webhook receives a new customer signup (with fields: name, email, company), create a contact in HubSpot, add a row to Airtable in the 'Customers' table, and send a welcome email via Gmail.",
+            "systemPrompt": "System Prompt: \"Automate creation of contacts in HubSpot, add entries to Airtable, and send emails upon receiving new customer signups.\" (15 words)",
+            "requirements": {
+              "primaryGoal": "When a webhook receives a new customer signup, create a contact in HubSpot, add a row to Airtable's 'Customers' table, and send a welcome email via Gmail",
+              "keySteps": [],
+              "inputs": [],
+              "outputs": [],
+              "constraints": [],
+              "complexity": "medium",
+              "urls": [],
+              "apis": [],
+              "credentials": [],
+              "schedules": [],
+              "platforms": [
+                "HubSpot",
+                "Airtable",
+                "Gmail"
+              ],
+              "originalPrompt": "When a webhook receives a new customer signup (with fields: name, email, company), create a contact in HubSpot, add a row to Airtable in the 'Customers' table, and send a welcome email via Gmail.",
+              "trigger": "webhook",
+              "planner_used": true,
+              "ir_used": true,
+              "ir_validation": {
+                "valid": true,
+                "errors": [],
+                "warnings": []
+              },
+              "planner_trigger": "webhook",
+              "planner_steps_count": 3,
+              "planner_confidence": 0.95
+            },
+            "validation": {
+              "valid": true,
+              "errors": [],
+              "warnings": []
+            },
+            "productionReady": false,
+            "timestamp": "2026-02-24T12:04:05.011Z",
+            "confidenceScore": {
+              "overall": 0.85,
+              "components": {}
+            },
+            "intent": "write_workflow",
+            "buildMode": "safe",
+            "repairAttempted": false
+          }
+        },
+        "documentation": "# Generated Workflow\n\n## Goal\nWhen a webhook receives a new customer signup, create a contact in HubSpot, add a row to Airtable's 'Customers' table, and send a welcome email via Gmail\n\n## Steps\n\n\n## Nodes\n- Manual Trigger (manual_trigger)\n- Add row Airtable (custom)\n- Create contact HubSpot (custom)\n- Send welcome email (custom)\n- Output from google_gmail (custom)\n\n## Connections\nstep_1 → step_3\nstep_3 → 991607f6-9c4a-4cff-8c63-7c4aac496168\n\nGenerated on: 2026-02-24T12:04:05.003Z\n",
+        "suggestions": [
+          {
+            "type": "error_handling",
+            "suggestion": "Add error handling nodes for better reliability",
+            "priority": "high"
+          },
+          {
+            "type": "logging",
+            "suggestion": "Add logging nodes for debugging",
+            "priority": "medium"
+          }
+        ],
+        "estimatedComplexity": "medium",
+        "systemPrompt": "System Prompt: \"Automate creation of contacts in HubSpot, add entries to Airtable, and send emails upon receiving new customer signups.\" (15 words)",
+        "requirements": {
+          "primaryGoal": "When a webhook receives a new customer signup, create a contact in HubSpot, add a row to Airtable's 'Customers' table, and send a welcome email via Gmail",
+          "keySteps": [],
+          "inputs": [],
+          "outputs": [],
+          "constraints": [],
+          "complexity": "medium",
+          "urls": [],
+          "apis": [],
+          "credentials": [],
+          "schedules": [],
+          "platforms": [
+            "HubSpot",
+            "Airtable",
+            "Gmail"
+          ],
+          "originalPrompt": "When a webhook receives a new customer signup (with fields: name, email, company), create a contact in HubSpot, add a row to Airtable in the 'Customers' table, and send a welcome email via Gmail.",
+          "trigger": "webhook",
+          "planner_used": true,
+          "ir_used": true,
+          "ir_validation": {
+            "valid": true,
+            "errors": [],
+            "warnings": []
+          },
+          "planner_trigger": "webhook",
+          "planner_steps_count": 3,
+          "planner_confidence": 0.95
+        },
+        "requiredCredentials": []
+      }
+    },
+    {
+      "testId": "test_4",
+      "testName": "Complex Multi-Step with Logic",
+      "prompt": "Every Monday at 9 AM, fetch all open GitHub issues from repo 'myorg/myproject'. Filter issues that are labeled 'bug' and have been open for more than 7 days. For each matching issue, create a task in ClickUp with high priority, add it to a Notion database called 'Critical Bugs', and notify the team on Telegram channel #urgent-bugs.",
+      "success": true,
+      "observations": {
+        "nodeCount": 7,
+        "nodeTypes": [
+          "schedule",
+          "github",
+          "clickup",
+          "telegram",
+          "notion",
+          "log_output",
+          "filter"
+        ],
+        "connectionCount": 1,
+        "credentials": [],
+        "validationStatus": "needs_attention",
+        "matchesExpected": false
+      },
+      "responseTime": 91575,
+      "workflow": {
+        "workflow": {
+          "nodes": [
+            {
+              "id": "c58bc61e-4f88-4b88-b457-d823a8beffba",
+              "type": "custom",
+              "position": {
+                "x": 120,
+                "y": 120
+              },
+              "data": {
+                "type": "schedule",
+                "label": "Schedule Trigger",
+                "category": "triggers",
+                "config": {
+                  "timezone": "{{input.timezone}}",
+                  "cronExpression": "0 9 * * *",
+                  "cron": "{{input.cron}}"
+                }
+              }
+            },
+            {
+              "id": "step_1",
+              "type": "custom",
+              "position": {
+                "x": 440,
+                "y": 120
+              },
+              "data": {
+                "type": "github",
+                "label": "Fetch all open",
+                "category": "devops",
+                "icon": "Box",
+                "config": {
+                  "operation": "{{c58bc61e-4f88-4b88-b457-d823a8beffba.type}}",
+                  "body": "{{c58bc61e-4f88-4b88-b457-d823a8beffba.type}}"
+                },
+                "autoConfigured": true,
+                "autoConfigConfidence": 0.8999999999999999
+              }
+            },
+            {
+              "id": "step_3",
+              "type": "custom",
+              "position": {
+                "x": 760,
+                "y": 120
+              },
+              "data": {
+                "type": "clickup",
+                "label": "Create task ClickUp",
+                "category": "actions",
+                "icon": "Box",
+                "config": {
+                  "operation": "{{step_1.output}}"
+                },
+                "autoConfigured": true,
+                "autoConfigConfidence": 0.8999999999999999
+              }
+            },
+            {
+              "id": "step_5",
+              "type": "custom",
+              "position": {
+                "x": 1080,
+                "y": 120
+              },
+              "data": {
+                "type": "telegram",
+                "label": "Notify team Telegram",
+                "category": "output",
+                "icon": "MessageSquare",
+                "config": {
+                  "chatId": "{{step_3.output}}",
+                  "messageType": "{{step_3.output}}",
+                  "message": "{{step_3.output}}",
+                  "parseMode": "HTML",
+                  "disableWebPagePreview": false,
+                  "disableNotification": false,
+                  "protectContent": false,
+                  "allowSendingWithoutReply": false
+                },
+                "autoConfigured": true,
+                "autoConfigConfidence": 0.8999999999999999
+              }
+            },
+            {
+              "id": "step_4",
+              "type": "custom",
+              "position": {
+                "x": 1400,
+                "y": 120
+              },
+              "data": {
+                "type": "notion",
+                "label": "Add task Notion",
+                "category": "productivity",
+                "icon": "Box",
+                "config": {
+                  "operation": "{{step_5.type}}",
+                  "resource": "{{step_5.type}}"
+                },
+                "autoConfigured": true,
+                "autoConfigConfidence": 0.8999999999999999
+              }
+            },
+            {
+              "id": "d4e3edd6-2232-47d7-8be4-187bbf68d02a",
+              "type": "custom",
+              "position": {
+                "x": 1720,
+                "y": 120
+              },
+              "data": {
+                "type": "log_output",
+                "label": "Output from telegram",
+                "category": "output",
+                "config": {
+                  "message": "{{step_4.output}}",
+                  "level": "info"
+                },
+                "autoConfigured": true,
+                "autoConfigConfidence": 1
+              }
+            },
+            {
+              "id": "step_2",
+              "type": "custom",
+              "position": {
+                "x": 2040,
+                "y": 120
+              },
+              "data": {
+                "type": "filter",
+                "label": "Filter issues that",
+                "category": "logic",
+                "icon": "Code",
+                "config": {
+                  "condition": "{{d4e3edd6-2232-47d7-8be4-187bbf68d02a.type}}"
+                },
+                "autoConfigured": true,
+                "autoConfigConfidence": 0.8999999999999999
+              }
+            }
+          ],
+          "edges": [
+            {
+              "id": "012d6d50-0b06-4b1f-b593-6bc1c8ec16f6",
+              "source": "step_3",
+              "target": "step_5",
+              "type": "default",
+              "sourceHandle": "data",
+              "targetHandle": "input"
+            }
+          ],
+          "metadata": {
+            "generatedFrom": "Every Monday at 9 AM, fetch all open GitHub issues from repo 'myorg/myproject'. Filter issues that are labeled 'bug' and have been open for more than 7 days. For each matching issue, create a task in ClickUp with high priority, add it to a Notion database called 'Critical Bugs', and notify the team on Telegram channel #urgent-bugs.",
+            "systemPrompt": "System Prompt: \"Automate weekly tasks to fetch GitHub issues, create ClickUp tasks, update Notion, and send Telegram notifications.\" (14 words)",
+            "requirements": {
+              "primaryGoal": "Every Monday at 9 AM, fetch all open GitHub issues from repo 'myorg/myproject', filter by label 'bug' and age > 7 days, create ClickUp tasks with high priority, add to Notion database 'Critical Bugs', notify team on Telegram channel #urgent-bugs",
+              "keySteps": [],
+              "inputs": [],
+              "outputs": [],
+              "constraints": [],
+              "complexity": "medium",
+              "urls": [],
+              "apis": [],
+              "credentials": [],
+              "schedules": [],
+              "platforms": [
+                "GitHub",
+                "ClickUp",
+                "Notion",
+                "Telegram"
+              ],
+              "originalPrompt": "Every Monday at 9 AM, fetch all open GitHub issues from repo 'myorg/myproject'. Filter issues that are labeled 'bug' and have been open for more than 7 days. For each matching issue, create a task in ClickUp with high priority, add it to a Notion database called 'Critical Bugs', and notify the team on Telegram channel #urgent-bugs.",
+              "trigger": "schedule",
+              "planner_used": true,
+              "ir_used": true,
+              "ir_validation": {
+                "valid": true,
+                "errors": [],
+                "warnings": []
+              },
+              "planner_trigger": "schedule",
+              "planner_steps_count": 5,
+              "planner_confidence": 0.95
+            },
+            "validation": {
+              "valid": true,
+              "errors": [],
+              "warnings": []
+            },
+            "productionReady": false,
+            "timestamp": "2026-02-24T12:05:38.599Z",
+            "confidenceScore": {
+              "overall": 0.85,
+              "components": {}
+            },
+            "intent": "read_workflow",
+            "buildMode": "safe",
+            "repairAttempted": false
+          }
+        },
+        "documentation": "# Generated Workflow\n\n## Goal\nEvery Monday at 9 AM, fetch all open GitHub issues from repo 'myorg/myproject', filter by label 'bug' and age > 7 days, create ClickUp tasks with high priority, add to Notion database 'Critical Bugs', notify team on Telegram channel #urgent-bugs\n\n## Steps\n\n\n## Nodes\n- Schedule Trigger (schedule)\n- Fetch all open (custom)\n- Create task ClickUp (custom)\n- Notify team Telegram (custom)\n- Add task Notion (custom)\n- Output from telegram (custom)\n- Filter issues that (custom)\n\n## Connections\nstep_3 → step_5\n\nGenerated on: 2026-02-24T12:05:38.597Z\n",
+        "suggestions": [
+          {
+            "type": "error_handling",
+            "suggestion": "Add error handling nodes for better reliability",
+            "priority": "high"
+          },
+          {
+            "type": "logging",
+            "suggestion": "Add logging nodes for debugging",
+            "priority": "medium"
+          }
+        ],
+        "estimatedComplexity": "medium",
+        "systemPrompt": "System Prompt: \"Automate weekly tasks to fetch GitHub issues, create ClickUp tasks, update Notion, and send Telegram notifications.\" (14 words)",
+        "requirements": {
+          "primaryGoal": "Every Monday at 9 AM, fetch all open GitHub issues from repo 'myorg/myproject', filter by label 'bug' and age > 7 days, create ClickUp tasks with high priority, add to Notion database 'Critical Bugs', notify team on Telegram channel #urgent-bugs",
+          "keySteps": [],
+          "inputs": [],
+          "outputs": [],
+          "constraints": [],
+          "complexity": "medium",
+          "urls": [],
+          "apis": [],
+          "credentials": [],
+          "schedules": [],
+          "platforms": [
+            "GitHub",
+            "ClickUp",
+            "Notion",
+            "Telegram"
+          ],
+          "originalPrompt": "Every Monday at 9 AM, fetch all open GitHub issues from repo 'myorg/myproject'. Filter issues that are labeled 'bug' and have been open for more than 7 days. For each matching issue, create a task in ClickUp with high priority, add it to a Notion database called 'Critical Bugs', and notify the team on Telegram channel #urgent-bugs.",
+          "trigger": "schedule",
+          "planner_used": true,
+          "ir_used": true,
+          "ir_validation": {
+            "valid": true,
+            "errors": [],
+            "warnings": []
+          },
+          "planner_trigger": "schedule",
+          "planner_steps_count": 5,
+          "planner_confidence": 0.95
+        },
+        "requiredCredentials": []
+      }
+    }
+  ]
+}
