@@ -4,7 +4,7 @@
  */
 
 import { NodeSchemaRegistry } from './node-schema-registry';
-import { normalizeNodeType } from '../utils/node-type-normalizer';
+import { unifiedNormalizeNodeType } from '../utils/unified-node-type-normalizer';
 import { Workflow, WorkflowNode, WorkflowEdge } from '../types/ai-types';
 import type { 
   WorkflowRepairResult, 
@@ -36,7 +36,7 @@ export class WorkflowAutoRepair {
 
     // Fix 1: Ensure schedule nodes have cron
     nodes = nodes.map(node => {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       if (nodeType === 'schedule') {
         const config = node.data?.config || node.data || {};
         if (!config.cron) {
@@ -58,7 +58,7 @@ export class WorkflowAutoRepair {
 
     // Fix 2: Fix orphan nodes (connect to trigger if logical)
     const triggers = nodes.filter(n => {
-      const type = normalizeNodeType(n);
+      const type = unifiedNormalizeNodeType(n);
       return ['manual_trigger', 'schedule', 'webhook', 'chat_trigger'].includes(type);
     });
 
@@ -71,7 +71,7 @@ export class WorkflowAutoRepair {
         if (node.id !== mainTrigger.id) {
           const hasIncoming = edges.some(e => e.target === node.id);
           if (!hasIncoming) {
-            const nodeType = normalizeNodeType(node);
+            const nodeType = unifiedNormalizeNodeType(node);
             if (!['manual_trigger', 'schedule', 'webhook', 'chat_trigger'].includes(nodeType)) {
               fixes.push(
                 `Orphan node ${node.id} (${nodeType}) detected during auto-repair (no auto-connection to trigger; handled by linear connection logic).`
@@ -89,8 +89,8 @@ export class WorkflowAutoRepair {
 
       if (!sourceNode || !targetNode) return edge;
 
-      const sourceType = normalizeNodeType(sourceNode);
-      const targetType = normalizeNodeType(targetNode);
+      const sourceType = unifiedNormalizeNodeType(sourceNode);
+      const targetType = unifiedNormalizeNodeType(targetNode);
 
       let modified = false;
       const newEdge = { ...edge };

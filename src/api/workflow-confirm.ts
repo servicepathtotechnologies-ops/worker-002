@@ -15,7 +15,7 @@ import { workflowConfirmationManager, WorkflowState } from '../services/ai/workf
 import { toolSubstitutionEngine } from '../services/ai/tool-substitution-engine';
 import { getSupabaseClient } from '../core/database/supabase-compat';
 import { nodeLibrary } from '../services/nodes/node-library';
-import { normalizeNodeType } from '../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../core/utils/unified-node-type-normalizer';
 
 interface ConfirmRequest {
   workflowId: string;
@@ -45,7 +45,7 @@ function applyToolOverrides(
   const updatedNodes = workflow.nodes.map(node => {
     const override = Object.values(toolOverrides).find(o => o.nodeId === node.id);
     if (override) {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       const newSchema = nodeLibrary.getSchema(override.newTool);
       
       if (!newSchema) {
@@ -111,7 +111,7 @@ function applyNodeOverrides(
           return;
         }
 
-        console.log(`[WorkflowConfirm] Replacing node ${override.nodeId}: ${normalizeNodeType(node)} → ${override.newNodeType}`);
+        console.log(`[WorkflowConfirm] Replacing node ${override.nodeId}: ${unifiedNormalizeNodeType(node)} → ${override.newNodeType}`);
         
         updatedNodes[nodeIndex] = {
           ...node,

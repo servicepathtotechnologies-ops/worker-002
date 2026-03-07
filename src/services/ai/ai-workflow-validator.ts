@@ -3,7 +3,7 @@
 
 import { ollamaOrchestrator } from './ollama-orchestrator';
 import type { WorkflowGenerationStructure, WorkflowNode, WorkflowEdge } from '../../core/types/ai-types';
-import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 
 export interface AIValidationResult {
   valid: boolean;
@@ -58,56 +58,151 @@ export class AIWorkflowValidator {
   }
 
   /**
-   * Prepare workflow summary for AI analysis
+   * ✅ FIXED: Prepare structured graph JSON for AI analysis
+   * 
+   * Uses structured JSON instead of natural language to prevent false positives.
    */
   private prepareWorkflowSummary(
     structure: WorkflowGenerationStructure,
     nodes?: WorkflowNode[],
     edges?: WorkflowEdge[]
   ): string {
-    const summary: string[] = [];
+    // ✅ Build structured graph JSON
+    const graphData = {
+      trigger: structure.trigger || null,
+      triggerNodeId: nodes?.find(n => {
+        const nodeType = unifiedNormalizeNodeType(n) || n.type || '';
+        return nodeType.includes('trigger') || nodeType === structure.trigger;
+      })?.id || null,
+      executionOrder: this.buildExecutionOrder(nodes || [], edges || []),
+      nodes: (nodes || []).map(node => ({
+        id: node.id,
+        type: unifiedNormalizeNodeType(node) || node.type || 'unknown',
+        label: (node.data as any)?.label || node.id,
+        isTrigger: this.isTriggerNode(node),
+        operation: (node.data as any)?.config?.operation || (node.data as any)?.operation || null,
+      })),
+      edges: (edges || []).map(edge => ({
+        id: edge.id,
+        source: edge.source,
+        target: edge.target,
+        sourceHandle: edge.sourceHandle || 'default',
+        targetHandle: edge.targetHandle || 'default',
+      })),
+      connectivity: {
+        totalNodes: nodes?.length || 0,
+        totalEdges: edges?.length || 0,
+        allNodesReachable: this.checkAllNodesReachable(nodes || [], edges || []),
+      },
+    };
     
-    // Trigger information
-    summary.push(`## Trigger: ${structure.trigger || 'Not specified'}`);
+    return `## STRUCTURED WORKFLOW GRAPH (JSON):
+\`\`\`json
+${JSON.stringify(graphData, null, 2)}
+\`\`\`
+
+## EXECUTION ORDER:
+${graphData.executionOrder.map((nodeId, idx) => {
+  const node = graphData.nodes.find(n => n.id === nodeId);
+  return `${idx + 1}. ${node?.type || nodeId}${node?.isTrigger ? ' [TRIGGER]' : ''}`;
+}).join('\n')}
+
+## CONNECTIVITY:
+- Total Nodes: ${graphData.connectivity.totalNodes}
+- Total Edges: ${graphData.connectivity.totalEdges}
+- All Nodes Reachable: ${graphData.connectivity.allNodesReachable ? 'YES' : 'NO'}
+- Trigger Node ID: ${graphData.triggerNodeId || 'NOT FOUND'}`;
+  }
+  
+  /**
+   * Build execution order from nodes and edges
+   */
+  private buildExecutionOrder(nodes: WorkflowNode[], edges: WorkflowEdge[]): string[] {
+    // Find trigger node
+    const triggerNode = nodes.find(n => this.isTriggerNode(n));
+    if (!triggerNode) return nodes.map(n => n.id);
     
-    // Steps information
-    summary.push(`\n## Workflow Steps (${structure.steps.length} steps):`);
-    structure.steps.forEach((step, index) => {
-      const stepType = (step as any).type || step.type || 'unknown';
-      const stepDesc = (step as any).description || step.description || '';
-      summary.push(`${index + 1}. ${stepType}${stepDesc ? ` - ${stepDesc}` : ''}`);
+    // Build adjacency list
+    const outgoing = new Map<string, string[]>();
+    edges.forEach(edge => {
+      if (!outgoing.has(edge.source)) {
+        outgoing.set(edge.source, []);
+      }
+      outgoing.get(edge.source)!.push(edge.target);
     });
     
-    // Connections information
-    if (structure.connections && structure.connections.length > 0) {
-      summary.push(`\n## Connections (${structure.connections.length} connections):`);
-      structure.connections.forEach((conn, index) => {
-        summary.push(`${index + 1}. ${conn.source} → ${conn.target}`);
-      });
+    // BFS from trigger
+    const order: string[] = [];
+    const visited = new Set<string>();
+    const queue = [triggerNode.id];
+    visited.add(triggerNode.id);
+    
+    while (queue.length > 0) {
+      const currentNodeId = queue.shift()!;
+      order.push(currentNodeId);
+      
+      const neighbors = outgoing.get(currentNodeId) || [];
+      for (const neighbor of neighbors) {
+        if (!visited.has(neighbor)) {
+          visited.add(neighbor);
+          queue.push(neighbor);
+        }
+      }
     }
     
-    // Node details if available
-    if (nodes && nodes.length > 0) {
-      summary.push(`\n## Node Details (${nodes.length} nodes):`);
-      nodes.forEach((node, index) => {
-        const nodeType = normalizeNodeType(node) || node.type || 'unknown';
-        const nodeLabel = (node.data as any)?.label || node.id;
-        const operation = (node.data as any)?.config?.operation || (node.data as any)?.operation || '';
-        // 🚨 CRITICAL: Explicitly mark trigger nodes
-        const isTrigger = ['manual_trigger', 'schedule', 'webhook', 'form', 'chat_trigger', 'interval', 'error_trigger', 'workflow_trigger'].includes(nodeType);
-        summary.push(`${index + 1}. ${nodeLabel} (${nodeType}${isTrigger ? ' [TRIGGER]' : ''}${operation ? `, operation: ${operation}` : ''})`);
-      });
+    // Add any remaining nodes
+    for (const node of nodes) {
+      if (!visited.has(node.id)) {
+        order.push(node.id);
+      }
     }
     
-    // Edge details if available
-    if (edges && edges.length > 0) {
-      summary.push(`\n## Edge Details (${edges.length} edges):`);
-      edges.forEach((edge, index) => {
-        summary.push(`${index + 1}. ${edge.source} → ${edge.target} (${edge.sourceHandle || 'default'} → ${edge.targetHandle || 'default'})`);
-      });
+    return order;
+  }
+  
+  /**
+   * Check if node is a trigger
+   */
+  private isTriggerNode(node: WorkflowNode): boolean {
+    const nodeType = unifiedNormalizeNodeType(node) || node.type || '';
+    return ['manual_trigger', 'schedule', 'webhook', 'form', 'chat_trigger', 
+            'interval', 'error_trigger', 'workflow_trigger'].includes(nodeType) ||
+           nodeType.includes('trigger');
+  }
+  
+  /**
+   * Check if all nodes are reachable from trigger
+   */
+  private checkAllNodesReachable(nodes: WorkflowNode[], edges: WorkflowEdge[]): boolean {
+    const triggerNode = nodes.find(n => this.isTriggerNode(n));
+    if (!triggerNode) return false;
+    
+    // Build adjacency list
+    const outgoing = new Map<string, string[]>();
+    edges.forEach(edge => {
+      if (!outgoing.has(edge.source)) {
+        outgoing.set(edge.source, []);
+      }
+      outgoing.get(edge.source)!.push(edge.target);
+    });
+    
+    // BFS from trigger
+    const reachable = new Set<string>();
+    const queue = [triggerNode.id];
+    reachable.add(triggerNode.id);
+    
+    while (queue.length > 0) {
+      const currentNodeId = queue.shift()!;
+      const neighbors = outgoing.get(currentNodeId) || [];
+      for (const neighbor of neighbors) {
+        if (!reachable.has(neighbor)) {
+          reachable.add(neighbor);
+          queue.push(neighbor);
+        }
+      }
     }
     
-    return summary.join('\n');
+    return reachable.size === nodes.length;
   }
 
   /**
@@ -302,7 +397,7 @@ Return the JSON now:`;
     nodes: WorkflowNode[]
   ): Promise<{ valid: boolean; issues: string[] }> {
     const nodeOrder = nodes.map(n => {
-      const type = normalizeNodeType(n) || n.type || 'unknown';
+      const type = unifiedNormalizeNodeType(n) || n.type || 'unknown';
       const operation = (n.data as any)?.config?.operation || (n.data as any)?.operation || '';
       return { type, operation, label: (n.data as any)?.label || n.id };
     });

@@ -4,7 +4,7 @@
 import { WorkflowNode, WorkflowEdge } from '../../core/types/ai-types';
 import { validateNodeConfig as validateNodeConfigFromRegistry } from '../../core/validation/schema-based-validator';
 import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
-import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 
 /**
  * Check if a value is a placeholder (not allowed in production workflows)
@@ -153,7 +153,7 @@ export function validateWorkflowConnections(
   
   nodes.forEach(node => {
     // Trigger nodes don't need incoming connections
-    const actualType = normalizeNodeType(node) || node.type;
+    const actualType = unifiedNormalizeNodeType(node) || node.type;
     if (isTriggerNodeType(actualType)) {
       return;
     }
@@ -166,7 +166,7 @@ export function validateWorkflowConnections(
   });
   
   // Check for trigger node
-  const hasTrigger = nodes.some(n => isTriggerNodeType(normalizeNodeType(n) || n.type));
+  const hasTrigger = nodes.some(n => isTriggerNodeType(unifiedNormalizeNodeType(n) || n.type));
   if (!hasTrigger) {
     errors.push('Workflow must have at least one trigger node');
   }

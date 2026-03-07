@@ -39,12 +39,11 @@
 21. `google_sheets`
 22. `google_doc`
 23. `google_gmail`
-24. `gmail`
-25. `google_drive`
-26. `google_calendar`
-27. `google_contacts`
-28. `google_tasks`
-29. `google_big_query`
+24. `google_drive`
+25. `google_calendar`
+26. `google_contacts`
+27. `google_tasks`
+28. `google_big_query`
 
 ### Transformation & Data Manipulation (15)
 30. `set_variable`

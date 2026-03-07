@@ -1,8 +1,15 @@
 /**
  * Intent Structurer
  * 
+ * ⚠️ DEPRECATED: This is a LEGACY component kept only as a last-resort fallback.
+ * 
+ * The new architecture uses:
+ * - SimpleIntent extraction (intentExtractor) → Intent-Aware Planner (intentAwarePlanner)
+ * 
+ * This method will be removed in a future version.
+ * 
  * Converts user prompt into deterministic structured intent JSON.
- * This is STEP 1 of the pipeline: Prompt → Structured Intent
+ * This was STEP 1 of the OLD pipeline: Prompt → Structured Intent
  * 
  * Rules:
  * - No natural language allowed in output
@@ -19,22 +26,22 @@ export interface StructuredIntent {
     interval?: string;
     schedule?: string;
     cron?: string;
-    [key: string]: any;
+    [key: string]: unknown; // ✅ PHASE 2: Changed from 'any' to 'unknown' for type safety
   };
   actions: Array<{
     type: string;
     operation: string;
-    config?: Record<string, any>;
+    config?: Record<string, unknown>; // ✅ PHASE 2: Changed from 'any' to 'unknown' for type safety
   }>;
   dataSources?: Array<{
     type: string;
     operation: string;
-    config?: Record<string, any>;
+    config?: Record<string, unknown>; // ✅ PHASE 2: Changed from 'any' to 'unknown' for type safety
   }>;
   transformations?: Array<{
     type: string;
     operation: string;
-    config?: Record<string, any>;
+    config?: Record<string, unknown>; // ✅ PHASE 2: Changed from 'any' to 'unknown' for type safety
   }>;
   conditions?: Array<{
     type: 'if_else' | 'switch';

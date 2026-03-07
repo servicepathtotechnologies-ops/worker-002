@@ -3,7 +3,7 @@
 // Ensures correct input/output field mapping and type compatibility
 
 import { WorkflowNode, WorkflowEdge } from '../../core/types/ai-types';
-import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType } from '../../core/utils/unified-node-type-normalizer';
 
 export interface ConnectionValidationResult {
   valid: boolean;
@@ -330,8 +330,8 @@ export class ConnectionValidator {
     const warnings: string[] = [];
 
     // PHASE 1: Use normalized node types
-    const sourceType = normalizeNodeType(sourceNode);
-    const targetType = normalizeNodeType(targetNode);
+    const sourceType = unifiedNormalizeNodeType(sourceNode);
+    const targetType = unifiedNormalizeNodeType(targetNode);
 
     // Get schemas
     const sourceOutputSchema = this.getNodeOutputSchema(sourceType);
@@ -470,15 +470,15 @@ export class ConnectionValidator {
 
       if (!result.valid) {
         // ✅ CRITICAL FIX: Use normalizeNodeType for consistent type reporting
-        const sourceActualType = normalizeNodeType(sourceNode);
-        const targetActualType = normalizeNodeType(targetNode);
+        const sourceActualType = unifiedNormalizeNodeType(sourceNode);
+        const targetActualType = unifiedNormalizeNodeType(targetNode);
         allErrors.push(...result.errors.map(e => `Edge ${edge.id} (${sourceActualType} → ${targetActualType}): ${e}`));
       }
 
       if (result.warnings.length > 0) {
         // ✅ CRITICAL FIX: Use normalizeNodeType for consistent type reporting
-        const sourceActualType = normalizeNodeType(sourceNode);
-        const targetActualType = normalizeNodeType(targetNode);
+        const sourceActualType = unifiedNormalizeNodeType(sourceNode);
+        const targetActualType = unifiedNormalizeNodeType(targetNode);
         allWarnings.push(...result.warnings.map(w => `Edge ${edge.id} (${sourceActualType} → ${targetActualType}): ${w}`));
       }
     }

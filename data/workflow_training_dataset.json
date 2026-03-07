@@ -1,12 +1,7 @@
 {
   "version": "2.0",
-<<<<<<< HEAD
   "description": "Comprehensive AI Workflow Agent Training Dataset - 125 diverse workflow examples covering all node types and patterns",
   "totalWorkflows": 125,
-=======
-  "description": "Comprehensive AI Workflow Agent Training Dataset - 100 diverse workflow examples covering all node types and patterns",
-  "totalWorkflows": 100,
->>>>>>> bf0d5a8d18fa3508c2b2a02e424f2fbbb30e6667
   "workflows": [
     {
       "id": "workflow_1",
@@ -8349,7 +8344,6 @@
           "goalAchieved": true
         }
       }
-<<<<<<< HEAD
     },
     {
       "id": "workflow_101",
@@ -10413,8 +10407,6 @@
           "goalAchieved": true
         }
       }
-=======
->>>>>>> bf0d5a8d18fa3508c2b2a02e424f2fbbb30e6667
     }
   ]
 }

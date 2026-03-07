@@ -21,7 +21,7 @@
  */
 
 import { WorkflowNode, WorkflowEdge } from '../../core/types/ai-types';
-import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 import { nodeLibrary } from '../nodes/node-library';
 
 export enum NodeCategory {
@@ -100,7 +100,7 @@ export class ExecutionOrderEnforcer {
       const originalIndex = nodes.findIndex(n => n.id === node.id);
       return {
         nodeId: node.id,
-        nodeType: normalizeNodeType(node),
+        nodeType: unifiedNormalizeNodeType(node),
         category: categorizedNodes.get(node.id) || NodeCategory.TRANSFORMER,
         originalOrder: originalIndex,
         finalOrder: index,
@@ -158,8 +158,8 @@ export class ExecutionOrderEnforcer {
           const sourceNode = nodes.find(n => n.id === edge.source);
           const targetNode = nodes.find(n => n.id === edge.target);
           if (sourceNode && targetNode) {
-            const sourceType = normalizeNodeType(sourceNode);
-            const targetType = normalizeNodeType(targetNode);
+            const sourceType = unifiedNormalizeNodeType(sourceNode);
+            const targetType = unifiedNormalizeNodeType(targetNode);
             issues.push(`Invalid order: ${sourceType} (${sourceCategory}) → ${targetType} (${targetCategory})`);
           }
         }
@@ -176,7 +176,7 @@ export class ExecutionOrderEnforcer {
     const categories = new Map<string, NodeCategory>();
     
     for (const node of nodes) {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       const category = this.getNodeCategory(nodeType);
       categories.set(node.id, category);
     }
@@ -196,6 +196,8 @@ export class ExecutionOrderEnforcer {
    */
   private getNodeCategory(nodeType: string): NodeCategory {
     const nodeTypeLower = nodeType.toLowerCase();
+    const schema = nodeLibrary.getSchema(nodeTypeLower);
+    const capabilities: string[] = (schema?.capabilities || []) as string[];
     
     // 1. Triggers (first)
     if (nodeTypeLower.includes('trigger') || 
@@ -205,6 +207,17 @@ export class ExecutionOrderEnforcer {
         nodeTypeLower === 'interval' ||
         nodeTypeLower === 'chat_trigger') {
       return NodeCategory.TRIGGER;
+    }
+
+    // Contract-driven: treat write-capable nodes as OUTPUT actions (terminal sinks).
+    // This prevents misclassifying storage/CRM nodes like Airtable as producers.
+    const hasWriteCapability =
+      capabilities.some(c => (c || '').toLowerCase().includes('.write')) ||
+      capabilities.some(c => (c || '').toLowerCase().includes('database.write')) ||
+      capabilities.some(c => (c || '').toLowerCase().includes('crm.write')) ||
+      capabilities.some(c => (c || '').toLowerCase().includes('storage.write'));
+    if (hasWriteCapability) {
+      return NodeCategory.OUTPUT;
     }
     
     // 2. Data Sources (read operations only - second)
@@ -367,7 +380,7 @@ export class ExecutionOrderEnforcer {
     
     for (const node of nodes) {
       const nodeCategory = categories.get(node.id);
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       
       if (!nodeCategory) continue;
       

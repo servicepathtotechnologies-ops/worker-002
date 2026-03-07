@@ -16,6 +16,7 @@
 import { LRUNodeOutputsCache } from '../cache/lru-node-outputs-cache';
 import { getNestedValue } from './object-utils';
 import { intentAwarePropertySelect } from './intent-aware-property-selector';
+import { convertToType, FieldType } from './type-converter';
 
 /**
  * Get the most recent node output from cache
@@ -28,22 +29,29 @@ function getPreviousNodeOutput(nodeOutputs: LRUNodeOutputsCache): any {
 }
 
 /**
- * UNIVERSAL TEMPLATE RESOLVER
+ * UNIVERSAL TEMPLATE RESOLVER (Enhanced with Type Conversion)
  * 
  * Resolves template expressions like:
  * - {{$json.items}} → actual array from previous node
  * - $json.items → actual array (handles non-template format)
  * - {{$json.field.path}} → nested value
  * 
+ * ✅ NEW: Automatically converts resolved values to expected types
+ * ✅ NEW: Prevents "Type mismatch" errors
+ * 
  * This works for ALL nodes universally.
  * 
  * @param template - Template string or value to resolve
  * @param nodeOutputs - Cache of all node outputs
- * @returns Resolved value, or original if not a template
+ * @param expectedType - Optional expected type for conversion
+ * @param fieldName - Optional field name for better error messages
+ * @returns Resolved value (converted to expected type if provided), or original if not a template
  */
 export function resolveUniversalTemplate(
   template: any,
-  nodeOutputs: LRUNodeOutputsCache
+  nodeOutputs: LRUNodeOutputsCache,
+  expectedType?: FieldType,
+  fieldName?: string
 ): any {
   // If not a string, return as-is
   if (typeof template !== 'string') {
@@ -131,17 +139,39 @@ export function resolveUniversalTemplate(
     return undefined;
   };
 
+  // Helper to convert resolved value to expected type
+  const convertIfNeeded = (resolved: any): any => {
+    if (expectedType && resolved !== undefined && resolved !== null) {
+      const conversion = convertToType(resolved, expectedType, fieldName);
+      if (conversion.success) {
+        return conversion.value;
+      }
+      // If conversion fails, log warning but return original
+      console.warn(
+        `[TemplateResolver] Type conversion failed for field "${fieldName || 'unknown'}": ` +
+        `${conversion.originalType} → ${expectedType}. Error: ${conversion.error || 'unknown'}`
+      );
+    }
+    return resolved;
+  };
+
   // Non-template format: $json.field (without {{}})
   if (template.startsWith('$json.') || template.startsWith('json.') || template.startsWith('input.') || template.startsWith('trigger.')) {
     const resolved = resolveExpression(template);
-    return resolved !== undefined ? resolved : template;
+    if (resolved !== undefined) {
+      return convertIfNeeded(resolved);
+    }
+    return template;
   }
 
   // Full-expression (typed) match: {{ ... }}
   const fullExpr = template.match(/^\s*\{\{\s*([^}]+)\s*\}\}\s*$/);
   if (fullExpr) {
     const resolved = resolveExpression(fullExpr[1]);
-    return resolved !== undefined ? resolved : template;
+    if (resolved !== undefined) {
+      return convertIfNeeded(resolved);
+    }
+    return template;
   }
 
   // Interpolated string: replace each {{...}} with string value
@@ -149,7 +179,9 @@ export function resolveUniversalTemplate(
     return template.replace(/\{\{\s*([^}]+)\s*\}\}/g, (m, expr) => {
       const resolved = resolveExpression(String(expr));
       if (resolved === undefined || resolved === null) return m; // keep original if unresolved
-      return stringifyForInterpolation(resolved);
+      // For interpolated strings, always convert to string
+      const stringValue = convertIfNeeded(resolved);
+      return stringifyForInterpolation(stringValue);
     });
   }
 
@@ -158,18 +190,39 @@ export function resolveUniversalTemplate(
 }
 
 /**
- * Resolve all template expressions in a config object
+ * Resolve all template expressions in a config object (Enhanced with Type Conversion)
  * This ensures ALL config fields get template resolution automatically
+ * 
+ * ✅ NEW: Automatically converts resolved values to expected types from node schema
  * 
  * @param config - Node configuration object
  * @param nodeOutputs - Cache of all node outputs
- * @returns Config with all templates resolved
+ * @param nodeType - Optional node type for schema-based type conversion
+ * @returns Config with all templates resolved and type-converted
  */
 export function resolveConfigTemplates(
   config: Record<string, any>,
-  nodeOutputs: LRUNodeOutputsCache
+  nodeOutputs: LRUNodeOutputsCache,
+  nodeType?: string
 ): Record<string, any> {
   const resolved: Record<string, any> = {};
+  
+  // Get node schema for type information
+  let fieldTypes: Record<string, FieldType> = {};
+  if (nodeType) {
+    try {
+      const { nodeLibrary } = require('../../services/nodes/node-library');
+      const schema = nodeLibrary.getSchema(nodeType);
+      if (schema?.configSchema) {
+        const optional = schema.configSchema.optional || {};
+        for (const [fieldName, fieldDef] of Object.entries(optional)) {
+          fieldTypes[fieldName] = (fieldDef as any)?.type || 'string';
+        }
+      }
+    } catch (error) {
+      // Schema not available, continue without type conversion
+    }
+  }
   
   for (const [key, value] of Object.entries(config)) {
     // Skip internal metadata fields
@@ -178,8 +231,11 @@ export function resolveConfigTemplates(
       continue;
     }
     
-    // Resolve template expressions
-    resolved[key] = resolveUniversalTemplate(value, nodeOutputs);
+    // Get expected type from schema
+    const expectedType = fieldTypes[key];
+    
+    // Resolve template expressions with type conversion
+    resolved[key] = resolveUniversalTemplate(value, nodeOutputs, expectedType, key);
   }
   
   return resolved;

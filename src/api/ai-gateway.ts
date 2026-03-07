@@ -7,7 +7,7 @@ import { Router, Request, Response } from 'express';
 import { ollamaOrchestrator } from '../services/ai/ollama-orchestrator';
 import { chichuChatbot } from '../services/ai/chichu-chatbot';
 import { aiWorkflowEditor } from '../services/ai/workflow-editor';
-import { agenticWorkflowBuilder } from '../services/ai/workflow-builder';
+// ✅ MIGRATION: Legacy builder import removed - workflow improvement feature not yet available in production pipeline
 import { aiPerformanceMonitor } from '../services/ai/performance-monitor';
 import { ollamaManager } from '../services/ai/ollama-manager';
 
@@ -190,7 +190,8 @@ router.post('/editor/code-assist', async (req: Request, res: Response) => {
   }
 });
 
-// ==================== AGENTIC WORKFLOW BUILDER ====================
+// ==================== WORKFLOW BUILDER (MIGRATED TO NEW PIPELINE) ====================
+// ✅ MIGRATION: Endpoint migrated to use new deterministic pipeline
 router.post('/builder/generate-from-prompt', async (req: Request, res: Response) => {
   try {
     const { prompt, constraints, options } = req.body;
@@ -199,24 +200,35 @@ router.post('/builder/generate-from-prompt', async (req: Request, res: Response)
       return res.status(400).json({ error: 'Prompt is required' });
     }
     
+    // ✅ MIGRATION: Use new pipeline instead of legacy builder
+    const { workflowLifecycleManager } = await import('../services/workflow-lifecycle-manager');
+    
     // Stream progress if requested
     if (options?.stream) {
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
       
-      // Stream generation steps
-      await agenticWorkflowBuilder.streamGeneration(prompt, (progress) => {
-        res.write(`data: ${JSON.stringify(progress)}\n\n`);
+      // Generate workflow using new pipeline
+      const lifecycleResult = await workflowLifecycleManager.generateWorkflowGraph(prompt, {
+        ...constraints,
+        onProgress: (step: number, stepName: string, progress: number, details?: any) => {
+          res.write(`data: ${JSON.stringify({ step, stepName, progress, details })}\n\n`);
+        },
       });
       
-      // Generate final workflow
-      const workflow = await agenticWorkflowBuilder.generateFromPrompt(prompt, constraints);
-      res.write(`data: ${JSON.stringify({ type: 'complete', workflow })}\n\n`);
+      // Send final workflow
+      res.write(`data: ${JSON.stringify({ type: 'complete', workflow: lifecycleResult.workflow })}\n\n`);
       res.end();
     } else {
-      const workflow = await agenticWorkflowBuilder.generateFromPrompt(prompt, constraints);
-      res.json({ success: true, ...workflow });
+      const lifecycleResult = await workflowLifecycleManager.generateWorkflowGraph(prompt, constraints);
+      res.json({ 
+        success: true, 
+        workflow: lifecycleResult.workflow,
+        requirements: (lifecycleResult as any).requirements || {},
+        documentation: lifecycleResult.documentation,
+        requiredCredentials: lifecycleResult.requiredCredentials || [],
+      });
     }
   } catch (error) {
     console.error('Workflow generation error:', error);
@@ -227,22 +239,16 @@ router.post('/builder/generate-from-prompt', async (req: Request, res: Response)
   }
 });
 
+// ✅ MIGRATION: Legacy workflow improvement endpoint deprecated
+// This feature is not yet available in the production pipeline architecture
+// Use /editor/suggest-improvements for node-level improvements instead
 router.post('/builder/improve-workflow', async (req: Request, res: Response) => {
-  try {
-    const { workflow, feedback } = req.body;
-    
-    if (!workflow || !feedback) {
-      return res.status(400).json({ error: 'Workflow and feedback are required' });
-    }
-    
-    const improved = await agenticWorkflowBuilder.iterativeImprovement(workflow, feedback);
-    res.json({ success: true, ...improved });
-  } catch (error) {
-    res.status(500).json({ 
-      success: false,
-      error: error instanceof Error ? error.message : 'Unknown error',
-    });
-  }
+  res.status(501).json({ 
+    success: false,
+    error: 'Workflow improvement functionality has been deprecated. The legacy builder has been replaced with the production pipeline architecture. Use /editor/suggest-improvements for node-level improvements instead.',
+    deprecated: true,
+    alternative: '/editor/suggest-improvements',
+  });
 });
 
 // ==================== DIRECT OLLAMA ACCESS ====================

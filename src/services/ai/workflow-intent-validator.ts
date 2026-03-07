@@ -13,7 +13,7 @@
 import { StructuredIntent } from './intent-structurer';
 import { Workflow, WorkflowNode, WorkflowEdge } from '../../core/types/ai-types';
 import { getRequiredNodes } from './intent-constraint-engine';
-import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 import { isTriggerNodeType } from '../../core/utils/node-role';
 import { nodeLibrary } from '../nodes/node-library';
 
@@ -69,7 +69,7 @@ export class WorkflowIntentValidator {
     console.log(`[WorkflowIntentValidator] Required node types: ${requiredNodeTypes.join(', ')}`);
 
     // STEP 2: Get actual node types from workflow
-    const workflowNodeTypes = workflow.nodes.map(node => normalizeNodeType(node));
+    const workflowNodeTypes = workflow.nodes.map(node => unifiedNormalizeNodeType(node));
     const workflowNodeTypesSet = new Set(workflowNodeTypes);
     console.log(`[WorkflowIntentValidator] Workflow node types: ${workflowNodeTypes.join(', ')}`);
 
@@ -89,22 +89,22 @@ export class WorkflowIntentValidator {
 
     // STEP 4: Validate no extra actions (excluding trigger and utility nodes)
     const triggerNodes = workflow.nodes.filter(node => {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       return this.isTriggerNode(nodeType);
     });
 
     const utilityNodes = workflow.nodes.filter(node => {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       return this.isUtilityNode(nodeType);
     });
 
     const actionNodes = workflow.nodes.filter(node => {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       return !this.isTriggerNode(nodeType) && !this.isUtilityNode(nodeType);
     });
 
     for (const node of actionNodes) {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       const isRequired = requiredNodeTypes.some(requiredType => {
         return nodeType === requiredType || this.isNodeTypeVariant(nodeType, requiredType);
       });
@@ -216,7 +216,7 @@ export class WorkflowIntentValidator {
   private getExecutionOrder(workflow: Workflow): string[] {
     // Find trigger node
     const triggerNode = workflow.nodes.find(node => {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       return this.isTriggerNode(nodeType);
     });
 
@@ -251,7 +251,7 @@ export class WorkflowIntentValidator {
       visited.add(nodeId);
       const node = workflow.nodes.find(n => n.id === nodeId);
       if (node) {
-        const nodeType = normalizeNodeType(node);
+        const nodeType = unifiedNormalizeNodeType(node);
         if (!this.isTriggerNode(nodeType)) {
           order.push(nodeType);
         }
@@ -438,7 +438,7 @@ export class WorkflowIntentValidator {
    */
   private findUnreachableNodes(workflow: Workflow): string[] {
     const triggerNode = workflow.nodes.find(node => {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       return this.isTriggerNode(nodeType);
     });
 
@@ -496,7 +496,7 @@ export class WorkflowIntentValidator {
     }
     
     // Direct node type match
-    const normalized = normalizeNodeType({ type: 'custom', data: { type: actionType } });
+    const normalized = unifiedNormalizeNodeTypeString(actionType);
     const schema = nodeLibrary.getSchema(normalized);
     if (schema) {
       return [normalized];

@@ -19,6 +19,7 @@
     "test:contracts": "jest src/core/contracts/ --passWithNoTests",
     "test:compiler": "jest test/stage5-compiler.test.ts --passWithNoTests",
     "test:e2e": "jest test/e2e/ --passWithNoTests",
+    "test:integration": "jest src/services/ai/__tests__/end-to-end-workflow-integration.test.ts src/services/ai/__tests__/workflow-execution-integration.test.ts --passWithNoTests",
     "benchmark": "ts-node scripts/performance-benchmark.ts",
     "benchmark:save": "ts-node scripts/performance-benchmark.ts --save-only",
     "benchmark:run": "ts-node scripts/performance-benchmark.ts --run-only",
@@ -58,7 +59,8 @@
     "test:run": "ts-node scripts/run-workflow-tests.ts",
     "test:direct": "ts-node --project tsconfig.scripts.json scripts/test-workflow-direct.ts",
     "test:4prompts": "node scripts/test-4-prompts.cjs",
-    "validate:enhancements": "ts-node scripts/validate-enhancements.ts"
+    "validate:enhancements": "ts-node scripts/validate-enhancements.ts",
+    "test:15-workflows": "ts-node scripts/test-15-workflows-execution.ts"
   },
   "keywords": [],
   "author": "",

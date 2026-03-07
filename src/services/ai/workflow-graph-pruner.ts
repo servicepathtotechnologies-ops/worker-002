@@ -17,9 +17,11 @@
 import { StructuredIntent } from './intent-structurer';
 import { Workflow, WorkflowNode, WorkflowEdge } from '../../core/types/ai-types';
 import { getRequiredNodes } from './intent-constraint-engine';
-import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 import { nodeLibrary } from '../nodes/node-library';
 import { transformationDetector, detectTransformations } from './transformation-detector';
+import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
+import { nodeReplacementTracker } from './node-replacement-tracker';
 
 export interface PruningResult {
   workflow: Workflow;
@@ -58,7 +60,7 @@ export class WorkflowGraphPruner {
    * @param originalPrompt - Original user prompt (for transformation detection)
    * @returns Pruned workflow with statistics
    */
-  prune(workflow: Workflow, intent: StructuredIntent, originalPrompt?: string): PruningResult {
+  prune(workflow: Workflow, intent: StructuredIntent, originalPrompt?: string, confidenceScore?: number): PruningResult {
     console.log('[WorkflowGraphPruner] Starting workflow graph pruning...');
     console.log(`[WorkflowGraphPruner] Original: ${workflow.nodes.length} nodes, ${workflow.edges.length} edges`);
 
@@ -81,40 +83,45 @@ export class WorkflowGraphPruner {
     const { filteredNodes: nodesAfterUnrequired, unrequiredViolations } = this.removeUnrequiredNodes(
       workflow.nodes,
       requiredNodeTypesSet,
-      executionChainNodeIds
+      executionChainNodeIds,
+      confidenceScore
     );
     violations.push(...unrequiredViolations);
     unrequiredViolations.forEach(v => {
       if (v.nodeId) removedNodeIds.add(v.nodeId);
     });
 
-    // ✅ FIXED: STEP 4: Remove loops if no iteration intent detected (but NEVER remove nodes in execution chain)
+    // ✅ FIXED: STEP 4: Remove loops if no iteration intent detected (but NEVER remove nodes in execution chain OR required)
     const { filteredNodes: nodesAfterLoops, loopViolations } = this.removeLoops(
       nodesAfterUnrequired,
       intent,
-      executionChainNodeIds
+      executionChainNodeIds,
+      requiredNodeTypesSet
     );
     violations.push(...loopViolations);
     loopViolations.forEach(v => {
       if (v.nodeId) removedNodeIds.add(v.nodeId);
     });
 
-    // ✅ FIXED: STEP 5: Remove duplicate processing nodes (but NEVER remove nodes in execution chain)
+    // ✅ FIXED: STEP 5: Remove duplicate processing nodes (but NEVER remove nodes in execution chain OR required)
     const { filteredNodes: nodesAfterDedup, duplicateViolations } = this.removeDuplicateProcessingNodes(
       nodesAfterLoops,
-      executionChainNodeIds
+      executionChainNodeIds,
+      requiredNodeTypesSet,
+      confidenceScore
     );
     violations.push(...duplicateViolations);
     duplicateViolations.forEach(v => {
       if (v.nodeId) removedNodeIds.add(v.nodeId);
     });
 
-    // ✅ FIXED: STEP 6: Remove disconnected nodes (only nodes NOT in execution chain)
+    // ✅ FIXED: STEP 6: Remove disconnected nodes (only nodes NOT in execution chain AND NOT required)
     const { filteredNodes: nodesAfterDisconnected, disconnectedViolations } = this.removeDisconnectedNodes(
       nodesAfterDedup,
       workflow.edges,
       removedNodeIds,
-      executionChainNodeIds
+      executionChainNodeIds,
+      requiredNodeTypesSet
     );
     violations.push(...disconnectedViolations);
     disconnectedViolations.forEach(v => {
@@ -194,13 +201,14 @@ export class WorkflowGraphPruner {
   private removeUnrequiredNodes(
     nodes: WorkflowNode[],
     requiredNodeTypes: Set<string>,
-    executionChainNodeIds: Set<string>
+    executionChainNodeIds: Set<string>,
+    confidenceScore?: number
   ): { filteredNodes: WorkflowNode[]; unrequiredViolations: PruningViolation[] } {
     const filteredNodes: WorkflowNode[] = [];
     const violations: PruningViolation[] = [];
 
     for (const node of nodes) {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
 
       // ✅ FIXED: CRITICAL RULE - Never remove nodes in execution chain
       if (executionChainNodeIds.has(node.id)) {
@@ -251,12 +259,42 @@ export class WorkflowGraphPruner {
       }
 
       // Node is not required and not in execution chain - remove it
+      const reason = `Node "${nodeType}" not required by intent, transformation, or execution chain`;
       violations.push({
         type: 'unrequired_node',
         nodeId: node.id,
         nodeType,
-        reason: `Node "${nodeType}" not required by intent, transformation, or execution chain`,
+        reason,
       });
+      
+      // ✅ TRACK REPLACEMENT
+      const nodeDef = unifiedNodeRegistry.get(nodeType);
+      let category: 'dataSource' | 'transformation' | 'output' = 'transformation';
+      if (nodeDef?.category === 'data') {
+        category = 'dataSource';
+      } else if (nodeDef?.category === 'communication') {
+        category = 'output';
+      }
+      
+      const isProtected = (node.data as any)?.origin?.source === 'user' || 
+                         (node.data as any)?.protected === true;
+      
+      nodeReplacementTracker.trackReplacement({
+        nodeId: node.id,
+        nodeType,
+        operation: typeof node.data?.config?.operation === 'string' ? node.data.config.operation : '',
+        category,
+        reason,
+        stage: 'workflow_graph_pruner.removeUnrequiredNodes',
+        wasRemoved: true,
+        isProtected,
+        confidence: confidenceScore,
+        metadata: {
+          requiredNodeTypes: Array.from(requiredNodeTypes),
+          inExecutionChain: false,
+        },
+      });
+      
       console.log(`[WorkflowGraphPruner] ⚠️  Removed unrequired node: ${node.id} (${nodeType})`);
     }
 
@@ -289,12 +327,13 @@ export class WorkflowGraphPruner {
 
   /**
    * Remove loops if no iteration intent detected
-   * ✅ FIXED: Never remove loop nodes in execution chain
+   * ✅ CRITICAL FIX: Never remove loop nodes in execution chain OR required nodes
    */
   private removeLoops(
     nodes: WorkflowNode[],
     intent: StructuredIntent,
-    executionChainNodeIds: Set<string>
+    executionChainNodeIds: Set<string>,
+    requiredNodeTypesSet: Set<string>
   ): { filteredNodes: WorkflowNode[]; loopViolations: PruningViolation[] } {
     const intentText = JSON.stringify(intent).toLowerCase();
     const hasIterationIntent = intentText.includes('loop') ||
@@ -308,11 +347,11 @@ export class WorkflowGraphPruner {
     const violations: PruningViolation[] = [];
 
     for (const node of nodes) {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       const isLoopNode = this.isLoopNode(nodeType);
 
-      // ✅ FIXED: Never remove loop nodes in execution chain
-      if (isLoopNode && !hasIterationIntent && !executionChainNodeIds.has(node.id)) {
+      // ✅ CRITICAL FIX: Never remove loop nodes in execution chain OR required nodes
+      if (isLoopNode && !hasIterationIntent && !executionChainNodeIds.has(node.id) && !requiredNodeTypesSet.has(nodeType)) {
         violations.push({
           type: 'unnecessary_loop',
           nodeId: node.id,
@@ -332,11 +371,13 @@ export class WorkflowGraphPruner {
   /**
    * Remove duplicate processing nodes
    * Keeps only the first occurrence of each processing node type
-   * ✅ FIXED: Never remove duplicate processing nodes in execution chain
+   * ✅ CRITICAL FIX: Never remove duplicate processing nodes in execution chain OR required nodes
    */
   private removeDuplicateProcessingNodes(
     nodes: WorkflowNode[],
-    executionChainNodeIds: Set<string>
+    executionChainNodeIds: Set<string>,
+    requiredNodeTypesSet: Set<string>,
+    confidenceScore?: number
   ): { filteredNodes: WorkflowNode[]; duplicateViolations: PruningViolation[] } {
     const processingNodeTypes = new Set([
       'transform',
@@ -358,25 +399,70 @@ export class WorkflowGraphPruner {
     const violations: PruningViolation[] = [];
 
     for (const node of nodes) {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
 
       if (processingNodeTypes.has(nodeType)) {
-        // ✅ FIXED: Never remove duplicate processing nodes in execution chain
+        // ✅ CRITICAL FIX: Never remove duplicate processing nodes in execution chain OR required nodes
         if (executionChainNodeIds.has(node.id)) {
           filteredNodes.push(node);
           console.log(`[WorkflowGraphPruner] ✅ Protected execution chain processing node: ${node.id} (${nodeType})`);
           continue;
         }
 
+        // ✅ CRITICAL FIX: Never remove required nodes, even if duplicate
+        if (requiredNodeTypesSet.has(nodeType)) {
+          filteredNodes.push(node);
+          console.log(`[WorkflowGraphPruner] ✅ Protected required processing node: ${node.id} (${nodeType})`);
+          // Still track it as seen to avoid keeping multiple duplicates
+          if (!seenProcessingNodes.has(nodeType)) {
+            seenProcessingNodes.set(nodeType, node.id);
+          }
+          continue;
+        }
+
         // Check if we've seen this processing node type before
         if (seenProcessingNodes.has(nodeType)) {
-          // Duplicate processing node - remove it (only if not in execution chain)
+          // Duplicate processing node - remove it (only if not in execution chain or required)
+          const reason = `Duplicate processing node "${nodeType}" found`;
           violations.push({
             type: 'duplicate_processing',
             nodeId: node.id,
             nodeType,
-            reason: `Duplicate processing node "${nodeType}" found`,
+            reason,
           });
+          
+          // ✅ TRACK REPLACEMENT
+          const nodeDef = unifiedNodeRegistry.get(nodeType);
+          let category: 'dataSource' | 'transformation' | 'output' = 'transformation';
+          if (nodeDef?.category === 'data') {
+            category = 'dataSource';
+          } else if (nodeDef?.category === 'communication') {
+            category = 'output';
+          }
+          
+          const isProtected = (node.data as any)?.origin?.source === 'user' || 
+                             (node.data as any)?.protected === true;
+          
+          const firstNodeId = seenProcessingNodes.get(nodeType);
+          const firstNode = nodes.find(n => n.id === firstNodeId);
+          const firstNodeType = firstNode ? unifiedNormalizeNodeTypeString(firstNode.type || firstNode.data?.type || '') : '';
+          
+          nodeReplacementTracker.trackReplacement({
+            nodeId: node.id,
+            nodeType,
+            operation: typeof node.data?.config?.operation === 'string' ? node.data.config.operation : '',
+            category,
+            reason,
+            stage: 'workflow_graph_pruner.removeDuplicateProcessingNodes',
+            replacedBy: firstNodeType || '',
+            wasRemoved: true,
+            isProtected,
+            confidence: confidenceScore,
+            metadata: {
+              firstNodeId: firstNodeId || '',
+            },
+          });
+          
           console.log(`[WorkflowGraphPruner] ⚠️  Removed duplicate processing node: ${node.id} (${nodeType})`);
           continue;
         }
@@ -393,19 +479,20 @@ export class WorkflowGraphPruner {
 
   /**
    * Remove disconnected nodes (not reachable from trigger)
-   * ✅ FIXED: Only remove nodes NOT in execution chain
-   * ✅ FIXED: Execution chain nodes are always considered "connected"
+   * ✅ CRITICAL FIX: Never remove nodes in execution chain OR required nodes
+   * Required nodes must ALWAYS be preserved, even if they appear disconnected
    */
   private removeDisconnectedNodes(
     nodes: WorkflowNode[],
     edges: WorkflowEdge[],
     alreadyRemoved: Set<string>,
-    executionChainNodeIds: Set<string>
+    executionChainNodeIds: Set<string>,
+    requiredNodeTypesSet: Set<string>
   ): { filteredNodes: WorkflowNode[]; disconnectedViolations: PruningViolation[] } {
     // Find trigger node
     const triggerNode = nodes.find(node => {
       if (alreadyRemoved.has(node.id)) return false;
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       return this.isTriggerNode(nodeType);
     });
 
@@ -451,20 +538,29 @@ export class WorkflowGraphPruner {
         continue;
       }
 
-      // ✅ FIXED: Never remove nodes in execution chain (they're always "connected")
+      const nodeType = unifiedNormalizeNodeType(node);
+
+      // ✅ CRITICAL FIX: Never remove nodes in execution chain (they're always "connected")
       if (executionChainNodeIds.has(node.id)) {
         filteredNodes.push(node);
         console.log(`[WorkflowGraphPruner] ✅ Protected execution chain node from disconnected removal: ${node.id}`);
         continue;
       }
 
+      // ✅ CRITICAL FIX: Never remove required nodes, even if they appear disconnected
+      // Required nodes must ALWAYS be preserved - connectivity will be fixed by auto-repair
+      if (requiredNodeTypesSet.has(nodeType)) {
+        filteredNodes.push(node);
+        console.log(`[WorkflowGraphPruner] ✅ Protected required node from disconnected removal: ${node.id} (${nodeType})`);
+        continue;
+      }
+
       if (!reachable.has(node.id)) {
-        const nodeType = normalizeNodeType(node);
         violations.push({
           type: 'disconnected_node',
           nodeId: node.id,
           nodeType,
-          reason: `Node "${nodeType}" is not reachable from trigger and not in execution chain`,
+          reason: `Node "${nodeType}" is not reachable from trigger and not required`,
         });
         console.log(`[WorkflowGraphPruner] ⚠️  Removed disconnected node: ${node.id} (${nodeType})`);
         continue;
@@ -489,7 +585,7 @@ export class WorkflowGraphPruner {
     // Find trigger node
     const triggerNode = nodes.find(node => {
       if (removedNodeIds.has(node.id)) return false;
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       return this.isTriggerNode(nodeType);
     });
 
@@ -722,7 +818,7 @@ export class WorkflowGraphPruner {
 
     // Find trigger node
     const triggerNode = workflow.nodes.find(node => {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       return this.isTriggerNode(nodeType);
     });
 
@@ -759,7 +855,7 @@ export class WorkflowGraphPruner {
     for (const nodeId of reachable) {
       const node = workflow.nodes.find(n => n.id === nodeId);
       if (node) {
-        const nodeType = normalizeNodeType(node);
+        const nodeType = unifiedNormalizeNodeType(node);
         dependencyNodes.add(nodeType);
       }
     }
@@ -782,7 +878,7 @@ export class WorkflowGraphPruner {
 
     // STEP 1: Find trigger node
     const triggerNode = workflow.nodes.find(node => {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       return this.isTriggerNode(nodeType);
     });
 
@@ -841,7 +937,7 @@ export class WorkflowGraphPruner {
 
     // Find nodes with no outgoing edges (terminal nodes) or explicitly marked as output
     for (const node of workflow.nodes) {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       const hasOutgoing = outgoing.has(node.id) && (outgoing.get(node.id) || []).length > 0;
       const isOutputType = this.isOutputNode(nodeType);
 
@@ -935,7 +1031,7 @@ export class WorkflowGraphPruner {
 
     // Find nodes with no outgoing edges (terminal nodes)
     for (const node of workflow.nodes) {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       const hasOutgoing = outgoing.has(node.id) && (outgoing.get(node.id) || []).length > 0;
 
       // Check if it's an output node type

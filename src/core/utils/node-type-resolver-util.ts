@@ -46,11 +46,13 @@ export function resolveNodeType(nodeType: string, debug: boolean = false): strin
   const resolution = resolver.resolve(nodeType, debug);
 
   if (!resolution || resolution.method === 'not_found') {
-    // If not found, return original (let caller handle fallback)
-    if (debug) {
-      console.warn(`[resolveNodeType] Node type "${nodeType}" not found, returning original`);
-    }
-    return nodeType;
+    // ✅ PRODUCTION-GRADE: Throw error instead of fallback
+    // This ensures resolution failures are caught immediately and not silently ignored
+    throw new Error(
+      `[NodeTypeResolver] Unknown node type: "${nodeType}". ` +
+      `This type is not registered in NodeLibrary and has no alias mapping. ` +
+      `Please use a canonical node type or add an alias mapping.`
+    );
   }
 
   // Log resolution only if debug is explicitly enabled

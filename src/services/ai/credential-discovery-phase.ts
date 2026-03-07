@@ -10,7 +10,7 @@
 
 import { WorkflowNode, Workflow } from '../../core/types/ai-types';
 import { nodeLibrary } from '../nodes/node-library';
-import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 import { CredentialResolver } from './credential-resolver';
 
 export interface CredentialRequirement {
@@ -70,7 +70,7 @@ export class CredentialDiscoveryPhase {
 
     // Walk every node in the workflow
     for (const node of workflow.nodes) {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       const nodeId = node.id;
 
       // CRITICAL: Validate node schema exists

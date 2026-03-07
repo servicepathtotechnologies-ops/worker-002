@@ -30,7 +30,7 @@
  */
 
 import { NodeLibrary, NodeSchema, NodeCapability } from './node-library';
-import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 
 export type DataType = 'text' | 'array' | 'object';
 
@@ -254,7 +254,7 @@ export class NodeCapabilityRegistry {
       }
     }
     
-    const normalized = normalizeNodeType({ type: 'custom', data: { type: nodeType } });
+    const normalized = unifiedNormalizeNodeTypeString(nodeType);
     return this.capabilities.get(normalized) || null;
   }
   

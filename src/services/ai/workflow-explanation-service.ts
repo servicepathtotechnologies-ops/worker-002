@@ -15,7 +15,7 @@ import { StructuredIntent } from './intent-structurer';
 import { ExpandedIntent } from './intent-auto-expander';
 import { Workflow, WorkflowNode, WorkflowEdge } from '../../core/types/ai-types';
 import { nodeLibrary } from '../nodes/node-library';
-import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 
 export interface WorkflowStepExplanation {
   /**
@@ -203,7 +203,7 @@ export class WorkflowExplanationService {
 
     // Find trigger node in workflow
     const triggerNode = workflow.nodes?.find(n => {
-      const nodeType = normalizeNodeType(n);
+      const nodeType = unifiedNormalizeNodeType(n);
       return ['manual_trigger', 'schedule', 'webhook', 'form', 'chat_trigger'].includes(nodeType);
     });
 
@@ -241,7 +241,7 @@ export class WorkflowExplanationService {
     }
 
     workflow.nodes.forEach(node => {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       const schema = nodeLibrary.getSchema(nodeType);
 
       if (schema) {
@@ -344,7 +344,7 @@ export class WorkflowExplanationService {
         return;
       }
 
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       const schema = nodeLibrary.getSchema(nodeType);
 
       // Determine if this is an AI assumption
@@ -356,7 +356,7 @@ export class WorkflowExplanationService {
         ?.filter(e => e.target === nodeId)
         .map(e => {
           const sourceNode = workflow.nodes?.find(n => n.id === e.source);
-          return sourceNode ? normalizeNodeType(sourceNode) : e.source;
+          return sourceNode ? unifiedNormalizeNodeType(sourceNode) : e.source;
         }) || [];
 
       // Get output data description
@@ -612,7 +612,7 @@ export class WorkflowExplanationService {
       if (!node) {
         return nodeId;
       }
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       const schema = nodeLibrary.getSchema(nodeType);
       return schema?.label || nodeType;
     });
@@ -655,7 +655,7 @@ export class WorkflowExplanationService {
 
     // Check for AI-assumed nodes (only if not already covered by expanded intent assumptions)
     workflow.nodes?.forEach(node => {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       
       // Skip trigger nodes (they're usually explicit or have defaults)
       if (['manual_trigger', 'schedule', 'webhook', 'form', 'chat_trigger'].includes(nodeType)) {

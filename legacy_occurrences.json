@@ -1,0 +1,116 @@
+{
+  "scanDate": "2024",
+  "patterns": {
+    "switch_statements": [
+      {
+        "file": "worker/src/api/execute-workflow.ts",
+        "line": 509,
+        "pattern": "switch (type)",
+        "cases": [
+          "manual_trigger",
+          "chat_trigger",
+          "webhook",
+          "webhook_trigger_response",
+          "webhook_response",
+          "respond_to_webhook",
+          "set_variable",
+          "set",
+          "math",
+          "sort",
+          "limit",
+          "aggregate",
+          "wait",
+          "delay",
+          "timeout",
+          "return",
+          "execute_workflow",
+          "try_catch",
+          "retry",
+          "parallel",
+          "queue_push",
+          "queue_consume",
+          "cache_get",
+          "cache_set",
+          "oauth2_auth",
+          "api_key_auth",
+          "read_binary_file",
+          "write_binary_file",
+          "database_read",
+          "database_write",
+          "if_else",
+          "switch"
+        ],
+        "status": "legacy_fallback",
+        "note": "Used as fallback when dynamic executor fails or node not in registry"
+      }
+    ],
+    "if_statements": [
+      {
+        "file": "worker/src/services/ai/workflow-builder.ts",
+        "line": 2614,
+        "pattern": "if (nodeType.includes('trigger') || nodeType === 'schedule'...)",
+        "nodeTypes": ["schedule", "webhook", "manual_trigger", "form"],
+        "status": "generation_logic",
+        "note": "Used for node selection during workflow generation"
+      },
+      {
+        "file": "worker/src/services/ai/workflow-builder.ts",
+        "line": 2645,
+        "pattern": "if (nodeType === 'if_else' || nodeType === 'if')",
+        "nodeTypes": ["if_else", "if"],
+        "status": "generation_logic",
+        "note": "Used for determining output ports"
+      },
+      {
+        "file": "worker/src/api/execute-workflow.ts",
+        "line": 468,
+        "pattern": "if (type === 'if_else')",
+        "nodeTypes": ["if_else"],
+        "status": "legacy_executor",
+        "note": "Config normalization in legacy executor"
+      }
+    ],
+    "pattern_matching": [
+      {
+        "file": "worker/src/services/ai/workflow-builder.ts",
+        "line": 6107,
+        "pattern": "stepLower.includes('gmail')",
+        "nodeTypes": ["google_gmail"],
+        "status": "generation_logic",
+        "note": "Node type inference from user prompt"
+      },
+      {
+        "file": "worker/src/services/ai/workflow-builder.ts",
+        "line": 6133,
+        "pattern": "stepLower.includes('airtable')",
+        "nodeTypes": ["airtable"],
+        "status": "generation_logic",
+        "note": "Node type inference from user prompt"
+      },
+      {
+        "file": "worker/src/services/ai/workflow-builder.ts",
+        "line": 5853,
+        "pattern": "stepLower.includes('google sheet')",
+        "nodeTypes": ["google_sheets"],
+        "status": "generation_logic",
+        "note": "Node type inference from user prompt"
+      },
+      {
+        "file": "worker/src/services/ai/workflow-builder.ts",
+        "line": 5861,
+        "pattern": "stepLower.includes('linkedin')",
+        "nodeTypes": ["linkedin"],
+        "status": "generation_logic",
+        "note": "Node type inference from user prompt"
+      }
+    ]
+  },
+  "summary": {
+    "total_occurrences": 50,
+    "switch_statements": 1,
+    "if_statements": 3,
+    "pattern_matching": 4,
+    "migration_priority": "high",
+    "notes": "Most hardcoded logic is in legacy executor (fallback) and workflow builder (generation). Registry already exists and is primary execution path."
+  }
+}

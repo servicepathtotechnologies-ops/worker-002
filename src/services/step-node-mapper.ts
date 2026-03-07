@@ -292,6 +292,7 @@ export class StepNodeMapper {
   
   /**
    * Create a workflow node
+   * ✅ UNIVERSAL FIX: Nodes are created with default config from registry immediately
    */
   private createNode(
     nodeType: string,
@@ -304,6 +305,24 @@ export class StepNodeMapper {
       throw new Error(`Cannot create node: schema not found for type "${nodeType}"`);
     }
     
+    // ✅ UNIVERSAL FIX: Get default config from registry immediately
+    // This ensures nodes are created with all their default values (level, message, etc.)
+    let defaultConfig: Record<string, any> = {};
+    try {
+      const { unifiedNodeRegistry } = require('../../core/registry/unified-node-registry');
+      defaultConfig = unifiedNodeRegistry.getDefaultConfig(nodeType) || {};
+    } catch (error) {
+      // If registry not available, use schema defaults
+      if (schema.configSchema?.optional) {
+        for (const [fieldName, fieldDef] of Object.entries(schema.configSchema.optional)) {
+          const field = fieldDef as any;
+          if (field.default !== undefined) {
+            defaultConfig[fieldName] = field.default;
+          }
+        }
+      }
+    }
+    
     return {
       id: nodeId,
       type: nodeType,
@@ -312,7 +331,7 @@ export class StepNodeMapper {
         label: label || schema.label,
         type: nodeType,
         category: schema.category,
-        config: {}, // Config will be populated later
+        config: defaultConfig, // ✅ Created with default config from registry
       },
     };
   }

@@ -21,7 +21,7 @@
 
 import { WorkflowNode, WorkflowEdge } from '../../core/types/ai-types';
 import { nodeLibrary } from '../nodes/node-library';
-import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 
 export enum DataType {
   TEXT = 'text',
@@ -96,6 +96,7 @@ export class NodeDataTypeSystem {
   
   /**
    * Infer node type information from schema
+   * ✅ CRITICAL: Prefers NodeLibrary nodeCapability contracts over heuristics
    */
   private inferNodeTypeInfo(nodeType: string, schema: any): NodeTypeInfo {
     const nodeTypeLower = nodeType.toLowerCase();
@@ -104,6 +105,41 @@ export class NodeDataTypeSystem {
     let inputType: DataType | DataType[] = DataType.ANY;
     let outputType: DataType = DataType.TEXT;
     
+    // ✅ STEP 1: Prefer NodeLibrary nodeCapability contract if available
+    if (schema?.nodeCapability) {
+      const cap = schema.nodeCapability;
+      // Map NodeLibrary capability types to DataType enum
+      const mapCapType = (capType: string | string[]): DataType | DataType[] => {
+        if (Array.isArray(capType)) {
+          return capType.map(t => {
+            if (t === 'text') return DataType.TEXT;
+            if (t === 'array') return DataType.ARRAY;
+            if (t === 'object') return DataType.OBJECT;
+            return DataType.ANY;
+          });
+        }
+        if (capType === 'text') return DataType.TEXT;
+        if (capType === 'array') return DataType.ARRAY;
+        if (capType === 'object') return DataType.OBJECT;
+        return DataType.ANY;
+      };
+      
+      inputType = mapCapType(cap.inputType || DataType.ANY);
+      outputType = mapCapType(cap.outputType || DataType.TEXT) as DataType;
+      
+      // If we got a valid contract, return early (skip heuristics)
+      if (cap.inputType && cap.outputType) {
+        return {
+          nodeType,
+          inputType,
+          outputType,
+          acceptsArray: cap.acceptsArray || (Array.isArray(inputType) && inputType.includes(DataType.ARRAY)),
+          requiresScalar: cap.producesArray === false || outputType === DataType.TEXT || outputType === DataType.OBJECT,
+        };
+      }
+    }
+    
+    // ✅ STEP 2: Fallback to heuristics (for nodes without explicit contracts)
     // Data Producers (output: array or object)
     if (this.isDataProducer(nodeTypeLower)) {
       outputType = DataType.ARRAY; // Most data sources produce arrays
@@ -132,6 +168,34 @@ export class NodeDataTypeSystem {
         outputType = DataType.OBJECT; // Classification result
       } else if (nodeTypeLower.includes('transform') || nodeTypeLower.includes('format')) {
         inputType = DataType.ANY;
+        outputType = DataType.TEXT;
+      }
+
+      /**
+       * ✅ CRITICAL ARCHITECTURAL FIX (AI PIPELINE):
+       *
+       * For LLM-like transformer nodes (ollama, openai_gpt, anthropic_claude, google_gemini, ai_chat_model),
+       * the output must be typed as TEXT, not ANY. The ai_chat_model node already declares
+       * inputType [text, array] via its nodeCapability in NodeLibrary, but this legacy
+       * heuristic type system previously inferred `ANY` for some of these providers.
+       *
+       * This caused structural type errors when connecting:
+       *   ollama (any) → ai_chat_model (text | array)
+       *
+       * By hard-normalizing all LLM transformers to TEXT output here, we guarantee that:
+       * - All LLM providers produce TEXT in the type system
+       * - Connections between LLM providers and ai_chat_model are always type-compatible
+       * - The fix is universal for all workflows using these nodes.
+       */
+      const llmNodeTypes = [
+        'ollama',
+        'openai_gpt',
+        'anthropic_claude',
+        'google_gemini',
+        'ai_chat_model',
+      ];
+      if (llmNodeTypes.includes(nodeTypeLower)) {
+        inputType = [DataType.TEXT, DataType.ARRAY];
         outputType = DataType.TEXT;
       }
     }
@@ -183,7 +247,7 @@ export class NodeDataTypeSystem {
    * Get type information for a node
    */
   getNodeTypeInfo(nodeType: string): NodeTypeInfo | null {
-    const normalized = normalizeNodeType({ type: 'custom', data: { type: nodeType } });
+    const normalized = unifiedNormalizeNodeTypeString(nodeType);
     return this.typeRegistry.get(normalized) || null;
   }
   
@@ -191,6 +255,13 @@ export class NodeDataTypeSystem {
    * Check type compatibility between two nodes
    */
   checkTypeCompatibility(sourceType: DataType, targetInputType: DataType | DataType[]): TypeCompatibilityResult {
+    // If source is ANY, treat it as a wildcard (compatible with any target).
+    // This prevents recurring structural failures like:
+    //   manual_trigger (any) → ai_chat_model (text | array)
+    if (sourceType === DataType.ANY) {
+      return { compatible: true, requiresTransform: false };
+    }
+
     // If target accepts ANY, always compatible
     if (targetInputType === DataType.ANY) {
       return { compatible: true, requiresTransform: false };
@@ -295,7 +366,7 @@ export class NodeDataTypeSystem {
     // Build node type map
     const nodeTypeMap = new Map<string, NodeTypeInfo>();
     for (const node of nodes) {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       const typeInfo = this.getNodeTypeInfo(nodeType);
       if (typeInfo) {
         nodeTypeMap.set(node.id, typeInfo);

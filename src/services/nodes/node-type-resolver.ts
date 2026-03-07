@@ -33,9 +33,9 @@ export interface NodeTypeResolution {
  */
 const NODE_TYPE_ALIASES: Record<string, string[]> = {
   // AI Nodes
-  'ai_service': ['ai', 'openai', 'llm', 'ai_node', 'ai_processor', 'ai_model', 'ai_chat'],
-  'ai_chat_model': ['chat_model', 'ai_chat', 'llm_chat', 'conversation'],
-  'ai_agent': ['agent', 'ai_assistant', 'assistant', 'bot'],
+  'ai_service': ['ai', 'openai', 'llm', 'ai_node', 'ai_processor', 'ai_model', 'ai_chat', 'ai service', 'ai processing', 'summarize', 'analyze', 'extract', 'classify', 'ai text', 'ai model'],
+  'ai_chat_model': ['chat_model', 'ai_chat', 'llm_chat', 'conversation', 'chat_model'],
+  'ai_agent': ['agent', 'ai_assistant', 'assistant', 'bot', 'ai agent', 'chatbot', 'chat bot', 'conversational ai', 'ai reasoning', 'natural language'],
   'openai_gpt': ['gpt', 'gpt4', 'gpt3', 'openai', 'chatgpt'],
   'anthropic_claude': ['claude', 'anthropic', 'claude3'],
   'google_gemini': ['gemini', 'google_ai', 'bard'],
@@ -44,37 +44,38 @@ const NODE_TYPE_ALIASES: Record<string, string[]> = {
   'sentiment_analyzer': ['sentiment', 'emotion', 'analyzer'],
   
   // Email Nodes - google_gmail is the main node, gmail maps to it
-  'google_gmail': ['gmail', 'google_mail', 'email', 'gmail_send', 'send_email', 'mail', 'send via gmail'],
-  'email': ['mail', 'send_email', 'email_send'],
-  'outlook': ['microsoft_mail', 'outlook_mail'],
+  'google_gmail': ['gmail', 'google_mail', 'email', 'gmail_send', 'send_email', 'mail', 'send via gmail', 'google mail', 'google email', 'gmail them', 'email via gmail', 'mail via gmail'],
+  'email': ['mail', 'send_email', 'email_send', 'email', 'mail', 'smtp', 'send', 'notify'],
+  'outlook': ['microsoft_mail', 'outlook_mail', 'outlook', 'microsoft outlook', 'outlook email', 'send via outlook'],
   
   // Google Services
-  'google_sheets': ['sheets', 'gsheets', 'google_sheet', 'spreadsheet'],
-  'google_doc': ['gdoc', 'google_document', 'document'],
-  'google_drive': ['drive', 'gdrive', 'google_storage'],
-  'google_calendar': ['calendar', 'gcal', 'google_cal'],
-  'google_contacts': ['contacts', 'gcontacts', 'google_contact'],
-  'google_tasks': ['tasks', 'gtasks', 'google_task'],
-  'google_big_query': ['bigquery', 'big_query', 'bq'],
+  'google_sheets': ['sheets', 'gsheets', 'google_sheet', 'spreadsheet', 'sheet', 'excel', 'g sheet', 'googlesheet', 'googlesheets'],
+  'google_doc': ['gdoc', 'google_document', 'document', 'docs', 'google docs', 'google doc'],
+  'google_drive': ['drive', 'gdrive', 'google_storage', 'gdrive'],
+  'google_calendar': ['calendar', 'gcal', 'google_cal', 'google calendar'],
+  'google_contacts': ['contacts', 'gcontacts', 'google_contact', 'google contacts'],
+  'google_tasks': ['tasks', 'gtasks', 'google_task', 'google tasks'],
+  'google_big_query': ['bigquery', 'big_query', 'bq', 'bigquery'],
   
   // Database Nodes
-  'database_write': ['db_write', 'write_db', 'postgresql', 'postgres'],
-  'database_read': ['db_read', 'read_db', 'query_db'],
-  'supabase': ['supa', 'supa_db'],
-  'mysql': ['my_sql'],
-  'mongodb': ['mongo', 'mongo_db'],
+  'database_write': ['db_write', 'write_db', 'postgresql', 'postgres', 'write', 'insert', 'update', 'delete'],
+  'database_read': ['db_read', 'read_db', 'query_db', 'read', 'select', 'fetch', 'get', 'retrieve'],
+  'postgresql': ['postgres', 'postgresql', 'pg', 'postgres_db'],
+  'supabase': ['supa', 'supa_db', 'supabase'],
+  'mysql': ['my_sql', 'mysql'],
+  'mongodb': ['mongo', 'mongo_db', 'mongodb'],
   
   // HTTP & API
-  'http_request': ['http', 'api', 'request', 'fetch', 'api_call'],
-  'http_post': ['post', 'http_post_request'],
-  'respond_to_webhook': ['webhook_response', 'response', 'respond'],
-  'webhook_response': ['webhook_reply', 'response'],
-  'graphql': ['gql', 'graph_ql'],
+  'http_request': ['http', 'api', 'request', 'fetch', 'api_call', 'call', 'endpoint', 'url', 'http_request', 'http_call'],
+  'http_post': ['post', 'http_post_request', 'post_request'],
+  'respond_to_webhook': ['webhook_response', 'response', 'respond', 'reply', 'return'],
+  'webhook_response': ['webhook_reply', 'response', 'webhook_response'],
+  'graphql': ['gql', 'graph_ql', 'graphql'],
   
   // Communication
-  'slack_message': ['slack', 'slack_send', 'send_slack'],
-  'telegram': ['telegram_send', 'send_telegram'],
-  'discord': ['discord_send', 'send_discord'],
+  'slack_message': ['slack', 'slack_send', 'send_slack', 'slack message', 'slack notification', 'notification', 'message', 'alert'],
+  'telegram': ['telegram_send', 'send_telegram', 'telegram', 'telegram bot', 'telegram message'],
+  'discord': ['discord_send', 'send_discord', 'discord'],
   'microsoft_teams': ['teams', 'ms_teams', 'send_teams'],
   'whatsapp_cloud': ['whatsapp', 'wa', 'send_whatsapp'],
   'twilio': ['sms', 'twilio_sms', 'send_sms'],
@@ -87,11 +88,11 @@ const NODE_TYPE_ALIASES: Record<string, string[]> = {
   'facebook': ['fb', 'facebook_post'],
   
   // CRM
-  'salesforce': ['sf', 'sales_force'],
-  'hubspot': ['hub_spot'],
-  'airtable': ['air_table'],
+  'salesforce': ['sf', 'sales_force', 'salesforce', 'sobject', 'account', 'contact', 'lead', 'opportunity', 'salesforce contact', 'salesforce opportunity'],
+  'hubspot': ['hub_spot', 'hubspot'],
+  'airtable': ['air_table', 'airtable'],
   'zoho_crm': ['zoho', 'zoho_crm'],
-  'pipedrive': ['pipe_drive'],
+  'pipedrive': ['pipe_drive', 'pipedrive'],
   
   // File Storage
   'aws_s3': ['s3', 'amazon_s3', 'aws_storage'],
@@ -110,27 +111,58 @@ const NODE_TYPE_ALIASES: Record<string, string[]> = {
   'paypal': ['pay_pal'],
   
   // Logic & Flow
-  'if_else': ['if', 'conditional', 'condition'],
-  'switch': ['case', 'switch_case'],
-  'merge': ['combine', 'join'],
-  'filter': ['where', 'filter_data'],
-  'loop': ['for', 'foreach', 'iterate'],
-  'split_in_batches': ['batch', 'split_batch'],
+  'if_else': ['if', 'conditional', 'condition', 'if_else', 'if else', 'else', 'when', 'check', 'if condition', 'conditional logic', 'if statement', 'else if', 'branch', 'decision'],
+  'switch': ['case', 'switch_case', 'switch', 'route', 'multiple', 'paths', 'switch statement', 'case statement', 'multi path', 'routing', 'multiway', 'select case'],
+  'merge': ['combine', 'join', 'merge', 'combine data', 'merge data', 'join data', 'unite', 'consolidate', 'fuse', 'amalgamate'],
+  'loop': ['for', 'foreach', 'iterate', 'loop', 'for loop', 'for each', 'iteration', 'repeat', 'cycle', 'recur', 'repetition'],
+  'split_in_batches': ['batch', 'split_batch', 'split_in_batches', 'split batch', 'batch split', 'chunk', 'divide', 'partition', 'segment', 'split into batches'],
+  'wait': ['wait', 'delay', 'sleep', 'rate limit', 'pause', 'throttle'],
+  'delay': ['delay', 'wait', 'pause', 'sleep', 'throttle', 'rate limit', 'cooldown'],
+  'timeout': ['timeout', 'max_time', 'limit', 'deadline', 'abort', 'time limit', 'execution time'],
+  'retry': ['retry', 'retry_on_failure', 'attempt', 'repeat', 'backoff', 'retry on failure', 'retry logic', 'retry mechanism'],
+  'error_handler': ['error_handler', 'error handling', 'catch', 'error', 'retry', 'handle', 'fail', 'reliable'],
+  'try_catch': ['try_catch', 'try catch', 'error handling', 'try', 'catch', 'error', 'exception', 'handle'],
+  'return': ['return', 'exit', 'stop', 'break', 'terminate', 'end workflow', 'early exit'],
+  'execute_workflow': ['subworkflow', 'execute', 'call', 'invoke', 'call workflow', 'invoke workflow', 'nested workflow', 'workflow call'],
+  'parallel': ['parallel', 'concurrent', 'simultaneous', 'fork', 'join', 'run in parallel', 'parallel execution', 'at the same time'],
   
   // Data Manipulation
-  'set_variable': ['set', 'variable', 'assign'],
-  'javascript': ['js', 'code', 'script'],
-  'json_parser': ['json', 'parse_json'],
-  'csv': ['csv_parser', 'parse_csv'],
-  'html': ['html_parser', 'parse_html'],
-  'xml': ['xml_parser', 'parse_xml'],
+  'aggregate': ['aggregate', 'sum', 'avg', 'average', 'count', 'total', 'summation', 'join', 'concat', 'concatenate', 'group', 'groupby', 'group by', 'statistics', 'stats', 'calculate', 'compute', 'accumulate', 'tally', 'add up'],
+  'sort': ['sort', 'order', 'arrange', 'sorting', 'ascending', 'descending', 'asc', 'desc', 'alphabetical', 'numerical', 'rank', 'sequence'],
+  'limit': ['limit', 'take', 'top', 'first', 'head', 'slice', 'truncate', 'restrict', 'maximum', 'max items', 'cap'],
+  'filter': ['where', 'filter_data', 'filter', 'where clause', 'condition', 'select', 'find', 'search', 'match', 'criteria'],
+  'set_variable': ['set', 'variable', 'assign', 'map', 'transform', 'add field', 'set value', 'assign value', 'create variable', 'define variable'],
+  'javascript': ['js', 'code', 'script', 'javascript', 'transform', 'custom', 'complex', 'custom code', 'js code', 'javascript code', 'execute code'],
+  'function': ['function', 'custom function', 'execute function', 'function call', 'call function', 'invoke function', 'run function'],
+  'function_item': ['function item', 'each item', 'per item', 'for each', 'item function', 'process item', 'map item', 'transform item'],
+  'date_time': ['date', 'time', 'format', 'timestamp', 'schedule', 'date time', 'format date', 'format time', 'datetime', 'date format', 'time format'],
+  'text_formatter': ['format', 'template', 'text', 'string', 'interpolate', 'placeholder', 'text format', 'string format', 'text template', 'format string'],
+  'json_parser': ['json', 'parse_json', 'json_parser', 'parse json', 'json parse', 'json decode', 'decode json'],
+  'csv': ['csv_parser', 'parse_csv', 'csv', 'csv parse', 'parse csv', 'comma separated', 'csv file'],
+  'html': ['html_parser', 'parse_html', 'html', 'html parse', 'parse html', 'html decode', 'parse markup'],
+  'xml': ['xml_parser', 'parse_xml', 'xml', 'xml parse', 'parse xml', 'xml decode', 'parse markup'],
+  
+  // Queue & Cache
+  'queue_push': ['queue', 'push', 'enqueue', 'bull', 'redis', 'queue push', 'push to queue', 'add to queue', 'enqueue job', 'queue job', 'add job'],
+  'queue_consume': ['queue', 'consume', 'pop', 'dequeue', 'worker', 'queue consume', 'consume queue', 'process queue', 'dequeue job', 'process job', 'worker process'],
+  'cache_get': ['cache', 'get', 'retrieve', 'redis', 'cache get', 'get cache', 'retrieve cache', 'fetch cache', 'read cache', 'cache read'],
+  'cache_set': ['cache', 'set', 'store', 'redis', 'cache set', 'set cache', 'store cache', 'write cache', 'cache write', 'save cache'],
+  
+  // Authentication
+  'oauth2_auth': ['oauth', 'oauth2', 'auth', 'authentication', 'token', 'oauth2_auth', 'oauth authentication', 'oauth token', 'oauth2 token', 'oauth login', 'oauth authorize'],
+  'api_key_auth': ['apikey', 'api key', 'auth', 'key', 'api key auth', 'key auth', 'api authentication', 'api token', 'bearer token'],
+  
+  // Logging
+  'log_output': ['log', 'debug', 'audit', 'monitor', 'log_output', 'logging', 'log data', 'write log', 'console log', 'output log', 'debug log'],
   
   // Triggers
-  'schedule': ['cron', 'scheduled', 'timer'],
-  'webhook': ['webhook_trigger', 'http_trigger'],
-  'manual_trigger': ['manual', 'on_demand', 'trigger'],
-  'interval': ['interval_trigger', 'periodic'],
-  'form': ['form_trigger', 'form_submission'],
+  'schedule': ['cron', 'scheduled', 'timer', 'daily', 'hourly', 'weekly', 'time', 'every', 'schedule trigger', 'cron job', 'scheduled task', 'timer trigger', 'recurring', 'periodic schedule'],
+  'webhook': ['webhook_trigger', 'http_trigger', 'webhook', 'callback', 'event', 'when', 'webhook endpoint', 'http webhook', 'api webhook', 'webhook listener', 'incoming webhook'],
+  'manual_trigger': ['manual', 'on_demand', 'trigger', 'run', 'execute', 'manual trigger', 'on demand trigger', 'manual run', 'start workflow', 'trigger workflow'],
+  'interval': ['interval_trigger', 'periodic', 'interval', 'every', 'repeat', 'periodic trigger', 'interval timer', 'recurring trigger', 'repeat trigger'],
+  'form': ['form_trigger', 'form_submission', 'typeform', 'form', 'contact form', 'survey', 'application', 'submission', 'form submit', 'form fill', 'form data'],
+  'chat_trigger': ['chat', 'chatbot', 'chat trigger', 'conversation', 'chat bot', 'chat message', 'user message', 'chat input', 'conversational trigger'],
+  'error_trigger': ['error', 'error trigger', 'error handler', 'on error', 'error event', 'failure trigger', 'exception trigger', 'catch error'],
 };
 
 /**
@@ -399,10 +431,55 @@ export class NodeTypeResolver {
     const normalized = normalizeNodeType(nodeType);
     const attemptedMethods: string[] = [];
     
-    // Step 1: Try exact match (case-insensitive)
+    // ✅ CRITICAL FIX: Check alias map FIRST (before exact match)
+    // Aliases like "gmail" should NEVER be treated as node types - they MUST resolve to canonical types
+    // Step 1: Try alias match FIRST (aliases are NOT node types)
+    attemptedMethods.push('alias_match');
+    const aliasMatch = ALIAS_TO_CANONICAL.get(normalized);
+    if (aliasMatch && aliasMatch !== normalized) {
+      // Alias found - verify canonical type exists in registry
+      const schema = this.nodeLibrary!.getSchema(aliasMatch);
+      if (schema) {
+        if (debug || process.env.DEBUG_NODE_LOOKUPS === 'true') {
+          console.log(`[NodeTypeResolver] ✅ Resolved alias "${original}" → canonical "${aliasMatch}" (via alias map)`);
+        }
+        const resolution: NodeTypeResolution = {
+          original,
+          resolved: aliasMatch, // Return canonical type, NOT alias
+          method: 'alias',
+          confidence: 0.95,
+        };
+        this.resolutionCache.set(original, resolution);
+        return resolution;
+      }
+    }
+    
+    // Step 2: Try exact match (case-insensitive) - ONLY for canonical types, NOT aliases
     attemptedMethods.push('exact_match');
     const exactMatch = this.nodeLibrary!.getSchema(nodeType);
     if (exactMatch) {
+      // ✅ CRITICAL: Verify this is NOT an alias (aliases should have been caught above)
+      // If it's in the alias map as a key but not mapped to itself, it's an alias and should be rejected
+      const isAlias = ALIAS_TO_CANONICAL.has(normalized) && ALIAS_TO_CANONICAL.get(normalized) !== normalized;
+      if (isAlias) {
+        // This is an alias that wasn't properly resolved - should not happen
+        // But if it does, try to resolve it via alias map
+        const canonicalFromAlias = ALIAS_TO_CANONICAL.get(normalized);
+        if (canonicalFromAlias && canonicalFromAlias !== normalized) {
+          const canonicalSchema = this.nodeLibrary!.getSchema(canonicalFromAlias);
+          if (canonicalSchema) {
+            const resolution: NodeTypeResolution = {
+              original,
+              resolved: canonicalFromAlias, // Return canonical type
+              method: 'alias',
+              confidence: 0.95,
+            };
+            this.resolutionCache.set(original, resolution);
+            return resolution;
+          }
+        }
+      }
+      
       const resolution: NodeTypeResolution = {
         original,
         resolved: nodeType,
@@ -413,33 +490,13 @@ export class NodeTypeResolver {
       return resolution;
     }
     
-    // Step 2: Try capability-based resolution (PREFERRED over string matching)
+    // Step 3: Try capability-based resolution (PREFERRED over string matching)
     // This maps operations like "summarize" to nodes with matching capabilities
     attemptedMethods.push('capability_based');
     const capabilityResolution = this.resolveByCapability(nodeType, debug);
     if (capabilityResolution && capabilityResolution.method === 'capability_based') {
       this.resolutionCache.set(original, capabilityResolution);
       return capabilityResolution;
-    }
-    
-    // Step 3: Try alias match
-    attemptedMethods.push('alias_match');
-    const aliasMatch = ALIAS_TO_CANONICAL.get(normalized);
-    if (aliasMatch) {
-      const schema = this.nodeLibrary!.getSchema(aliasMatch);
-      if (schema) {
-        if (debug || process.env.DEBUG_NODE_LOOKUPS === 'true') {
-          console.log(`[NodeTypeResolver] ✅ Resolved node type "${original}" → "${aliasMatch}" (via alias)`);
-        }
-        const resolution: NodeTypeResolution = {
-          original,
-          resolved: aliasMatch,
-          method: 'alias',
-          confidence: 0.95,
-        };
-        this.resolutionCache.set(original, resolution);
-        return resolution;
-      }
     }
     
     // Step 4: Try fuzzy match against all registered node types
@@ -468,10 +525,10 @@ export class NodeTypeResolver {
       return resolution;
     }
     
-    // Step 5: Try normalization (using normalizeNodeType from node-type-normalizer)
+    // Step 5: Try normalization (using unifiedNormalizeNodeTypeString from unified-node-type-normalizer)
     attemptedMethods.push('normalization');
     try {
-      const { normalizeNodeType: normalize } = require('../ai/node-type-normalizer');
+      const { unifiedNormalizeNodeTypeString: normalize } = require('../../core/utils/unified-node-type-normalizer');
       const normalizedType = normalize(nodeType);
       
         if (normalizedType && normalizedType !== nodeType) {
@@ -521,24 +578,19 @@ export class NodeTypeResolver {
       }
     }
     
-    // Step 7: Not found - return structured warning (do not throw)
+    // Step 7: Not found - throw error (production-grade: no silent fallback)
     if (debug || process.env.DEBUG_NODE_LOOKUPS === 'true') {
-      console.warn(`[NodeTypeResolver] ❌ Could not resolve node type "${original}" after ${attemptedMethods.length} attempts`);
+      console.error(`[NodeTypeResolver] ❌ Could not resolve node type "${original}" after ${attemptedMethods.length} attempts`);
     }
     
-    const resolution: NodeTypeResolution = {
-      original,
-      resolved: original, // Return original as fallback
-      method: 'not_found',
-      confidence: 0.0,
-      warning: {
-        message: `Node type "${original}" could not be resolved to any registered type`,
-        attemptedMethods,
-        suggestedFix: `Register "${original}" in NodeLibrary, add alias mapping, or use a supported node type`,
-      },
-    };
-    this.resolutionCache.set(original, resolution);
-    return resolution;
+    // ✅ PRODUCTION-GRADE: Throw error instead of returning fallback
+    // This ensures resolution failures are caught immediately
+    throw new Error(
+      `[NodeTypeResolver] Unknown node type: "${original}". ` +
+      `Attempted resolution methods: ${attemptedMethods.join(', ')}. ` +
+      `This type is not registered in NodeLibrary and has no alias mapping. ` +
+      `Please register "${original}" in NodeLibrary, add an alias mapping, or use a supported canonical node type.`
+    );
   }
   
   /**

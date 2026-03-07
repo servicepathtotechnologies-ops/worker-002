@@ -17,7 +17,7 @@
 import { Workflow, WorkflowNode, WorkflowEdge } from '../../core/types/ai-types';
 import { StructuredIntent } from './intent-structurer';
 import { getRequiredNodes } from './intent-constraint-engine';
-import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 import { nodeLibrary } from '../nodes/node-library';
 
 export interface PruningResult {
@@ -135,7 +135,7 @@ export class WorkflowAutoPruner {
     const removedNodeIds: string[] = [];
 
     for (const node of nodes) {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       
       // Always keep trigger nodes
       if (this.isTriggerNode(nodeType)) {
@@ -186,7 +186,7 @@ export class WorkflowAutoPruner {
     const removedLoopNodes: string[] = [];
 
     for (const node of nodes) {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       const isLoopNode = nodeType.includes('loop') ||
                         nodeType === 'for' ||
                         nodeType === 'while' ||
@@ -226,7 +226,7 @@ export class WorkflowAutoPruner {
     const removedTransformers: string[] = [];
 
     for (const node of nodes) {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       
       if (transformerTypes.has(nodeType)) {
         // Check if we've seen this transformer type before
@@ -277,7 +277,7 @@ export class WorkflowAutoPruner {
   ): { finalEdges: WorkflowEdge[]; removedPathEdges: string[] } {
     // Find trigger node
     const triggerNode = nodes.find(node => {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       return this.isTriggerNode(nodeType);
     });
 

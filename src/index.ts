@@ -18,8 +18,24 @@ import './core/env-loader';
 import { nodeLibrary } from './services/nodes/node-library';
 import { NodeSchemaRegistry } from './core/contracts/node-schema-registry';
 
+// ✅ ROOT-LEVEL: Initialize Node Context Registry
+// This ensures all node contexts are available for AI understanding
+// NOTE: Import triggers initialization (singleton pattern) - no manual init needed
+import { nodeContextRegistry } from './core/registry/node-context-registry';
+
 // ✅ ARCHITECTURAL REFACTOR: Initialize UnifiedNodeRegistry (Single Source of Truth)
+// NOTE: Import triggers initialization (singleton pattern) - no manual init needed
 import { unifiedNodeRegistry } from './core/registry/unified-node-registry';
+
+// ✅ VERIFICATION ONLY: Registries are already initialized via imports above
+// Just verify they're working correctly (no duplicate initialization)
+try {
+  const contextCount = nodeContextRegistry.getAllNodeTypes().length;
+  console.log(`[ServerStartup] ✅ Node Context Registry verified (${contextCount} node contexts)`);
+} catch (error: any) {
+  console.error('[ServerStartup] ❌ Node Context Registry verification failed:', error.message);
+  throw error; // Stop boot if context registry fails - this is critical
+}
 
 // Initialize node registry on startup
 console.log('[ServerStartup] 🔵 Initializing node registry...');
@@ -27,18 +43,17 @@ try {
   const registry = NodeSchemaRegistry.getInstance();
   console.log('[ServerStartup] ✅ Node registry initialized');
   
-  // Initialize UnifiedNodeRegistry (permanent architecture fix)
-  console.log('[ServerStartup] 🏗️  Initializing UnifiedNodeRegistry (permanent architecture fix)...');
+  // ✅ VERIFICATION ONLY: UnifiedNodeRegistry is already initialized via import above
+  // Just verify it's working correctly (no duplicate initialization)
   try {
-    const unifiedRegistry = unifiedNodeRegistry; // This triggers initialization
-    const nodeCount = unifiedRegistry.getAllTypes().length;
-    console.log(`[ServerStartup] ✅ UnifiedNodeRegistry initialized with ${nodeCount} node definitions`);
+    const nodeCount = unifiedNodeRegistry.getAllTypes().length;
+    console.log(`[ServerStartup] ✅ UnifiedNodeRegistry verified (${nodeCount} node definitions)`);
     
     // Verify critical nodes are in unified registry
     const criticalNodes = ['google_sheets', 'ai_chat_model', 'google_gmail'];
     const missingInUnified: string[] = [];
     for (const nodeType of criticalNodes) {
-      if (!unifiedRegistry.has(nodeType)) {
+      if (!unifiedNodeRegistry.has(nodeType)) {
         missingInUnified.push(nodeType);
       }
     }
@@ -48,17 +63,15 @@ try {
       console.log(`[ServerStartup] ✅ All critical nodes verified in UnifiedNodeRegistry`);
     }
   } catch (error: any) {
-    console.error('[ServerStartup] ❌ Failed to initialize UnifiedNodeRegistry:', error.message);
+    console.error('[ServerStartup] ❌ UnifiedNodeRegistry verification failed:', error.message);
   }
   
-  // Verify critical nodes are registered
-  // Use resolver to get canonical node types for critical nodes
-  const { resolveNodeType } = require('./core/utils/node-type-resolver-util');
+  // ✅ PRODUCTION-GRADE: Verify critical nodes using canonical types only
+  // Registry should not depend on runtime alias resolution
   const criticalNodes = [
     'ai_service',
-    resolveNodeType('gmail', true), // Resolves 'gmail' → 'google_gmail'
-    'google_gmail'
-  ].filter((node, index, arr) => arr.indexOf(node) === index); // Remove duplicates
+    'google_gmail' // ✅ Canonical type only - 'gmail' is alias, not a node
+  ];
   const missingNodes: string[] = [];
   
   for (const nodeType of criticalNodes) {
@@ -75,6 +88,63 @@ try {
     console.error(`[ServerStartup] ❌ Missing critical nodes: ${missingNodes.join(', ')}`);
   } else {
     console.log('[ServerStartup] ✅ All critical nodes verified in registry');
+  }
+  
+  // ✅ PRODUCTION-GRADE: Validate alias resolution on startup
+  // This ensures all aliases resolve to canonical types deterministically
+  // NOTE: Validation is silent - aliases work correctly, this is just a verification
+  try {
+    const { resolveNodeType } = require('./core/utils/node-type-resolver-util');
+    
+    // Test critical aliases (silent validation - no errors logged)
+    const aliasTests: Array<{ alias: string; expectedCanonical: string }> = [
+      { alias: 'gmail', expectedCanonical: 'google_gmail' },
+      { alias: 'ai', expectedCanonical: 'ai_service' },
+      { alias: 'mail', expectedCanonical: 'email' },
+    ];
+    
+    let allValid = true;
+    for (const { alias, expectedCanonical } of aliasTests) {
+      try {
+        const resolved = resolveNodeType(alias, false);
+        // ✅ FIX: Verify resolved canonical type exists in registry (not the alias itself)
+        // Aliases like "gmail" should resolve to "google_gmail" which IS in the registry
+        if (resolved === alias) {
+          // ❌ CRITICAL: Resolver returned alias instead of canonical type
+          // This means alias resolution failed - the resolver should return canonical type
+          allValid = false;
+          console.warn(`[ServerStartup] ⚠️  Alias "${alias}" did not resolve to canonical type (resolver returned "${resolved}" instead of "${expectedCanonical}")`);
+          continue;
+        }
+        
+        const schema = registry.get(resolved);
+        if (!schema) {
+          allValid = false;
+          // Only log if resolved canonical type doesn't exist in registry (critical error)
+          console.warn(`[ServerStartup] ⚠️  Alias "${alias}" resolves to "${resolved}" but this canonical type is not in registry`);
+        } else if (resolved !== expectedCanonical) {
+          // Alias resolved but to wrong canonical type
+          console.warn(`[ServerStartup] ⚠️  Alias "${alias}" resolves to "${resolved}" but expected "${expectedCanonical}"`);
+        } else {
+          // ✅ Success: Alias correctly resolved to expected canonical type
+          // Silent success - no log needed (aliases are working correctly)
+        }
+      } catch (error: any) {
+        allValid = false;
+        // Only log actual resolution failures (critical errors)
+        console.warn(`[ServerStartup] ⚠️  Alias "${alias}" resolution failed: ${error.message}`);
+      }
+    }
+    
+    if (allValid) {
+      // Silent success - aliases are working correctly
+    }
+  } catch (error: any) {
+    // Silent catch - alias resolution works, validation is non-critical
+    // Only log if it's a critical system error
+    if (error.message && !error.message.includes('Alias resolution validation')) {
+      console.warn(`[ServerStartup] ⚠️  Alias validation check failed: ${error.message}`);
+    }
   }
 } catch (error: any) {
   console.error('[ServerStartup] ❌ Failed to initialize node registry:', error.message);

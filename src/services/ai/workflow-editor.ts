@@ -3,7 +3,7 @@
 
 import { ollamaOrchestrator } from './ollama-orchestrator';
 import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
-import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 
 interface WorkflowNode {
   id: string;
@@ -235,7 +235,7 @@ Suggest 3-5 improvements or alternative approaches. Respond with JSON:
     const optimizations: any[] = [];
     
     // Check for common optimization patterns
-    const actualType = normalizeNodeType(node as any) || node.data?.type || node.type;
+    const actualType = unifiedNormalizeNodeType(node as any) || node.data?.type || node.type;
     const def = unifiedNodeRegistry.get(actualType);
 
     const isHttpLike = !!def?.inputSchema && ('url' in def.inputSchema || 'endpoint' in def.inputSchema);
@@ -264,7 +264,7 @@ Suggest 3-5 improvements or alternative approaches. Respond with JSON:
     workflow: Workflow
   ): string[] {
     const warnings: string[] = [];
-    const actualType = normalizeNodeType(node as any) || node.data?.type || node.type;
+    const actualType = unifiedNormalizeNodeType(node as any) || node.data?.type || node.type;
     const def = unifiedNodeRegistry.get(actualType);
     const isTrigger = def?.category === 'trigger' || actualType.includes('trigger');
     
@@ -283,7 +283,7 @@ Suggest 3-5 improvements or alternative approaches. Respond with JSON:
     const isHttpLike = !!def?.inputSchema && ('url' in def.inputSchema || 'endpoint' in def.inputSchema);
     if (isHttpLike) {
       const hasErrorHandlingNode = workflow.nodes.some((n) => {
-        const nt = normalizeNodeType(n as any) || (n as any).data?.type || n.type;
+        const nt = unifiedNormalizeNodeType(n as any) || (n as any).data?.type || n.type;
         const nd = unifiedNodeRegistry.get(nt);
         return (nd?.tags || []).some((t) => String(t).toLowerCase().includes('error'));
       });

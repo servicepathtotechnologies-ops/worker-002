@@ -19,7 +19,7 @@ describe('DSLGenerator', () => {
   describe('Google Sheets + Summarize + Gmail Workflow', () => {
     const userPrompt = 'Get data from Google Sheets, summarize it using AI, and send to Gmail';
 
-    it('should generate DSL with correct components for Sheets + Summarize + Gmail', () => {
+    it('should generate DSL with correct components for Sheets + Summarize + Gmail', async () => {
       // Create mock StructuredIntent with 2 actions
       const intent: StructuredIntent = {
         trigger: 'manual_trigger',
@@ -47,7 +47,7 @@ describe('DSLGenerator', () => {
       };
 
       // Generate DSL
-      const dsl = dslGenerator.generateDSL(intent, userPrompt, transformationDetection);
+      const dsl = await dslGenerator.generateDSL(intent, userPrompt, transformationDetection);
 
       // ✅ Test: Intent has 2 actions
       expect(intent.actions.length).toBe(2);
@@ -123,7 +123,7 @@ describe('DSLGenerator', () => {
         requiredNodeTypes: ['text_summarizer', 'ollama_llm'],
       };
 
-      const dsl = dslGenerator.generateDSL(intent, userPrompt, transformationDetection);
+      const dsl = await dslGenerator.generateDSL(intent, userPrompt, transformationDetection);
 
       // Verify transformations were added
       expect(dsl.transformations.length).toBeGreaterThan(0);
@@ -156,7 +156,7 @@ describe('DSLGenerator', () => {
         requiredNodeTypes: ['ollama_llm', 'ollama_llm', 'ollama'], // Duplicate types
       };
 
-      const dsl = dslGenerator.generateDSL(intent, userPrompt, transformationDetection);
+      const dsl = await dslGenerator.generateDSL(intent, userPrompt, transformationDetection);
 
       // Verify no duplicate transformations
       const transformationTypes = dsl.transformations.map(t => t.type);

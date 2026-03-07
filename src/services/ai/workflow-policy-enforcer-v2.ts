@@ -11,7 +11,7 @@
 
 import { WorkflowStructure } from './workflow-structure-builder';
 import { WorkflowNode, WorkflowEdge, Workflow } from '../../core/types/ai-types';
-import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType } from '../../core/utils/unified-node-type-normalizer';
 
 export interface PolicyEnforcementResult {
   valid: boolean;
@@ -101,7 +101,7 @@ export class WorkflowPolicyEnforcerV2 {
     
     // Find trigger node
     const triggerNode = workflow.nodes.find(n => {
-      const type = normalizeNodeType(n);
+      const type = unifiedNormalizeNodeType(n);
       return ['manual_trigger', 'schedule', 'webhook', 'form', 'chat_trigger'].includes(type);
     });
 
@@ -116,7 +116,7 @@ export class WorkflowPolicyEnforcerV2 {
     if (!triggerHasOutgoing) {
       // Find first non-trigger node
       const firstNode = workflow.nodes.find(n => {
-        const type = normalizeNodeType(n);
+        const type = unifiedNormalizeNodeType(n);
         return !['manual_trigger', 'schedule', 'webhook', 'form', 'chat_trigger'].includes(type);
       });
 
@@ -186,7 +186,7 @@ export class WorkflowPolicyEnforcerV2 {
     const fixes_applied: string[] = [];
     
     const crmWriteNodes = workflow.nodes.filter(n => {
-      const type = normalizeNodeType(n);
+      const type = unifiedNormalizeNodeType(n);
       const isCrm = ['hubspot', 'zoho_crm', 'salesforce', 'pipedrive'].includes(type);
       if (!isCrm) return false;
       
@@ -217,12 +217,12 @@ export class WorkflowPolicyEnforcerV2 {
     
     // Find trigger node
     const triggerNode = workflow.nodes.find(n => {
-      const type = normalizeNodeType(n);
+      const type = unifiedNormalizeNodeType(n);
       return ['manual_trigger', 'schedule', 'webhook', 'form', 'chat_trigger'].includes(type);
     });
 
     const nonTriggerNodes = workflow.nodes.filter(n => {
-      const type = normalizeNodeType(n);
+      const type = unifiedNormalizeNodeType(n);
       return !['manual_trigger', 'schedule', 'webhook', 'form', 'chat_trigger'].includes(type);
     });
 
@@ -285,7 +285,7 @@ export class WorkflowPolicyEnforcerV2 {
 
       // Validate sourceHandle exists in source node
       if (edge.sourceHandle) {
-        const sourceType = normalizeNodeType(sourceNode);
+        const sourceType = unifiedNormalizeNodeType(sourceNode);
         const validOutputs = this.getValidOutputFields(sourceType);
         if (!validOutputs.includes(edge.sourceHandle)) {
           // Fix: use default output field
@@ -296,7 +296,7 @@ export class WorkflowPolicyEnforcerV2 {
 
       // Validate targetHandle exists in target node
       if (edge.targetHandle) {
-        const targetType = normalizeNodeType(targetNode);
+        const targetType = unifiedNormalizeNodeType(targetNode);
         const validInputs = this.getValidInputFields(targetType);
         if (!validInputs.includes(edge.targetHandle)) {
           // Fix: use default input field

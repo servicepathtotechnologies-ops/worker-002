@@ -2,7 +2,7 @@
 // Rule-based enforcement of workflow structure constraints
 
 import type { WorkflowGenerationStructure, WorkflowNode, WorkflowEdge } from '../../core/types/ai-types';
-import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType } from '../../core/utils/unified-node-type-normalizer';
 
 export interface PolicyViolation {
   type: 'crm_policy' | 'graph_policy' | 'edge_policy' | 'node_policy';
@@ -69,7 +69,7 @@ export class WorkflowPolicyEnforcer {
     // Detect CRM nodes
     const crmNodeTypes = ['hubspot', 'zoho_crm', 'salesforce', 'pipedrive'];
     const crmNodes = nodes.filter(n => {
-      const type = normalizeNodeType(n) || n.type || '';
+      const type = unifiedNormalizeNodeType(n) || n.type || '';
       return crmNodeTypes.includes(type);
     });
     
@@ -98,7 +98,7 @@ export class WorkflowPolicyEnforcer {
     // Policy: Write CRM nodes must have data source OR static payload
     writeCrmNodes.forEach(crmNode => {
       const hasDataSource = nodes.some(n => {
-        const type = normalizeNodeType(n) || n.type || '';
+        const type = unifiedNormalizeNodeType(n) || n.type || '';
         return ['google_sheets', 'database_read', 'airtable', 'http_request', 'form'].includes(type);
       });
       
@@ -114,7 +114,7 @@ export class WorkflowPolicyEnforcer {
     
     // Policy: No write → write → write chains
     const writeNodes = nodes.filter(n => {
-      const type = normalizeNodeType(n) || n.type || '';
+      const type = unifiedNormalizeNodeType(n) || n.type || '';
       const config = (n.data as any)?.config || {};
       const operation = (config.operation || '').toLowerCase();
       return ['create', 'update', 'write', 'upsert'].includes(operation) || 
@@ -145,7 +145,7 @@ export class WorkflowPolicyEnforcer {
     
     // Policy: Trigger must have ≥ 1 outgoing edge
     const triggerNode = nodes.find(n => {
-      const type = normalizeNodeType(n) || n.type || '';
+      const type = unifiedNormalizeNodeType(n) || n.type || '';
       return ['schedule', 'webhook', 'manual_trigger', 'form', 'interval', 'chat_trigger'].includes(type);
     });
     
@@ -163,7 +163,7 @@ export class WorkflowPolicyEnforcer {
     
     // Policy: Every non-trigger node must have 1 incoming edge
     const nonTriggerNodes = nodes.filter(n => {
-      const type = normalizeNodeType(n) || n.type || '';
+      const type = unifiedNormalizeNodeType(n) || n.type || '';
       return !['schedule', 'webhook', 'manual_trigger', 'form', 'interval', 'chat_trigger'].includes(type);
     });
     
@@ -194,7 +194,7 @@ export class WorkflowPolicyEnforcer {
     const crmNodeTypes = ['hubspot', 'zoho_crm', 'salesforce', 'pipedrive'];
     const crmProviders = new Set<string>();
     nodes.forEach(n => {
-      const type = normalizeNodeType(n) || n.type || '';
+      const type = unifiedNormalizeNodeType(n) || n.type || '';
       if (crmNodeTypes.includes(type)) {
         crmProviders.add(type);
       }
@@ -234,7 +234,7 @@ export class WorkflowPolicyEnforcer {
       
       // Validate output field exists in source node (using sourceHandle)
       if (edge.sourceHandle) {
-        const sourceType = normalizeNodeType(sourceNode) || sourceNode.type || '';
+        const sourceType = unifiedNormalizeNodeType(sourceNode) || sourceNode.type || '';
         const validOutputFields = this.getValidOutputFields(sourceType);
         if (!validOutputFields.includes(edge.sourceHandle)) {
           violations.push({
@@ -248,7 +248,7 @@ export class WorkflowPolicyEnforcer {
       
       // Validate input field exists in target node (using targetHandle)
       if (edge.targetHandle) {
-        const targetType = normalizeNodeType(targetNode) || targetNode.type || '';
+        const targetType = unifiedNormalizeNodeType(targetNode) || targetNode.type || '';
         const validInputFields = this.getValidInputFields(targetType);
         if (!validInputFields.includes(edge.targetHandle)) {
           violations.push({
@@ -323,7 +323,7 @@ export class WorkflowPolicyEnforcer {
       // Remove duplicate CRM nodes (keep first one)
       const crmNodeTypes = ['hubspot', 'zoho_crm', 'salesforce', 'pipedrive'];
       const crmNodes = normalizedNodes.filter(n => {
-        const type = normalizeNodeType(n) || n.type || '';
+        const type = unifiedNormalizeNodeType(n) || n.type || '';
         return crmNodeTypes.includes(type);
       });
       
@@ -345,7 +345,7 @@ export class WorkflowPolicyEnforcer {
     
     // 🚨 CRITICAL FIX: Fix trigger outgoing connections
     const triggerNode = normalizedNodes.find(n => {
-      const type = normalizeNodeType(n) || n.type || '';
+      const type = unifiedNormalizeNodeType(n) || n.type || '';
       return ['schedule', 'webhook', 'manual_trigger', 'form', 'interval', 'chat_trigger'].includes(type);
     });
     
@@ -354,15 +354,15 @@ export class WorkflowPolicyEnforcer {
       if (triggerOutgoing.length === 0) {
         // Connect trigger to first non-trigger, non-chat_model node
         const firstActionNode = normalizedNodes.find(n => {
-          const type = normalizeNodeType(n) || n.type || '';
+          const type = unifiedNormalizeNodeType(n) || n.type || '';
           return n.id !== triggerNode.id && 
                  type !== 'chat_model' &&
                  !['schedule', 'webhook', 'manual_trigger', 'form', 'interval', 'chat_trigger'].includes(type);
         });
         if (firstActionNode) {
           // Determine correct field mapping based on trigger type
-          const triggerType = normalizeNodeType(triggerNode) || triggerNode.type || '';
-          const targetType = normalizeNodeType(firstActionNode) || firstActionNode.type || '';
+          const triggerType = unifiedNormalizeNodeType(triggerNode) || triggerNode.type || '';
+          const targetType = unifiedNormalizeNodeType(firstActionNode) || firstActionNode.type || '';
           
           // ✅ CRITICAL: Use correct output handles for each trigger type
           const sourceHandle = (triggerType === 'schedule' || triggerType === 'interval') ? 'output' : 
@@ -389,7 +389,7 @@ export class WorkflowPolicyEnforcer {
     
     // Fix orphaned nodes
     const nonTriggerNodes = normalizedNodes.filter(n => {
-      const type = normalizeNodeType(n) || n.type || '';
+      const type = unifiedNormalizeNodeType(n) || n.type || '';
       return !['schedule', 'webhook', 'manual_trigger', 'form', 'interval', 'chat_trigger'].includes(type);
     });
     
@@ -424,8 +424,8 @@ export class WorkflowPolicyEnforcer {
       const targetNode = normalizedNodes.find(n => n.id === edge.target);
       
       if (sourceNode && targetNode) {
-        const sourceType = normalizeNodeType(sourceNode) || sourceNode.type || '';
-        const targetType = normalizeNodeType(targetNode) || targetNode.type || '';
+        const sourceType = unifiedNormalizeNodeType(sourceNode) || sourceNode.type || '';
+        const targetType = unifiedNormalizeNodeType(targetNode) || targetNode.type || '';
         
         const validOutputFields = this.getValidOutputFields(sourceType);
         const validInputFields = this.getValidInputFields(targetType);

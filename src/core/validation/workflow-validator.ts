@@ -7,7 +7,7 @@
 
 import { validateNodeConfig as validateNodeConfigFromRegistry } from './schema-based-validator';
 import { unifiedNodeRegistry } from '../registry/unified-node-registry';
-import { normalizeNodeType } from '../utils/node-type-normalizer';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../utils/unified-node-type-normalizer';
 
 export interface WorkflowNode {
   id: string;
@@ -49,7 +49,7 @@ export function validateAllNodeInputs(nodes: WorkflowNode[]): ValidationResult {
   const warnings: string[] = [];
 
   for (const node of nodes) {
-    const nodeType = normalizeNodeType(node as any) || node.data?.type || node.type;
+    const nodeType = unifiedNormalizeNodeType(node as any) || node.data?.type || node.type;
     const def = unifiedNodeRegistry.get(nodeType);
     if (!def) {
       warnings.push(`Node ${node.id} has unknown type: ${nodeType}`);

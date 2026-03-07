@@ -42,8 +42,18 @@ TRIGGER DETECTION:
 - "when", "on" -> event trigger (use "event")
 - "every day", "every morning", "at 9am", cron-like schedules -> "schedule"
 - "manually", "run this manually", "on demand" -> "manual"
-- "webhook", "http request", "incoming request" -> "webhook"
+- "webhook", "http request", "incoming request" -> "webhook" (ONLY if receiving/listening for incoming requests)
+- "webhook to manage API calls", "webhook to send", "webhook to call API" -> NOT a trigger, use "http_request" in actions instead
 - If no explicit trigger, default to "manual".
+
+WEBHOOK INTENT DISAMBIGUATION (CRITICAL):
+- "webhook" keyword is AMBIGUOUS:
+  * Receiving webhooks (trigger) -> Use "webhook" in trigger field
+    Examples: "receive webhook", "listen for webhook", "incoming webhook", "webhook trigger"
+  * Sending API calls (output) -> Use "http_request" in actions field
+    Examples: "webhook to manage API calls", "webhook to send API", "webhook to call API", "send webhook", "make API call"
+- When user says "webhook to manage API calls" or "webhook to send/call API" -> This is an OUTPUT action, NOT a trigger
+- Only use "webhook" as trigger when user explicitly wants to RECEIVE incoming HTTP requests
 
 ACTION VERBS:
 - create, add, insert -> usually actions
@@ -61,6 +71,8 @@ ROLE ASSIGNMENT RULES:
 - Service used with create/update/send verbs -> actions
 - Service used with append/store/log verbs -> storage
 - Service only mentioned in context like "emails from Gmail already stored in Google Sheets" -> mentioned_only
+- "webhook" with "send/call/manage API" verbs -> actions (use "http_request", not "webhook")
+- "webhook" with "receive/listen/incoming" verbs -> trigger (use "webhook")
 
 PHRASE CLASSIFICATION:
 - "GET/READ/FETCH FROM X" -> X is a data_source.

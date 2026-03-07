@@ -9,7 +9,7 @@ import { requirementsExtractor } from './requirements-extractor';
 import { workflowValidator } from './workflow-validator';
 import { nodeEquivalenceMapper } from './node-equivalence-mapper';
 import { enhancedWorkflowAnalyzer } from './enhanced-workflow-analyzer';
-import { nodeLibrary } from '../nodes/node-library';
+import { nodeLibrary, CANONICAL_NODE_TYPES } from '../nodes/node-library';
 import { nodeDefinitionRegistry } from '../../core/types/node-definition';
 import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 import { config } from '../../core/config';
@@ -61,9 +61,13 @@ import {
   AI_USAGE_RULES 
 } from './workflow-construction-logic';
 import { getNodeOutputType, areTypesCompatible, getNodeOutputSchema } from '../../core/types/node-output-types';
-import { TypeConverter } from '../../core/utils/type-converter';
-import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+// TypeConverter removed - not used in this file
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
+import { resolveNodeType } from '../../core/utils/node-type-resolver-util';
+import { resolveAliasToCanonical } from '../../core/utils/comprehensive-alias-resolver';
+import { isEmptyValue } from '../../core/utils/is-empty-value';
 import { nodeTypeNormalizationService } from './node-type-normalization-service';
+import { capabilityResolver } from './capability-resolver';
 import { NodeSchemaRegistry } from '../../core/contracts/node-schema-registry';
 import { WorkflowAutoRepair } from '../../core/contracts/workflow-auto-repair';
 import { enhancedNodeReference } from './enhanced-node-reference';
@@ -86,6 +90,9 @@ import {
   fixTemplateExpressions 
 } from './template-expression-validator';
 import { nodeAutoConfigurator } from '../node-auto-configurator';
+import { platformSelectionResolver } from './platform-selection-resolver';
+import { generateTemplates } from './schema-aware-template-generator';
+import { validateMappings } from './template-validation-gate';
 
 export class AgenticWorkflowBuilder {
   private nodeLibrary: Map<string, any> = new Map();
@@ -734,7 +741,33 @@ You are a workflow execution engine, not a diagram generator.`;
     requiredCredentials?: string[];
     confidenceScore?: any;
   }> {
-    console.log(`🤖 Generating workflow from prompt: "${userPrompt}"`);
+    console.log(`🤖 [STAGE: START] Generating workflow from prompt: "${userPrompt}"`);
+    
+    // ✅ ROOT-LEVEL FIX: Check for platform ambiguity BEFORE generating workflow
+    // If user says "CRM" or "email" without specifying platform, auto-select default
+    const platformCheck = platformSelectionResolver.analyzePlatformSelection(userPrompt);
+    
+    if (platformCheck.needsClarification) {
+      // ✅ AUTO-SELECT: Instead of throwing error, auto-select default platforms
+      // This provides better UX - user can always edit the workflow later
+      const defaultSelections = platformSelectionResolver.autoSelectDefaults(platformCheck.ambiguousCategories || []);
+      
+      if (defaultSelections.length > 0) {
+        console.log(`[Platform Selection] ⚠️  Auto-selected default platforms: ${defaultSelections.map(s => `${s.category} → ${s.platform}`).join(', ')}`);
+        console.log(`[Platform Selection] 💡 User can edit the workflow to change platforms if needed`);
+        
+        // Update prompt with selected platforms for better context
+        let enhancedPrompt = userPrompt;
+        for (const selection of defaultSelections) {
+          enhancedPrompt += ` (using ${selection.platform} for ${selection.category})`;
+        }
+        userPrompt = enhancedPrompt;
+      } else {
+        // Fallback: Just log warning and continue
+        console.warn(`[Platform Selection] ⚠️  Ambiguous platform mentions detected: ${platformCheck.ambiguousCategories?.join(', ')}`);
+        console.warn(`[Platform Selection] 💡 Proceeding with workflow generation - AI will infer best platform`);
+      }
+    }
     
     // ⚡ EARLY DETECTION: Check if this is a chatbot workflow BEFORE any LLM calls
     const promptLower = userPrompt.toLowerCase();
@@ -755,6 +788,7 @@ You are a workflow execution engine, not a diagram generator.`;
     }
     
     // PHASE-2: Prompt Normalization (Feature #1) - BEFORE STEP-1
+    console.log('[WorkflowBuilder] 🔄 [STAGE: Prompt Normalization] Starting...');
     onProgress?.({ step: 0, stepName: 'Normalizing', progress: 5, details: { message: 'Normalizing user prompt...' } });
     const { promptNormalizer } = await import('./prompt-normalizer');
     
@@ -771,6 +805,7 @@ You are a workflow execution engine, not a diagram generator.`;
       // Use normalized prompt for rest of pipeline
       effectivePrompt = normalized.normalizedPrompt;
       console.log(`✅ [PHASE-2] Prompt normalized: "${effectivePrompt.substring(0, 100)}"`);
+      console.log('[WorkflowBuilder] ✅ [STAGE: Prompt Normalization] Completed');
     } catch (error) {
       // CRITICAL: If AI normalization fails (e.g., models unavailable, connection refused), use original prompt
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -802,10 +837,12 @@ You are a workflow execution engine, not a diagram generator.`;
     }
     
     // PHASE-2: Intent Classification (Feature #2)
+    console.log('[WorkflowBuilder] 🔄 [STAGE: Intent Classification] Starting...');
     onProgress?.({ step: 0, stepName: 'Classifying', progress: 8, details: { message: 'Classifying workflow intent...' } });
     // Intent classification is already done earlier in the pipeline
     // Use the classification result from earlier
     const intentClassification = intentClassifier.classifyIntent(userPrompt);
+    console.log(`[WorkflowBuilder] ✅ [STAGE: Intent Classification] Completed - Intent: ${intentClassification.intent}`);
     
     // 🚨 CRITICAL FIX: For vague prompts, use minimal safe structure instead of full AI generation
     if (intentClassification.intent === 'ambiguous' && intentClassification.minimalSafeStructure) {
@@ -825,6 +862,7 @@ You are a workflow execution engine, not a diagram generator.`;
     }
     
     // 🆕 NEW PIPELINE: Workflow Planner - Convert prompt to ordered steps
+    console.log('[WorkflowBuilder] 🔄 [STAGE: Workflow Planning] Starting...');
     onProgress?.({ step: 2, stepName: 'Planning', progress: 12, details: { message: 'Planning workflow steps...' } });
     let workflowPlan: WorkflowPlan | null = null;
     let usePlannerOutput = false;
@@ -832,6 +870,7 @@ You are a workflow execution engine, not a diagram generator.`;
     try {
       workflowPlan = await workflowPlanner.planWorkflow(userPrompt);
       console.log(`✅ [WorkflowPlanner] Plan created:`, JSON.stringify(workflowPlan, null, 2));
+      console.log(`[WorkflowBuilder] ✅ [STAGE: Workflow Planning] Completed - ${workflowPlan.steps?.length || 0} steps planned`);
       console.log(`✅ [WorkflowPlanner] Trigger: ${workflowPlan.trigger_type}, Steps: ${workflowPlan.steps.length}`);
       
       // Log planner output
@@ -1467,8 +1506,10 @@ You are a workflow execution engine, not a diagram generator.`;
       // Continue but use environment variable references for missing credentials
     }
     
+    console.log('[WorkflowBuilder] 🔄 [STAGE: Node Configuration] Starting...');
     onProgress?.({ step: 5, stepName: 'Building', progress: 70, details: { message: 'Configuring nodes...' } });
-    const configuredNodes = await this.configureNodes(nodes, requirements, constraints);
+    let configuredNodes = await this.configureNodes(nodes, requirements, constraints);
+    console.log(`[WorkflowBuilder] ✅ [STAGE: Node Configuration] Completed - Configured ${configuredNodes.length} nodes`);
     
     // Workflow Construction Logic (STEP-3): PHASE_3 - Data Mapping
     onProgress?.({ step: 5, stepName: 'Building', progress: 75, details: { message: 'PHASE 3: Validating data mapping...' } });
@@ -1487,8 +1528,48 @@ You are a workflow execution engine, not a diagram generator.`;
       console.warn('⚠️  Conditions validation errors:', conditionsValidation.errors);
     }
     
-    onProgress?.({ step: 5, stepName: 'Building', progress: 80, details: { message: 'Creating connections...' } });
-    const { nodes: nodesWithChatModels, edges: connections } = await this.createConnections(configuredNodes, requirements, finalStructure);
+    onProgress?.({ step: 5, stepName: 'Building', progress: 80, details: { message: 'Building deterministic graph connectivity...' } });
+    
+    // ✅ ROOT-LEVEL FIX: Use DeterministicGraphAssembler
+    // This ensures: trigger first, execution plan from intent, atomic edge creation, ZERO orphan nodes
+    const { deterministicGraphAssembler } = await import('../graph/deterministicGraphAssembler');
+    
+    // ✅ STEP 1: Get structured intent (if available from requirements)
+    let structuredIntent: any = null;
+    try {
+      // Try to get structured intent from requirements metadata
+      structuredIntent = (requirements as any)?.structuredIntent || null;
+    } catch (error) {
+      console.warn('[DeterministicGraphAssembler] Could not extract structured intent, using node order fallback');
+    }
+    
+    // ✅ STEP 2: Assemble graph deterministically (guarantees zero orphan nodes)
+    const assemblyResult = deterministicGraphAssembler.assembleGraph(configuredNodes, structuredIntent);
+    
+    if (!assemblyResult.success) {
+      console.error('[DeterministicGraphAssembler] ❌ Graph assembly failed:', assemblyResult.errors);
+      throw new Error(
+        `Graph assembly failed: ${assemblyResult.errors.join(', ')}. ` +
+        `This indicates a failure in graph construction - workflow build aborted.`
+      );
+    }
+    
+    // ✅ STEP 3: Use assembled graph (guaranteed zero orphan nodes)
+    let connections = assemblyResult.edges;
+    const assembledNodes = assemblyResult.nodes; // May include auto-created trigger
+    
+    // Update configuredNodes if trigger was auto-created
+    if (assembledNodes.length > configuredNodes.length) {
+      configuredNodes = assembledNodes;
+    }
+    
+    console.log(
+      `[DeterministicGraphAssembler] ✅ Graph assembled: ` +
+      `${assemblyResult.stats.totalNodes} nodes, ${assemblyResult.stats.totalEdges} edges, ` +
+      `${assemblyResult.stats.orphanNodes} orphan nodes (guaranteed zero)`
+    );
+    
+    const nodesWithChatModels = configuredNodes;
     
     // POLICY ENFORCEMENT: Rule-based structural enforcement BEFORE validation
     onProgress?.({ step: 5, stepName: 'Policy Enforcement', progress: 82, details: { message: 'Enforcing workflow policies...' } });
@@ -1522,9 +1603,26 @@ You are a workflow execution engine, not a diagram generator.`;
       console.log(`✅ [Policy Enforcer] All policies passed`);
     }
     
-    // Use normalized nodes and edges from policy enforcer
+    // ✅ ROOT-LEVEL FIX: Sanitize edges using EdgeSanitizer before using them
+    const { edgeSanitizer: edgeSanitizer1 } = await import('../edges/edgeSanitizer');
+    const connectionsToSanitize = policyResult.normalizedEdges.length > 0 ? policyResult.normalizedEdges : connections;
+    const sanitizationResult = edgeSanitizer1.sanitize(connectionsToSanitize, nodesWithChatModels);
+    
+    if (sanitizationResult.stats.repaired > 0) {
+      console.log(
+        `[EdgeSanitizer] 🔧 Repaired ${sanitizationResult.stats.repaired} edge(s) during sanitization`
+      );
+    }
+    
+    if (sanitizationResult.stats.removed > 0) {
+      console.warn(
+        `[EdgeSanitizer] ⚠️  Removed ${sanitizationResult.stats.removed} unrecoverable edge(s)`
+      );
+    }
+    
+    // Use normalized nodes and sanitized edges
     const normalizedNodes = policyResult.normalizedNodes.length > 0 ? policyResult.normalizedNodes : nodesWithChatModels;
-    const normalizedEdges = policyResult.normalizedEdges.length > 0 ? policyResult.normalizedEdges : connections;
+    const normalizedEdges = sanitizationResult.edges;
     
     // GRAPH INTEGRITY CHECK #3: Final check after connections are created
     onProgress?.({ step: 5, stepName: 'Graph Integrity Check #3', progress: 83, details: { message: 'Final graph integrity check...' } });
@@ -1552,9 +1650,23 @@ You are a workflow execution engine, not a diagram generator.`;
       }
     }
     
+    // ✅ ROOT-LEVEL FIX: Final edge sanitization before validation
+    const { edgeSanitizer: edgeSanitizer2 } = await import('../edges/edgeSanitizer');
+    const finalSanitization = edgeSanitizer2.sanitize(normalizedEdges, normalizedNodes);
+    
+    // Store sanitization result globally for later use
+    (global as any).finalSanitization = finalSanitization;
+    
+    if (finalSanitization.stats.repaired > 0 || finalSanitization.stats.removed > 0) {
+      console.log(
+        `[EdgeSanitizer] ✅ Final sanitization: ${finalSanitization.stats.repaired} repaired, ` +
+        `${finalSanitization.stats.removed} removed`
+      );
+    }
+    
     // Store final normalized nodes/edges for validation (declare before use)
     const finalNodesForValidation = normalizedNodes;
-    const finalEdgesForValidation = normalizedEdges;
+    const finalEdgesForValidation = finalSanitization.edges; // Use sanitized edges
     
     // AI VALIDATION: Final validation after nodes and connections are created (safety layer only)
     onProgress?.({ step: 5, stepName: 'AI Final Validation', progress: 85, details: { message: 'AI performing final workflow validation...' } });
@@ -1658,7 +1770,24 @@ You are a workflow execution engine, not a diagram generator.`;
     onProgress?.({ step: 6, stepName: 'Finalizing', progress: 95, details: { message: 'Finalizing workflow...' } });
     
     let finalNodes = validatedNodes;
-    let finalEdges = connections;
+    // ✅ ROOT-LEVEL FIX: Use sanitized edges from earlier sanitization
+    // finalSanitization is stored in global (line ~1637) for cross-scope access
+    const storedSanitization = (global as any).finalSanitization;
+    let finalEdges = (storedSanitization && storedSanitization.edges) ? storedSanitization.edges : connections;
+    
+    // If not sanitized yet (shouldn't happen, but safety check), sanitize now
+    if (!storedSanitization || !storedSanitization.edges) {
+      const { edgeSanitizer } = await import('../edges/edgeSanitizer');
+      const sanitization = edgeSanitizer.sanitize(connections, validatedNodes);
+      finalEdges = sanitization.edges;
+      (global as any).finalSanitization = sanitization;
+      if (sanitization.stats.repaired > 0 || sanitization.stats.removed > 0) {
+        console.log(
+          `[EdgeSanitizer] ✅ Sanitized edges: ${sanitization.stats.repaired} repaired, ` +
+          `${sanitization.stats.removed} removed`
+        );
+      }
+    }
     let validationResult: { valid: boolean; errors: any[]; warnings: any[] } | null = { valid: true, errors: [], warnings: [] };
     let step5Validation: any = {
       executable: true,
@@ -1738,7 +1867,7 @@ You are a workflow execution engine, not a diagram generator.`;
     
     // Normalize all node types first
     finalWorkflow.nodes = finalWorkflow.nodes.map(node => {
-      const normalizedType = normalizeNodeType(node);
+      const normalizedType = unifiedNormalizeNodeType(node);
       if (normalizedType && normalizedType !== 'custom') {
         // Ensure data exists with all required fields
         const existingLabel = node.data?.label;
@@ -2539,6 +2668,13 @@ You are a workflow execution engine, not a diagram generator.`;
     }
     
     // Default based on node type
+    // ✅ REGISTRY-BASED: Use registry to determine output ports
+    const nodeDef = unifiedNodeRegistry.get(nodeType);
+    if (nodeDef && nodeDef.outgoingPorts && nodeDef.outgoingPorts.length > 0) {
+      return nodeDef.outgoingPorts;
+    }
+    
+    // ⚠️ LEGACY FALLBACK: Hardcoded if_else check (for backward compatibility)
     if (nodeType === 'if_else' || nodeType === 'if') {
       return ['true', 'false'];
     }
@@ -3159,278 +3295,28 @@ Use only nodes from the library above.`;
       return structure;
     }
     
-    // ✅ CRITICAL: Try to match sample workflows FIRST (highest priority)
-    // This ensures we use real-world workflow patterns instead of AI generation
-    // Works consistently for ALL workflows with ≥80% similarity threshold
-    try {
-      const { workflowTrainingService } = require('./workflow-training-service');
-      console.log(`🔍 [generateStructure] Checking sample workflows for: "${userPrompt}"`);
-      
-      // ✅ CRITICAL: If structured spec provided, enhance requirements with structured data
-      if (structuredSpec && structuredSpec.trigger) {
-        console.log(`📋 [generateStructure] Structured specification detected - enhancing requirements`);
-        // Override trigger if specified in structured spec
-        if (structuredSpec.trigger.type && structuredSpec.trigger.type !== 'other') {
-          (requirements as any).trigger = structuredSpec.trigger.type;
-          console.log(`   Trigger from structured spec: ${structuredSpec.trigger.type}`);
-        }
-        // Add actions from structured spec to requirements
-        if (structuredSpec.actions && structuredSpec.actions.length > 0) {
-          const actionDescriptions = structuredSpec.actions.map((a: any) => `${a.actionType}: ${JSON.stringify(a.details)}`).join(', ');
-          (requirements as any).keySteps = [
-            ...(requirements.keySteps || []),
-            ...structuredSpec.actions.map((a: any) => `${a.actionType} - ${JSON.stringify(a.details)}`)
-          ];
-          console.log(`   Added ${structuredSpec.actions.length} action(s) from structured spec`);
-        }
+    // ✅ ARCHITECTURAL FIX: Sample workflows are now TRAINING-ONLY (few-shot examples)
+    // They are used as examples in AI prompts to teach patterns, NOT for replacement
+    // All workflows are generated 100% from user prompts, not from static sample matching
+    // Sample workflows are included as few-shot examples in the AI prompt (see lines 4026-4056)
+    
+    // ✅ CRITICAL: If structured spec provided, enhance requirements with structured data
+    if (structuredSpec && structuredSpec.trigger) {
+      console.log(`📋 [generateStructure] Structured specification detected - enhancing requirements`);
+      // Override trigger if specified in structured spec
+      if (structuredSpec.trigger.type && structuredSpec.trigger.type !== 'other') {
+        (requirements as any).trigger = structuredSpec.trigger.type;
+        console.log(`   Trigger from structured spec: ${structuredSpec.trigger.type}`);
       }
-      
-      // Get all sample workflow titles
-      const allSampleWorkflows = this.getAllSampleWorkflowTitles();
-      console.log(`📋 [generateStructure] Found ${allSampleWorkflows.length} sample workflows in database`);
-      
-      // Calculate similarity for each workflow
-      const scoredWorkflows = allSampleWorkflows.map((workflow: any) => {
-        const similarity = this.calculateWorkflowSimilarity(
-          userPrompt,
-          workflow.goal,
-          workflow.use_case,
-          workflow.category
-        );
-        return { ...workflow, similarity };
-      });
-      
-      // ✅ CRITICAL: Log top 3 matches for debugging
-      const topMatches = [...scoredWorkflows].sort((a, b) => b.similarity - a.similarity).slice(0, 3);
-      console.log(`🔍 [generateStructure] Top 3 matches:`);
-      topMatches.forEach((w: any, idx: number) => {
-        console.log(`   ${idx + 1}. "${w.goal}" - ${(w.similarity * 100).toFixed(1)}% similarity (ID: ${w.id})`);
-      });
-      
-      // Sort by similarity (highest first)
-      scoredWorkflows.sort((a, b) => b.similarity - a.similarity);
-      
-      // Log top 5 matches for debugging
-      console.log(`🔍 [generateStructure] Top 5 matches:`);
-      scoredWorkflows.slice(0, 5).forEach((w: any, idx: number) => {
-        console.log(`   ${idx + 1}. "${w.goal}" - ${(w.similarity * 100).toFixed(1)}% similarity`);
-      });
-      
-      // ✅ CRITICAL: Check if any workflow matches with ≥80% similarity (configurable threshold)
-      // Default: 85% for high confidence, but supports 80% as minimum per specification
-      // This threshold ensures we only use sample workflows when there's strong confidence
-      // Works consistently for ALL workflows, not just specific examples
-      const SIMILARITY_THRESHOLD = parseFloat(process.env.WORKFLOW_SIMILARITY_THRESHOLD || '0.85');
-      const MIN_SIMILARITY_THRESHOLD = 0.80; // Minimum per specification
-      
-      // ✅ CRITICAL: For candidate/validation/hiring workflows, use lower threshold (75%) for better matching
-      // This handles variations like "candidate validation" vs "HR hiring workflow agent"
-      const isCandidateValidationPrompt = userPrompt.includes('candidate') && 
-                                         (userPrompt.includes('validation') || userPrompt.includes('screen') || userPrompt.includes('qualif'));
-      const effectiveThreshold = isCandidateValidationPrompt 
-        ? Math.max(0.75, MIN_SIMILARITY_THRESHOLD) // Lower threshold for candidate validation (75%)
-        : Math.max(SIMILARITY_THRESHOLD, MIN_SIMILARITY_THRESHOLD);
-      
-      if (isCandidateValidationPrompt) {
-        console.log(`🔍 [generateStructure] Candidate validation prompt detected - using lower threshold (75%) for better matching`);
+      // Add actions from structured spec to requirements
+      if (structuredSpec.actions && structuredSpec.actions.length > 0) {
+        const actionDescriptions = structuredSpec.actions.map((a: any) => `${a.actionType}: ${JSON.stringify(a.details)}`).join(', ');
+        (requirements as any).keySteps = [
+          ...(requirements.keySteps || []),
+          ...structuredSpec.actions.map((a: any) => `${a.actionType} - ${JSON.stringify(a.details)}`)
+        ];
+        console.log(`   Added ${structuredSpec.actions.length} action(s) from structured spec`);
       }
-      const bestMatch = scoredWorkflows.find((w: any) => w.similarity >= effectiveThreshold);
-      
-      // Log all workflows above 50% for debugging (helps identify why matches fail)
-      const highSimilarityWorkflows = scoredWorkflows.filter((w: any) => w.similarity >= 0.5 && w.similarity < SIMILARITY_THRESHOLD);
-      if (highSimilarityWorkflows.length > 0 && !bestMatch) {
-        console.log(`ℹ️  [generateStructure] Found ${highSimilarityWorkflows.length} workflow(s) with 50-${(effectiveThreshold * 100).toFixed(0)}% similarity (below threshold):`);
-        highSimilarityWorkflows.slice(0, 3).forEach((w: any) => {
-          console.log(`   - "${w.goal}" (${(w.similarity * 100).toFixed(1)}%)`);
-        });
-      }
-      
-      if (bestMatch) {
-        console.log(`✅ [generateStructure] ✅ MATCH FOUND: "${bestMatch.goal}" (${(bestMatch.similarity * 100).toFixed(1)}% similarity ≥ ${(effectiveThreshold * 100).toFixed(0)}% threshold)`);
-        console.log(`   Using complete workflow structure from sample workflow database`);
-        
-        // ✅ CRITICAL: Get the full workflow structure from the singleton instance
-        const allWorkflows = workflowTrainingService.getAllWorkflows();
-        const matchedWorkflow = allWorkflows.find((w: any) => w.id === bestMatch.id);
-        
-        if (!matchedWorkflow) {
-          console.warn(`⚠️  [generateStructure] Matched workflow "${bestMatch.id}" not found in loaded workflows`);
-          console.warn(`   This may indicate a mismatch between similarity matching and workflow loading`);
-          console.warn(`   Falling back to custom AI generation`);
-          // Continue to fallback below
-        } else {
-          // ✅ CRITICAL: Handle multiple workflow formats
-          // Check for phase1.step5.selectedNodes (modern examples + training dataset format)
-          const selectedNodes = matchedWorkflow?.phase1?.step5?.selectedNodes || [];
-          const connections = matchedWorkflow?.phase1?.step5?.connections || [];
-          
-          // Extract trigger - check multiple possible locations
-          // ✅ CRITICAL FIX: Check if user requested a specific trigger (from requirements or planner)
-          // This ensures we respect user's trigger preference over sample workflow's trigger
-          const requestedTrigger = (requirements as any).trigger || 
-                                  (requirements as any).detectedTrigger ||
-                                  structuredSpec?.trigger?.type;
-          
-          let triggerNode = requestedTrigger || // User's requested trigger takes priority
-                           matchedWorkflow?.trigger?.node || 
-                           matchedWorkflow?.phase1?.step5?.structure?.trigger ||
-                           'manual_trigger';
-          
-          // If trigger is in selectedNodes (first element) AND no user trigger specified, extract it
-          if (!requestedTrigger && selectedNodes.length > 0) {
-            const firstNode = selectedNodes[0];
-            if (firstNode === 'webhook' || firstNode === 'form' || firstNode === 'schedule' || 
-                firstNode === 'manual_trigger' || firstNode === 'email_received' ||
-                firstNode === 'record_created' || firstNode === 'record_updated') {
-              triggerNode = firstNode;
-            }
-          }
-          
-          // Log trigger override if user requested different trigger
-          if (requestedTrigger && requestedTrigger !== triggerNode) {
-            console.log(`✅ [generateStructure] Overriding sample workflow trigger "${triggerNode}" with user's requested trigger "${requestedTrigger}"`);
-            triggerNode = requestedTrigger;
-          }
-          
-          if (selectedNodes.length > 0) {
-            console.log(`✅ [generateStructure] Using matched sample workflow structure: "${bestMatch.goal}"`);
-            console.log(`   Workflow ID: ${matchedWorkflow.id}`);
-            console.log(`   Trigger: ${triggerNode}`);
-            console.log(`   Nodes: ${selectedNodes.length} node(s) total`);
-            
-            // ✅ CRITICAL: Filter out trigger nodes from selectedNodes (already handled)
-            const actionNodes = selectedNodes.filter((nodeType: string) => 
-              nodeType !== 'webhook' && 
-              nodeType !== 'form' && 
-              nodeType !== 'schedule' && 
-              nodeType !== 'manual_trigger' &&
-              nodeType !== 'email_received' &&
-              nodeType !== 'record_created' &&
-              nodeType !== 'record_updated'
-            );
-            
-            console.log(`   Action nodes: ${actionNodes.length} node(s)`);
-            
-            // Convert to WorkflowGenerationStructure format
-            // ✅ CRITICAL: Use consistent ID format (step1, step2, etc.) to match node creation
-            // ✅ CRITICAL: Use EXACT node types from sample workflow - don't change them
-            const steps: WorkflowStepDefinition[] = actionNodes.map((nodeType: string, index: number) => {
-              const schema = this.nodeLibrary.get(nodeType);
-              const label = schema?.label || nodeType;
-              
-              // ✅ CRITICAL: Validate node type exists in library
-              if (!schema) {
-                console.warn(`⚠️  [generateStructure] Node type "${nodeType}" from sample workflow not found in library`);
-                console.warn(`   This may cause issues during node selection`);
-              }
-              
-              return {
-                id: `step${index + 1}`, // Use step1, step2 format (no underscore) to match node.id
-                description: label,
-                type: nodeType, // ✅ CRITICAL: Use exact node type from sample workflow
-              };
-            });
-            
-            console.log(`✅ [generateStructure] Created ${steps.length} steps from sample workflow:`);
-            steps.forEach((step, idx) => {
-              console.log(`   ${idx + 1}. ${step.type} - "${step.description}"`);
-            });
-            
-            // Build connections array
-            const structureConnections: Array<{source: string, target: string, outputField?: string, inputField?: string}> = [];
-            
-            // Parse connections from example (format: "source → target" or "source (true) → target")
-            for (const conn of connections) {
-              const parts = conn.split('→').map((s: string) => s.trim());
-              if (parts.length === 2) {
-                let source = parts[0].replace(/\s*\(.*?\)\s*/, '').trim(); // Remove "(true)" etc.
-                const target = parts[1].trim();
-                
-                // Check if source is trigger
-                if (source === 'trigger' || source === triggerNode || source === 'webhook' || source === 'form' || source === 'schedule' || source === 'manual_trigger' || source === 'email_received' || source === 'record_created' || source === 'record_updated') {
-                  // Connect from trigger to target step
-                  const targetIndex = actionNodes.indexOf(target);
-                  if (targetIndex >= 0) {
-                    structureConnections.push({
-                      source: 'trigger',
-                      target: `step${targetIndex + 1}`, // Use step1, step2 format (no underscore)
-                    });
-                  }
-                } else {
-                  // Both source and target are in actionNodes
-                  const sourceIndex = actionNodes.indexOf(source);
-                  const targetIndex = actionNodes.indexOf(target);
-                  
-                  if (sourceIndex >= 0 && targetIndex >= 0) {
-                    // 🚨 CRITICAL FIX: Prevent self-loops
-                    if (sourceIndex !== targetIndex) {
-                      structureConnections.push({
-                        source: `step${sourceIndex + 1}`, // Use step1, step2 format (no underscore)
-                        target: `step${targetIndex + 1}`, // Use step1, step2 format (no underscore)
-                      });
-                    } else {
-                      console.warn(`⚠️  [Sample Workflow] Prevented self-loop connection: step${sourceIndex + 1} → step${targetIndex + 1}`);
-                    }
-                  }
-                }
-              }
-            }
-            
-            // If no connections parsed, create sequential connections
-            // ✅ CRITICAL: Use consistent ID format (step1, step2, etc.) to match step IDs
-            if (structureConnections.length === 0 && steps.length > 0) {
-              structureConnections.push({ source: 'trigger', target: 'step1' });
-              for (let i = 1; i < steps.length; i++) {
-                // 🚨 CRITICAL FIX: Prevent self-loops in sequential connections
-                const sourceStep = `step${i}`;
-                const targetStep = `step${i + 1}`;
-                if (sourceStep !== targetStep) {
-                  structureConnections.push({
-                    source: sourceStep,
-                    target: targetStep,
-                  });
-                } else {
-                  console.warn(`⚠️  [Sequential Connections] Prevented self-loop: ${sourceStep} → ${targetStep}`);
-                }
-              }
-            }
-            
-            console.log(`✅ [generateStructure] Using sample workflow structure: ${triggerNode} → ${actionNodes.join(' → ')}`);
-            
-            // Mark this structure as coming from a sample workflow to prevent filtering
-            const sampleStructure: WorkflowGenerationStructure = {
-              trigger: triggerNode,
-              steps,
-              outputs: [],
-              connections: structureConnections,
-            };
-            
-            // ✅ CRITICAL: Check for missing nodes from user requirements
-            // If user mentioned additional nodes not in the sample, add them
-            const enhancedStructure = await this.enhanceStructureWithMissingNodes(
-              sampleStructure,
-              requirements,
-              matchedWorkflow
-            );
-            
-            // Add metadata to indicate this is from a sample workflow
-            (enhancedStructure as any)._fromSampleWorkflow = true;
-            (enhancedStructure as any)._sampleWorkflowId = matchedWorkflow.id;
-            
-            return enhancedStructure;
-          } else {
-            console.warn(`⚠️  [generateStructure] Matched workflow "${bestMatch.goal}" but missing structure, falling back to custom generation`);
-          }
-        }
-      } else {
-        const topMatch = scoredWorkflows[0];
-        const topSimilarity = topMatch ? (topMatch.similarity * 100).toFixed(1) : '0.0';
-        console.log(`ℹ️  [generateStructure] No sample workflow matched with ≥${(effectiveThreshold * 100).toFixed(0)}% similarity threshold.`);
-        console.log(`   Top match: "${topMatch?.goal || 'N/A'}" (${topSimilarity}%)`);
-        console.log(`   → Falling back to custom AI node selection`);
-      }
-    } catch (error) {
-      console.log('[generateStructure] Sample workflow matching failed, using AI generation:', error);
     }
     
     // 🚨 CRITICAL: Pre-process requirements to detect trigger type BEFORE AI generation
@@ -3889,13 +3775,15 @@ Use only nodes from the library above.`;
     // DEBUG: Log that node library is included
     console.log(`📚 [STRUCTURE GENERATION] Node library included: ${nodeLibrary.getAllSchemas().length} nodes available`);
     
-    // Get training examples for structure generation - use more examples for better learning
+    // ✅ ARCHITECTURAL FIX: Sample workflows are TRAINING-ONLY (few-shot examples)
+    // They teach the AI patterns, node combinations, and data flow - NOT used for replacement
+    // All workflows are generated 100% from user prompts, with samples as learning examples
     let fewShotExamples = '';
     try {
-      // Get similar workflows based on user prompt for better relevance
+      // Get similar workflows based on user prompt for better relevance (training examples only)
       const similarWorkflows = workflowTrainingService.getSimilarWorkflows(
         requirements.primaryGoal || '', 
-        5 // Use 5 similar examples
+        5 // Use 5 similar examples for few-shot learning
       );
       
       // If we have similar workflows, use them; otherwise use general examples with user prompt for similarity
@@ -3908,7 +3796,8 @@ Use only nodes from the library above.`;
         : workflowTrainingService.getNodeSelectionExamples(5, requirements.primaryGoal || '');
       
       if (examples.length > 0) {
-        fewShotExamples = '\n\n## 📚 TRAINING EXAMPLES - Learn from these similar workflows:\n\n';
+        fewShotExamples = '\n\n## 📚 TRAINING EXAMPLES - Learn from these similar workflows (DO NOT COPY - USE AS PATTERNS):\n\n';
+        fewShotExamples += '**IMPORTANT**: These examples show workflow patterns and node combinations. Generate a NEW workflow based on the user\'s prompt, not these examples.\n\n';
         examples.forEach((example: any, idx: number) => {
           fewShotExamples += `### Example ${idx + 1}:\n`;
           fewShotExamples += `**Goal:** "${example.goal}"\n`;
@@ -3919,7 +3808,7 @@ Use only nodes from the library above.`;
           fewShotExamples += '\n';
         });
         fewShotExamples += '---\n\n';
-        console.log(`📚 [Structure Generation] Using ${examples.length} training examples for few-shot learning`);
+        console.log(`📚 [Structure Generation] Using ${examples.length} training examples for few-shot learning (patterns only, not replacement)`);
       }
     } catch (error) {
       console.warn('⚠️  Failed to get training examples for structure generation:', error);
@@ -4298,7 +4187,23 @@ Return JSON:
         }
         
         parsed = JSON.parse(cleanJson);
+        
+        // 🔥 PRODUCTION-GRADE ALIAS RESOLUTION LAYER
+        // Resolve all node types (aliases, misspellings, variations) to canonical types BEFORE validation
+        // This handles: extra spaces, misspellings, broken words, user phrasing, multi-word variations
+        parsed = this.resolveAndNormalizeNodeTypes(parsed);
+        
+        // ✅ STRICT ARCHITECTURE: Validate LLM-generated node types IMMEDIATELY after parsing
+        // This is the ROOT-LEVEL enforcement that blocks invalid node types before they reach any downstream logic
+        // If validation fails, workflow generation is ABORTED (fail-fast)
+        this.validateLLMGeneratedNodeTypes(parsed);
+        
       } catch (parseError) {
+        // Check if error is from our validation (re-throw to abort)
+        if (parseError instanceof Error && parseError.message.includes('[LLM Schema Validation]')) {
+          throw parseError; // Re-throw validation errors to abort workflow generation
+        }
+        
         console.warn('⚠️  Failed to parse AI-generated structure:', parseError instanceof Error ? parseError.message : String(parseError));
         console.warn('   Raw response (first 500 chars):', (typeof result === 'string' ? result : JSON.stringify(result)).substring(0, 500));
         parsed = null;
@@ -4616,46 +4521,80 @@ Return JSON:
         }
         
         // 🚨 CRITICAL: Enforce AI Agent node if detected but missing (DEFAULT: uses Ollama)
+        // ✅ CRITICAL FIX: This check happens BEFORE DSL compilation, so ai_chat_model might not exist yet
+        // DSL layer will inject ai_chat_model if needed, so we should NOT inject ai_agent here
+        // This prevents duplicate AI nodes (ai_agent + ai_chat_model)
+        // 
+        // REMOVED: AI Agent injection at this stage to prevent duplicates
+        // The DSL layer (ensureLLMNodeInDSL) will handle AI node injection AFTER structure is generated
+        // This ensures we don't create duplicate AI nodes
         if (detectedRequirements.needsAiAgent) {
           const existingStepTypes = new Set(cleanedSteps.map((s: any) => s.data?.type || s.type || s.nodeType));
           const aiNodeTypes = ['ai_agent', 'ai_chat_model', 'chat_model'];
           const hasAiNode = aiNodeTypes.some(type => existingStepTypes.has(type));
           
           if (!hasAiNode) {
-            console.warn(`⚠️  [AI Enforcement] AI requirement detected but no AI node found. Adding ai_agent (default: Ollama).`);
-            // ✅ CRITICAL: Use ai_agent as default (not ai_chat_model) - it works with Ollama by default
-            const aiSchema = nodeLibrary.getSchema('ai_agent') || nodeLibrary.getSchema('ai_chat_model');
-            if (aiSchema) {
-              const aiStep = {
-                id: `step_ai_agent_${Date.now()}`,
-                description: aiSchema.label || 'AI Agent (Ollama)',
-                type: 'ai_agent', // ✅ DEFAULT: Use ai_agent (works with Ollama by default)
-              };
-              cleanedSteps.push(aiStep);
-              parsed.steps = cleanedSteps;
-              console.log(`✅ [AI Enforcement] Added AI AGENT node with type: ai_agent (configured for Ollama by default)`);
-            }
+            // ✅ CRITICAL FIX: Don't inject ai_agent here - DSL layer will inject ai_chat_model if needed
+            // This prevents duplicate AI nodes (ai_agent + ai_chat_model)
+            console.log(`[AI Enforcement] ⚠️  AI requirement detected but no AI node found in steps. DSL layer will inject ai_chat_model if needed (skipping ai_agent injection to prevent duplicates)`);
+            // REMOVED: ai_agent injection - let DSL layer handle it
+          } else {
+            const existingAiNodes = Array.from(existingStepTypes).filter((t): t is string => typeof t === 'string' && aiNodeTypes.includes(t)).join(', ');
+            console.log(`[AI Enforcement] ✅ AI node already exists in steps: ${existingAiNodes}`);
           }
         }
         
         // 🚨 CRITICAL: Enforce HTTP Request node if detected but missing
+        // ✅ ROOT-LEVEL FIX: Use UniversalNodeInjectionGuard to prevent unnecessary injection
         if (detectedRequirements.needsHttpRequest) {
           const existingStepTypes = new Set(cleanedSteps.map((s: any) => s.data?.type || s.type || s.nodeType));
           const httpNodeTypes = ['http_request', 'http_post', 'http_get'];
           const hasHttpNode = httpNodeTypes.some(type => existingStepTypes.has(type));
           
           if (!hasHttpNode) {
-            console.warn(`⚠️  [HTTP Enforcement] HTTP requirement detected but no HTTP node found. Adding http_request.`);
-            const httpSchema = nodeLibrary.getSchema('http_request');
-            if (httpSchema) {
-              const httpStep = {
-                id: `step_http_request_${Date.now()}`,
-                description: httpSchema.label || 'HTTP Request',
-                type: 'http_request',
-              };
-              cleanedSteps.push(httpStep);
-              parsed.steps = cleanedSteps;
-              console.log(`✅ [HTTP Enforcement] Added HTTP REQUEST node with type: http_request`);
+            // ✅ CRITICAL FIX: Check with UniversalNodeInjectionGuard before injecting
+            try {
+              const { UniversalNodeInjectionGuard } = await import('./universal-node-injection-guard');
+              const currentWorkflow: any = { nodes: cleanedSteps.map((s: any) => ({ type: s.data?.type || s.type || s.nodeType })), edges: [] };
+              // Get user prompt from requirements or structuredSpec
+              const userPrompt = ((requirements as any).originalPrompt || (requirements as any).userPrompt || requirements.primaryGoal || '').toLowerCase().trim();
+              const guardResult = UniversalNodeInjectionGuard.shouldInjectNode(
+                'http_request',
+                currentWorkflow,
+                userPrompt,
+                'HTTP requirement detected'
+              );
+              
+              if (!guardResult.shouldInject) {
+                console.log(`[HTTP Enforcement] ⚠️  Skipping HTTP request injection: ${guardResult.reason}`);
+              } else {
+                console.warn(`⚠️  [HTTP Enforcement] HTTP requirement detected but no HTTP node found. Adding http_request.`);
+                const httpSchema = nodeLibrary.getSchema('http_request');
+                if (httpSchema) {
+                  const httpStep = {
+                    id: `step_http_request_${Date.now()}`,
+                    description: httpSchema.label || 'HTTP Request',
+                    type: 'http_request',
+                  };
+                  cleanedSteps.push(httpStep);
+                  parsed.steps = cleanedSteps;
+                  console.log(`✅ [HTTP Enforcement] Added HTTP REQUEST node with type: http_request`);
+                }
+              }
+            } catch (error) {
+              // Fallback to old behavior if guard not available
+              console.warn(`⚠️  [HTTP Enforcement] HTTP requirement detected but no HTTP node found. Adding http_request.`);
+              const httpSchema = nodeLibrary.getSchema('http_request');
+              if (httpSchema) {
+                const httpStep = {
+                  id: `step_http_request_${Date.now()}`,
+                  description: httpSchema.label || 'HTTP Request',
+                  type: 'http_request',
+                };
+                cleanedSteps.push(httpStep);
+                parsed.steps = cleanedSteps;
+                console.log(`✅ [HTTP Enforcement] Added HTTP REQUEST node with type: http_request`);
+              }
             }
           }
         }
@@ -4718,15 +4657,9 @@ Return JSON:
           return structure; // Return structure as-is for chatbot workflows
         }
         
-        // ✅ CRITICAL: Skip filtering if structure came from sample workflow
-        // Sample workflows are canonical patterns and should not be filtered
-        const filteredStructure = (structure as any)._fromSampleWorkflow 
-          ? structure 
-          : this.filterUnmentionedNodes(structure, requirements, detectedRequirements);
-        
-        if ((structure as any)._fromSampleWorkflow) {
-          console.log(`✅ [generateStructure] Skipping node filtering - structure from sample workflow: ${(structure as any)._sampleWorkflowId}`);
-        }
+        // ✅ ARCHITECTURAL FIX: All workflows are now AI-generated from user prompts
+        // No sample workflow replacement logic - sample workflows are training-only (few-shot examples)
+        const filteredStructure = this.filterUnmentionedNodes(structure, requirements, detectedRequirements);
         if (isDebug) {
           console.log(`🔍 [DIAGNOSTIC] [Pipeline Snapshot] After filtering:`);
           console.log(`🔍 [DIAGNOSTIC]   - Steps count: ${filteredStructure.steps.length}`);
@@ -4941,12 +4874,202 @@ Return JSON:
         return simplifiedStructure;
       }
     } catch (error) {
+      // ✅ STRICT ARCHITECTURE: Re-throw validation errors to abort workflow generation
+      if (error instanceof Error && error.message.includes('[LLM Schema Validation]')) {
+        throw error; // Abort workflow generation if validation fails
+      }
+      
       console.warn('Error generating structure with AI, using fallback logic:', error);
     }
 
     // Fallback: Generate structure using simple logic
     const fallbackStructure = this.generateStructureFallback(requirements);
     return this.simplifyStructureForSimpleWorkflows(fallbackStructure, requirements);
+  }
+
+  /**
+   * 🔥 PRODUCTION-GRADE ALIAS RESOLUTION
+   * 
+   * Resolves all node types in parsed structure to canonical types using comprehensive alias resolver.
+   * Handles: extra spaces, misspellings, broken words, user phrasing, multi-word variations.
+   * 
+   * Pipeline:
+   * 1. Normalize and resolve trigger
+   * 2. Normalize and resolve all steps/nodes
+   * 3. Replace original types with resolved canonical types
+   * 4. Log resolution mappings for debugging
+   * 
+   * @param parsed - Parsed JSON structure from LLM
+   * @returns Parsed structure with all node types resolved to canonical types
+   */
+  private resolveAndNormalizeNodeTypes(parsed: any): any {
+    if (!parsed || typeof parsed !== 'object') {
+      return parsed;
+    }
+
+    const resolutionLog: Array<{ location: string; original: string; resolved: string; method: string; confidence: number }> = [];
+
+    // Resolve trigger
+    if (parsed.trigger && typeof parsed.trigger === 'string') {
+      const resolution = resolveAliasToCanonical(parsed.trigger);
+      if (resolution.resolved) {
+        resolutionLog.push({
+          location: 'trigger',
+          original: resolution.original,
+          resolved: resolution.resolved,
+          method: resolution.method,
+          confidence: resolution.confidence,
+        });
+        parsed.trigger = resolution.resolved;
+      } else {
+        console.warn(`[Alias Resolver] ⚠️ Could not resolve trigger: "${parsed.trigger}" - ${resolution.warning || 'no match found'}`);
+      }
+    }
+
+    // Resolve all steps/nodes
+    const steps = parsed.steps || parsed.nodes || [];
+    if (Array.isArray(steps)) {
+      steps.forEach((step: any, index: number) => {
+        if (!step || typeof step !== 'object') {
+          return;
+        }
+
+        const stepType = step.type || step.nodeType;
+        if (stepType && typeof stepType === 'string') {
+          const resolution = resolveAliasToCanonical(stepType);
+          if (resolution.resolved) {
+            resolutionLog.push({
+              location: `step${index + 1} (${step.id || 'unknown'})`,
+              original: resolution.original,
+              resolved: resolution.resolved,
+              method: resolution.method,
+              confidence: resolution.confidence,
+            });
+            
+            // Replace with resolved canonical type
+            if (step.type) step.type = resolution.resolved;
+            if (step.nodeType) step.nodeType = resolution.resolved;
+          } else {
+            console.warn(
+              `[Alias Resolver] ⚠️ Could not resolve step${index + 1} type: "${stepType}" - ${resolution.warning || 'no match found'}`
+            );
+          }
+        }
+      });
+    }
+
+    // Log resolution summary
+    if (resolutionLog.length > 0) {
+      console.log(`[Alias Resolver] ✅ Resolved ${resolutionLog.length} node type(s):`);
+      resolutionLog.forEach(log => {
+        console.log(
+          `  ${log.location}: "${log.original}" → "${log.resolved}" ` +
+          `(${log.method}, confidence: ${(log.confidence * 100).toFixed(1)}%)`
+        );
+      });
+    }
+
+    return parsed;
+  }
+
+  /**
+   * ✅ STRICT ARCHITECTURE: Validate LLM-generated node types
+   * 
+   * This is the ROOT-LEVEL enforcement that blocks invalid node types.
+   * 
+   * Rules:
+   * - Validates trigger against CANONICAL_NODE_TYPES
+   * - Validates every step.type or step.nodeType against CANONICAL_NODE_TYPES
+   * - Collects ALL invalid types before throwing (comprehensive error message)
+   * - THROWS ERROR immediately if any invalid type found (fail-fast)
+   * - Blocks execution - invalid workflows CANNOT proceed
+   * 
+   * This ensures:
+   * - LLM cannot generate invalid node types
+   * - Invalid types are blocked at generation time
+   * - No invalid types reach NodeLibrary or registry
+   * - Clear error messages for debugging
+   * 
+   * NOTE: This validation runs AFTER alias resolution, so all types should already be canonical.
+   * 
+   * @param parsed - Parsed JSON structure from LLM (with resolved canonical types)
+   * @throws Error if any invalid node types are detected
+   */
+  private validateLLMGeneratedNodeTypes(parsed: any): void {
+    if (!parsed || typeof parsed !== 'object') {
+      // Empty or invalid structure - let downstream logic handle it
+      return;
+    }
+    
+    const invalidTypes: Array<{ location: string; type: string }> = [];
+    
+    // ✅ STEP 1: Validate trigger
+    if (parsed.trigger) {
+      if (typeof parsed.trigger !== 'string') {
+        invalidTypes.push({ location: 'trigger', type: String(parsed.trigger) });
+      } else if (!CANONICAL_NODE_TYPES.includes(parsed.trigger)) {
+        invalidTypes.push({ location: 'trigger', type: parsed.trigger });
+      }
+    }
+    
+    // ✅ STEP 2: Validate all steps
+    const steps = parsed.steps || parsed.nodes || [];
+    if (Array.isArray(steps)) {
+      steps.forEach((step: any, index: number) => {
+        if (!step || typeof step !== 'object') {
+          return; // Skip invalid step objects (handled elsewhere)
+        }
+        
+        // Check both step.type and step.nodeType (support different formats)
+        const stepType = step.type || step.nodeType;
+        
+        if (!stepType) {
+          // Missing type - invalid
+          invalidTypes.push({ 
+            location: `step${index + 1} (${step.id || 'unknown'})`, 
+            type: '<missing>' 
+          });
+        } else if (typeof stepType !== 'string') {
+          // Non-string type - invalid
+          invalidTypes.push({ 
+            location: `step${index + 1} (${step.id || 'unknown'})`, 
+            type: String(stepType) 
+          });
+        } else if (!CANONICAL_NODE_TYPES.includes(stepType)) {
+          // Type not in canonical list - invalid
+          invalidTypes.push({ 
+            location: `step${index + 1} (${step.id || 'unknown'})`, 
+            type: stepType 
+          });
+        }
+      });
+    }
+    
+    // ✅ STEP 3: Fail-fast if any invalid types found
+    if (invalidTypes.length > 0) {
+      const invalidList = invalidTypes.map(item => `${item.location}: "${item.type}"`).join(', ');
+      const sampleTypes = CANONICAL_NODE_TYPES.slice(0, 10).join(', ');
+      
+      const errorMessage = 
+        `[LLM Schema Validation] ❌ Invalid node types generated: ${invalidList}. ` +
+        `Only canonical types from NodeLibrary are allowed. ` +
+        `Valid types (sample): ${sampleTypes}... ` +
+        `Total valid types: ${CANONICAL_NODE_TYPES.length}. ` +
+        `This indicates LLM generated invalid node types. Workflow generation aborted.`;
+      
+      console.error(`❌ [LLM Schema Validation] Invalid types detected: ${invalidList}`);
+      console.error(`   Total invalid: ${invalidTypes.length}`);
+      console.error(`   Valid types count: ${CANONICAL_NODE_TYPES.length}`);
+      
+      throw new Error(errorMessage);
+    }
+    
+    // ✅ STEP 4: Log success
+    const stepCount = (parsed.steps || parsed.nodes || []).length;
+    console.log(
+      `✅ [LLM Schema Validation] All node types are canonical ` +
+      `(trigger: ${parsed.trigger || 'none'}, ${stepCount} step(s) validated)`
+    );
   }
 
   /**
@@ -5806,7 +5929,42 @@ Return JSON:
    * UNIVERSAL: Infer node type from step description using node library service
    * Uses schema information for intelligent matching
    */
+  /**
+   * ✅ REGISTRY-BASED: Infer node type from prompt using registry metadata
+   * 
+   * Replaces hardcoded pattern matching with semantic matching.
+   * Falls back to legacy pattern matching if registry inference fails.
+   */
   private inferStepType(step: string, context?: string): string {
+    // ✅ STEP 1: Try registry-based inference first
+    try {
+      const { inferNodeTypeFromPrompt } = require('./registry-based-node-inference');
+      const inference = inferNodeTypeFromPrompt(step, context);
+      
+      if (inference && inference.confidence > 0.5) {
+        console.log(
+          `[RegistryInference] ✅ Inferred "${inference.nodeType}" from "${step.substring(0, 50)}" ` +
+          `(confidence: ${(inference.confidence * 100).toFixed(0)}%, keywords: ${inference.matchedKeywords.join(', ')})`
+        );
+        return inference.nodeType;
+      }
+    } catch (error) {
+      console.warn(`[RegistryInference] ⚠️  Registry inference failed, using legacy pattern matching: ${error}`);
+    }
+    
+    // ✅ STEP 2: Fallback to legacy pattern matching (for backward compatibility)
+    return this.inferStepTypeLegacy(step, context);
+  }
+  
+  /**
+   * ⚠️ LEGACY: Pattern-based node type inference
+   * 
+   * This method contains hardcoded pattern matching.
+   * TODO: Migrate all patterns to node metadata in NodeLibrary.
+   * 
+   * @deprecated Use registry-based inference instead
+   */
+  private inferStepTypeLegacy(step: string, context?: string): string {
     const stepLower = step.toLowerCase();
     const originalStep = step;
     
@@ -6267,14 +6425,8 @@ Return JSON:
     structure: WorkflowGenerationStructure,
     requirements: Requirements
   ): Promise<WorkflowNode[]> {
-    // ✅ CRITICAL: Check if this structure came from a sample workflow
-    const isFromSampleWorkflow = (structure as any)._fromSampleWorkflow === true;
-    const sampleWorkflowId = (structure as any)._sampleWorkflowId;
-    
-    if (isFromSampleWorkflow) {
-      console.log(`✅ [selectNodes] Structure from sample workflow: ${sampleWorkflowId}`);
-      console.log(`   Using EXACT node types from sample workflow - skipping type inference`);
-    }
+    // ✅ ARCHITECTURAL FIX: All workflows are now AI-generated from user prompts
+    // No special handling for sample workflows - they are training-only (few-shot examples)
     
     console.log(`🔍 [DIAGNOSTIC] [selectNodes] Starting with ${structure.steps.length} steps`);
     console.log(`🔍 [DIAGNOSTIC] [selectNodes] Step types: ${structure.steps.map((s: any) => s.data?.type || s.type || s.nodeType).join(', ')}`);
@@ -6293,7 +6445,7 @@ Return JSON:
     
     if (existingTriggers.length > 0) {
       // ✅ FIXED: If trigger exists, do not create another - just log and continue
-      const existingTriggerType = normalizeNodeType(existingTriggers[0]);
+      const existingTriggerType = unifiedNormalizeNodeType(existingTriggers[0]);
       console.log(`✅ [NODE SELECTION] Trigger node already exists (type: ${existingTriggerType}), skipping trigger creation`);
       // Do NOT remove duplicates here - workflow must have exactly one trigger, and we've checked it exists
     } else {
@@ -6360,22 +6512,12 @@ Return JSON:
         console.error(`🚨 [NODE VALIDATION] Step object: ${JSON.stringify({ type: step.type, data: stepAny.data })}`);
         console.error(`🚨 [NODE VALIDATION] This node cannot be added to the workflow.`);
         
-        // ✅ CRITICAL: If from sample workflow, don't infer - use exact type or fail
-        if (isFromSampleWorkflow) {
-          console.error(`🚨 [NODE VALIDATION] Structure from sample workflow - node type "${correctedType}" must exist in library`);
-          console.error(`🚨 [NODE VALIDATION] This indicates a mismatch between sample workflow and node library`);
-          console.error(`🚨 [NODE VALIDATION] Skipping type inference - node will be skipped if not found`);
-          // Still try to find it, but don't infer different types
-        }
-        
-        // Try to infer correct type from description (only if not from sample workflow)
-        if (!isFromSampleWorkflow) {
-          console.warn(`⚠️  [NODE VALIDATION] Attempting correction...`);
-        }
+        // Try to infer correct type from description
+        console.warn(`⚠️  [NODE VALIDATION] Attempting correction...`);
         
         // Try to infer correct type from description if type doesn't exist
         const stepDescLower = (step.description || '').toLowerCase();
-        const inferredType = isFromSampleWorkflow ? correctedType : this.inferStepType(step.description || correctedType);
+        const inferredType = this.inferStepType(step.description || correctedType);
         const inferredSchema = nodeLibrary.getSchema(inferredType);
         
         if (inferredSchema) {
@@ -6443,11 +6585,32 @@ Return JSON:
       
       // ✅ CRITICAL: Normalize and validate node type before creating node
       // This ensures workflow builder never generates unknown node types
-      const normalizationResult = nodeTypeNormalizationService.normalizeNodeType(correctedType);
+      let normalizationResult = nodeTypeNormalizationService.normalizeNodeType(correctedType);
+      
+      // ✅ ROOT-LEVEL FIX: If normalization fails, use node type resolver as fallback
       if (!normalizationResult.valid) {
-        console.error(`❌ [NODE SELECTION] Invalid node type "${correctedType}" at step ${index + 1}. Skipping node.`);
-        logger.error(`❌ [NODE SELECTION] Invalid node type: ${correctedType}`);
-        return; // Skip invalid node types
+        console.warn(`⚠️  [NODE SELECTION] Node type "${correctedType}" not found, attempting node type resolution...`);
+        
+        // Try node type resolver (handles aliases like "gmail" → "google_gmail")
+        const { nodeTypeResolver } = require('../nodes/node-type-resolver');
+        const resolution = nodeTypeResolver.resolve(correctedType, false);
+        
+        if (resolution && resolution.method !== 'not_found' && nodeLibrary.isNodeTypeRegistered(resolution.resolved)) {
+          console.log(`✅ [NODE SELECTION] Resolved "${correctedType}" → "${resolution.resolved}" via node type resolver (${resolution.method})`);
+          correctedType = resolution.resolved;
+          
+          // Re-validate the resolved type
+          normalizationResult = nodeTypeNormalizationService.normalizeNodeType(correctedType);
+          if (!normalizationResult.valid) {
+            console.error(`❌ [NODE SELECTION] Resolved type "${correctedType}" is still invalid. Skipping node.`);
+            logger.error(`❌ [NODE SELECTION] Invalid resolved node type: ${correctedType}`);
+            return; // Skip invalid node types
+          }
+        } else {
+          console.error(`❌ [NODE SELECTION] Invalid node type "${correctedType}" and no resolution found. Skipping node.`);
+          logger.error(`❌ [NODE SELECTION] Invalid node type: ${correctedType}`);
+          return; // Skip invalid node types
+        }
       }
       
       // Use normalized type
@@ -6503,7 +6666,7 @@ Return JSON:
       
       // CRITICAL: Check for duplicate nodes (same type and similar description)
       const isDuplicate = nodes.some(existingNode => {
-        const existingType = normalizeNodeType(existingNode);
+        const existingType = unifiedNormalizeNodeType(existingNode);
         const existingLabel = existingNode.data?.label?.toLowerCase() || '';
         const newLabel = shortLabel.toLowerCase();
         
@@ -6664,31 +6827,40 @@ Return JSON:
     let firstTriggerType: string | null = null;
     
     for (const node of nodes) {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
+      // ✅ CRITICAL: Resolve to canonical type to catch aliases (e.g., "gmail" → "google_gmail")
+      let canonicalType: string;
+      try {
+        canonicalType = resolveNodeType(nodeType);
+      } catch (error) {
+        // If resolution fails, use normalized type as fallback
+        canonicalType = nodeType;
+      }
       const nodeLabel = (node.data?.label || '').toLowerCase();
       
       // CRITICAL: For triggers, only allow ONE trigger regardless of label
-      if (isTriggerType(nodeType)) {
+      if (isTriggerType(canonicalType)) {
         if (firstTriggerSeen) {
           // Already have a trigger, skip this duplicate
-          console.warn(`⚠️  [NODE DEDUPLICATION] Removed duplicate trigger: ${nodeType} - "${node.data?.label}" (already have ${firstTriggerType})`);
+          console.warn(`⚠️  [NODE DEDUPLICATION] Removed duplicate trigger: ${nodeType} (canonical: ${canonicalType}) - "${node.data?.label}" (already have ${firstTriggerType})`);
           continue;
         }
         // First trigger - keep it
         firstTriggerSeen = true;
-        firstTriggerType = nodeType;
+        firstTriggerType = canonicalType;
         uniqueNodes.push(node);
         continue;
       }
       
-      // For non-trigger nodes, check by type + label
-      const key = `${nodeType}:${nodeLabel}`;
+      // ✅ ENHANCED: For non-trigger nodes, check by CANONICAL type (not original type)
+      // This prevents duplicates like "gmail" and "google_gmail" from both existing
+      const key = `${canonicalType}:${nodeLabel}`;
       
       if (!seenNodes.has(key)) {
         seenNodes.set(key, true);
         uniqueNodes.push(node);
       } else {
-        console.warn(`⚠️  [NODE DEDUPLICATION] Removed duplicate node: ${nodeType} - "${node.data?.label}"`);
+        console.warn(`⚠️  [NODE DEDUPLICATION] Removed duplicate node: ${nodeType} (canonical: ${canonicalType}) - "${node.data?.label}"`);
       }
     }
     
@@ -6699,7 +6871,7 @@ Return JSON:
     
     // Registry-driven normalization: apply deprecations/replacements universally
     finalNodes.forEach((node) => {
-      const actualType = normalizeNodeType(node);
+      const actualType = unifiedNormalizeNodeType(node);
       const def = unifiedNodeRegistry.get(actualType);
       if (def?.deprecated && def.replacement) {
         console.log(`✅ Post-processing: Normalizing deprecated node ${node.id} ${actualType} → ${def.replacement}`);
@@ -6738,10 +6910,70 @@ Return JSON:
     console.log(`   - Failed: ${autoConfigResult.summary.failed}`);
     console.log(`   - Skip wizard: ${autoConfigResult.skipWizard}`);
 
+    // ✅ ROOT-LEVEL FIX: Populate required fields for all nodes
+    console.log('[WorkflowBuilder] 🔧 [STAGE: Populate Required Fields] Starting...');
+    let configuredNodesWithRequiredFields: WorkflowNode[] = [];
+    
+    try {
+      const { populateRequiredFields } = await import('./required-field-populator');
+      const { LLMAdapter } = await import('../../shared/llm-adapter');
+      const llmAdapter = new LLMAdapter();
+      
+      for (let i = 0; i < autoConfigResult.nodes.length; i++) {
+        const node = autoConfigResult.nodes[i];
+        const previousNode = i > 0 ? autoConfigResult.nodes[i - 1] : null;
+        
+        try {
+          // Populate required fields
+          const populationResult = await populateRequiredFields(
+            node,
+            previousNode,
+            autoConfigResult.nodes,
+            i,
+            llmAdapter
+          );
+          
+          // Merge populated fields into node config
+          const updatedConfig = {
+            ...(node.data?.config || {}),
+            ...populationResult.populated,
+          };
+          
+          const updatedNode: WorkflowNode = {
+            ...node,
+            data: {
+              ...node.data,
+              config: updatedConfig,
+            },
+          };
+          
+          configuredNodesWithRequiredFields.push(updatedNode);
+          
+          if (Object.keys(populationResult.populated).length > 0) {
+            console.log(
+              `[WorkflowBuilder] ✅ Populated ${Object.keys(populationResult.populated).length} required field(s) for ${node.data?.type || node.type} ` +
+              `(source: ${populationResult.source}, confidence: ${populationResult.confidence.toFixed(2)})`
+            );
+          }
+        } catch (nodeError: any) {
+          console.warn(`[WorkflowBuilder] ⚠️  Failed to populate fields for node ${node.id} (${node.data?.type || node.type}): ${nodeError.message}`);
+          // Continue with node as-is
+          configuredNodesWithRequiredFields.push(node);
+        }
+      }
+      
+      console.log(`[WorkflowBuilder] ✅ [STAGE: Populate Required Fields] Completed for ${configuredNodesWithRequiredFields.length} nodes`);
+    } catch (error: any) {
+      console.error('[WorkflowBuilder] ❌ [STAGE: Populate Required Fields] Failed:', error.message);
+      console.warn('[WorkflowBuilder] ⚠️  Continuing with auto-configured nodes (without field population)');
+      // Fallback: Use auto-configured nodes without field population
+      configuredNodesWithRequiredFields = autoConfigResult.nodes;
+    }
+
     // Use auto-configured nodes if successful
     if (autoConfigResult.allConfigured && autoConfigResult.skipWizard) {
       console.log('[WorkflowBuilder] ✅ All nodes auto-configured successfully, skipping manual configuration');
-      return autoConfigResult.nodes;
+      return configuredNodesWithRequiredFields;
     }
 
     // Step 2: Fall back to manual configuration for nodes that need it
@@ -6815,7 +7047,7 @@ Return JSON:
       
       // 🚨 CRITICAL FIX: For vague prompts with CRM nodes, set default operation to "create"
       if (isVaguePrompt) {
-        const nodeType = normalizeNodeType(node);
+        const nodeType = unifiedNormalizeNodeType(node);
         const crmNodeTypes = ['hubspot', 'zoho_crm', 'salesforce', 'pipedrive'];
         if (crmNodeTypes.includes(nodeType)) {
           if (!config.operation) {
@@ -6827,6 +7059,33 @@ Return JSON:
             console.log(`✅ [Vague Prompt Config] Set default resource "contact" for ${nodeType} node`);
           }
         }
+      }
+      
+      // ✅ ROOT-LEVEL FIX: Populate required fields before generating inputs
+      try {
+        const { populateRequiredFields } = await import('./required-field-populator');
+        const { LLMAdapter } = await import('../../shared/llm-adapter');
+        const llmAdapter = new LLMAdapter();
+        
+        const populationResult = await populateRequiredFields(
+          node,
+          previousNode,
+          nodes,
+          index,
+          llmAdapter
+        );
+        
+        // Merge populated required fields into config
+        config = { ...config, ...populationResult.populated };
+        
+        if (Object.keys(populationResult.populated).length > 0) {
+          console.log(
+            `[WorkflowBuilder] ✅ Populated ${Object.keys(populationResult.populated).length} required field(s) for ${node.data?.type || node.type}`
+          );
+        }
+      } catch (populateError: any) {
+        console.warn(`[WorkflowBuilder] ⚠️  Failed to populate required fields for ${node.data?.type || node.type}: ${populateError.message}`);
+        // Continue with config as-is
       }
       
       // CRITICAL: Generate all required input fields with IO mapping
@@ -6841,7 +7100,7 @@ Return JSON:
       
       // Special handling for transformation nodes
       if (this.isTransformationNode(node.type)) {
-        const transformedConfig = this.configureTransformationNode(
+        const transformedConfig = await this.configureTransformationNode(
           node,
           nodes,
           index,
@@ -6940,7 +7199,7 @@ Return JSON:
     
     // STEP 1: Load node schema (required inputs, outputs)
     // CRITICAL FIX: Use normalizeNodeType to get actual node type
-    const actualNodeType = normalizeNodeType(node);
+    const actualNodeType = unifiedNormalizeNodeType(node);
     const nodeSchema = nodeLibrary.getSchema(actualNodeType);
     
     if (!nodeSchema?.configSchema) {
@@ -7126,7 +7385,7 @@ Return JSON:
     
     // STEP 8: CRITICAL - Ensure AI-like nodes that expose `userInput` always have it populated
     // (registry-driven: check schema, not hardcoded node types)
-    const nodeActualType = normalizeNodeType(node) || node.type;
+    const nodeActualType = unifiedNormalizeNodeType(node) || node.type;
     const nodeDef = unifiedNodeRegistry.get(nodeActualType);
     const requiresUserInput = !!nodeDef?.inputSchema && 'userInput' in nodeDef.inputSchema;
 
@@ -7540,7 +7799,7 @@ Return JSON:
    * Get trigger payload fields
    */
   private getTriggerPayloadFields(upstreamNodes: WorkflowNode[]): string[] {
-    const triggerNode = upstreamNodes.find((n) => this.isTriggerNodeType(normalizeNodeType(n) || n.type));
+    const triggerNode = upstreamNodes.find((n) => this.isTriggerNodeType(unifiedNormalizeNodeType(n) || n.type));
     
     if (!triggerNode) {
       return [];
@@ -7550,7 +7809,7 @@ Return JSON:
     const commonFields = ['user_message', 'message', 'text', 'input', 'body', 'data', 'session_id'];
 
     // Registry-driven trigger payload fields: union with trigger output schema fields
-    const actualType = normalizeNodeType(triggerNode) || triggerNode.type;
+    const actualType = unifiedNormalizeNodeType(triggerNode) || triggerNode.type;
     const outputFields = this.getNodeOutputFields(actualType);
     return Array.from(new Set([...commonFields, ...outputFields]));
   }
@@ -7705,7 +7964,7 @@ Return JSON:
       
       if (operation === 'create' && previousNode) {
         const previousOutputFields = this.getPreviousNodeOutputFields(previousNode);
-        const previousNodeType = normalizeNodeType(previousNode);
+        const previousNodeType = unifiedNormalizeNodeType(previousNode);
         
         // Check if we have email and name in the flow
         const hasEmail = previousOutputFields.some(f => f.toLowerCase().includes('email'));
@@ -8034,7 +8293,7 @@ Return JSON:
     
     // ✅ CRITICAL FIX: Always use comprehensive registry, even if config has fields
     // This ensures we have the complete list of available outputs
-    const nodeActualType = normalizeNodeType(previousNode);
+    const nodeActualType = unifiedNormalizeNodeType(previousNode);
     const registryFields = this.getNodeOutputFields(nodeActualType);
     
     // Merge config fields with registry fields (registry takes precedence for duplicates)
@@ -8319,6 +8578,28 @@ Return JSON:
   private generateIntelligentDefault(fieldName: string, nodeType: string, requirements: Requirements): any {
     const fieldNameLower = fieldName.toLowerCase();
     
+    // ✅ NEW: Strategy 0 - Handle stop_and_error errorMessage specifically
+    if (nodeType === 'stop_and_error' && fieldNameLower === 'errormessage') {
+      // Generate contextual error message based on workflow context
+      if (requirements.primaryGoal) {
+        const goalLower = requirements.primaryGoal.toLowerCase();
+        if (goalLower.includes('login') || goalLower.includes('auth')) {
+          return 'Login failed - Invalid credentials';
+        }
+        if (goalLower.includes('validation') || goalLower.includes('validate')) {
+          return 'Validation failed - Please check your input';
+        }
+        if (goalLower.includes('permission') || goalLower.includes('access')) {
+          return 'Access denied - Insufficient permissions';
+        }
+        if (goalLower.includes('payment') || goalLower.includes('transaction')) {
+          return 'Payment processing failed';
+        }
+      }
+      // Default error message
+      return 'Workflow execution stopped - Condition not met';
+    }
+    
     // ENHANCED: Add example values so users can see where to change things
     
     // Strategy 1: Use requirements context with examples
@@ -8404,7 +8685,7 @@ return {
     allNodes?: WorkflowNode[],
     nodeIndex?: number
   ): Promise<Record<string, unknown>> {
-    const actualNodeType = normalizeNodeType(node) || node.data?.type || node.type;
+    const actualNodeType = unifiedNormalizeNodeType(node) || node.data?.type || node.type;
     const def = unifiedNodeRegistry.get(actualNodeType);
     const schema = nodeLibrary.getSchema(actualNodeType);
 
@@ -8433,7 +8714,23 @@ return {
 
     const inferValue = (fieldName: string): any => {
       const f = fieldName.toLowerCase();
-      if (f.includes('url') || f.includes('endpoint')) {
+      // ✅ ARCHITECTURAL FIX: URLs are now credentials - do NOT auto-generate
+      // Only auto-generate configuration URLs (webhook_url, callback_url, redirect_url)
+      // Credential URLs (baseUrl, apiUrl, endpoint, host, server) should be asked from user
+      const isCredentialUrl = (f.includes('url') || f.includes('endpoint') || f === 'baseurl' || f === 'base_url' || 
+                               f === 'apiurl' || f === 'api_url' || f === 'host' || f === 'hostname' || f === 'server') &&
+                              !f.includes('webhook') && !f.includes('callback') && !f.includes('redirect');
+      
+      if (isCredentialUrl) {
+        // ✅ DO NOT auto-generate credential URLs - they should be asked from user
+        // Return empty string so it will be detected as empty and asked as credential
+        return '';
+      }
+      
+      // Configuration URLs (webhook, callback, redirect) can still be auto-generated
+      if ((f.includes('webhook') && f.includes('url')) || 
+          (f.includes('callback') && f.includes('url')) || 
+          (f.includes('redirect') && f.includes('url'))) {
         return (requirements.urls && requirements.urls[0]) || getServiceBaseUrl(serviceName);
       }
       if (f.includes('cron')) {
@@ -8458,14 +8755,10 @@ return {
     };
 
     // Fill missing required fields deterministically
+    // ✅ FIX: Use universal isEmpty check to handle arrays, objects, nested structures
     for (const fieldName of requiredFields) {
       const v = (config as any)[fieldName];
-      const empty =
-        v === undefined ||
-        v === null ||
-        (typeof v === 'string' && v.trim() === '') ||
-        (Array.isArray(v) && v.length === 0);
-      if (empty) {
+      if (isEmptyValue(v)) {
         (config as any)[fieldName] = inferValue(fieldName);
       }
     }
@@ -8490,13 +8783,13 @@ return {
   /**
    * Configure transformation node with input-output mapping
    */
-  private configureTransformationNode(
+  private async configureTransformationNode(
     node: WorkflowNode,
     allNodes: WorkflowNode[],
     index: number,
     baseConfig: Record<string, unknown>,
     requirements: Requirements
-  ): Record<string, unknown> {
+  ): Promise<Record<string, unknown>> {
     const previousNode = index > 0 ? allNodes[index - 1] : null;
     const config = { ...baseConfig };
 
@@ -8514,7 +8807,8 @@ return {
       if (!config.inputMapping) {
         // Pass requirements and node type for intelligent property selection
         const nodeType = node.data?.type || node.type;
-        config.inputMapping = this.generateInputMapping(previousNode, requirements, nodeType);
+        // ✅ SCHEMA-AWARE: Use async schema-aware template generation
+        config.inputMapping = await this.generateInputMapping(previousNode, node, requirements, nodeType);
       }
 
       // Set input fields
@@ -8573,9 +8867,102 @@ return {
 
   /**
    * Generate input mapping from previous node
-   * CRITICAL FIX: Use proper {{$json.field}} format instead of {{previousNode.field}}
+   * ✅ SCHEMA-AWARE: Uses actual upstream node output schemas to generate templates
+   * This prevents invalid template expressions like {{$json.body}} when field doesn't exist
    */
-  private generateInputMapping(previousNode: WorkflowNode, requirements?: Requirements, currentNodeType?: string): Record<string, string> {
+  private async generateInputMapping(
+    previousNode: WorkflowNode,
+    currentNode: WorkflowNode,
+    requirements?: Requirements,
+    currentNodeType?: string
+  ): Promise<Record<string, string>> {
+    // ✅ FEATURE FLAG: Check if schema-aware templates are enabled
+    const useSchemaAware = process.env.ENABLE_SCHEMA_AWARE_TEMPLATES !== 'false';
+    
+    if (!useSchemaAware) {
+      // Fallback to naive generation (legacy behavior)
+      return this.generateInputMappingNaive(previousNode, requirements, currentNodeType);
+    }
+
+    try {
+      // ✅ STEP 1: Get LLM adapter
+      const { LLMAdapter } = await import('../../shared/llm-adapter');
+      const llmAdapter = new LLMAdapter();
+      
+      if (!llmAdapter) {
+        console.warn('[SchemaAwareTemplateGenerator] LLM adapter not available, falling back to naive generation');
+        return this.generateInputMappingNaive(previousNode, requirements, currentNodeType);
+      }
+
+      // ✅ STEP 2: Generate templates using schema-aware generator
+      const structuredIntent = requirements?.primaryGoal || (requirements as any)?.originalPrompt || '';
+      
+      const templateResult = await generateTemplates({
+        upstreamNode: previousNode,
+        targetNode: currentNode,
+        structuredIntent,
+        sampleLimit: 3,
+        llmAdapter,
+      });
+
+      // ✅ STEP 3: Validate mappings before applying
+      const validation = validateMappings(
+        templateResult.mappings,
+        templateResult.upstreamSchema,
+        currentNodeType || currentNode.data?.type || currentNode.type
+      );
+
+      // ✅ STEP 4: Apply only approved mappings
+      const mapping: Record<string, string> = {};
+      
+      for (const approvedMapping of validation.approvedMappings) {
+        mapping[approvedMapping.targetField] = approvedMapping.template;
+      }
+
+      // ✅ STEP 5: Log rejected mappings for debugging
+      if (validation.rejectedMappings.length > 0) {
+        console.warn(
+          `[SchemaAwareTemplateGenerator] ${validation.rejectedMappings.length} mappings rejected:`,
+          validation.rejectedMappings.map(m => `${m.targetField} → ${m.sourceField}`).join(', ')
+        );
+      }
+
+      // ✅ STEP 6: Store debug info in node config (not data directly)
+      if (currentNode.data) {
+        (currentNode.data.config as any)._templateGeneration = {
+          overallConfidence: templateResult.overallConfidence,
+          validationScore: validation.score,
+          approvedCount: validation.approvedMappings.length,
+          rejectedCount: validation.rejectedMappings.length,
+          notes: templateResult.notes,
+          warnings: validation.warnings,
+        };
+      }
+
+      // ✅ STEP 7: If no approved mappings, fallback to naive generation
+      if (Object.keys(mapping).length === 0) {
+        console.warn('[SchemaAwareTemplateGenerator] No approved mappings, falling back to naive generation');
+        return this.generateInputMappingNaive(previousNode, requirements, currentNodeType);
+      }
+
+      return mapping;
+
+    } catch (error) {
+      console.error('[SchemaAwareTemplateGenerator] Error generating templates:', error);
+      // Fallback to naive generation on error
+      return this.generateInputMappingNaive(previousNode, requirements, currentNodeType);
+    }
+  }
+
+  /**
+   * Naive input mapping generation (legacy fallback)
+   * This is the original implementation that creates templates without schema validation
+   */
+  private generateInputMappingNaive(
+    previousNode: WorkflowNode,
+    requirements?: Requirements,
+    currentNodeType?: string
+  ): Record<string, string> {
     const mapping: Record<string, string> = {};
 
     // Try to extract output fields from previous node
@@ -8782,8 +9169,8 @@ return {
   ): { valid: boolean; error?: string; suggestedOutputField?: string; suggestedInputField?: string } {
     // Get node schemas
     // CRITICAL FIX: Use normalizeNodeType to get actual node types
-    const sourceActualType = normalizeNodeType(sourceNode);
-    const targetActualType = normalizeNodeType(targetNode);
+    const sourceActualType = unifiedNormalizeNodeType(sourceNode);
+    const targetActualType = unifiedNormalizeNodeType(targetNode);
     const sourceSchema = nodeLibrary.getSchema(sourceActualType);
     const targetSchema = nodeLibrary.getSchema(targetActualType);
     
@@ -9164,7 +9551,7 @@ return {
     sourceNode: WorkflowNode,
     stepOutputField?: string
   ): string {
-    const sourceActualType = normalizeNodeType(sourceNode);
+    const sourceActualType = unifiedNormalizeNodeType(sourceNode);
     const sourceOutputs = this.getNodeOutputFields(sourceActualType);
     
     // If step specifies an output field, validate and use it
@@ -9317,7 +9704,7 @@ return {
     targetNode: WorkflowNode,
     stepInputField?: string
   ): string {
-    const targetActualType = normalizeNodeType(targetNode);
+    const targetActualType = unifiedNormalizeNodeType(targetNode);
     const targetInputs = this.getNodeInputFields(targetActualType);
     
     // If step specifies an input field, validate and use it
@@ -9496,8 +9883,8 @@ return {
       }
       
       // ✅ CRITICAL: Use normalizeNodeType to get actual types
-      const sourceActualType = normalizeNodeType(sourceNode);
-      const targetActualType = normalizeNodeType(targetNode);
+      const sourceActualType = unifiedNormalizeNodeType(sourceNode);
+      const targetActualType = unifiedNormalizeNodeType(targetNode);
       
       // Get valid output fields for source node
       const sourceOutputs = this.getNodeOutputFields(sourceActualType);
@@ -10227,12 +10614,12 @@ return {
     
     // PRIORITY 1 FIX: Use structure connections if available, otherwise fall back to sequential
     const isTriggerNode = (n: WorkflowNode) => {
-      const t = normalizeNodeType(n) || n.type;
+      const t = unifiedNormalizeNodeType(n) || n.type;
       const def = unifiedNodeRegistry.get(t);
       return def?.category === 'trigger' || t.includes('trigger');
     };
     const isInternalNode = (n: WorkflowNode) => {
-      const t = normalizeNodeType(n) || n.type;
+      const t = unifiedNormalizeNodeType(n) || n.type;
       const def = unifiedNodeRegistry.get(t);
       return (def?.tags || []).includes('internal');
     };
@@ -10275,7 +10662,7 @@ return {
             const stepNum = parseInt(stepIdPattern[1]);
             // Match by order (skip trigger node)
             const actionNodes = finalNodes.filter(n => {
-              const nodeType = normalizeNodeType(n);
+              const nodeType = unifiedNormalizeNodeType(n);
               return !this.isTriggerNodeType(nodeType) && !this.isInternalNodeType(nodeType);
             });
             if (actionNodes[stepNum - 1] && actionNodes[stepNum - 1].id === n.id) {
@@ -10284,7 +10671,7 @@ return {
           }
           // If no match, try to match by order (skip trigger node)
           const actionNodeIndex = finalNodes.filter(n => {
-            const nodeType = normalizeNodeType(n);
+            const nodeType = unifiedNormalizeNodeType(n);
             return !this.isTriggerNodeType(nodeType) && !this.isInternalNodeType(nodeType);
           }).indexOf(n);
           return actionNodeIndex === index;
@@ -10364,7 +10751,7 @@ return {
           
           // For if_else nodes, allow up to 2 connections (true/false paths)
           const sourceNode = finalNodes.find(n => stepIdToNodeId.get(conn.source) === n.id);
-          const isIfElse = sourceNode && normalizeNodeType(sourceNode) === 'if_else';
+          const isIfElse = sourceNode && unifiedNormalizeNodeType(sourceNode) === 'if_else';
           const existingFromSource = linearConnections.filter(lc => lc.source === conn.source).length;
           const canAddFromSource = isIfElse ? existingFromSource < 2 : existingFromSource < 1;
           
@@ -10434,28 +10821,28 @@ return {
       
       // Check for Pattern 1: data source (read) → loop → create operation (write)
       const hasDataSourceRead = finalNodes.some(n => {
-        const type = normalizeNodeType(n);
+        const type = unifiedNormalizeNodeType(n);
         const operation = getOperation(n);
         return dataSourceTypes.includes(type) && (isReadOp(operation) || !operation);
       });
       const hasLoop = finalNodes.some(n => {
-        const type = normalizeNodeType(n);
+        const type = unifiedNormalizeNodeType(n);
         return type === loopType;
       });
       const hasCreateOperation = finalNodes.some(n => {
-        const type = normalizeNodeType(n);
+        const type = unifiedNormalizeNodeType(n);
         const operation = getOperation(n);
         return createOperationTypes.includes(type) && (isWriteOp(operation) || !operation);
       });
       
       // Check for Pattern 2: integration (read) → data source (write)
       const hasIntegrationRead = finalNodes.some(n => {
-        const type = normalizeNodeType(n);
+        const type = unifiedNormalizeNodeType(n);
         const operation = getOperation(n);
         return integrationReadTypes.includes(type) && (isReadOp(operation) || !operation);
       });
       const hasDataSourceWrite = finalNodes.some(n => {
-        const type = normalizeNodeType(n);
+        const type = unifiedNormalizeNodeType(n);
         const operation = getOperation(n);
         return dataSourceTypes.includes(type) && isWriteOp(operation);
       });
@@ -10483,8 +10870,8 @@ return {
           const targetNode = finalNodes.find(n => n.id === targetNodeId);
           if (!sourceNode || !targetNode) continue;
           
-          const sourceType = normalizeNodeType(sourceNode);
-          const targetType = normalizeNodeType(targetNode);
+          const sourceType = unifiedNormalizeNodeType(sourceNode);
+          const targetType = unifiedNormalizeNodeType(targetNode);
           const sourcePos = getNodePosition(sourceNodeId);
           const targetPos = getNodePosition(targetNodeId);
           
@@ -10531,8 +10918,8 @@ return {
           const targetNode = finalNodes.find(n => n.id === targetNodeId);
           if (!sourceNode || !targetNode) continue;
           
-          const sourceType = normalizeNodeType(sourceNode);
-          const targetType = normalizeNodeType(targetNode);
+          const sourceType = unifiedNormalizeNodeType(sourceNode);
+          const targetType = unifiedNormalizeNodeType(targetNode);
           const sourceOperation = getOperation(sourceNode);
           const targetOperation = getOperation(targetNode);
           const sourcePos = getNodePosition(sourceNodeId);
@@ -10600,8 +10987,8 @@ return {
           }
           
           // ✅ CRITICAL FIX: Use normalizeNodeType to get actual node types for mapping
-          const sourceActualType = normalizeNodeType(sourceNode);
-          const targetActualType = normalizeNodeType(targetNode);
+          const sourceActualType = unifiedNormalizeNodeType(sourceNode);
+          const targetActualType = unifiedNormalizeNodeType(targetNode);
           
           // ✅ SCHEMA-AWARE HANDLE RESOLUTION: Use new helper functions to get correct handles
           // Resolve source handle from step output field or use schema-based default
@@ -10660,33 +11047,47 @@ return {
             continue;
           }
           
-          // ✅ CRITICAL: Validate and fix handles using handle registry to ensure valid React handle IDs
-          const { sourceHandle: validatedSourceHandle, targetHandle: validatedTargetHandle } = validateAndFixEdgeHandles(
-            sourceActualType,
-            targetActualType,
-            resolvedSourceHandle,
-            resolvedTargetHandle
-          );
+          // ✅ ROOT-LEVEL FIX: Use EdgeCreationService for automatic repair
+          const { edgeCreationService } = await import('../edges/edgeCreationService');
+          const { nodeIdResolver } = require('../../core/utils/nodeIdResolver');
           
-          // ✅ ARCHITECTURAL FIX: Strict validation before creating edge
-          try {
-            this.validateEdgeHandlesStrict(sourceNode, targetNode, validatedSourceHandle, validatedTargetHandle);
-          } catch (error) {
-            console.error(`❌ [STRICT VALIDATION] Edge creation failed: ${error}`);
-            // Skip this edge - don't create invalid connections
-            continue;
+          // Register node IDs in resolver (if not already registered)
+          if (!nodeIdResolver.hasPhysical(sourceNodeId)) {
+            nodeIdResolver.register(connection.source, sourceNodeId, sourceActualType);
+          }
+          if (!nodeIdResolver.hasPhysical(targetNodeId)) {
+            nodeIdResolver.register(connection.target, targetNodeId, targetActualType);
           }
           
-          const edge: WorkflowEdge = {
-            id: randomUUID(),
-            source: sourceNodeId,
-            target: targetNodeId,
-            type: targetActualType === 'ai_agent' ? 'ai-input' : 'default',
-            sourceHandle: validatedSourceHandle,
-            targetHandle: validatedTargetHandle,
-          };
-          edges.push(edge);
-          console.log(`✅ Connected ${connection.source} → ${connection.target} (schema-aware, handles: ${validatedSourceHandle} → ${validatedTargetHandle})`);
+          const edgeResult = edgeCreationService.createEdge({
+            sourceNodeId: connection.source, // Use logical ID, service will resolve
+            targetNodeId: connection.target, // Use logical ID, service will resolve
+            sourceHandle: resolvedSourceHandle,
+            targetHandle: resolvedTargetHandle,
+            sourceNode,
+            targetNode,
+            nodes: finalNodes,
+            edgeType: targetActualType === 'ai_agent' ? 'ai-input' : 'default',
+            allowRepair: true, // Allow repair during build
+            strict: false,     // Permissive mode during build
+          });
+          
+          if (edgeResult.success && edgeResult.edge) {
+            edges.push(edgeResult.edge);
+            if (edgeResult.repairs.length > 0) {
+              console.log(
+                `✅ Connected ${connection.source} → ${connection.target} ` +
+                `(repaired: ${edgeResult.repairs.map(r => r.type).join(', ')})`
+              );
+            } else {
+              console.log(`✅ Connected ${connection.source} → ${connection.target}`);
+            }
+          } else {
+            console.error(
+              `❌ [EdgeCreationService] Failed to create edge: ${connection.source} → ${connection.target}: ` +
+              `${edgeResult.error}`
+            );
+          }
         }
       } else {
         console.log('⚠️  Structure connections failed validation. Will use sequential connection fallback.');
@@ -10703,12 +11104,12 @@ return {
       // Separate into processing and output nodes
       // CRITICAL FIX: Use normalizeNodeType to get actual node types for filtering
       processingNodes = allNonTriggerNodes.filter(n => {
-        const actualType = normalizeNodeType(n);
+        const actualType = unifiedNormalizeNodeType(n);
         return !['slack_message', 'email', 'discord', 'log_output', 'respond_to_webhook', 'http_response'].includes(actualType);
       });
       
       outputNodes = allNonTriggerNodes.filter(n => {
-        const actualType = normalizeNodeType(n);
+        const actualType = unifiedNormalizeNodeType(n);
         return ['slack_message', 'email', 'discord', 'log_output', 'respond_to_webhook', 'http_response'].includes(actualType);
       });
       
@@ -10723,8 +11124,8 @@ return {
         const firstNode = nodesToConnect[0];
         
         // ✅ SCHEMA-AWARE HANDLE RESOLUTION: Use new helper functions for trigger connections
-        const triggerActualType = normalizeNodeType(triggerNode);
-        const firstNodeActualType = normalizeNodeType(firstNode);
+        const triggerActualType = unifiedNormalizeNodeType(triggerNode);
+        const firstNodeActualType = unifiedNormalizeNodeType(firstNode);
         
         // Resolve handles using schema-aware helpers
         const resolvedSourceHandle = this.resolveSourceHandle(triggerNode);
@@ -10802,8 +11203,8 @@ return {
         }
         
         // CRITICAL FIX: Use normalizeNodeType to get actual node types for mapping
-        const sourceActualType = normalizeNodeType(sourceNode);
-        const targetActualType = normalizeNodeType(targetNode);
+        const sourceActualType = unifiedNormalizeNodeType(sourceNode);
+        const targetActualType = unifiedNormalizeNodeType(targetNode);
         
         // Get proper field mapping using actual node types
         const mapping = mapOutputToInput(sourceActualType, targetActualType);
@@ -10915,8 +11316,8 @@ return {
             
             if (!alreadyConnected && lastConnectedNode.id !== outputNode.id) {
               // CRITICAL FIX: Use normalizeNodeType for correct field mapping
-              const lastNodeActualType = normalizeNodeType(lastConnectedNode);
-              const outputNodeActualType = normalizeNodeType(outputNode);
+              const lastNodeActualType = unifiedNormalizeNodeType(lastConnectedNode);
+              const outputNodeActualType = unifiedNormalizeNodeType(outputNode);
               const mapping = mapOutputToInput(lastNodeActualType, outputNodeActualType);
               if (mapping) {
                 // ✅ CRITICAL FIX: Validate and fix handles using handle registry
@@ -10984,12 +11385,12 @@ return {
       if (triggerOutgoing.length === 0) {
         // Find the best first node to connect to (prefer nodes with no incoming edges, avoid log_output)
         const nodesWithIncoming = new Set(edges.map(e => e.target));
-        const nonTriggerCandidates = allNonTriggerNodes.filter(n => normalizeNodeType(n) !== 'log_output');
+        const nonTriggerCandidates = allNonTriggerNodes.filter(n => unifiedNormalizeNodeType(n) !== 'log_output');
         const firstActionNode = nonTriggerCandidates.find(n => !nodesWithIncoming.has(n.id)) || nonTriggerCandidates[0] || allNonTriggerNodes[0];
 
         if (firstActionNode) {
-          const triggerType = normalizeNodeType(triggerNode);
-          const targetType = normalizeNodeType(firstActionNode);
+          const triggerType = unifiedNormalizeNodeType(triggerNode);
+          const targetType = unifiedNormalizeNodeType(firstActionNode);
 
           const resolvedSourceHandle = this.resolveSourceHandle(triggerNode);
           const resolvedTargetHandle = this.resolveTargetHandle(firstActionNode);
@@ -11091,8 +11492,8 @@ return {
           }
           
           // CRITICAL FIX: Use normalizeNodeType for correct type identification
-          const orphanActualType = normalizeNodeType(orphan);
-          const connectToActualType = normalizeNodeType(connectToNode);
+          const orphanActualType = unifiedNormalizeNodeType(orphan);
+          const connectToActualType = unifiedNormalizeNodeType(connectToNode);
           
           // Skip if it's a chat_model (handled separately)
           if (orphanActualType === 'chat_model') {
@@ -11216,17 +11617,83 @@ return {
     // FINAL CHECK: Ensure at least one edge exists for workflows with multiple nodes
     if (finalNodes.length > 1 && edges.length === 0) {
       console.error('❌ CRITICAL: No edges created for multi-node workflow! Creating fallback connections...');
-      // Create simple sequential chain
-      const nodesInOrder = finalNodes.filter(n => n.type !== 'chat_model');
-      for (let i = 0; i < nodesInOrder.length - 1; i++) {
-        const edge: WorkflowEdge = {
-          id: randomUUID(),
-          source: nodesInOrder[i].id,
-          target: nodesInOrder[i + 1].id,
-          type: 'default',
-        };
-        edges.push(edge);
+      // ✅ ROOT-LEVEL FIX: Create simple sequential chain using actual node IDs
+      // Filter out chat_model nodes and sort by position or creation order
+      const nodesInOrder = finalNodes
+        .filter(n => {
+          const nodeType = unifiedNormalizeNodeType(n);
+          return nodeType !== 'chat_model';
+        })
+        .sort((a, b) => {
+          // Sort by position if available, otherwise by ID
+          if (a.position && b.position) {
+            return a.position.x - b.position.x || a.position.y - b.position.y;
+          }
+          return a.id.localeCompare(b.id);
+        });
+      
+      // Find trigger node (should be first)
+      const triggerNode = nodesInOrder.find(n => {
+        const nodeType = unifiedNormalizeNodeType(n);
+        return this.isTriggerNodeType(nodeType);
+      });
+      
+      // Get non-trigger nodes in order
+      const nonTriggerNodes = nodesInOrder.filter(n => {
+        const nodeType = unifiedNormalizeNodeType(n);
+        return !this.isTriggerNodeType(nodeType);
+      });
+      
+      // Connect trigger to first non-trigger node
+      if (triggerNode && nonTriggerNodes.length > 0) {
+        const mapping = mapOutputToInput(unifiedNormalizeNodeType(triggerNode), unifiedNormalizeNodeType(nonTriggerNodes[0]));
+        if (mapping) {
+          const edge: WorkflowEdge = {
+            id: randomUUID(),
+            source: triggerNode.id,
+            target: nonTriggerNodes[0].id,
+            type: 'default',
+            sourceHandle: mapping.outputField,
+            targetHandle: mapping.inputField,
+          };
+          edges.push(edge);
+          console.log(`✅ Created fallback edge: trigger → ${nonTriggerNodes[0].data?.type || nonTriggerNodes[0].id}`);
+        }
       }
+      
+      // ✅ UNIVERSAL: Use Universal Edge Creation Service for sequential connections
+      const { universalEdgeCreationService } = require('../edges/universal-edge-creation-service');
+      
+      // Connect non-trigger nodes sequentially
+      for (let i = 0; i < nonTriggerNodes.length - 1; i++) {
+        const sourceNode = nonTriggerNodes[i];
+        const targetNode = nonTriggerNodes[i + 1];
+        const sourceType = unifiedNormalizeNodeType(sourceNode);
+        const targetType = unifiedNormalizeNodeType(targetNode);
+        
+        const mapping = mapOutputToInput(sourceType, targetType);
+        if (mapping) {
+          const edgeResult = universalEdgeCreationService.createEdge({
+            sourceNode,
+            targetNode,
+            sourceHandle: mapping.outputField,
+            targetHandle: mapping.inputField,
+            edgeType: 'default',
+            existingEdges: edges,
+            allNodes: nodes,
+          });
+          
+          if (edgeResult.success && edgeResult.edge) {
+            edges.push(edgeResult.edge);
+            console.log(`✅ Created fallback edge: ${sourceType} → ${targetType}`);
+          } else {
+            console.warn(
+              `⚠️  Failed to create fallback edge: ${sourceType} → ${targetType}: ${edgeResult.error || edgeResult.reason}`
+            );
+          }
+        }
+      }
+      
       console.log(`✅ Created ${edges.length} fallback sequential connections`);
     }
 
@@ -11297,9 +11764,9 @@ return {
     nodes: WorkflowNode[],
     edges: WorkflowEdge[]
   ): { nodes: WorkflowNode[]; edges: WorkflowEdge[] } {
-    const isTriggerNode = (n: WorkflowNode) => this.isTriggerNodeType(normalizeNodeType(n));
+    const isTriggerNode = (n: WorkflowNode) => this.isTriggerNodeType(unifiedNormalizeNodeType(n));
     const isOutputSinkNode = (n: WorkflowNode) => {
-      const t = normalizeNodeType(n);
+      const t = unifiedNormalizeNodeType(n);
       const def = unifiedNodeRegistry.get(t);
       return def?.category === 'communication' || (def?.tags || []).includes('sink') || (def?.tags || []).includes('output');
     };
@@ -11314,7 +11781,7 @@ return {
     }
 
     // If there is already a log_output node, make sure it is wired as the FINAL sink (not from trigger).
-    const existingLogOutputs = nodes.filter(n => normalizeNodeType(n) === 'log_output');
+    const existingLogOutputs = nodes.filter(n => unifiedNormalizeNodeType(n) === 'log_output');
     const hasAnyOutputNode = terminalNonTriggerNodes.some(isOutputSinkNode);
 
     // We only auto-add/auto-rewire when workflow has no explicit output OR when there is an auto-injected log_output present.
@@ -11369,7 +11836,7 @@ return {
         if (e.target !== logOutputNode!.id) return true;
         const src = nodeById.get(e.source);
         if (!src) return true;
-        const srcType = normalizeNodeType(src);
+        const srcType = unifiedNormalizeNodeType(src);
         // Drop trigger→log_output edges so log_output sits at the end of actual branches
         if (this.isTriggerNodeType(srcType)) {
           console.warn(`⚠️  [ensureOutputNode] Removed trigger→log_output edge: ${srcType} (${e.source}) → log_output (${e.target})`);
@@ -11390,8 +11857,8 @@ return {
       const key = `${term.id}::${logOutputNode!.id}`;
       if (existingPairs.has(key)) return;
 
-      const sourceActualType = normalizeNodeType(term);
-      const targetActualType = normalizeNodeType(logOutputNode!);
+      const sourceActualType = unifiedNormalizeNodeType(term);
+      const targetActualType = unifiedNormalizeNodeType(logOutputNode!);
 
       const resolvedSourceHandle = this.resolveSourceHandle(term);
       const resolvedTargetHandle = this.resolveTargetHandle(logOutputNode!);
@@ -11435,7 +11902,7 @@ return {
     // - Applies migrations for backward compatibility
     // This prevents "schema mismatch" class of errors from reappearing across prompts.
     try {
-      const canonicalType = normalizeNodeType(node as any);
+      const canonicalType = unifiedNormalizeNodeType(node as any);
       const def = nodeDefinitionRegistry.get(canonicalType);
       if (def) {
         const currentConfig = (node.data?.config || {}) as Record<string, any>;
@@ -11530,7 +11997,7 @@ return {
     const START_X = 120;
 
     // Identify trigger(s) (registry-driven)
-    const triggerNodes = nodes.filter(n => this.isTriggerNodeType(normalizeNodeType(n) || n.type));
+    const triggerNodes = nodes.filter(n => this.isTriggerNodeType(unifiedNormalizeNodeType(n) || n.type));
     const triggerNode = triggerNodes[0] ?? nodes[0];
 
     // Build adjacency map
@@ -11585,7 +12052,7 @@ return {
       const targetNode = idToNode[e.target];
       if (!sourceNode || !targetNode) return;
 
-      const sourceType = normalizeNodeType(sourceNode);
+      const sourceType = unifiedNormalizeNodeType(sourceNode);
       const isBranchSource = sourceType === 'if_else' || sourceType === 'switch';
 
       if (isBranchSource && targetNode.position) {
@@ -11648,18 +12115,15 @@ return {
     workflow.nodes.forEach(node => {
       const config = node.data?.config || {};
       // CRITICAL FIX: Use normalizeNodeType to get actual node type
-      const actualNodeType = normalizeNodeType(node);
+      const actualNodeType = unifiedNormalizeNodeType(node);
       const nodeSchema = nodeLibrary.getSchema(actualNodeType);
       const requiredFields = nodeSchema?.configSchema?.required || [];
       
       // PRIORITY 2: Check for empty required fields
+      // ✅ FIX: Use universal isEmpty check to handle arrays, objects, nested structures
       requiredFields.forEach(fieldName => {
         const value = config[fieldName];
-        const isEmpty = value === undefined || value === null || 
-                       (typeof value === 'string' && value.trim() === '') ||
-                       (Array.isArray(value) && value.length === 0);
-        
-        if (isEmpty) {
+        if (isEmptyValue(value)) {
           errors.push(`Node ${node.id} (${node.type}) has empty required field: ${fieldName}`);
         }
       });
@@ -11677,11 +12141,23 @@ return {
         }
       });
       
-      // Registry-driven validation (single source of truth)
-      const actualTypeForValidation = normalizeNodeType(node);
-      const registryValidation = unifiedNodeRegistry.validateConfig(actualTypeForValidation, config as any);
-      if (!registryValidation.valid) {
-        errors.push(`Node ${node.id} (${node.type}) invalid config: ${registryValidation.errors.join(', ')}`);
+      // ✅ STRICT ARCHITECTURE: Pre-validation guard before registry
+      // This ensures invalid node types CANNOT reach validateConfig()
+      const actualTypeForValidation = unifiedNormalizeNodeType(node);
+      
+      try {
+        // Step 1: Strict pre-validation (fail-fast)
+        const { assertValidNodeType } = require('../../core/utils/node-authority');
+        assertValidNodeType(actualTypeForValidation);
+        
+        // Step 2: Registry validation (only reached if pre-validation passes)
+        const registryValidation = unifiedNodeRegistry.validateConfig(actualTypeForValidation, config as any);
+        if (!registryValidation.valid) {
+          errors.push(`Node ${node.id} (${node.type}) invalid config: ${registryValidation.errors.join(', ')}`);
+        }
+      } catch (error: any) {
+        // Invalid node type detected - fail fast
+        errors.push(`Node ${node.id} (${node.type}) invalid: ${error.message}`);
       }
     });
     
@@ -11707,7 +12183,7 @@ return {
     
     const orphanedNodes = workflow.nodes.filter(node => {
       // Trigger nodes don't need incoming connections
-      const nt = normalizeNodeType(node) || node.type;
+      const nt = unifiedNormalizeNodeType(node) || node.type;
       if (this.isTriggerNodeType(nt)) {
         return false;
       }
@@ -11720,7 +12196,7 @@ return {
     
     // Ensure workflow has at least one output or end node
     const hasOutput = workflow.nodes.some(n => {
-      const t = normalizeNodeType(n) || n.type;
+      const t = unifiedNormalizeNodeType(n) || n.type;
       const def = unifiedNodeRegistry.get(t);
       return def?.category === 'communication' || (def?.tags || []).includes('sink') || (def?.tags || []).includes('output');
     });
@@ -11857,7 +12333,7 @@ return {
       });
 
       // Second pass: Fill required fields from registry schema/defaults (single source of truth)
-      const actualType = normalizeNodeType(node) || node.type;
+      const actualType = unifiedNormalizeNodeType(node) || node.type;
       const def = unifiedNodeRegistry.get(actualType);
       const defaults = unifiedNodeRegistry.getDefaultConfig(actualType) || {};
 
@@ -12028,7 +12504,7 @@ Generated on: ${new Date().toISOString()}
     // Check 2: All required fields are filled
     for (const node of nodes) {
       // CRITICAL FIX: Use normalizeNodeType to get actual node type
-      const actualNodeType = normalizeNodeType(node);
+      const actualNodeType = unifiedNormalizeNodeType(node);
       const nodeSchema = nodeLibrary.getSchema(actualNodeType);
       if (nodeSchema?.configSchema?.required) {
         const requiredFields = nodeSchema.configSchema.required;
@@ -12171,8 +12647,8 @@ Identify what needs to be changed. Respond with JSON:
     targetHandle: string
   ): void {
     // ✅ CRITICAL: Use normalizeNodeType to get actual types
-    const sourceActualType = normalizeNodeType(sourceNode);
-    const targetActualType = normalizeNodeType(targetNode);
+    const sourceActualType = unifiedNormalizeNodeType(sourceNode);
+    const targetActualType = unifiedNormalizeNodeType(targetNode);
     
     // Get valid output fields for source node
     const sourceOutputs = this.getNodeOutputFields(sourceActualType);
@@ -12204,8 +12680,8 @@ Identify what needs to be changed. Respond with JSON:
     targetField: string
   ): { valid: boolean; reason?: string } {
     // ✅ ARCHITECTURAL FIX: Use normalizeNodeType for validation
-    const sourceActualType = normalizeNodeType(sourceNode);
-    const targetActualType = normalizeNodeType(targetNode);
+    const sourceActualType = unifiedNormalizeNodeType(sourceNode);
+    const targetActualType = unifiedNormalizeNodeType(targetNode);
     
     // PHASE 4: Type compatibility validation
     const sourceOutputType = getNodeOutputType(sourceActualType);
@@ -12280,7 +12756,7 @@ Identify what needs to be changed. Respond with JSON:
     const questions: string[] = [];
     
     nodes.forEach(node => {
-      const actualType = normalizeNodeType(node) || node.type;
+      const actualType = unifiedNormalizeNodeType(node) || node.type;
       const def = unifiedNodeRegistry.get(actualType);
       const schema = getNodeOutputSchema(actualType);
       
@@ -12319,8 +12795,8 @@ Identify what needs to be changed. Respond with JSON:
     targetNode: WorkflowNode
   ): { outputField: string; inputField: string } | null {
     // ✅ CRITICAL FIX: Use normalizeNodeType to get actual node types
-    const sourceActualType = normalizeNodeType(sourceNode);
-    const targetActualType = normalizeNodeType(targetNode);
+    const sourceActualType = unifiedNormalizeNodeType(sourceNode);
+    const targetActualType = unifiedNormalizeNodeType(targetNode);
     
     const sourceOutputs = this.getPreviousNodeOutputFields(sourceNode);
     const targetSchema = nodeLibrary.getSchema(targetActualType);
@@ -12428,7 +12904,7 @@ Identify what needs to be changed. Respond with JSON:
     }
 
     // Always normalize using data.type so 'custom' nodes are handled correctly
-    const getType = (n: WorkflowNode): string => normalizeNodeType(n) || n.type || (n.data as any)?.type || '';
+    const getType = (n: WorkflowNode): string => unifiedNormalizeNodeType(n) || n.type || (n.data as any)?.type || '';
     
     // Helper to get operation type from node config
     const getOperation = (n: WorkflowNode): string => {
@@ -12635,11 +13111,11 @@ Identify what needs to be changed. Respond with JSON:
   private validateAllNodesExist(nodes: WorkflowNode[]): WorkflowNode[] {
     const allSchemas = nodeLibrary.getAllSchemas();
     const validNodeTypes = new Set(allSchemas.map(s => s.type));
-    const { normalizeNodeType } = require('../../core/utils/node-type-normalizer');
+    const { unifiedNormalizeNodeType } = require('../../core/utils/unified-node-type-normalizer');
     
     return nodes.map(node => {
       // CRITICAL FIX: Use normalizeNodeType to get actual type from node.data.type
-      const actualNodeType = normalizeNodeType(node);
+      const actualNodeType = unifiedNormalizeNodeType(node);
       const nodeType = actualNodeType || node.type || node.data?.type || '';
       
       // CRITICAL FIX: form node is valid - check if it's actually in library
@@ -13123,7 +13599,7 @@ Identify what needs to be changed. Respond with JSON:
     const warnings: string[] = [];
     
     nodes.forEach(node => {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       const isTrigger = this.isTriggerNodeType(nodeType);
       const def = unifiedNodeRegistry.get(nodeType);
       const isTerminal = def?.category === 'communication' || (def?.tags || []).includes('sink') || (def?.tags || []).includes('output');

@@ -20,7 +20,9 @@ import { extractSemanticOperations, ExtractedIntent, SemanticOperationType } fro
 import { planExecution, ExecutionPlan } from './dependency-planner';
 import { mapStepsToNodes, NodeMappingResult } from './node-mapper';
 import { insertLoops, LoopInsertionResult } from './loop-insertion-rule';
-import { validateWorkflow, ValidationResult } from './deterministic-workflow-validator';
+// ✅ CONSOLIDATED: Deterministic workflow validator merged into workflow-validator
+// Using workflow-validator for validation (advisory only - FinalWorkflowValidator is source of truth)
+import { workflowValidator } from './workflow-validator';
 import { Workflow, WorkflowNode, WorkflowEdge } from '../../core/types/ai-types';
 import { randomUUID } from 'crypto';
 import { resolveCompatibleHandles } from './schema-driven-connection-resolver';
@@ -35,7 +37,7 @@ export interface CompilationResult {
     executionPlan: ExecutionPlan;
     nodeMapping: NodeMappingResult;
     loopInsertion: LoopInsertionResult;
-    validation: ValidationResult;
+    validation: { valid: boolean; errors: string[]; warnings: string[] };
   };
 }
 
@@ -91,7 +93,7 @@ export class DeterministicWorkflowCompiler {
             executionPlan: { steps: [], isValid: false, errors: [], warnings: [] },
             nodeMapping: { steps: [], unmappedOperations: [], errors: [] },
             loopInsertion: { steps: [], insertedLoops: [] },
-            validation: { isValid: false, errors: [], warnings: [], details: { orderingIssues: [], unusedNodes: [], typeMismatches: [], disconnectedNodes: [] } },
+            validation: { valid: false, errors: [], warnings: [] },
           },
         };
       }
@@ -134,7 +136,7 @@ export class DeterministicWorkflowCompiler {
               executionPlan,
               nodeMapping: { steps: [], unmappedOperations: [], errors: [] },
               loopInsertion: { steps: [], insertedLoops: [] },
-              validation: { isValid: false, errors: [], warnings: [], details: { orderingIssues: [], unusedNodes: [], typeMismatches: [], disconnectedNodes: [] } },
+              validation: { valid: false, errors: [], warnings: [] },
             },
           };
         }
@@ -163,7 +165,7 @@ export class DeterministicWorkflowCompiler {
             executionPlan,
             nodeMapping,
             loopInsertion: { steps: [], insertedLoops: [] },
-            validation: { isValid: false, errors: [], warnings: [], details: { orderingIssues: [], unusedNodes: [], typeMismatches: [], disconnectedNodes: [] } },
+            validation: { valid: false, errors: [], warnings: [] },
           },
         };
       }
@@ -280,18 +282,19 @@ export class DeterministicWorkflowCompiler {
         // Continue with original workflow
       }
       
-      // STEP 7: Workflow Validator (downgraded to warnings only)
-      // ✅ FIXED: DeterministicWorkflowValidator is now advisory only - FinalWorkflowValidator is the single source of truth
+      // STEP 7: Workflow Validator (advisory only)
+      // ✅ CONSOLIDATED: Using workflow-validator (deterministic-workflow-validator merged)
+      // ✅ FIXED: Advisory only - FinalWorkflowValidator is the single source of truth
       console.log('[DeterministicWorkflowCompiler] STEP 7: Validating workflow (advisory only)...');
-      const validation = validateWorkflow(loopInsertion.steps, workflow, originalPrompt);
+      const validation = await workflowValidator.validateAndFix(workflow);
       
       // ✅ FIXED: Convert all errors to warnings - only FinalWorkflowValidator decides build success
-      if (!validation.isValid) {
-        warnings.push(...validation.errors.map(e => `[Advisory] ${e}`));
-        warnings.push(...validation.warnings);
+      if (!validation.valid) {
+        warnings.push(...validation.errors.map(e => `[Advisory] ${e.message}`));
+        warnings.push(...validation.warnings.map(w => `[Advisory] ${w.message}`));
         console.log(`[DeterministicWorkflowCompiler] ⚠️  Advisory validation found ${validation.errors.length} issues (converted to warnings)`);
       } else {
-        warnings.push(...validation.warnings);
+        warnings.push(...validation.warnings.map(w => `[Advisory] ${w.message}`));
         console.log(`[DeterministicWorkflowCompiler] ✅ Advisory validation passed`);
       }
       
@@ -394,7 +397,11 @@ export class DeterministicWorkflowCompiler {
             executionPlan,
             nodeMapping,
             loopInsertion,
-            validation,
+            validation: {
+              valid: validation.valid,
+              errors: validation.errors.map(e => typeof e === 'string' ? e : e.message),
+              warnings: validation.warnings.map(w => typeof w === 'string' ? w : w.message),
+            },
           },
         };
       }
@@ -411,13 +418,17 @@ export class DeterministicWorkflowCompiler {
         success: true,
         workflow,
         errors: [],
-        warnings: [...warnings, ...validation.warnings],
+        warnings: [...warnings, ...validation.warnings.map(w => typeof w === 'string' ? w : w.message)],
         metadata: {
           extractedIntent,
           executionPlan,
           nodeMapping,
           loopInsertion,
-          validation,
+          validation: {
+            valid: validation.valid,
+            errors: validation.errors.map(e => typeof e === 'string' ? e : e.message),
+            warnings: validation.warnings.map(w => typeof w === 'string' ? w : w.message),
+          },
         },
       };
     } catch (error) {
@@ -434,7 +445,7 @@ export class DeterministicWorkflowCompiler {
           executionPlan: { steps: [], isValid: false, errors: [], warnings: [] },
           nodeMapping: { steps: [], unmappedOperations: [], errors: [] },
           loopInsertion: { steps: [], insertedLoops: [] },
-          validation: { isValid: false, errors: [], warnings: [], details: { orderingIssues: [], unusedNodes: [], typeMismatches: [], disconnectedNodes: [] } },
+          validation: { valid: false, errors: [], warnings: [] },
         },
       };
     }

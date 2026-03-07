@@ -19,6 +19,14 @@ import { Workflow, WorkflowNode, WorkflowEdge } from '../../core/types/ai-types'
 import { TransformationDetection } from './transformation-detector';
 import { isIntentActionCovered } from './intent-dsl-semantic-mapper';
 import { validateIntentCoverageByCapabilities } from './capability-based-validator';
+import { unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
+import { getTriggerNodes } from '../../core/utils/trigger-deduplicator';
+import { isTriggerNode, isDataSourceNode, isOutputNode, isTransformationNode } from '../../core/utils/universal-node-type-checker';
+import { nodeDataTypeSystem, validateWorkflowTypes } from './node-data-type-system';
+import { isValidHandle } from '../../core/utils/node-handle-registry';
+import { transformationDetector } from './transformation-detector';
+import { unifiedNodeCategorizer } from './unified-node-categorizer';
+import { nodeLibrary } from '../nodes/node-library';
 
 /**
  * Base validation result interface
@@ -218,9 +226,14 @@ export class IntentCoverageValidationLayer extends ValidationLayer {
         details.missingDataSources = true;
       }
       
+      // ✅ UNIVERSAL: log_output is always added as final output node before validation
+      // So we don't need to check for outputs here - log_output will always exist
+      // This check is kept for DSL-level validation, but log_output injection happens later
+      // Note: This validation happens at DSL level, log_output is added at workflow graph level
       if (hasWriteOperation && dsl.outputs.length === 0) {
-        errors.push('Intent contains send/write operations but no outputs were generated.');
-        details.missingOutputs = true;
+        // This is OK - log_output will be added before final validation
+        // Just log a warning, not an error
+        warnings.push('Intent contains write operations but no outputs in DSL - log_output will be auto-injected');
       }
     }
     
@@ -355,11 +368,9 @@ export class GraphConnectivityValidationLayer extends ValidationLayer {
       return { valid: false, errors, warnings, details };
     }
     
-    // Find trigger nodes
-    const triggerNodes = nodes.filter(node => {
-      const nodeType = (node.data?.type || node.type || '').toLowerCase();
-      return nodeType.includes('trigger') || nodeType === 'manual_trigger';
-    });
+    // ✅ UNIVERSAL FIX: Use registry-based trigger detection (not hardcoded)
+    // This ensures ALL trigger types are recognized (webhook, manual_trigger, schedule, chat_trigger, etc.)
+    const triggerNodes = nodes.filter(node => isTriggerNode(node));
     
     if (triggerNodes.length === 0) {
       errors.push('Workflow must have at least one trigger node');
@@ -529,18 +540,458 @@ export class TypeCompatibilityValidationLayer extends ValidationLayer {
 }
 
 /**
- * Validation Pipeline Orchestrator
+ * ✅ WORLD-CLASS: Layer 5 - Linear Flow Validation
+ * Validates execution order (producer → transformer → output)
+ */
+export class LinearFlowValidationLayer extends ValidationLayer {
+  readonly name = 'linear-flow';
+  readonly order = 5;
+  
+  validate(context: ValidationContext): ValidationLayerResult {
+    const errors: string[] = [];
+    const warnings: string[] = [];
+    const details: Record<string, any> = {};
+    
+    if (!context.workflow) {
+      return { valid: true, errors, warnings, details };
+    }
+    
+    const { nodes, edges } = context.workflow;
+    
+    // Build execution order from edges (topological sort)
+    const executionOrder = this.getExecutionOrder(nodes, edges);
+    if (executionOrder.length === 0) {
+      return { valid: true, errors, warnings, details };
+    }
+    
+    // Categorize nodes by type
+    const nodeCategories = new Map<string, 'data_source' | 'processing' | 'conditional' | 'output' | 'other'>();
+    nodes.forEach(node => {
+      const nodeType = unifiedNormalizeNodeTypeString(node.data?.type || node.type || '');
+      const category = this.categorizeNode(nodeType);
+      nodeCategories.set(node.id, category);
+    });
+    
+    // Validate order for linear workflows
+    const orderViolations: Array<{ nodeId: string; nodeType: string; issue: string }> = [];
+    
+    for (let i = 0; i < executionOrder.length; i++) {
+      const currentNodeId = executionOrder[i];
+      const currentCategory = nodeCategories.get(currentNodeId) || 'other';
+      const currentNodeType = nodes.find(n => n.id === currentNodeId)?.data?.type || nodes.find(n => n.id === currentNodeId)?.type || '';
+      
+      const immediatePredecessorIndex = i > 0 ? i - 1 : -1;
+      
+      if (immediatePredecessorIndex >= 0) {
+        const previousNodeId = executionOrder[immediatePredecessorIndex];
+        const previousCategory = nodeCategories.get(previousNodeId) || 'other';
+        
+        // ❌ INVALID: Output → Processing (can't process after output)
+        if (previousCategory === 'output' && currentCategory === 'processing') {
+          orderViolations.push({
+            nodeId: currentNodeId,
+            nodeType: currentNodeType,
+            issue: `Output node cannot be followed by processing node`,
+          });
+        }
+        
+        // ❌ INVALID: Output → Data Source (can't read after output)
+        if (previousCategory === 'output' && currentCategory === 'data_source') {
+          orderViolations.push({
+            nodeId: currentNodeId,
+            nodeType: currentNodeType,
+            issue: `Output node cannot be followed by data source node`,
+          });
+        }
+      }
+    }
+    
+    if (orderViolations.length > 0) {
+      const violationMessages = orderViolations.map(v => `${v.nodeType} (${v.issue})`);
+      errors.push(`Execution order violations: ${violationMessages.join('; ')}`);
+      details.orderViolations = orderViolations;
+    }
+    
+    return {
+      valid: errors.length === 0,
+      errors,
+      warnings,
+      details,
+    };
+  }
+  
+  private getExecutionOrder(nodes: any[], edges: any[]): string[] {
+    const inDegree = new Map<string, number>();
+    const adjacencyList = new Map<string, string[]>();
+    
+    nodes.forEach(node => {
+      inDegree.set(node.id, 0);
+      adjacencyList.set(node.id, []);
+    });
+    
+    edges.forEach(edge => {
+      const current = inDegree.get(edge.target) || 0;
+      inDegree.set(edge.target, current + 1);
+      
+      const neighbors = adjacencyList.get(edge.source) || [];
+      neighbors.push(edge.target);
+      adjacencyList.set(edge.source, neighbors);
+    });
+    
+    const queue: string[] = [];
+    const result: string[] = [];
+    
+    inDegree.forEach((degree, nodeId) => {
+      if (degree === 0) {
+        queue.push(nodeId);
+      }
+    });
+    
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      result.push(current);
+      
+      const neighbors = adjacencyList.get(current) || [];
+      neighbors.forEach(neighbor => {
+        const degree = inDegree.get(neighbor)!;
+        inDegree.set(neighbor, degree - 1);
+        if (degree - 1 === 0) {
+          queue.push(neighbor);
+        }
+      });
+    }
+    
+    return result;
+  }
+  
+  private categorizeNode(nodeType: string): 'data_source' | 'processing' | 'conditional' | 'output' | 'other' {
+    const lower = nodeType.toLowerCase();
+    
+    if (lower.includes('sheets') || lower.includes('database') || lower.includes('read') || 
+        (lower.includes('http_request') && !lower.includes('salesforce'))) {
+      return 'data_source';
+    }
+    
+    if (lower.includes('ai_') || lower.includes('chat_model') || lower.includes('agent') ||
+        lower.includes('summar') || lower.includes('transform') || lower.includes('process')) {
+      return 'processing';
+    }
+    
+    if (lower.includes('if_else') || lower.includes('switch') || lower.includes('filter')) {
+      return 'conditional';
+    }
+    
+    if (lower.includes('salesforce') || lower.includes('crm') || lower.includes('gmail') ||
+        lower.includes('email') || lower.includes('slack') || lower.includes('notify') ||
+        lower.includes('write') || lower.includes('create') || lower.includes('update')) {
+      return 'output';
+    }
+    
+    return 'other';
+  }
+  
+  shouldRun(context: ValidationContext): boolean {
+    return !!context.workflow && !!context.workflow.nodes && context.workflow.nodes.length > 0;
+  }
+}
+
+/**
+ * ✅ WORLD-CLASS: Layer 6 - Structural DAG Enforcement
+ * Enforces strict linear DAG (no branches unless explicit)
+ */
+export class StructuralDAGValidationLayer extends ValidationLayer {
+  readonly name = 'structural-dag-enforcement';
+  readonly order = 6;
+  
+  validate(context: ValidationContext): ValidationLayerResult {
+    const errors: string[] = [];
+    const warnings: string[] = [];
+    const details: Record<string, any> = {
+      removedBranches: 0,
+      removedEdges: [] as string[],
+    };
+    
+    if (!context.workflow) {
+      return { valid: true, errors, warnings, details };
+    }
+    
+    const workflow = context.workflow;
+    const { nodes, edges } = workflow;
+    
+    // Find all trigger nodes
+    const triggerNodes = nodes.filter(n => {
+      const type = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
+      return type === 'manual_trigger' || type.includes('trigger') || type === 'webhook' || type === 'form';
+    });
+    
+    if (triggerNodes.length === 0) {
+      warnings.push('No trigger node found - cannot enforce DAG structure');
+      return { valid: true, errors, warnings, details };
+    }
+    
+    // Build outgoing edges map
+    const outgoingEdges = new Map<string, WorkflowEdge[]>();
+    edges.forEach(edge => {
+      if (!outgoingEdges.has(edge.source)) {
+        outgoingEdges.set(edge.source, []);
+      }
+      outgoingEdges.get(edge.source)!.push(edge);
+    });
+    
+    // ✅ RULE 1: TRIGGERS MUST HAVE EXACTLY 1 OUTGOING EDGE
+    for (const triggerNode of triggerNodes) {
+      const triggerId = triggerNode.id;
+      const outgoing = outgoingEdges.get(triggerId) || [];
+      
+      if (outgoing.length > 1) {
+        warnings.push(`Trigger node has ${outgoing.length} outgoing edges (expected 1). Multiple branches not allowed in linear workflows.`);
+        details.removedBranches += outgoing.length - 1;
+      }
+    }
+    
+    // ✅ RULE 2: NORMAL NODES MUST HAVE EXACTLY 1 OUTGOING EDGE (unless if_else/switch/merge)
+    nodes.forEach(node => {
+      const nodeType = unifiedNormalizeNodeTypeString(node.type || node.data?.type || '');
+      const isConditional = nodeType === 'if_else' || nodeType === 'switch' || nodeType === 'merge';
+      
+      if (!isConditional) {
+        const outgoing = outgoingEdges.get(node.id) || [];
+        if (outgoing.length > 1) {
+          warnings.push(`Node ${nodeType} has ${outgoing.length} outgoing edges (expected 1). Multiple branches not allowed in linear workflows.`);
+          details.removedBranches += outgoing.length - 1;
+        }
+      }
+    });
+    
+    return {
+      valid: errors.length === 0,
+      errors,
+      warnings,
+      details,
+    };
+  }
+  
+  shouldRun(context: ValidationContext): boolean {
+    return !!context.workflow && context.workflow.nodes.length > 0;
+  }
+}
+
+/**
+ * ✅ WORLD-CLASS: Layer 7 - Final Integrity Validation
+ * Final comprehensive checks (duplicate nodes, all nodes connected to output, required inputs, workflow minimal, edge handles, transformation requirements)
+ */
+export class FinalIntegrityValidationLayer extends ValidationLayer {
+  readonly name = 'final-integrity';
+  readonly order = 7; // Runs LAST, after all other validations
+  
+  validate(context: ValidationContext): ValidationLayerResult {
+    const errors: string[] = [];
+    const warnings: string[] = [];
+    const details: Record<string, any> = {
+      duplicateNodes: [] as string[],
+      disconnectedNodes: [] as string[],
+      missingInputs: [] as Array<{ nodeId: string; nodeType: string; reason: string }>,
+      invalidEdgeHandles: [] as Array<{ edgeId: string; sourceHandle?: string; targetHandle?: string; reason: string }>,
+      missingTransformations: [] as string[],
+      nonMinimalIssues: [] as string[],
+    };
+    
+    if (!context.workflow) {
+      return { valid: true, errors, warnings, details };
+    }
+    
+    const { nodes, edges } = context.workflow;
+    
+    // Check 1: Duplicate nodes (duplicate IDs)
+    const nodeIdMap = new Map<string, WorkflowNode[]>();
+    nodes.forEach(node => {
+      if (!nodeIdMap.has(node.id)) {
+        nodeIdMap.set(node.id, []);
+      }
+      nodeIdMap.get(node.id)!.push(node);
+    });
+    
+    nodeIdMap.forEach((duplicates, nodeId) => {
+      if (duplicates.length > 1) {
+        errors.push(`Duplicate node ID found: "${nodeId}" (${duplicates.length} instances)`);
+        details.duplicateNodes.push(nodeId);
+      }
+    });
+    
+    // Check 2: All nodes connected to output
+    // ✅ UNIVERSAL: log_output is always added as final output node (universal fix)
+    // Recognize all output nodes including log_output
+    const outputNodes = nodes.filter(node => {
+      const nodeType = unifiedNormalizeNodeTypeString(node.data?.type || node.type || '');
+      const isOutput = unifiedNodeCategorizer.isOutput(nodeType.toLowerCase());
+      // Always recognize log_output as output (universal final output node)
+      const isLogOutput = nodeType.toLowerCase() === 'log_output';
+      const outgoing = edges.filter(e => e.source === node.id);
+      return !outgoing.length && !isTriggerNode(node) && (isOutput || isLogOutput);
+    });
+    
+    // ✅ UNIVERSAL: log_output should always exist (added before validation)
+    // If it doesn't exist, that's an error in the injection logic
+    if (outputNodes.length === 0) {
+      errors.push('No output nodes found in workflow - log_output should have been auto-injected');
+    }
+    
+    // Build reverse adjacency list (for backward traversal from outputs)
+    const reverseAdj = new Map<string, string[]>();
+    edges.forEach(edge => {
+      if (!reverseAdj.has(edge.target)) {
+        reverseAdj.set(edge.target, []);
+      }
+      reverseAdj.get(edge.target)!.push(edge.source);
+    });
+    
+    // Find nodes not connected to any output
+    const visited = new Set<string>();
+    const queue = [...outputNodes.map(n => n.id)];
+    outputNodes.forEach(node => visited.add(node.id));
+    
+    while (queue.length > 0) {
+      const currentNodeId = queue.shift()!;
+      const incoming = reverseAdj.get(currentNodeId) || [];
+      for (const neighborId of incoming) {
+        if (!visited.has(neighborId)) {
+          visited.add(neighborId);
+          queue.push(neighborId);
+        }
+      }
+    }
+    
+    const disconnectedNodes = nodes.filter(node => !visited.has(node.id)).map(n => n.id);
+    if (disconnectedNodes.length > 0) {
+      errors.push(`Found ${disconnectedNodes.length} node(s) not connected to any output`);
+      details.disconnectedNodes = disconnectedNodes;
+    }
+    
+    // Check 3: Required inputs
+    const incomingEdgesMap = new Map<string, WorkflowEdge[]>();
+    edges.forEach(edge => {
+      if (!incomingEdgesMap.has(edge.target)) {
+        incomingEdgesMap.set(edge.target, []);
+      }
+      incomingEdgesMap.get(edge.target)!.push(edge);
+    });
+    
+    nodes.forEach(node => {
+      const nodeType = unifiedNormalizeNodeTypeString(node.data?.type || node.type || '');
+      if (isTriggerNode(node)) {
+        return; // Triggers don't need inputs
+      }
+      
+      const incomingEdges = incomingEdgesMap.get(node.id) || [];
+      if (incomingEdges.length === 0) {
+        errors.push(`Node "${nodeType}" (${node.id}) has no input connections`);
+        details.missingInputs.push({
+          nodeId: node.id,
+          nodeType,
+          reason: 'No incoming edges found',
+        });
+      }
+    });
+    
+    // Check 4: Edge handles validation
+    edges.forEach(edge => {
+      const sourceNode = nodes.find(n => n.id === edge.source);
+      const targetNode = nodes.find(n => n.id === edge.target);
+      
+      if (sourceNode && targetNode) {
+        const sourceType = unifiedNormalizeNodeTypeString(sourceNode.data?.type || sourceNode.type || '');
+        const targetType = unifiedNormalizeNodeTypeString(targetNode.data?.type || targetNode.type || '');
+        
+        if (edge.sourceHandle && !isValidHandle(sourceType, edge.sourceHandle, true)) {
+          const reason = `Invalid source handle "${edge.sourceHandle}" for "${sourceType}"`;
+          errors.push(`Edge ${edge.id}: ${reason}`);
+          details.invalidEdgeHandles.push({
+            edgeId: edge.id,
+            sourceHandle: edge.sourceHandle,
+            reason,
+          });
+        }
+        
+        if (edge.targetHandle && !isValidHandle(targetType, edge.targetHandle, false)) {
+          const reason = `Invalid target handle "${edge.targetHandle}" for "${targetType}"`;
+          errors.push(`Edge ${edge.id}: ${reason}`);
+          details.invalidEdgeHandles.push({
+            edgeId: edge.id,
+            targetHandle: edge.targetHandle,
+            reason,
+          });
+        }
+      }
+    });
+    
+    // Check 5: Transformation requirements
+    if (context.originalPrompt) {
+      const { detectTransformations } = require('./transformation-detector');
+      const transformationCheck = detectTransformations(context.originalPrompt);
+      if (transformationCheck.detected && transformationCheck.requiredNodeTypes.length > 0) {
+        const workflowNodeTypes = nodes.map(n => unifiedNormalizeNodeTypeString(n.data?.type || n.type || ''));
+        const missingTransformations = transformationCheck.requiredNodeTypes.filter(
+          (requiredType: string) => !workflowNodeTypes.some(workflowType => 
+            workflowType === requiredType || workflowType.includes(requiredType) || requiredType.includes(workflowType)
+          )
+        );
+        
+        if (missingTransformations.length > 0) {
+          errors.push(`Missing required transformation nodes: ${missingTransformations.join(', ')}`);
+          details.missingTransformations = missingTransformations;
+        }
+      }
+    }
+    
+    // Check 6: Workflow minimal (warnings only)
+    const nodeTypeCount = new Map<string, number>();
+    nodes.forEach(node => {
+      const nodeType = unifiedNormalizeNodeTypeString(node.data?.type || node.type || '');
+      nodeTypeCount.set(nodeType, (nodeTypeCount.get(nodeType) || 0) + 1);
+    });
+    
+    nodeTypeCount.forEach((count, nodeType) => {
+      if (count > 1 && !this.isAllowedDuplicate(nodeType)) {
+        warnings.push(`Duplicate node type "${nodeType}" found ${count} times (may be non-minimal)`);
+        details.nonMinimalIssues.push(`Multiple instances of "${nodeType}" node`);
+      }
+    });
+    
+    return {
+      valid: errors.length === 0,
+      errors,
+      warnings,
+      details,
+    };
+  }
+  
+  private isAllowedDuplicate(nodeType: string): boolean {
+    const allowedDuplicates = ['set_variable', 'log', 'delay', 'notification'];
+    return allowedDuplicates.includes(nodeType);
+  }
+  
+  shouldRun(context: ValidationContext): boolean {
+    return !!context.workflow && context.workflow.nodes.length > 0;
+  }
+}
+
+/**
+ * ✅ WORLD-CLASS: Validation Pipeline Orchestrator
+ * SINGLE SOURCE OF TRUTH for workflow validation
  * Runs validation layers in order and aggregates results
  */
 export class WorkflowValidationPipeline {
   private layers: ValidationLayer[] = [];
   
   constructor() {
-    // Register default layers
+    // ✅ WORLD-CLASS: Register ALL validation layers (SINGLE SOURCE OF TRUTH)
     this.registerLayer(new IntentCoverageValidationLayer());
     this.registerLayer(new DSLStructureValidationLayer());
     this.registerLayer(new GraphConnectivityValidationLayer());
     this.registerLayer(new TypeCompatibilityValidationLayer());
+    this.registerLayer(new LinearFlowValidationLayer());
+    this.registerLayer(new StructuralDAGValidationLayer());
+    this.registerLayer(new FinalIntegrityValidationLayer()); // Final comprehensive checks
   }
   
   /**

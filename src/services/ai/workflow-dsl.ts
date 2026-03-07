@@ -3,7 +3,7 @@
  * 
  * Intermediate representation between StructuredIntent and Workflow Graph.
  * 
- * Pipeline: prompt → intent → DSL → workflow graph
+ * Pipeline: prompt -> intent -> DSL -> workflow graph
  * 
  * The DSL is a deterministic, structured representation that:
  * - Defines trigger, data sources, transformations, outputs
@@ -13,13 +13,32 @@
  */
 
 import { nodeCapabilityRegistryDSL } from './node-capability-registry-dsl';
+import { unifiedNodeCategorizer } from './unified-node-categorizer';
+import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 import { nodeLibrary } from '../nodes/node-library';
-import { normalizeNodeType } from './node-type-normalizer';
+import { unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
+import { normalizeNodeTypeAsync } from './node-type-normalizer'; // Keep async version for now
+import { resolveNodeType } from '../../core/utils/node-type-resolver-util';
+import { semanticNodeResolver } from './semantic-node-resolver';
+import { semanticIntentAnalyzer } from './semantic-intent-analyzer';
+import { nodeMetadataEnricher } from './node-metadata-enricher';
+import { resolutionLearningCache } from './resolution-learning-cache';
 import { StructuredIntent } from './intent-structurer';
 import { matchesIntentAction, isIntentActionCovered } from './intent-dsl-semantic-mapper';
 import { validateIntentCoverageByCapabilities } from './capability-based-validator';
 import { getTransformationNodeType, getTransformationNodeTypes } from './transformation-node-config';
 import { workflowTemplateSelector, WorkflowTemplate } from './workflow-templates';
+import { 
+  READ_OPERATIONS, 
+  WRITE_OPERATIONS, 
+  TRANSFORM_OPERATIONS,
+  DATA_SOURCE_KEYWORDS,
+  OUTPUT_KEYWORDS,
+  isReadOperation,
+  isWriteOperation,
+  isTransformOperation
+} from '../../core/constants/operation-semantics';
+import { semanticNodeEquivalenceRegistry } from '../../core/registry/semantic-node-equivalence-registry';
 
 /**
  * DSL Generation Error
@@ -102,7 +121,7 @@ export interface DSLTrigger {
     interval?: 'hourly' | 'daily' | 'weekly' | 'monthly';
     schedule?: string; // Cron expression
     cron?: string;
-    [key: string]: any;
+    [key: string]: unknown; // ✅ PHASE 2: Changed from 'any' to 'unknown' for type safety
   };
 }
 
@@ -113,8 +132,13 @@ export interface DSLDataSource {
   id: string;
   type: string; // Node type (e.g., 'google_sheets', 'database')
   operation: 'read' | 'fetch' | 'get' | 'query';
-  config?: Record<string, any>;
+  config?: Record<string, unknown>; // ✅ PHASE 2: Changed from 'any' to 'unknown' for type safety
   description?: string;
+  origin?: {
+    source: 'user' | 'auto' | 'system';
+    stage: string;
+  };
+  protected?: boolean; // If true, never remove this node
 }
 
 /**
@@ -128,8 +152,13 @@ export interface DSLTransformation {
     sourceId: string; // ID of data source or previous transformation
     field?: string; // Specific field to transform
   };
-  config?: Record<string, any>;
+  config?: Record<string, unknown>; // ✅ PHASE 2: Changed from 'any' to 'unknown' for type safety
   description?: string;
+  origin?: {
+    source: 'user' | 'auto' | 'system';
+    stage: string;
+  };
+  protected?: boolean; // If true, never remove this node
 }
 
 /**
@@ -143,8 +172,13 @@ export interface DSLOutput {
     sourceId: string; // ID of data source or transformation
     field?: string; // Specific field to output
   };
-  config?: Record<string, any>;
+  config?: Record<string, unknown>; // ✅ PHASE 2: Changed from 'any' to 'unknown' for type safety
   description?: string;
+  origin?: {
+    source: 'user' | 'auto' | 'system';
+    stage: string;
+  };
+  protected?: boolean; // If true, never remove this node
 }
 
 /**
@@ -211,7 +245,8 @@ function validateIntentCoverage(intent: StructuredIntent, dsl: WorkflowDSL): voi
   
   if (!capabilityValidation.valid) {
     // Convert capability-based errors to IntentActionCoverageFailure format for backward compatibility
-    const missingActions: IntentActionCoverageFailure[] = [];
+    // ✅ PHASE 3: Build array immutably (use let for reassignment)
+    let missingActions: IntentActionCoverageFailure[] = [];
     
     for (const missingReq of capabilityValidation.missingRequirements) {
       // Collect available DSL nodes
@@ -242,7 +277,7 @@ function validateIntentCoverage(intent: StructuredIntent, dsl: WorkflowDSL): voi
           `For ${missingReq.capability} capability, consider adding a ${missingReq.capability === 'read' ? 'dataSource' : missingReq.capability === 'transform' ? 'transformation' : 'output'} node.`,
       };
       
-      missingActions.push(failureInfo);
+      missingActions = [...missingActions, failureInfo]; // ✅ PHASE 3: Immutable add
     }
     
     // Build detailed error message
@@ -298,12 +333,13 @@ function validateIntentCoverage(intent: StructuredIntent, dsl: WorkflowDSL): voi
  * @throws DSLGenerationError if minimum requirements are not met
  */
 function validateMinimumComponents(dsl: WorkflowDSL): void {
-  const violations: Array<{ component: string; required: number; actual: number }> = [];
+  // ✅ PHASE 3: Build array immutably (use let for reassignment)
+  let violations: Array<{ component: string; required: number; actual: number }> = [];
 
   // Minimum requirements:
   // 1. Must have a trigger (always required)
   if (!dsl.trigger || !dsl.trigger.type) {
-    violations.push({ component: 'trigger', required: 1, actual: 0 });
+    violations = [...violations, { component: 'trigger', required: 1, actual: 0 }]; // ✅ PHASE 3: Immutable add
   }
 
   // 2. Must have at least one data source OR output (workflow must do something)
@@ -320,11 +356,11 @@ function validateMinimumComponents(dsl: WorkflowDSL): void {
   // However, transformations typically need input, so we require dataSource OR output
   // Transformations alone are valid only if trigger provides data (edge case)
   if (!hasDataSource && !hasOutput && !hasTransformation) {
-    violations.push({ 
+    violations = [...violations, { // ✅ PHASE 3: Immutable add
       component: 'dataSource, output, or transformation', 
       required: 1, 
       actual: 0 
-    });
+    }];
   }
 
   // Note: Transformations are first-class components and are always included in DSL structure
@@ -363,24 +399,37 @@ function validateOperationRequirements(intent: StructuredIntent, dsl: WorkflowDS
     return; // No operations to validate
   }
 
-  const violations: Array<{ component: string; required: number; actual: number }> = [];
+  // ✅ PHASE 3: Build array immutably (use let for reassignment)
+  let violations: Array<{ component: string; required: number; actual: number }> = [];
 
-  // Check for read operations
-  const readOperations = ['read', 'fetch', 'get', 'query'];
+  // ✅ ROOT-LEVEL FIX: Use constants for operation semantics
   const hasReadOperation = intent.actions.some(a => 
-    readOperations.includes((a.operation || '').toLowerCase())
+    isReadOperation(a.operation || '')
   );
   if (hasReadOperation && dsl.dataSources.length === 0) {
-    violations.push({ component: 'dataSource', required: 1, actual: 0 });
+    violations = [...violations, { component: 'dataSource', required: 1, actual: 0 }]; // ✅ PHASE 3: Immutable add
   }
 
-  // Check for write operations
-  const writeOperations = ['send', 'write', 'create', 'update', 'notify'];
-  const hasWriteOperation = intent.actions.some(a => 
-    writeOperations.includes((a.operation || '').toLowerCase())
+    // ✅ ROOT-LEVEL FIX: Use constants for operation semantics
+    const hasWriteOperation = intent.actions.some(a => 
+      isWriteOperation(a.operation || '')
+    );
+  
+  // ✅ SPECIAL CASE: Chatbot/AI workflows - ai_chat_model or ai_agent IS the output
+  // For chatbot workflows, the AI response goes back through the chat interface
+  // No separate output node is needed
+  const hasAIChatNode = dsl.transformations.some(tf => {
+    const type = (tf.type || '').toLowerCase();
+    return type === 'ai_chat_model' || type === 'ai_agent' || type === 'chat_model';
+  });
+  const isChatbotWorkflow = hasAIChatNode && (
+    dsl.trigger.type === 'chat_trigger' || 
+    dsl.trigger.type === 'manual_trigger'
   );
-  if (hasWriteOperation && dsl.outputs.length === 0) {
-    violations.push({ component: 'output', required: 1, actual: 0 });
+  
+  // If chatbot workflow, AI node IS the output - don't require separate output node
+  if (hasWriteOperation && dsl.outputs.length === 0 && !isChatbotWorkflow) {
+    violations = [...violations, { component: 'output', required: 1, actual: 0 }]; // ✅ PHASE 3: Immutable add
   }
 
   // Throw descriptive error if operation requirements are not met
@@ -416,12 +465,25 @@ export class DSLGenerator {
    * @param transformationDetection - Transformation detection result (REQUIRED)
    * @returns Workflow DSL
    */
-  generateDSL(
-    intent: any,
+  async generateDSL(
+    intent: StructuredIntent,
     originalPrompt?: string,
-    transformationDetection?: { detected: boolean; verbs: string[]; requiredNodeTypes: string[] }
-  ): WorkflowDSL {
+    transformationDetection?: { detected: boolean; verbs: string[]; requiredNodeTypes: string[] },
+    confidenceScore?: number
+  ): Promise<WorkflowDSL> {
     console.log('[DSLGenerator] Generating DSL from StructuredIntent...');
+    
+    // ✅ PHASE 2: Validate input contract at stage boundary
+    const { validateStructuredIntent } = require('../../core/contracts/pipeline-stage-contracts');
+    const intentValidation = validateStructuredIntent(intent);
+    if (!intentValidation.valid) {
+      throw new DSLGenerationError(
+        `Invalid StructuredIntent: ${intentValidation.errors.join(', ')}`,
+        [],
+        undefined,
+        undefined
+      );
+    }
     
     // ✅ TEMPLATE SELECTION: Select matching template based on intent
     const templateSelection = workflowTemplateSelector.selectTemplate(intent, originalPrompt);
@@ -432,20 +494,24 @@ export class DSLGenerator {
     }
 
     // Extract trigger
+    const triggerConfig = intent.trigger_config || {};
     const trigger: DSLTrigger = {
-      type: intent.trigger || 'manual_trigger',
-      config: intent.trigger_config || {},
+      type: (intent.trigger || 'manual_trigger') as DSLTrigger['type'],
+      config: triggerConfig ? {
+        ...triggerConfig,
+        interval: (triggerConfig.interval as 'hourly' | 'daily' | 'weekly' | 'monthly' | undefined) || undefined,
+      } : undefined,
     };
 
-    // Extract data sources
-    const dataSources: DSLDataSource[] = [];
-    const transformations: DSLTransformation[] = [];
-    const outputs: DSLOutput[] = [];
+    // ✅ PHASE 3: Extract data sources (build arrays immutably, use let for reassignment)
+    let dataSources: DSLDataSource[] = [];
+    let transformations: DSLTransformation[] = [];
+    let outputs: DSLOutput[] = [];
 
-    // Track uncategorized actions and mapped actions for validation
-    const uncategorizedActions: Array<{ type: string; operation: string; reason?: string }> = [];
-    const mappedActionsToDataSources: Array<{ actionType: string; operation: string; dslIndex: number }> = [];
-    const mappedActionsToOutputs: Array<{ actionType: string; operation: string; dslIndex: number }> = [];
+    // ✅ PHASE 3: Track uncategorized actions and mapped actions for validation (build arrays immutably, use let for reassignment)
+    let uncategorizedActions: Array<{ type: string; operation: string; reason?: string }> = [];
+    let mappedActionsToDataSources: Array<{ actionType: string; operation: string; dslIndex: number }> = [];
+    let mappedActionsToOutputs: Array<{ actionType: string; operation: string; dslIndex: number }> = [];
     // Count all intent components (actions + dataSources + transformations from planner)
     const originalActionCount = 
       (intent.actions || []).length +
@@ -456,32 +522,57 @@ export class DSLGenerator {
     let stepCounter = 0;
 
     // ✅ NEW: Process dataSources from StructuredIntent (if planner provided them separately)
-    // This preserves planner.data_sources → intent.dataSources mapping
+    // This preserves planner.data_sources -> intent.dataSources mapping
     if (intent.dataSources && intent.dataSources.length > 0) {
       console.log(`[DSLGenerator] Processing ${intent.dataSources.length} dataSource(s) from StructuredIntent.dataSources`);
       for (const ds of intent.dataSources) {
         const rawType = ds.type || '';
-        const normalizedType = normalizeNodeType(rawType);
-        const dsType = normalizedType || rawType;
+        
+        // ✅ UNIVERSAL FIX: Use same resolution strategy as actions
+        let resolvedType = this.extractBaseNodeName(rawType);
+        if (resolvedType === rawType) {
+          try {
+            resolvedType = resolveNodeType(resolvedType, false);
+          } catch (error) {
+            resolvedType = rawType;
+          }
+        }
+        
+        const normalizedType = unifiedNormalizeNodeTypeString(resolvedType);
+        let dsType = normalizedType || resolvedType || rawType;
         const dsOperation = ds.operation || 'read';
 
-        // Ensure NodeLibrary can resolve normalized type; log and skip if it cannot.
-        if (!nodeLibrary.isNodeTypeRegistered(dsType)) {
-          console.error(`[DSLGenerator] ❌ DataSource type "${rawType}" normalized to "${dsType}" is not registered in NodeLibrary. Skipping this data source.`);
+        // ✅ UNIVERSAL FIX: Use getSchema() with pattern matching
+        let schema = nodeLibrary.getSchema(dsType);
+        if (!schema) {
+          schema = nodeLibrary.getSchema(rawType);
+          if (schema) {
+            dsType = schema.type;
+            console.log(`[DSLGenerator] ✅ Pattern-matched dataSource: "${rawType}" -> "${dsType}"`);
+          }
+        } else {
+          dsType = schema.type;
+        }
+
+        // Skip if still cannot resolve
+        if (!schema) {
+          console.error(`[DSLGenerator] ❌ DataSource type "${rawType}" could not be resolved. Skipping this data source.`);
           continue;
         }
         
         // Categorize as data source (should always be dataSource)
-        if (this.isDataSource(dsType, dsOperation)) {
+        // ✅ PHASE 2: Use schema operations directly instead of categorizer
+        const dsCategory = this.determineCategoryFromSchema(schema, dsOperation);
+        if (dsCategory === 'dataSource') {
           const dslIndex = dataSources.length;
-          dataSources.push({
+          dataSources = [...dataSources, { // ✅ PHASE 3: Immutable add
             id: `ds_${stepCounter++}`,
             type: dsType,
             operation: dsOperation as any,
             config: ds.config || {},
-            description: ds.config?.description,
-          });
-          mappedActionsToDataSources.push({ actionType: dsType, operation: dsOperation, dslIndex });
+            description: (ds.config?.description as string | undefined) || undefined,
+          }];
+          mappedActionsToDataSources = [...mappedActionsToDataSources, { actionType: dsType, operation: dsOperation, dslIndex }]; // ✅ PHASE 3: Immutable add
         } else {
           console.warn(`[DSLGenerator] ⚠️  DataSource "${dsType}" with operation "${dsOperation}" failed dataSource categorization`);
         }
@@ -489,30 +580,68 @@ export class DSLGenerator {
     }
 
     // ✅ NEW: Process transformations from StructuredIntent (if planner provided them separately)
-    // This preserves planner.transformations → intent.transformations mapping
+    // This preserves planner.transformations -> intent.transformations mapping
     if (intent.transformations && intent.transformations.length > 0) {
       console.log(`[DSLGenerator] Processing ${intent.transformations.length} transformation(s) from StructuredIntent.transformations`);
       for (const tf of intent.transformations) {
         const rawType = tf.type || '';
-        const normalizedType = normalizeNodeType(rawType);
-        const tfType = normalizedType || rawType;
+        
+        // ✅ UNIVERSAL FIX: Use same resolution strategy as actions
+        let resolvedType = this.extractBaseNodeName(rawType);
+        if (resolvedType === rawType) {
+          try {
+            resolvedType = resolveNodeType(resolvedType, false);
+          } catch (error) {
+            resolvedType = rawType;
+          }
+        }
+        
+        const normalizedType = unifiedNormalizeNodeTypeString(resolvedType);
+        let tfType = normalizedType || resolvedType || rawType;
         const tfOperation = tf.operation || 'transform';
 
-        // Ensure NodeLibrary can resolve normalized type; log and skip if it cannot.
-        if (!nodeLibrary.isNodeTypeRegistered(tfType)) {
-          console.error(`[DSLGenerator] ❌ Transformation type "${rawType}" normalized to "${tfType}" is not registered in NodeLibrary. Skipping this transformation.`);
+        // ✅ UNIVERSAL FIX: Use getSchema() with pattern matching
+        let schema = nodeLibrary.getSchema(tfType);
+        if (!schema) {
+          schema = nodeLibrary.getSchema(rawType);
+          if (schema) {
+            tfType = schema.type;
+            console.log(`[DSLGenerator] ✅ Pattern-matched transformation: "${rawType}" -> "${tfType}"`);
+          }
+        } else {
+          tfType = schema.type;
+        }
+
+        // Skip if still cannot resolve
+        if (!schema) {
+          console.error(`[DSLGenerator] ❌ Transformation type "${rawType}" could not be resolved. Skipping this transformation.`);
           continue;
         }
         
         // Categorize as transformation (should always be transformation)
-        if (this.isTransformation(tfType, tfOperation)) {
-          transformations.push({
+        // ✅ PHASE 2: Use schema operations directly instead of categorizer
+        const tfCategory = this.determineCategoryFromSchema(schema, tfOperation);
+        if (tfCategory === 'transformation') {
+          // ✅ ROOT FIX: Check for duplicates BEFORE adding (PREVENTION, not removal)
+          const duplicateCheck = this.wouldBeDuplicateOperation(
+            tfType,
+            tfOperation,
+            transformations,
+            'transformation'
+          );
+          
+          if (duplicateCheck.isDuplicate) {
+            console.warn(`[DSLGenerator] ⚠️  Skipping duplicate transformation: ${tfType} (${duplicateCheck.reason})`);
+            continue; // Skip adding duplicate
+          }
+          
+          transformations = [...transformations, { // ✅ PHASE 3: Immutable add
             id: `tf_${stepCounter++}`,
             type: tfType,
             operation: this.mapTransformationOperation(tfOperation),
             config: tf.config || {},
-            description: tf.config?.description,
-          });
+            description: (tf.config?.description as string | undefined) || undefined,
+          }];
         } else {
           console.warn(`[DSLGenerator] ⚠️  Transformation "${tfType}" with operation "${tfOperation}" failed transformation categorization`);
         }
@@ -522,83 +651,226 @@ export class DSLGenerator {
     // Process actions (these are outputs/write operations from planner)
     for (const action of intent.actions || []) {
       const rawType = action.type || '';
-      const normalizedType = normalizeNodeType(rawType);
-      const actionType = normalizedType || rawType;
+      
+      // ✅ ROOT-LEVEL FIX: Enhanced resolution with semantic understanding
+      // Step 1: Check cache first (fast path)
+      let resolvedType = rawType;
+      const cached = resolutionLearningCache.get(rawType.toLowerCase());
+      if (cached && cached.confidence > 0.8 && cached.resolvedType) {
+        if (nodeLibrary.isNodeTypeRegistered(cached.resolvedType)) {
+          resolvedType = cached.resolvedType;
+          console.log(`[DSLGenerator] ✅ Using cached resolution: "${rawType}" -> "${resolvedType}"`);
+        }
+      }
+      
+      // Step 2: Try semantic resolution for variations (e.g., "post on linkedin")
+      if (resolvedType === rawType) {
+        const looksLikeVariation = /(post|publish|send|create)\s+(on|to|via|using)\s+/.test(rawType.toLowerCase()) ||
+                                    rawType.includes('_post') || rawType.includes('post_');
+        
+        if (looksLikeVariation) {
+          try {
+            // Quick semantic match using keyword overlap (sync)
+            const metadata = nodeMetadataEnricher.enrichAllNodes();
+            const quickMatch = this.findQuickSemanticMatch(rawType.toLowerCase(), metadata);
+            if (quickMatch && nodeLibrary.isNodeTypeRegistered(quickMatch)) {
+              resolvedType = quickMatch;
+              console.log(`[DSLGenerator] ✅ Semantic resolution: "${rawType}" -> "${resolvedType}"`);
+            }
+          } catch (error) {
+            console.debug(`[DSLGenerator] Semantic resolution skipped for "${rawType}":`, error);
+          }
+        }
+      }
+      
+      // Step 3: Extract base node name from compound names (e.g., "notion_write_data" -> "notion")
+      // This handles AI-generated compound names that combine node type + operation
+      if (resolvedType === rawType) {
+        const baseNodeName = this.extractBaseNodeName(resolvedType);
+        if (baseNodeName !== resolvedType) {
+          console.log(`[DSLGenerator] 🔍 Extracted base node name: "${resolvedType}" -> "${baseNodeName}"`);
+          resolvedType = baseNodeName;
+        }
+      }
+      
+      // Step 4: Resolve aliases (gmail -> google_gmail) BEFORE normalization
+      // This prevents "gmail" from being incorrectly matched to "ai" via substring matching
+      if (resolvedType === rawType || !nodeLibrary.isNodeTypeRegistered(resolvedType)) {
+        try {
+          const aliasResolved = resolveNodeType(resolvedType, false);
+          if (aliasResolved !== resolvedType && nodeLibrary.isNodeTypeRegistered(aliasResolved)) {
+            resolvedType = aliasResolved;
+            console.log(`[DSLGenerator] ✅ Resolved alias: "${rawType}" -> "${resolvedType}"`);
+          }
+        } catch (error) {
+          // If resolution fails, continue to pattern matching
+          console.debug(`[DSLGenerator] Alias resolution skipped for "${rawType}": ${error}`);
+        }
+      }
+      
+      // Step 5: Normalize the resolved type (handles semantic mappings like ai providers)
+      const normalizedType = unifiedNormalizeNodeTypeString(resolvedType);
+      let actionType = normalizedType || resolvedType || rawType;
       const operation = action.operation || 'read';
 
-      // Ensure NodeLibrary can resolve normalized type for explicit intent actions.
-      // If we cannot map this action to any supported node type, treat it as a
-      // hard structural error – the intent cannot be realized.
-      if (!nodeLibrary.isNodeTypeRegistered(actionType)) {
+      // ✅ UNIVERSAL FIX: Use getSchema() with pattern matching (like IntentCompletenessValidator)
+      // This ensures we can resolve compound names and variations that aren't directly registered
+      let finalSchema = nodeLibrary.getSchema(actionType);
+      
+      // If direct lookup fails, try pattern matching via getSchema
+      if (!finalSchema) {
+        // getSchema() internally uses pattern matching, so try it directly
+        finalSchema = nodeLibrary.getSchema(rawType); // Try original name with pattern matching
+        if (finalSchema) {
+          actionType = finalSchema.type; // Use the canonical type from schema
+          console.log(`[DSLGenerator] ✅ Pattern-matched node type: "${rawType}" -> "${actionType}"`);
+        }
+      } else {
+        // Schema found - use canonical type from schema (may differ from actionType)
+        actionType = finalSchema.type;
+        if (actionType !== normalizedType && actionType !== resolvedType) {
+          console.log(`[DSLGenerator] ✅ Using canonical type from schema: "${rawType}" -> "${actionType}"`);
+        }
+      }
+      
+      // Final validation: Ensure we have a valid schema
+      if (!finalSchema) {
+        // Last resort: Try extracting base name again and searching
+        const lastResortBase = this.extractBaseNodeName(rawType);
+        if (lastResortBase !== rawType) {
+          finalSchema = nodeLibrary.getSchema(lastResortBase);
+          if (finalSchema) {
+            actionType = finalSchema.type;
+            console.log(`[DSLGenerator] ✅ Last resort resolution: "${rawType}" -> "${actionType}"`);
+          }
+        }
+      }
+      
+      // If still no schema found, this is a hard error
+      if (!finalSchema) {
         const message =
-          `DSL generation failed: intent action type "${rawType}" normalized to "${actionType}" ` +
-          `is not registered in NodeLibrary. The system could not find any supported node type ` +
-          `to implement this action.`;
+          `DSL generation failed: intent action type "${rawType}" could not be resolved to any registered node type. ` +
+          `Tried: "${resolvedType}", "${normalizedType}", "${actionType}", and pattern matching. ` +
+          `The system could not find any supported node type to implement this action.`;
         console.error(`[DSLGenerator] ❌ ${message}`);
         throw new DSLGenerationError(message, [
           {
             type: rawType,
             operation,
-            reason: 'Unresolvable node type: no registered NodeLibrary schema after normalization',
+            reason: 'Unresolvable node type: no registered NodeLibrary schema found after all resolution attempts',
           },
         ]);
       }
 
-      // Categorize action
-      // ✅ REFACTORED: Pure capability-based classification
-      // Priority: transformation > output > data source
-      // This ensures correct categorization based on capabilities:
-      // - Nodes with TRANSFORM capability → transformation
-      // - Nodes with WRITE/SEND capability → output (if operation is write-like)
-      // - Nodes with READ capability → data source (if operation is read-like)
-      // For nodes with multiple capabilities, operation is used to disambiguate
+      // ✅ FIX 1: Use unified categorizer for consistent categorization
+      // This ensures DSL generator and compiler use the same logic
       let categorized = false;
 
-      // Check transformation first (transformations are usually unambiguous)
-      if (this.isTransformation(actionType, operation)) {
-        transformations.push({
-          id: `tf_${stepCounter++}`,
-          type: actionType,
-          operation: this.mapTransformationOperation(operation),
-          config: action.config || {},
-          description: action.config?.description,
-        });
-        categorized = true;
-      } else if (this.isOutput(actionType, operation)) {
+      // Determine origin: check if node type is explicitly mentioned in original prompt
+      const isUserExplicit = originalPrompt && (
+        originalPrompt.toLowerCase().includes(actionType.toLowerCase()) ||
+        originalPrompt.toLowerCase().includes(rawType.toLowerCase())
+      );
+      const originSource: 'user' | 'auto' | 'system' = isUserExplicit ? 'user' : 'auto';
+      const originMetadata = {
+        source: originSource,
+        stage: 'dsl_generation',
+      };
+
+      // ✅ CRITICAL FIX: Check if node type already exists in any category (prevent multi-category duplicates)
+      // Nodes with multiple capabilities (e.g., ai_agent with transformation + terminal) should only be added once
+      const normalizedActionType = unifiedNormalizeNodeTypeString(actionType);
+      const alreadyInTransformations = transformations.some(tf => unifiedNormalizeNodeTypeString(tf.type) === normalizedActionType);
+      const alreadyInOutputs = outputs.some(out => unifiedNormalizeNodeTypeString(out.type) === normalizedActionType);
+      const alreadyInDataSources = dataSources.some(ds => unifiedNormalizeNodeTypeString(ds.type) === normalizedActionType);
+      
+      if (alreadyInTransformations || alreadyInOutputs || alreadyInDataSources) {
+        const existingCategory = alreadyInTransformations ? 'transformation' : (alreadyInOutputs ? 'output' : 'data_source');
+        console.log(`[DSLGenerator] ⚠️  Node type "${actionType}" already exists as ${existingCategory}, skipping duplicate addition to prevent multi-category duplicates`);
+        categorized = true; // Mark as categorized to skip fallback
+        // Skip to next action (don't add to any category)
+      } else {
+        // ✅ PHASE 2: Use schema operations directly instead of categorization
+        // This eliminates redundant categorization layer - schema defines what node can do
+        const category = this.determineCategoryFromSchema(finalSchema, operation);
+        
+        if (category === 'output') {
         const dslIndex = outputs.length;
         const normalizedOutputType = this.normalizeOutputNodeType(actionType, operation, originalPrompt || '');
-        outputs.push({
+        outputs = [...outputs, { // ✅ PHASE 3: Immutable add
           id: `out_${stepCounter++}`,
           type: normalizedOutputType,
           operation: operation as any,
           config: action.config || {},
-          description: action.config?.description,
-        });
-        mappedActionsToOutputs.push({ actionType: normalizedOutputType, operation, dslIndex });
+          description: (action.config?.description as string | undefined) || undefined,
+          origin: originMetadata,
+          protected: originSource === 'user', // User-explicit nodes are protected
+        }];
+        mappedActionsToOutputs = [...mappedActionsToOutputs, { actionType: normalizedOutputType, operation, dslIndex }]; // ✅ PHASE 3: Immutable add
         categorized = true;
-      } else if (this.isDataSource(actionType, operation)) {
+        console.log(`[DSLGenerator] ✅ Categorized "${actionType}" as OUTPUT (using schema operation: "${operation}")`);
+      } else if (category === 'transformation') {
+        // ✅ ROOT FIX: Check for duplicates BEFORE adding (PREVENTION, not removal)
+        const duplicateCheck = this.wouldBeDuplicateOperation(
+          actionType,
+          operation,
+          transformations,
+          'transformation'
+        );
+        
+        if (duplicateCheck.isDuplicate) {
+          console.warn(`[DSLGenerator] ⚠️  Skipping duplicate transformation: ${actionType} (${duplicateCheck.reason})`);
+          // Still mark as categorized to avoid adding to uncategorizedActions
+          categorized = true;
+          continue; // Skip adding duplicate
+        }
+        
+        transformations = [...transformations, { // ✅ PHASE 3: Immutable add
+          id: `tf_${stepCounter++}`,
+          type: actionType,
+          operation: this.mapTransformationOperation(operation),
+          config: action.config || {},
+          description: (action.config?.description as string | undefined) || undefined,
+          origin: originMetadata,
+          protected: originSource === 'user', // User-explicit nodes are protected
+        }];
+        categorized = true;
+        console.log(`[DSLGenerator] ✅ Categorized "${actionType}" as TRANSFORMATION (using schema operation: "${operation}")`);
+      } else if (category === 'dataSource') {
         const dslIndex = dataSources.length;
-        dataSources.push({
+        dataSources = [...dataSources, { // ✅ PHASE 3: Immutable add
           id: `ds_${stepCounter++}`,
           type: actionType,
           operation: operation as any,
           config: action.config || {},
-          description: action.config?.description,
-        });
-        mappedActionsToDataSources.push({ actionType, operation, dslIndex });
+          description: (action.config?.description as string | undefined) || undefined,
+          origin: originMetadata,
+          protected: originSource === 'user', // User-explicit nodes are protected
+        }];
+        mappedActionsToDataSources = [...mappedActionsToDataSources, { actionType, operation, dslIndex }]; // ✅ PHASE 3: Immutable add
         categorized = true;
+        console.log(`[DSLGenerator] ✅ Categorized "${actionType}" as DATASOURCE (using schema operation: "${operation}")`);
       }
 
-      // Track uncategorized actions
+      // ✅ FIX 1: If unified categorizer didn't categorize, log warning
+      // The unified categorizer should handle all cases, but if it doesn't, we log for debugging
+      if (!categorized) {
+        console.warn(`[DSLGenerator] ⚠️  Unified categorizer failed to categorize "${actionType}" with operation "${operation}"`);
+        console.warn(`[DSLGenerator]   This should not happen - unified categorizer should handle all cases`);
+      }
+      } // Close the else block for duplicate check
+
+      // Track uncategorized actions (only if capability fallback also failed)
       if (!categorized) {
         const reason = this.getCategorizationFailureReason(actionType, operation);
-        uncategorizedActions.push({
+        uncategorizedActions = [...uncategorizedActions, { // ✅ PHASE 3: Immutable add
           type: rawType,
           operation,
           reason,
-        });
+        }];
         console.error(`[DSLGenerator] ❌ Failed to categorize action: type="${actionType}", operation="${operation}"`);
         console.error(`[DSLGenerator]   Reason: ${reason}`);
+        console.error(`[DSLGenerator]   Attempted: Operation normalization + Capability fallback`);
       }
     }
 
@@ -679,7 +951,7 @@ export class DSLGenerator {
           }
 
           // Normalize selected provider and ensure it is registered
-          const normalizedProvider = normalizeNodeType(selectedProvider);
+          const normalizedProvider = unifiedNormalizeNodeTypeString(selectedProvider);
           if (!nodeLibrary.isNodeTypeRegistered(normalizedProvider)) {
             console.error(`[DSLGenerator] ❌ Auto-injected transformation provider "${selectedProvider}" normalized to "${normalizedProvider}" is not registered in NodeLibrary. Skipping this auto-injected transformation.`);
             continue;
@@ -705,7 +977,7 @@ export class DSLGenerator {
           
           console.log(`[DSLGenerator] ✅ Adding missing transformation: ${normalizedProvider} (operation: ${operation})`);
           
-          transformations.push({
+          transformations = [...transformations, { // ✅ PHASE 3: Immutable add
             id: `tf_${stepCounter++}`,
             type: normalizedProvider,
             operation: operation,
@@ -714,7 +986,12 @@ export class DSLGenerator {
               verb: verb,
             },
             description: `Auto-added transformation for detected verb: ${verb}`,
-          });
+            origin: {
+              source: 'auto',
+              stage: 'dsl_generation',
+            },
+            protected: false, // Auto-injected nodes are not protected
+          }];
           
           // ✅ TRACK AUTO-INJECTED: Add to set (prevents duplicates) and update existing types
           autoInjectedNodesSet.add(normalizedProvider);
@@ -726,7 +1003,8 @@ export class DSLGenerator {
     }
     
     // Convert Set to array for metadata (ensures no duplicates)
-    const autoInjectedNodes = Array.from(autoInjectedNodesSet);
+    // ✅ PHASE 3: Build array immutably
+    let autoInjectedNodes = Array.from(autoInjectedNodesSet);
 
     // ✅ VALIDATION: Ensure auto-added transformations don't create duplicates
     // This is a redundant check but provides extra safety
@@ -741,7 +1019,7 @@ export class DSLGenerator {
         []
       );
     }
-
+    
     // ✅ GUARANTEED LLM NODE INJECTION: Ensure ai_chat_model exists for AI transformations
     // This is a safety net that guarantees LLM nodes are always present for AI operations
     // Note: This runs AFTER TransformationDetector injection to ensure we never miss LLM nodes
@@ -749,13 +1027,77 @@ export class DSLGenerator {
       intent,
       transformations,
       stepCounter,
-      autoInjectedNodesSet
+      autoInjectedNodesSet,
+      originalPrompt
     );
     if (llmInjectionResult.injected) {
-      transformations.push(...llmInjectionResult.nodes);
-      stepCounter = llmInjectionResult.nextStepCounter;
-      autoInjectedNodes.push(...llmInjectionResult.injectedNodeTypes);
-      console.log(`[DSLGenerator] ✅ Guaranteed LLM node injection: Added ${llmInjectionResult.nodes.length} ai_chat_model node(s)`);
+      // ✅ ROOT FIX: Check for duplicates BEFORE adding LLM nodes (PREVENTION, not removal)
+      const nodesToAdd: DSLTransformation[] = [];
+      for (const llmNode of llmInjectionResult.nodes) {
+        const duplicateCheck = this.wouldBeDuplicateOperation(
+          llmNode.type,
+          llmNode.operation || 'summarize',
+          transformations,
+          'transformation'
+        );
+        
+        if (duplicateCheck.isDuplicate) {
+          console.warn(`[DSLGenerator] ⚠️  Skipping duplicate LLM node injection: ${llmNode.type} (${duplicateCheck.reason})`);
+          continue; // Skip adding duplicate
+        }
+        
+        nodesToAdd.push(llmNode);
+      }
+      
+      if (nodesToAdd.length > 0) {
+        transformations = [...transformations, ...nodesToAdd]; // ✅ PHASE 3: Immutable add
+        stepCounter = llmInjectionResult.nextStepCounter;
+        autoInjectedNodes = [...autoInjectedNodes, ...nodesToAdd.map(n => n.type)]; // ✅ PHASE 3: Immutable add
+        console.log(`[DSLGenerator] ✅ Guaranteed LLM node injection: Added ${nodesToAdd.length} ai_chat_model node(s) (${llmInjectionResult.nodes.length - nodesToAdd.length} skipped as duplicates)`);
+      } else {
+        console.log(`[DSLGenerator] ⚠️  All LLM nodes skipped - duplicates already exist`);
+      }
+    }
+    
+    // ✅ CRITICAL FIX: Registry-based duplicate operation detection at DSL level (AFTER LLM injection)
+    // Prevents duplicate AI processing operations (ai_agent + ai_chat_model)
+    // Uses registry to determine operation signatures (same logic as production-workflow-builder)
+    // This runs AFTER LLM injection to catch duplicates created by injection
+    const duplicateOperations = this.detectDuplicateOperationsInDSL(transformations);
+    if (duplicateOperations.length > 0) {
+      console.warn(`[DSLGenerator] ⚠️  Duplicate operations detected in DSL: ${duplicateOperations.map(d => `${d.type1} + ${d.type2} (operation: ${d.operation})`).join(', ')}`);
+      // Remove duplicates, keeping the simpler/more direct node (ai_chat_model over ai_agent)
+      for (const dup of duplicateOperations) {
+        const toRemove = dup.type1 === 'ai_agent' ? dup.type1 : dup.type2; // Prefer ai_chat_model over ai_agent
+        const keptNode = dup.type1 === 'ai_agent' ? dup.type2 : dup.type1;
+        const index = transformations.findIndex(tf => unifiedNormalizeNodeTypeString(tf.type) === toRemove);
+        if (index >= 0) {
+          const nodeToRemove = transformations[index];
+          const reason = `Duplicate operation "${dup.operation}" - keeping simpler node "${keptNode}" over "${toRemove}"`;
+          
+          // ✅ TRACK REPLACEMENT
+          const { nodeReplacementTracker } = await import('./node-replacement-tracker');
+          nodeReplacementTracker.trackReplacement({
+            nodeType: toRemove,
+            operation: dup.operation,
+            category: 'transformation',
+            reason,
+            stage: 'workflow_dsl.detectDuplicateOperationsInDSL',
+            replacedBy: keptNode,
+            wasRemoved: true,
+            isProtected: nodeToRemove.protected === true || nodeToRemove.origin?.source === 'user',
+            confidence: confidenceScore,
+            metadata: {
+              duplicateType1: dup.type1,
+              duplicateType2: dup.type2,
+              operation: dup.operation,
+            },
+          });
+          
+          console.log(`[DSLGenerator] 🗑️  Removing duplicate operation: ${toRemove} (keeping ${keptNode})`);
+          transformations = transformations.filter((_, i) => i !== index); // ✅ PHASE 3: Immutable remove
+        }
+      }
     }
 
     // ✅ TEMPLATE APPLICATION: Apply template structure if template was selected
@@ -774,6 +1116,129 @@ export class DSLGenerator {
       finalTransformations = templateResult.transformations;
       finalOutputs = templateResult.outputs;
       console.log(`[DSLGenerator] ✅ Applied template structure: ${templateSelection.template.id}`);
+    }
+
+    // ✅ AUTO-INJECT OUTPUT NODE: If validation requires output but none exists, auto-inject log_output
+    // This ensures every workflow has a terminal output node (log_output is the default)
+    // Check BEFORE creating DSL object to prevent validation errors
+    // ✅ ROOT-LEVEL FIX: Use constants for operation semantics
+    // ✅ PHASE 2: Use proper type instead of 'any'
+    const hasWriteOperation = intent.actions && intent.actions.some((a: StructuredIntent['actions'][0]) => 
+      isWriteOperation(a.operation || '')
+    );
+    
+    // ✅ SPECIAL CASE: Chatbot workflows - ai_chat_model produces output through chat interface
+    // Don't auto-inject if it's a chatbot workflow (ai_chat_model IS the output)
+    const hasAIChatNode = finalTransformations.some(tf => {
+      const type = (tf.type || '').toLowerCase();
+      return type === 'ai_chat_model' || type === 'ai_agent' || type === 'chat_model';
+    });
+    const isChatbotWorkflow = hasAIChatNode && (
+      trigger.type === 'chat_trigger' || 
+      trigger.type === 'manual_trigger'
+    );
+    
+    // Check if output is required but missing (and not a chatbot workflow)
+    if (hasWriteOperation && finalOutputs.length === 0 && !isChatbotWorkflow) {
+      console.log(`[DSLGenerator] 🔧 Auto-injecting log_output node (required by write operation but missing)`);
+      
+      // Verify log_output is registered
+      if (!nodeLibrary.isNodeTypeRegistered('log_output')) {
+        console.error(`[DSLGenerator] ❌ Cannot auto-inject log_output: Node type not registered in NodeLibrary`);
+      } else {
+        // Auto-inject log_output as default terminal node
+        const outputId = `out_${stepCounter++}`;
+        finalOutputs = [...finalOutputs, { // ✅ PHASE 3: Immutable add
+          id: outputId,
+          type: 'log_output',
+          operation: 'write', // log_output writes/logs data
+          config: {
+            message: '{{$json}}', // Output all data from previous node
+          },
+          description: 'Auto-injected terminal output node',
+        }];
+        
+        // Track as auto-injected
+        autoInjectedNodesSet.add('log_output');
+        autoInjectedNodes = [...autoInjectedNodes, 'log_output']; // ✅ PHASE 3: Immutable add
+        
+        console.log(`[DSLGenerator] ✅ Auto-injected log_output node (id: ${outputId})`);
+      }
+    } else if (isChatbotWorkflow && finalOutputs.length === 0) {
+      console.log(`[DSLGenerator] ℹ️  Chatbot workflow detected - ai_chat_model serves as output (no separate output node needed)`);
+    }
+
+    // ✅ SEMANTIC EQUIVALENCE: Normalize DSL components to canonical types (remove semantic duplicates)
+    const normalizedComponents = this.normalizeSemanticEquivalencesInDSL(
+      finalDataSources,
+      finalTransformations,
+      finalOutputs,
+      intent
+    );
+    finalDataSources = normalizedComponents.dataSources;
+    finalTransformations = normalizedComponents.transformations;
+    finalOutputs = normalizedComponents.outputs;
+
+    // ✅ WORLD-CLASS UNIVERSAL: Ensure completeness BEFORE building execution order
+    // This ensures all required nodes are in DSL before ordering (prevents branches)
+    // Missing nodes are added to appropriate DSL component (dataSources, transformations, outputs)
+    // This is UNIVERSAL - applies to ALL workflows automatically
+    const completenessResult = this.ensureCompletenessDuringGeneration(
+      finalDataSources,
+      finalTransformations,
+      finalOutputs,
+      intent,
+      originalPrompt,
+      stepCounter
+    );
+    finalDataSources = completenessResult.dataSources;
+    finalTransformations = completenessResult.transformations;
+    finalOutputs = completenessResult.outputs;
+    stepCounter = completenessResult.stepCounter;
+    
+    if (completenessResult.nodesAdded.length > 0) {
+      console.log(`[DSLGenerator] ✅ Added ${completenessResult.nodesAdded.length} missing node(s) to DSL during generation: ${completenessResult.nodesAdded.join(', ')}`);
+    }
+
+    // ✅ WORLD-CLASS: AI DSL Node Analysis Layer (YOUR IDEA)
+    // Analyzes nodes at DSL level (BEFORE edges are created) to remove unnecessary nodes
+    // Uses hybrid approach: rule-based (fast) + AI-driven (smart)
+    // This is MORE EFFICIENT than pruning after edges are created
+    console.log('[DSLGenerator] 🔍 Analyzing DSL nodes for optimization (before building edges)...');
+    try {
+      const { aiDSLNodeAnalyzer } = await import('./ai-dsl-node-analyzer');
+      const analysisResult = aiDSLNodeAnalyzer.analyzeDSLNodes(
+        finalDataSources,
+        finalTransformations,
+        finalOutputs,
+        intent,
+        originalPrompt || '',
+        confidenceScore
+      );
+
+      finalDataSources = analysisResult.dataSources;
+      finalTransformations = analysisResult.transformations;
+      finalOutputs = analysisResult.outputs;
+
+      if (analysisResult.nodesRemoved.length > 0) {
+        console.log(`[DSLGenerator] ✅ AI Node Analysis: Removed ${analysisResult.nodesRemoved.length} unnecessary node(s): ${analysisResult.nodesRemoved.join(', ')}`);
+        console.log(`[DSLGenerator]   Reasoning: ${analysisResult.reasoning}`);
+        console.log(`[DSLGenerator]   Rule-based removals: ${analysisResult.analysisDetails.ruleBasedRemovals.length}`);
+        console.log(`[DSLGenerator]   AI-based removals: ${analysisResult.analysisDetails.aiBasedRemovals.length}`);
+        
+        // ✅ LOG REPLACEMENT ANALYSIS
+        const { nodeReplacementTracker } = await import('./node-replacement-tracker');
+        const report = nodeReplacementTracker.generateAnalysisReport();
+        console.log(report);
+      } else {
+        console.log(`[DSLGenerator] ✅ AI Node Analysis: All nodes are necessary - no removals needed`);
+      }
+    } catch (error) {
+      // ✅ ERROR RECOVERY: If AI analysis fails, continue with original nodes (don't break workflow generation)
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.warn(`[DSLGenerator] ⚠️  AI Node Analysis failed: ${errorMessage}`);
+      console.warn(`[DSLGenerator]   Continuing with original nodes (analysis is optional)`);
+      // Continue with original nodes
     }
 
     // Build execution order
@@ -828,7 +1293,7 @@ export class DSLGenerator {
       intentActionsInOutputs,
       intentActionsInTransformations,
     };
-
+    
     // ✅ PRODUCTION-GRADE VALIDATION: Verify intent coverage, minimum components, and operation requirements
     // ✅ IMPORTANT: This validation runs AFTER transformation injection, ensuring auto-added transformations
     // are included in intent coverage checks via semantic matching
@@ -844,14 +1309,16 @@ export class DSLGenerator {
       
       // Check if any intent actions with transformation operations are now covered
       const transformationOperations = ['summarize', 'analyze', 'process', 'transform'];
-      const intentTransformationActions = (intent.actions || []).filter((action: any) => 
+      // ✅ PHASE 2: Use proper type instead of 'any'
+      const intentTransformationActions = (intent.actions || []).filter((action: StructuredIntent['actions'][0]) => 
         transformationOperations.includes((action.operation || '').toLowerCase())
       );
       
       if (intentTransformationActions.length > 0) {
         // Intent coverage validation above should have already verified this, but log for transparency
-        const dslTransformationTypes = transformations.map(t => t.type.toLowerCase());
-        const coveredActions = intentTransformationActions.filter((action: any) => {
+        const dslTransformationTypes = finalTransformations.map(t => t.type.toLowerCase());
+        // ✅ PHASE 2: Use proper type instead of 'any'
+        const coveredActions = intentTransformationActions.filter((action: StructuredIntent['actions'][0]) => {
           const actionType = (action.type || '').toLowerCase();
           return dslTransformationTypes.some(dslType => 
             dslType === actionType || 
@@ -932,14 +1399,10 @@ export class DSLGenerator {
       return `Node type "${type}" not found in capability registry. No capabilities defined.`;
     }
 
-    // Check if operation matches any expected pattern
-    const dataSourceOps = ['read', 'fetch', 'get', 'query'];
-    const transformationOps = ['summarize', 'analyze', 'classify', 'translate', 'extract', 'transform', 'process'];
-    const outputOps = ['send', 'write', 'create', 'update', 'notify'];
-
-    if (!dataSourceOps.includes(operationLower) && 
-        !transformationOps.includes(operationLower) && 
-        !outputOps.includes(operationLower)) {
+    // ✅ ROOT-LEVEL FIX: Use constants for operation semantics
+    if (!isReadOperation(operation) && 
+        !isTransformOperation(operation) && 
+        !isWriteOperation(operation)) {
       return `Operation "${operation}" does not match expected patterns for data source, transformation, or output operations.`;
     }
 
@@ -948,163 +1411,163 @@ export class DSLGenerator {
   }
 
   /**
-   * Check if action is a data source
-   * ✅ REFACTORED: Pure capability-based classification
-   * Uses READ capability to determine if node is a data source
+   * ✅ SOLUTION 1: Normalize compound operations to base keywords
    * 
-   * Logic:
-   * - If node has read_data capability → dataSource
-   * - If node has both read_data and write_data, use operation to disambiguate
-   *   - read/fetch/get/query operations → dataSource
-   *   - write/create/update operations → output (handled by isOutput)
+   * Extracts base keyword from compound operations like:
+   * - "create_contact" -> "create"
+   * - "analyze_contact" -> "analyze"
+   * - "send_notification" -> "send"
+   * 
+   * This allows operation matching to work with planner-generated compound operations.
+   * 
+   * @param operation - Operation string (may be compound like "create_contact")
+   * @returns Normalized base keyword (e.g., "create", "analyze", "send")
    */
-  private isDataSource(type: string, operation: string): boolean {
-    const capabilities = nodeCapabilityRegistryDSL.getCapabilities(type);
-    const hasReadData = nodeCapabilityRegistryDSL.canReadData(type);
-    const hasWriteData = nodeCapabilityRegistryDSL.canWriteData(type);
-    const hasOutput = nodeCapabilityRegistryDSL.isOutput(type);
+  private normalizeOperation(operation: string): string {
+    if (!operation) return '';
     
-    // If node has read_data capability, it can be a data source
-    if (!hasReadData) {
-      return false;
-    }
+    const operationLower = operation.toLowerCase().trim();
     
-    // If node has ONLY read_data (no write/output capabilities), it's definitely a data source
-    if (!hasWriteData && !hasOutput) {
-      return true;
-    }
+    // ✅ ROOT-LEVEL FIX: Use constants for operation semantics
+    const allKeywords: readonly string[] = [...OUTPUT_KEYWORDS, ...TRANSFORM_OPERATIONS, ...DATA_SOURCE_KEYWORDS];
     
-    // If node has BOTH read_data and write_data/output capabilities, use operation to disambiguate
-    // This handles nodes like google_sheets, postgresql, etc.
-    if (hasWriteData || hasOutput) {
-      const operationLower = operation.toLowerCase();
-      const readOperations = ['read', 'fetch', 'get', 'query', 'retrieve', 'pull', 'list'];
-      const writeOperations = ['write', 'create', 'update', 'append', 'send', 'notify'];
-      
-      // If operation is explicitly a write operation, it's NOT a data source
-      if (writeOperations.includes(operationLower)) {
-        return false;
+    // Strategy 1: Check if operation starts with a keyword
+    for (const keyword of allKeywords) {
+      if (operationLower === keyword) {
+        return keyword; // Exact match
       }
-      
-      // If operation is a read operation, it IS a data source
-      if (readOperations.includes(operationLower)) {
-        return true;
+      if (operationLower.startsWith(keyword + '_')) {
+        return keyword; // "create_contact" -> "create"
       }
-      
-      // Default: if node has read_data and operation is ambiguous, prefer data source
-      // (This handles cases where operation is missing or unknown)
-      return true;
+      if (operationLower.includes('_' + keyword + '_')) {
+        return keyword; // "some_create_contact" -> "create"
+      }
+      if (operationLower.endsWith('_' + keyword)) {
+        return keyword; // "contact_create" -> "create"
+      }
     }
     
-    return false;
+    // Strategy 2: Extract first word before underscore
+    const firstPart = operationLower.split('_')[0];
+    if (allKeywords.includes(firstPart)) {
+      return firstPart; // "create_contact" -> "create" (via split)
+    }
+    
+    // Strategy 3: Check if operation contains keyword (fallback)
+    for (const keyword of allKeywords) {
+      if (operationLower.includes(keyword)) {
+        return keyword; // "recreate" -> "create" (contains check)
+      }
+    }
+    
+    // Fallback: return original operation if no keyword found
+    return operationLower;
   }
 
   /**
-   * Check if action is a transformation
-   * ✅ REFACTORED: Pure capability-based classification
-   * Uses TRANSFORM capability to determine if node is a transformation
+   * ✅ PHASE 2: Determine category from schema operations directly (no categorization needed)
+   * 
+   * Uses schema.configSchema.optional.operation to determine category:
+   * - Read operations (read, fetch, get, query) → dataSource
+   * - Write operations (write, send, post, create, update, notify) → output
+   * - Transform operations (transform, analyze, summarize, process) → transformation
+   * 
+   * This eliminates the need for the categorizer - schema defines what node can do.
+   * 
+   * @param schema - Node schema from nodeLibrary
+   * @param operation - Operation from intent or schema default
+   * @returns Category: 'dataSource' | 'transformation' | 'output'
    */
-  private isTransformation(type: string, operation: string): boolean {
-    // Check if node has transformation capability
-    if (nodeCapabilityRegistryDSL.isTransformation(type)) {
-      return true;
+  /**
+   * ✅ UNIVERSAL: Determine category from schema and operation
+   * 
+   * This method categorizes nodes based on OPERATION, not hardcoded patches.
+   * Works for ALL nodes universally.
+   * 
+   * Categorization Logic (in priority order):
+   * 1. Operation-based categorization (read → dataSource, write → output, transform → transformation)
+   * 2. Registry category fallback (if operation doesn't match known patterns)
+   * 
+   * NO hardcoded patches - all nodes use the same logic.
+   * 
+   * @param schema - Node schema from nodeLibrary
+   * @param operation - Operation from intent (validated against schema)
+   * @returns Category: 'dataSource' | 'transformation' | 'output'
+   */
+  private determineCategoryFromSchema(schema: any, operation: string): 'dataSource' | 'transformation' | 'output' {
+    // ✅ STEP 1: Normalize operation
+    const normalizedOp = this.normalizeOperation(operation);
+    
+    // ✅ STEP 2: Operation-based categorization (PRIMARY - works for ALL nodes)
+    // ✅ ROOT-LEVEL FIX: Use constants for operation semantics
+    // Read operations → dataSource
+    if (isReadOperation(normalizedOp)) {
+      return 'dataSource';
     }
     
-    // Check for specific transformation capabilities
-    const capabilities = nodeCapabilityRegistryDSL.getCapabilities(type);
-    const transformationCapabilities = [
-      'transformation',
-      'ai_processing',
-      'llm',
-      'summarize',
-      'analyze',
-      'transform',
-      'process',
-    ];
+    // Write operations → output
+    if (isWriteOperation(normalizedOp)) {
+      return 'output';
+    }
     
-    // If node has any transformation capability, it's a transformation
-    return capabilities.some(cap => 
-      transformationCapabilities.includes(cap.toLowerCase())
-    );
+    // Transform operations → transformation
+    if (isTransformOperation(normalizedOp)) {
+      return 'transformation';
+    }
+    
+    // ✅ STEP 3: Registry category fallback (if operation doesn't match)
+    // This is a FALLBACK, not a primary method - operation should always match
+    // NO hardcoded patches - all nodes use the same logic
+    const nodeDef = unifiedNodeRegistry.get(schema.type);
+    if (nodeDef) {
+      const category = nodeDef.category;
+      const categoryMap: Record<string, 'dataSource' | 'transformation' | 'output'> = {
+        'trigger': 'dataSource',
+        'data': 'dataSource',
+        'transformation': 'transformation',
+        'ai': 'transformation',
+        'communication': 'output',
+        'social': 'output',
+        'utility': 'transformation',
+        'logic': 'transformation'
+      };
+      
+      if (category && categoryMap[category]) {
+        return categoryMap[category];
+      }
+    }
+    
+    // ✅ STEP 4: Default fallback (should rarely be reached)
+    // If operation doesn't match any pattern and registry category not found
+    return 'transformation';
   }
 
   /**
-   * Check if action is an output
-   * ✅ REFACTORED: Pure capability-based classification
-   * Uses WRITE/SEND capability to determine if node is an output
+   * ✅ ROOT-LEVEL FIX: Operation-based classification helpers
+   * These check the OPERATION first, not capabilities
+   * This ensures correct categorization based on user intent
    * 
-   * Logic:
-   * - If node has output capability → output
-   * - If node has write_data capability → output (for write/create/update operations)
-   * - If node has send_email, send_message, etc. → output
-   * - If node has both read_data and write_data, use operation to disambiguate
-   *   - write/create/update/send operations → output
-   *   - read/fetch/get operations → dataSource (handled by isDataSource)
+   * ✅ ENHANCED: Now uses normalized operations to handle compound operations
    */
-  private isOutput(type: string, operation: string): boolean {
-    const capabilities = nodeCapabilityRegistryDSL.getCapabilities(type);
-    const hasOutput = nodeCapabilityRegistryDSL.isOutput(type);
-    const hasWriteData = nodeCapabilityRegistryDSL.canWriteData(type);
-    const hasReadData = nodeCapabilityRegistryDSL.canReadData(type);
-    
-    // Check for output-specific capabilities
-    const outputCapabilities = [
-      'output',
-      'send_email',
-      'send_message',
-      'send_webhook',
-      'send_request',
-      'write_crm',
-      'send_post',
-      'notification',
-      'notify',
-    ];
-    
-    const hasOutputCapability = capabilities.some(cap => 
-      outputCapabilities.includes(cap.toLowerCase())
-    );
-    
-    // If node has explicit output capability (like google_gmail), it's an output
-    if (hasOutput || hasOutputCapability) {
-      // But if it also has read_data and operation is read, prefer dataSource
-      if (hasReadData) {
-        const operationLower = operation.toLowerCase();
-        const readOperations = ['read', 'fetch', 'get', 'query', 'retrieve', 'pull', 'list'];
-        if (readOperations.includes(operationLower)) {
-          return false; // Let isDataSource handle it
-        }
-      }
-      return true;
-    }
-    
-    // If node has write_data capability, it can be an output
-    if (hasWriteData) {
-      // If node also has read_data, use operation to disambiguate
-      if (hasReadData) {
-        const operationLower = operation.toLowerCase();
-        const writeOperations = ['write', 'create', 'update', 'append', 'send', 'notify'];
-        const readOperations = ['read', 'fetch', 'get', 'query', 'retrieve', 'pull', 'list'];
-        
-        // If operation is explicitly a write operation, it's an output
-        if (writeOperations.includes(operationLower)) {
-          return true;
-        }
-        
-        // If operation is explicitly a read operation, it's NOT an output (isDataSource will handle it)
-        if (readOperations.includes(operationLower)) {
-          return false;
-        }
-        
-        // Default: if ambiguous, prefer output for write_data capability
-        return true;
-      }
-      
-      // If node has write_data but no read_data, it's an output
-      return true;
-    }
-    
-    return false;
+  // ✅ ROOT-LEVEL FIX: Use constants for operation semantics
+  private isOutputOperation(operation: string): boolean {
+    const normalized = this.normalizeOperation(operation);
+    return isWriteOperation(normalized);
   }
+
+  private isTransformationOperation(operation: string): boolean {
+    const normalized = this.normalizeOperation(operation);
+    return isTransformOperation(normalized);
+  }
+
+  private isDataSourceOperation(operation: string): boolean {
+    const normalized = this.normalizeOperation(operation);
+    return isReadOperation(normalized);
+  }
+
+  // ✅ PHASE 1 FIX: Removed duplicate categorization methods
+  // All categorization now uses unifiedNodeCategorizer as single source of truth
+  // Old methods (isDataSource, isTransformation, isOutput) removed - use unifiedNodeCategorizer.categorizeWithOperation() instead
 
   /**
    * Map transformation operation
@@ -1141,20 +1604,44 @@ export class DSLGenerator {
     intent: StructuredIntent,
     transformations: DSLTransformation[],
     stepCounter: number,
-    autoInjectedNodesSet: Set<string>
+    autoInjectedNodesSet: Set<string>,
+    originalPrompt?: string
   ): {
     injected: boolean;
     nodes: DSLTransformation[];
     nextStepCounter: number;
     injectedNodeTypes: string[];
   } {
-    // AI operations that require LLM node
-    const aiOperations = ['summarize', 'summarise', 'analyze', 'analyse', 'classify', 'generate', 'ai_processing', 'translate', 'extract', 'process', 'transform'];
+    // ✅ FIX #1: AI operations that require LLM node (REMOVED 'transform' and 'process' - too generic)
+    // Only include explicit AI operations, not generic data transformation operations
+    const aiOperations = ['summarize', 'summarise', 'analyze', 'analyse', 'classify', 'generate', 'ai_processing', 'translate', 'extract'];
+    
+    // ✅ FIX #2: Check if original prompt mentions AI (semantic validation)
+    const originalPromptLower = (originalPrompt || '').toLowerCase();
+    const originalMentionsAI = 
+      originalPromptLower.includes('ai') ||
+      originalPromptLower.includes('chatbot') ||
+      originalPromptLower.includes('llm') ||
+      originalPromptLower.includes('summarize') ||
+      originalPromptLower.includes('summarise') ||
+      originalPromptLower.includes('analyze') ||
+      originalPromptLower.includes('analyse') ||
+      originalPromptLower.includes('classify') ||
+      originalPromptLower.includes('generate') ||
+      originalPromptLower.includes('translate');
     
     // Check if intent.transformations contains AI operations
     const intentTransformations = intent.transformations || [];
     const hasAIOperations = intentTransformations.some(tf => {
       const operation = (tf.operation || '').toLowerCase();
+      const nodeType = (tf.type || '').toLowerCase();
+      
+      // ✅ FIX #1: Skip communication nodes with 'transform' operation (not AI)
+      const isCommunicationNode = ['google_gmail', 'slack_message', 'email', 'telegram', 'discord', 'microsoft_teams', 'whatsapp_cloud'].includes(nodeType);
+      if (isCommunicationNode && operation === 'transform') {
+        return false; // Don't treat communication node 'transform' as AI operation
+      }
+      
       return aiOperations.some(aiOp => operation.includes(aiOp));
     });
     
@@ -1163,24 +1650,44 @@ export class DSLGenerator {
     const hasAIActions = intentActions.some(action => {
       const operation = (action.operation || '').toLowerCase();
       const type = (action.type || '').toLowerCase();
+      
+      // ✅ FIX #1: Skip communication nodes with 'transform' operation (not AI)
+      const isCommunicationNode = ['google_gmail', 'slack_message', 'email', 'telegram', 'discord', 'microsoft_teams', 'whatsapp_cloud'].includes(type);
+      if (isCommunicationNode && operation === 'transform') {
+        return false; // Don't treat communication node 'transform' as AI operation
+      }
+      
       return aiOperations.some(aiOp => operation.includes(aiOp)) ||
              type.includes('ai') || type.includes('llm') || type.includes('chat');
     });
     
-    // If no AI operations detected, no injection needed
-    if (!hasAIOperations && !hasAIActions) {
+    // ✅ FIX #2: If original prompt doesn't mention AI AND no explicit AI operations detected, no injection needed
+    if (!originalMentionsAI && !hasAIOperations && !hasAIActions) {
+      console.log(`[DSLGenerator] ⚠️  Skipping AI injection: Original prompt doesn't mention AI and no explicit AI operations detected`);
       return { injected: false, nodes: [], nextStepCounter: stepCounter, injectedNodeTypes: [] };
     }
     
-    // Check if ai_chat_model already exists in transformations
+    // ✅ FIX #2: If original prompt doesn't mention AI but we detected AI operations, log warning
+    if (!originalMentionsAI && (hasAIOperations || hasAIActions)) {
+      console.warn(`[DSLGenerator] ⚠️  AI operations detected but original prompt doesn't mention AI. Original: "${originalPrompt?.substring(0, 100)}..."`);
+      // Still inject if explicit AI operations detected (might be from transformation detection)
+    }
+    
+    // ✅ CRITICAL FIX: Check for ANY existing AI processing nodes (ai_chat_model OR ai_agent)
+    // Both perform the same 'ai_processing' operation, so we should not inject if either exists
     const existingLLMNodes = transformations.filter(tf => {
-      const normalizedType = normalizeNodeType(tf.type);
-      return normalizedType === 'ai_chat_model' || tf.type.toLowerCase() === 'ai_chat_model';
+      const normalizedType = unifiedNormalizeNodeTypeString(tf.type);
+      // Check for both ai_chat_model and ai_agent (both perform ai_processing operation)
+      return normalizedType === 'ai_chat_model' || 
+             normalizedType === 'ai_agent' ||
+             tf.type.toLowerCase() === 'ai_chat_model' ||
+             tf.type.toLowerCase() === 'ai_agent';
     });
     
-    // If ai_chat_model already exists, no injection needed
+    // If any AI processing node already exists, no injection needed (prevent duplicates)
     if (existingLLMNodes.length > 0) {
-      console.log(`[DSLGenerator] ✅ LLM node (ai_chat_model) already exists in transformations (${existingLLMNodes.length} node(s))`);
+      const existingTypes = existingLLMNodes.map(tf => unifiedNormalizeNodeTypeString(tf.type)).join(', ');
+      console.log(`[DSLGenerator] ✅ AI processing node(s) already exist in transformations: ${existingTypes} (${existingLLMNodes.length} node(s)) - skipping duplicate injection`);
       return { injected: false, nodes: [], nextStepCounter: stepCounter, injectedNodeTypes: [] };
     }
     
@@ -1220,6 +1727,11 @@ export class DSLGenerator {
         model: 'qwen2.5:14b-instruct-q4_K_M',
       },
       description: 'Guaranteed LLM node injection for AI transformations',
+      origin: {
+        source: 'auto',
+        stage: 'dsl_generation',
+      },
+      protected: false, // Auto-injected nodes are not protected
     };
     
     console.log(`[DSLGenerator] ✅ Guaranteed LLM node injection: Adding ai_chat_model (operation: ${operation})`);
@@ -1233,6 +1745,181 @@ export class DSLGenerator {
       nextStepCounter: stepCounter,
       injectedNodeTypes: ['ai_chat_model'],
     };
+  }
+
+  /**
+   * ✅ ROOT FIX: Check if node would be duplicate BEFORE adding (PREVENTION, not removal)
+   * 
+   * This is called BEFORE adding nodes to prevent duplicates at the source.
+   * Uses registry to determine operation signatures.
+   * 
+   * @param nodeType - Node type to check
+   * @param operation - Operation to check
+   * @param existingNodes - Existing nodes in the array
+   * @param category - Category of nodes (dataSource, transformation, output)
+   * @returns true if node would be duplicate, false otherwise
+   */
+  private wouldBeDuplicateOperation(
+    nodeType: string,
+    operation: string,
+    existingNodes: Array<{ type: string; operation?: string }>,
+    category: 'data_source' | 'transformation' | 'output'
+  ): { isDuplicate: boolean; existingNode?: { type: string; operation?: string }; reason?: string } {
+    const { unifiedNodeRegistry } = require('../../core/registry/unified-node-registry');
+    const normalizedType = unifiedNormalizeNodeTypeString(nodeType);
+    const nodeDef = unifiedNodeRegistry.get(normalizedType);
+    
+    if (!nodeDef) {
+      return { isDuplicate: false }; // Can't determine operation, allow it
+    }
+    
+    // Get operation signature for the new node
+    const newOperationSignature = this.getOperationSignatureFromRegistry(nodeDef);
+    if (!newOperationSignature) {
+      return { isDuplicate: false }; // Can't determine operation, allow it
+    }
+    
+    // Check if any existing node has the same operation signature
+    for (const existingNode of existingNodes) {
+      const existingNormalizedType = unifiedNormalizeNodeTypeString(existingNode.type);
+      const existingNodeDef = unifiedNodeRegistry.get(existingNormalizedType);
+      
+      if (!existingNodeDef) {
+        continue; // Skip if can't determine operation
+      }
+      
+      const existingOperationSignature = this.getOperationSignatureFromRegistry(existingNodeDef);
+      if (existingOperationSignature === newOperationSignature) {
+        // Same operation signature - this is a duplicate
+        // Special handling: ai_agent + ai_chat_model (both perform ai_processing)
+        if ((normalizedType === 'ai_agent' && existingNormalizedType === 'ai_chat_model') ||
+            (normalizedType === 'ai_chat_model' && existingNormalizedType === 'ai_agent')) {
+          // Prefer ai_chat_model for simple operations
+          return {
+            isDuplicate: true,
+            existingNode,
+            reason: `Duplicate AI processing operation - ${normalizedType === 'ai_agent' ? 'ai_chat_model' : 'ai_agent'} already exists`,
+          };
+        }
+        
+        return {
+          isDuplicate: true,
+          existingNode,
+          reason: `Duplicate operation "${newOperationSignature}" - ${existingNormalizedType} already exists`,
+        };
+      }
+    }
+    
+    return { isDuplicate: false };
+  }
+
+  /**
+   * ✅ CRITICAL FIX: Detect duplicate operations in DSL using REGISTRY
+   * 
+   * Uses registry properties (category, tags) to determine operation equivalence.
+   * Prevents duplicate AI processing operations (ai_agent + ai_chat_model).
+   * 
+   * NOTE: This is a FALLBACK - primary prevention is done via wouldBeDuplicateOperation()
+   * 
+   * @param transformations - DSL transformations to check
+   * @returns Array of duplicate operation pairs
+   */
+  private detectDuplicateOperationsInDSL(
+    transformations: DSLTransformation[]
+  ): Array<{ type1: string; type2: string; operation: string }> {
+    const { unifiedNodeRegistry } = require('../../core/registry/unified-node-registry');
+    // ✅ PHASE 3: Build array immutably
+    let duplicates: Array<{ type1: string; type2: string; operation: string }> = [];
+    
+    // Group transformations by operation signature
+    const operationGroups = new Map<string, DSLTransformation[]>();
+    
+    for (const tf of transformations) {
+      const normalizedType = unifiedNormalizeNodeTypeString(tf.type);
+      const nodeDef = unifiedNodeRegistry.get(normalizedType);
+      
+      if (!nodeDef) {
+        continue; // Skip if not in registry
+      }
+      
+      // Get operation signature from registry (same logic as production-workflow-builder)
+      const operationSignature = this.getOperationSignatureFromRegistry(nodeDef);
+      
+      if (!operationSignature) {
+        continue; // Skip if can't determine operation
+      }
+      
+      if (!operationGroups.has(operationSignature)) {
+        operationGroups.set(operationSignature, []);
+      }
+      const existing = operationGroups.get(operationSignature) || [];
+      operationGroups.set(operationSignature, [...existing, tf]); // ✅ PHASE 3: Immutable add
+    }
+    
+    // Find duplicates (same operation signature with 2+ nodes)
+    for (const [operation, nodes] of operationGroups.entries()) {
+      if (nodes.length >= 2) {
+        // Found duplicate operations - prefer simpler node (ai_chat_model over ai_agent)
+        const types = nodes.map(n => unifiedNormalizeNodeTypeString(n.type));
+        if (types.includes('ai_agent') && types.includes('ai_chat_model')) {
+          duplicates = [...duplicates, { // ✅ PHASE 3: Immutable add
+            type1: 'ai_agent',
+            type2: 'ai_chat_model',
+            operation: operation,
+          }];
+        } else if (types.length > 1) {
+          // Other duplicate operations
+          duplicates = [...duplicates, { // ✅ PHASE 3: Immutable add
+            type1: types[0],
+            type2: types[1],
+            operation: operation,
+          }];
+        }
+      }
+    }
+    
+    return duplicates;
+  }
+  
+  /**
+   * ✅ UNIVERSAL: Get operation signature from registry properties
+   * 
+   * Uses registry category and tags to determine operation signature.
+   * Same logic as production-workflow-builder.getOperationSignature()
+   */
+  // ✅ PHASE 2: Use proper type from registry instead of 'any'
+  private getOperationSignatureFromRegistry(
+    nodeDef: { category?: string; tags?: string[] }
+  ): string | null {
+    const category = nodeDef.category;
+    const tags = nodeDef.tags || [];
+    
+    // AI processing operations
+    if (category === 'ai' || tags.some((tag: string) => ['ai', 'llm', 'chat', 'agent'].includes(tag.toLowerCase()))) {
+      return 'ai_processing';
+    }
+    
+    // CRM/route operations
+    if (category === 'data' && tags.some((tag: string) => ['crm', 'route', 'sales'].includes(tag.toLowerCase()))) {
+      return 'crm_route';
+    }
+    
+    // Database/storage operations
+    if (category === 'data' && tags.some((tag: string) => ['database', 'storage', 'write'].includes(tag.toLowerCase()))) {
+      return 'data_storage';
+    }
+    
+    // Email operations
+    if (category === 'communication' && tags.some((tag: string) => ['email', 'gmail', 'mail'].includes(tag.toLowerCase()))) {
+      return 'email_notify';
+    }
+    
+    // Messaging operations
+    if (category === 'communication' && tags.some((tag: string) => ['slack', 'discord', 'message', 'chat'].includes(tag.toLowerCase()))) {
+      return 'messaging';
+    }
+    
+    return null; // Unknown operation
   }
 
   /**
@@ -1316,6 +2003,122 @@ export class DSLGenerator {
   }
 
   /**
+   * ✅ SEMANTIC EQUIVALENCE: Normalize DSL components to canonical types and remove semantic duplicates
+   * 
+   * This ensures DSL contains only canonical types, not semantic equivalents.
+   * Example: ["instagram", "instagram_post"] -> ["instagram"] (keep canonical, remove duplicate)
+   */
+  private normalizeSemanticEquivalencesInDSL(
+    dataSources: DSLDataSource[],
+    transformations: DSLTransformation[],
+    outputs: DSLOutput[],
+    intent: StructuredIntent
+  ): {
+    dataSources: DSLDataSource[];
+    transformations: DSLTransformation[];
+    outputs: DSLOutput[];
+  } {
+    console.log('[DSLGenerator] 🔍 Normalizing semantic equivalences in DSL components...');
+    
+    // Normalize data sources
+    const normalizedDataSources = this.normalizeDSLComponents(
+      dataSources,
+      (ds) => ds.type,
+      (ds, canonical) => ({ ...ds, type: canonical }),
+      (ds) => ds.operation,
+      'dataSource'
+    );
+    
+    // Normalize transformations
+    const normalizedTransformations = this.normalizeDSLComponents(
+      transformations,
+      (tf) => tf.type,
+      (tf, canonical) => ({ ...tf, type: canonical }),
+      (tf) => tf.operation,
+      'transformation'
+    );
+    
+    // Normalize outputs
+    const normalizedOutputs = this.normalizeDSLComponents(
+      outputs,
+      (out) => out.type,
+      (out, canonical) => ({ ...out, type: canonical }),
+      (out) => out.operation,
+      'output'
+    );
+    
+    const totalBefore = dataSources.length + transformations.length + outputs.length;
+    const totalAfter = normalizedDataSources.length + normalizedTransformations.length + normalizedOutputs.length;
+    
+    if (totalAfter < totalBefore) {
+      console.log(
+        `[DSLGenerator] ✅ Removed ${totalBefore - totalAfter} semantic duplicate(s) from DSL, ` +
+        `kept ${totalAfter} canonical node type(s)`
+      );
+    }
+    
+    return {
+      dataSources: normalizedDataSources,
+      transformations: normalizedTransformations,
+      outputs: normalizedOutputs,
+    };
+  }
+
+  /**
+   * Helper: Normalize a list of DSL components using semantic equivalence
+   */
+  private normalizeDSLComponents<T extends { type: string }>(
+    components: T[],
+    getType: (component: T) => string,
+    setType: (component: T, canonical: string) => T,
+    getOperation: (component: T) => string | undefined,
+    componentType: string
+  ): T[] {
+    // ✅ PHASE 3: Build array immutably
+    let normalized: T[] = [];
+    const seenCanonicals = new Set<string>();
+    
+    for (const component of components) {
+      const nodeType = getType(component);
+      const operation = getOperation(component);
+      
+      // Get category from node definition
+      const schema = nodeLibrary.getSchema(nodeType);
+      const category = schema?.category?.toLowerCase();
+      
+      // Get canonical type
+      const canonical = semanticNodeEquivalenceRegistry.getCanonicalType(
+        nodeType,
+        operation?.toLowerCase(),
+        category
+      );
+      
+      // Check if canonical already exists
+      if (seenCanonicals.has(canonical.toLowerCase())) {
+        console.log(
+          `[DSLGenerator] ⚠️  Skipping semantic duplicate ${componentType}: ${nodeType} ` +
+          `(canonical ${canonical} already in DSL)`
+        );
+        continue; // Skip duplicate
+      }
+      
+      // Add canonical type
+      const normalizedComponent = setType(component, canonical);
+      normalized = [...normalized, normalizedComponent]; // ✅ PHASE 3: Immutable add
+      seenCanonicals.add(canonical.toLowerCase());
+      
+      if (canonical !== nodeType) {
+        console.log(
+          `[DSLGenerator] ✅ Normalized ${componentType} ${nodeType} -> ${canonical} ` +
+          `(semantic equivalence)`
+        );
+      }
+    }
+    
+    return normalized;
+  }
+
+  /**
    * Build execution order
    */
   private buildExecutionOrder(
@@ -1324,26 +2127,27 @@ export class DSLGenerator {
     transformations: DSLTransformation[],
     outputs: DSLOutput[]
   ): DSLExecutionStep[] {
-    const steps: DSLExecutionStep[] = [];
+    // ✅ PHASE 3: Build array immutably
+    let steps: DSLExecutionStep[] = [];
     let order = 0;
 
     // Step 0: Trigger
-    steps.push({
+    steps = [...steps, { // ✅ PHASE 3: Immutable add
       stepId: 'step_trigger',
       stepType: 'trigger',
       stepRef: 'trigger',
       order: order++,
-    });
+    }];
 
     // Step 1: Data sources (parallel or sequential)
     for (const ds of dataSources) {
-      steps.push({
+      steps = [...steps, { // ✅ PHASE 3: Immutable add
         stepId: `step_${ds.id}`,
         stepType: 'data_source',
         stepRef: ds.id,
         dependsOn: ['step_trigger'],
         order: order++,
-      });
+      }];
     }
 
     // Step 2: Transformations (depend on data sources)
@@ -1354,13 +2158,13 @@ export class DSLGenerator {
 
     for (const tf of transformations) {
       const dependsOn = lastDataSourceId ? [lastDataSourceId] : ['step_trigger'];
-      steps.push({
+      steps = [...steps, { // ✅ PHASE 3: Immutable add
         stepId: `step_${tf.id}`,
         stepType: 'transformation',
         stepRef: tf.id,
         dependsOn,
         order: order++,
-      });
+      }];
       lastDataSourceId = `step_${tf.id}`;
     }
 
@@ -1368,13 +2172,13 @@ export class DSLGenerator {
     const lastStepId = lastDataSourceId || (dataSources.length > 0 ? `step_${dataSources[dataSources.length - 1].id}` : 'step_trigger');
     
     for (const out of outputs) {
-      steps.push({
+      steps = [...steps, { // ✅ PHASE 3: Immutable add
         stepId: `step_${out.id}`,
         stepType: 'output',
         stepRef: out.id,
         dependsOn: [lastStepId],
         order: order++,
-      });
+      }];
     }
 
     return steps;
@@ -1382,8 +2186,15 @@ export class DSLGenerator {
 
   /**
    * Extract conditions from intent
+   * ✅ PHASE 2: Use proper type instead of 'any'
    */
-  private extractConditions(conditions: any[]): DSLCondition[] {
+  private extractConditions(conditions: Array<{
+    type?: 'if_else' | 'switch';
+    condition?: string;
+    true_path?: string[];
+    false_path?: string[];
+    cases?: Array<{ value: string; path: string[] }>;
+  }>): DSLCondition[] {
     return conditions.map((cond, idx) => ({
       id: `cond_${idx}`,
       type: cond.type || 'if_else',
@@ -1398,17 +2209,18 @@ export class DSLGenerator {
    * Validate DSL
    */
   validateDSL(dsl: WorkflowDSL): DSLValidationResult {
-    const errors: string[] = [];
-    const warnings: string[] = [];
+    // ✅ PHASE 3: Build arrays immutably (use let for reassignment)
+    let errors: string[] = [];
+    let warnings: string[] = [];
 
     // Validate trigger
     if (!dsl.trigger || !dsl.trigger.type) {
-      errors.push('DSL must have a trigger');
+      errors = [...errors, 'DSL must have a trigger']; // ✅ PHASE 3: Immutable add
     }
 
     // Validate execution order
     if (dsl.executionOrder.length === 0) {
-      errors.push('DSL must have at least one execution step');
+      errors = [...errors, 'DSL must have at least one execution step']; // ✅ PHASE 3: Immutable add
     }
 
     // Validate step references
@@ -1420,10 +2232,10 @@ export class DSLGenerator {
     for (const step of dsl.executionOrder) {
       if (step.stepType === 'trigger') {
         if (step.stepRef !== 'trigger') {
-          errors.push(`Trigger step must reference 'trigger', got '${step.stepRef}'`);
+          errors = [...errors, `Trigger step must reference 'trigger', got '${step.stepRef}'`]; // ✅ PHASE 3: Immutable add
         }
       } else if (!stepRefs.has(step.stepRef)) {
-        errors.push(`Execution step references unknown step: ${step.stepRef}`);
+        errors = [...errors, `Execution step references unknown step: ${step.stepRef}`]; // ✅ PHASE 3: Immutable add
       }
 
       // Validate dependencies
@@ -1431,7 +2243,7 @@ export class DSLGenerator {
         for (const dep of step.dependsOn) {
           const depStep = dsl.executionOrder.find(s => s.stepId === dep);
           if (!depStep) {
-            errors.push(`Step ${step.stepId} depends on unknown step: ${dep}`);
+            errors = [...errors, `Step ${step.stepId} depends on unknown step: ${dep}`]; // ✅ PHASE 3: Immutable add
           }
         }
       }
@@ -1440,14 +2252,14 @@ export class DSLGenerator {
     // Validate transformations have input sources
     for (const tf of dsl.transformations) {
       if (!tf.input) {
-        warnings.push(`Transformation ${tf.id} has no input source specified`);
+        warnings = [...warnings, `Transformation ${tf.id} has no input source specified`]; // ✅ PHASE 3: Immutable add
       }
     }
 
     // Validate outputs have input sources
     for (const out of dsl.outputs) {
       if (!out.input) {
-        warnings.push(`Output ${out.id} has no input source specified`);
+        warnings = [...warnings, `Output ${out.id} has no input source specified`]; // ✅ PHASE 3: Immutable add
       }
     }
 
@@ -1456,6 +2268,375 @@ export class DSLGenerator {
       errors,
       warnings,
     };
+  }
+
+  /**
+   * ✅ UNIVERSAL FIX: Extract base node name from compound names
+   * Handles AI-generated compound names like:
+   * - "notion_write_data" -> "notion"
+   * - "google_sheets_read" -> "google_sheets"
+   * - "slack_send_message" -> "slack_message"
+   * - "database_write" -> "database_write" (already base name)
+   * 
+   * Strategy:
+   * 1. Check if it's already a registered node type
+   * 2. Extract common prefixes (notion_, google_, slack_, etc.)
+   * 3. Remove operation suffixes (_write, _read, _send, _create, etc.)
+   * 4. Return the base node name
+   */
+  private extractBaseNodeName(compoundName: string): string {
+    if (!compoundName || typeof compoundName !== 'string') {
+      return compoundName;
+    }
+    
+    const lower = compoundName.toLowerCase().trim();
+    
+    // If it's already a registered node type, return as-is
+    if (nodeLibrary.isNodeTypeRegistered(compoundName)) {
+      return compoundName;
+    }
+    
+    // Common node prefixes to extract
+    const nodePrefixes = [
+      'notion', 'google_', 'slack_', 'linkedin', 'twitter', 'instagram',
+      'airtable', 'hubspot', 'zoho_', 'pipedrive', 'supabase', 'postgresql',
+      'mysql', 'mongodb', 'redis', 'snowflake', 'sqlite', 'timescale',
+      'openai_', 'anthropic_', 'ollama_', 'ai_', 'chat_',
+      'discord', 'telegram', 'whatsapp', 'email', 'gmail',
+      'github', 'gitlab', 'bitbucket', 'jira', 'jenkins',
+      'shopify', 'woocommerce', 'stripe', 'paypal',
+      'aws_', 'azure_', 'gcp_', 'dropbox', 'onedrive', 'ftp', 'sftp',
+    ];
+    
+    // Operation suffixes to remove
+    const operationSuffixes = [
+      '_write', '_read', '_send', '_create', '_update', '_delete',
+      '_post', '_get', '_put', '_patch', '_data', '_operation',
+      '_message', '_notification', '_trigger', '_action',
+    ];
+    
+    // Strategy 1: Try removing operation suffixes first
+    for (const suffix of operationSuffixes) {
+      if (lower.endsWith(suffix)) {
+        const baseName = compoundName.slice(0, -suffix.length);
+        if (nodeLibrary.isNodeTypeRegistered(baseName)) {
+          return baseName;
+        }
+        // Also try with getSchema (pattern matching)
+        const schema = nodeLibrary.getSchema(baseName);
+        if (schema) {
+          return schema.type;
+        }
+      }
+    }
+    
+    // Strategy 2: Extract known prefixes
+    for (const prefix of nodePrefixes) {
+      if (lower.startsWith(prefix)) {
+        // Try the prefix itself
+        if (nodeLibrary.isNodeTypeRegistered(prefix)) {
+          return prefix;
+        }
+        const schema1 = nodeLibrary.getSchema(prefix);
+        if (schema1) {
+          return schema1.type;
+        }
+        
+        // Try prefix + next word (e.g., "google_sheets" from "google_sheets_read")
+        const parts = lower.split('_');
+        if (parts.length >= 2 && parts[0] === prefix.replace('_', '')) {
+          const twoPartName = `${parts[0]}_${parts[1]}`;
+          if (nodeLibrary.isNodeTypeRegistered(twoPartName)) {
+            return twoPartName;
+          }
+          const schema2 = nodeLibrary.getSchema(twoPartName);
+          if (schema2) {
+            return schema2.type;
+          }
+        }
+      }
+    }
+    
+    // Strategy 3: Try first word as base name (for simple cases)
+    const firstWord = lower.split('_')[0];
+    if (firstWord && firstWord.length > 2) {
+      const schema = nodeLibrary.getSchema(firstWord);
+      if (schema) {
+        return schema.type;
+      }
+    }
+    
+    // Strategy 4: Try first two words (for compound names like "google_sheets")
+    if (lower.includes('_')) {
+      const parts = lower.split('_');
+      if (parts.length >= 2) {
+        const twoWords = `${parts[0]}_${parts[1]}`;
+        const schema = nodeLibrary.getSchema(twoWords);
+        if (schema) {
+          return schema.type;
+        }
+      }
+    }
+    
+    // If no extraction worked, return original (will be handled by pattern matching)
+    return compoundName;
+  }
+
+  /**
+   * ✅ ROOT-LEVEL FIX: Quick semantic match using keyword overlap
+   * This is a synchronous fallback for semantic resolution
+   * Works for variations like "post on linkedin" -> "linkedin"
+   */
+  private findQuickSemanticMatch(
+    input: string,
+    metadata: Array<{ type: string; keywords: string[] }>
+  ): string | null {
+    const inputWords = input.toLowerCase().split(/[\s_\-]+/).filter(w => w.length > 2);
+    
+    let bestMatch: { type: string; score: number } | null = null;
+    
+    for (const node of metadata) {
+      const nodeKeywords = node.keywords.map(k => k.toLowerCase());
+      let score = 0;
+      let matches = 0;
+      
+      // Check how many input words match node keywords
+      for (const word of inputWords) {
+        if (nodeKeywords.some(k => k === word || k.includes(word) || word.includes(k))) {
+          matches++;
+          score += 1;
+        }
+      }
+      
+      // Bonus if node type itself matches
+      if (node.type.toLowerCase().includes(inputWords[inputWords.length - 1]) ||
+          inputWords.some(w => node.type.toLowerCase().includes(w))) {
+        score += 2;
+      }
+      
+      // Normalize score
+      const normalizedScore = matches > 0 ? score / (inputWords.length + 1) : 0;
+      
+      if (normalizedScore > 0.5 && (!bestMatch || normalizedScore > bestMatch.score)) {
+        bestMatch = { type: node.type, score: normalizedScore };
+      }
+    }
+    
+    return bestMatch && bestMatch.score > 0.6 ? bestMatch.type : null;
+  }
+
+  /**
+   * ✅ WORLD-CLASS UNIVERSAL: Ensure completeness during DSL generation
+   * 
+   * This is a UNIVERSAL solution that ensures all required nodes are in DSL BEFORE ordering.
+   * Missing nodes are added to appropriate DSL component (dataSources, transformations, outputs).
+   * 
+   * This prevents nodes from being added after ordering (which creates branches).
+   * 
+   * @param dataSources - Current data sources
+   * @param transformations - Current transformations
+   * @param outputs - Current outputs
+   * @param intent - Structured intent
+   * @param originalPrompt - Original user prompt
+   * @param stepCounter - Current step counter
+   * @returns Updated DSL components with all required nodes
+   */
+  private ensureCompletenessDuringGeneration(
+    dataSources: DSLDataSource[],
+    transformations: DSLTransformation[],
+    outputs: DSLOutput[],
+    intent: StructuredIntent,
+    originalPrompt?: string,
+    stepCounter: number = 0
+  ): {
+    dataSources: DSLDataSource[];
+    transformations: DSLTransformation[];
+    outputs: DSLOutput[];
+    stepCounter: number;
+    nodesAdded: string[];
+  } {
+    // ✅ PHASE 3: Build arrays immutably
+    let nodesAdded: string[] = [];
+    let updatedDataSources = [...dataSources];
+    let updatedTransformations = [...transformations];
+    let updatedOutputs = [...outputs];
+    let currentStepCounter = stepCounter;
+
+    // ✅ UNIVERSAL: Extract required nodes from intent using capability-based validation
+    // This uses the same validation logic as validateIntentCoverage, but auto-fixes instead of throwing
+    const triggerConfig = (intent.trigger_config || {}) as DSLTrigger['config'];
+    const capabilityValidation = validateIntentCoverageByCapabilities(intent, {
+      trigger: { 
+        type: (intent.trigger || 'manual_trigger') as DSLTrigger['type'], 
+        config: triggerConfig
+      },
+      dataSources: updatedDataSources,
+      transformations: updatedTransformations,
+      outputs: updatedOutputs,
+      executionOrder: [],
+    });
+
+    // If validation passes, DSL is complete
+    if (capabilityValidation.valid) {
+      return {
+        dataSources: updatedDataSources,
+        transformations: updatedTransformations,
+        outputs: updatedOutputs,
+        stepCounter: currentStepCounter,
+        nodesAdded: [],
+      };
+    }
+
+    // ✅ UNIVERSAL: Add missing nodes based on capability requirements
+    // This uses capability-based matching (not hardcoded node types)
+    for (const missingReq of capabilityValidation.missingRequirements) {
+      const requiredCapabilities = missingReq.requiredCapabilities;
+      const intentAction = missingReq.intentAction;
+      
+      // ✅ Find node type that provides required capabilities
+      const nodeType = this.findNodeTypeForCapabilities(requiredCapabilities, intentAction.type);
+      
+      if (!nodeType) {
+        console.warn(`[DSLGenerator] ⚠️  Cannot find node type for capabilities: ${requiredCapabilities.join(', ')}`);
+        continue;
+      }
+
+      const normalizedType = unifiedNormalizeNodeTypeString(nodeType);
+      const schema = nodeLibrary.getSchema(normalizedType);
+      
+      if (!schema) {
+        console.warn(`[DSLGenerator] ⚠️  Cannot add missing node "${nodeType}" - not in node library`);
+        continue;
+      }
+
+      // ✅ Determine which DSL component to add to using capability registry
+      const capabilities = nodeCapabilityRegistryDSL.getCapabilities(normalizedType);
+      const isDataSource = capabilities.includes('data_source') || capabilities.includes('read');
+      const isTransformation = capabilities.includes('transformation') || capabilities.includes('ai');
+      const isOutput = capabilities.includes('output') || capabilities.includes('write') || capabilities.includes('send') || capabilities.includes('terminal');
+
+      // Determine operation from intent action or default
+      let operation = intentAction.operation || 'read';
+      if (isTransformation) {
+        operation = intentAction.operation || 'transform';
+      } else if (isOutput) {
+        operation = intentAction.operation || 'send';
+      }
+
+      // Check if node already exists (avoid duplicates)
+      const dslNodeTypes = new Set<string>();
+      updatedDataSources.forEach(ds => dslNodeTypes.add(unifiedNormalizeNodeTypeString(ds.type)));
+      updatedTransformations.forEach(tf => dslNodeTypes.add(unifiedNormalizeNodeTypeString(tf.type)));
+      updatedOutputs.forEach(out => dslNodeTypes.add(unifiedNormalizeNodeTypeString(out.type)));
+
+      if (dslNodeTypes.has(normalizedType)) {
+        console.log(`[DSLGenerator] ℹ️  Node ${normalizedType} already exists in DSL, skipping`);
+        continue;
+      }
+
+      // Get config from intent action if available (may not have config property)
+      const actionConfig = (intentAction as any).config || {};
+
+      if (isDataSource) {
+        updatedDataSources = [...updatedDataSources, { // ✅ PHASE 3: Immutable add
+          id: `ds_${currentStepCounter++}`,
+          type: normalizedType,
+          operation: operation as any,
+          config: actionConfig,
+        }];
+        nodesAdded = [...nodesAdded, normalizedType]; // ✅ PHASE 3: Immutable add
+        console.log(`[DSLGenerator] ✅ Added missing data source to DSL: ${normalizedType} (capabilities: ${requiredCapabilities.join(', ')})`);
+      } else if (isTransformation) {
+        updatedTransformations = [...updatedTransformations, { // ✅ PHASE 3: Immutable add
+          id: `tf_${currentStepCounter++}`,
+          type: normalizedType,
+          operation: operation as any,
+          config: actionConfig,
+        }];
+        nodesAdded = [...nodesAdded, normalizedType]; // ✅ PHASE 3: Immutable add
+        console.log(`[DSLGenerator] ✅ Added missing transformation to DSL: ${normalizedType} (capabilities: ${requiredCapabilities.join(', ')})`);
+      } else if (isOutput) {
+        updatedOutputs = [...updatedOutputs, { // ✅ PHASE 3: Immutable add
+          id: `out_${currentStepCounter++}`,
+          type: normalizedType,
+          operation: operation as any,
+          config: actionConfig,
+        }];
+        nodesAdded = [...nodesAdded, normalizedType]; // ✅ PHASE 3: Immutable add
+        console.log(`[DSLGenerator] ✅ Added missing output to DSL: ${normalizedType} (capabilities: ${requiredCapabilities.join(', ')})`);
+      } else {
+        console.warn(`[DSLGenerator] ⚠️  Cannot categorize missing node "${nodeType}" - skipping`);
+      }
+    }
+
+    return {
+      dataSources: updatedDataSources,
+      transformations: updatedTransformations,
+      outputs: updatedOutputs,
+      stepCounter: currentStepCounter,
+      nodesAdded,
+    };
+  }
+
+  /**
+   * ✅ UNIVERSAL: Find node type that provides required capabilities
+   * 
+   * Uses capability registry to find appropriate node type.
+   * This is universal - works for ANY capability requirement.
+   * 
+   * @param requiredCapabilities - Required capabilities (e.g., ['read'], ['write'], ['transform'])
+   * @param hintNodeType - Hint from intent action (optional)
+   * @returns Node type that provides required capabilities, or null if not found
+   */
+  private findNodeTypeForCapabilities(
+    requiredCapabilities: string[],
+    hintNodeType?: string
+  ): string | null {
+    // ✅ Try hint node type first (if provided)
+    if (hintNodeType) {
+      const normalizedHint = unifiedNormalizeNodeTypeString(hintNodeType);
+      const hintCapabilities = nodeCapabilityRegistryDSL.getCapabilities(normalizedHint);
+      
+      // Check if hint node provides all required capabilities
+      const providesAll = requiredCapabilities.every(reqCap => 
+        hintCapabilities.some(hintCap => 
+          hintCap === reqCap || 
+          hintCap.includes(reqCap) || 
+          reqCap.includes(hintCap)
+        )
+      );
+      
+      if (providesAll) {
+        const schema = nodeLibrary.getSchema(normalizedHint);
+        if (schema) {
+          return normalizedHint;
+        }
+      }
+    }
+
+    // ✅ Search node library for node that provides required capabilities
+    // This is universal - works for ANY capability requirement
+    const allSchemas = nodeLibrary.getAllSchemas();
+    
+    for (const schema of allSchemas) {
+      const nodeType = schema.type;
+      const capabilities = nodeCapabilityRegistryDSL.getCapabilities(nodeType);
+      
+      // Check if node provides all required capabilities
+      const providesAll = requiredCapabilities.every(reqCap => 
+        capabilities.some(cap => 
+          cap === reqCap || 
+          cap.includes(reqCap) || 
+          reqCap.includes(cap)
+        )
+      );
+      
+      if (providesAll) {
+        return nodeType;
+      }
+    }
+
+    return null;
   }
 }
 

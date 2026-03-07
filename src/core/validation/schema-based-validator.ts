@@ -17,7 +17,7 @@
 
 import { unifiedNodeRegistry } from '../registry/unified-node-registry';
 import { WorkflowNode } from '../../core/types/ai-types';
-import { normalizeNodeType } from '../utils/node-type-normalizer';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../utils/unified-node-type-normalizer';
 
 export interface ValidationResult {
   valid: boolean;
@@ -29,17 +29,29 @@ export interface ValidationResult {
  * Validate node config against schema from registry
  */
 export function validateNodeConfig(node: WorkflowNode): ValidationResult {
-  const normalizedType = normalizeNodeType(node);
+  const normalizedType = unifiedNormalizeNodeType(node);
   const nodeType = normalizedType || node.data?.type || node.type;
   const config = node.data?.config || {};
+  
+  // ✅ STRICT ARCHITECTURE: Pre-validation guard before registry
+  try {
+    const { assertValidNodeType } = require('../utils/node-authority');
+    assertValidNodeType(nodeType);
+  } catch (error: any) {
+    return {
+      valid: false,
+      errors: [error.message],
+    };
+  }
   
   // Get node definition from registry (SINGLE SOURCE OF TRUTH)
   const definition = unifiedNodeRegistry.get(nodeType);
   
   if (!definition) {
+    // This should NEVER happen if assertValidNodeType passed
     return {
       valid: false,
-      errors: [`Node type '${nodeType}' not found in registry`],
+      errors: [`[NodeAuthority] Integrity error: Canonical node type '${nodeType}' not found in registry. This indicates a system initialization failure.`],
     };
   }
   

@@ -16,12 +16,12 @@
  */
 
 import { Workflow, WorkflowNode } from '../core/types/ai-types';
-import { agenticWorkflowBuilder } from './ai/workflow-builder';
+// ✅ MIGRATION: Legacy builder import removed - always use new pipeline
 import { credentialDiscoveryPhase, CredentialDiscoveryResult } from './ai/credential-discovery-phase';
-import { workflowValidator, ValidationResult } from './ai/workflow-validator';
+import { workflowValidationPipeline, ValidationPipelineResult } from './ai/workflow-validation-pipeline';
 import { connectorRegistry } from './connectors/connector-registry';
 import { nodeLibrary } from './nodes/node-library';
-import { normalizeNodeType } from '../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType } from '../core/utils/unified-node-type-normalizer';
 import { resolveNodeType } from '../core/utils/node-type-resolver-util';
 import { NodeResolver } from './ai/node-resolver';
 import { getSupabaseClient } from '../core/database/supabase-compat';
@@ -47,7 +47,7 @@ export interface WorkflowGenerationResult {
       examples?: any[];
     }>;
   };
-  validation: ValidationResult;
+  validation: ValidationPipelineResult;
   documentation?: string;
   suggestions?: any[];
   estimatedComplexity?: string;
@@ -59,7 +59,7 @@ export interface WorkflowGenerationResult {
 
 export interface CredentialInjectionResult {
   workflow: Workflow;
-  validation: ValidationResult;
+  validation: ValidationPipelineResult;
   success: boolean;
   errors?: string[];
 }
@@ -114,11 +114,31 @@ export class WorkflowLifecycleManager {
       }
     );
 
-    // Handle clarification required (legacy - clarification stage removed)
+    // ✅ ROOT-LEVEL FIX: Handle clarification required gracefully when clarification is disabled
     // Note: Clarification stage has been removed, vague prompts are handled by intent_auto_expander
     if (pipelineResult.clarificationRequired) {
-      // This should not happen anymore, but handle gracefully if it does
       console.warn('[WorkflowLifecycleManager] Clarification required flag set, but clarification stage is disabled');
+      
+      // ✅ ROOT-LEVEL FIX: If clarification is required but disabled, check if we can proceed with expansion
+      // The pipeline orchestrator should have already attempted expansion, but if it didn't,
+      // we should provide a meaningful error message instead of "Unknown pipeline error"
+      if (!pipelineResult.workflow && (!pipelineResult.errors || pipelineResult.errors.length === 0)) {
+        // No workflow and no errors - this is the "Unknown pipeline error" case
+        // Provide meaningful error message based on pipeline context
+        const confidence = pipelineResult.confidenceScore?.confidence_score || 0;
+        const missingFields = pipelineResult.pipelineContext?.missing_fields || [];
+        const clarificationQuestions = pipelineResult.clarificationQuestions || [];
+        
+        const errorMessage = `Workflow generation failed: Low confidence (${(confidence * 100).toFixed(1)}%) and intent expansion did not produce a valid workflow. ` +
+          (missingFields.length > 0 ? `Missing fields: ${missingFields.join(', ')}. ` : '') +
+          (clarificationQuestions.length > 0 ? `Clarification needed: ${clarificationQuestions[0]}` : 'Please provide more specific workflow requirements.');
+        
+        // ✅ ROOT-LEVEL FIX: Populate errors array with meaningful message
+        if (!pipelineResult.errors) {
+          pipelineResult.errors = [];
+        }
+        pipelineResult.errors.push(errorMessage);
+      }
     }
 
     // Handle credentials required
@@ -127,9 +147,27 @@ export class WorkflowLifecycleManager {
     }
 
     if (!pipelineResult.success || !pipelineResult.workflow) {
-      const reason = (pipelineResult.errors && pipelineResult.errors.length > 0)
-        ? pipelineResult.errors.join(', ')
-        : 'Unknown pipeline error';
+      // ✅ ROOT-LEVEL FIX: Ensure errors array is always populated with meaningful messages
+      let errors = pipelineResult.errors || [];
+      
+      if (errors.length === 0) {
+        // Generate meaningful error message from pipeline context
+        const confidence = pipelineResult.confidenceScore?.confidence_score || 0;
+        const warnings = pipelineResult.warnings || [];
+        const missingFields = pipelineResult.pipelineContext?.missing_fields || [];
+        
+        if (confidence < 0.5) {
+          errors.push(`Workflow generation failed: Low confidence (${(confidence * 100).toFixed(1)}%) - prompt may be too vague or ambiguous`);
+        } else if (missingFields.length > 0) {
+          errors.push(`Workflow generation failed: Missing required fields: ${missingFields.join(', ')}`);
+        } else if (warnings.length > 0) {
+          errors.push(`Workflow generation failed: ${warnings[0]}`);
+        } else {
+          errors.push(`Workflow generation failed: Pipeline execution completed but no workflow was generated`);
+        }
+      }
+      
+      const reason = errors.join('; ');
       // ✅ Preserve pipeline result (including expandedIntent) for fallback detection
       const error: any = new Error(`Pipeline failed: ${reason}`);
       error.pipelineResult = pipelineResult; // Attach pipeline result to error for fallback detection
@@ -288,30 +326,10 @@ export class WorkflowLifecycleManager {
     }
 
     // STEP 1: Generate workflow graph (DAG only, no credentials)
-    // ✅ CRITICAL: Check if new pipeline should be used
-    const useNewPipeline = constraints?.useNewPipeline !== false; // Default to true for new pipeline
-    
-    // Use a flexible type here because new pipeline and legacy builder return slightly different shapes
-    let generationResult: any;
-    if (useNewPipeline) {
-      console.log('[WorkflowLifecycle] Using new deterministic pipeline architecture');
-      generationResult = await this.generateWorkflowWithNewPipeline(userPrompt, constraints, onProgress);
-    } else {
-      console.log('[WorkflowLifecycle] Using legacy workflow builder');
-    // ✅ CRITICAL: Pass structured spec from constraints if available
-    const structuredSpec = constraints?.structuredSpec;
-    
-      // ✅ CRITICAL FIX: Pass planner spec to constraints so workflow builder can use trigger preference
-      const enhancedConstraints = {
-        ...constraints,
-        plannerSpec: plannerSpec, // Pass planner spec so workflow builder can respect trigger preference
-      };
-      
-      generationResult = await agenticWorkflowBuilder.generateFromPrompt(
-      userPrompt,
-        enhancedConstraints
-    );
-    }
+    // ✅ PRODUCTION: Always use new deterministic pipeline architecture
+    // ✅ MIGRATION: Legacy builder fallback removed - single production path
+    console.log('[WorkflowLifecycle] Using new deterministic pipeline architecture');
+    const generationResult = await this.generateWorkflowWithNewPipeline(userPrompt, constraints, onProgress);
 
     let workflow = generationResult.workflow;
     
@@ -343,7 +361,7 @@ export class WorkflowLifecycleManager {
 
       const originalNodeCount = workflow.nodes.length;
       const filteredNodes = workflow.nodes.filter((node: any) => {
-        const nodeType = normalizeNodeType(node);
+        const nodeType = unifiedNormalizeNodeType(node);
         // ✅ CRITICAL FIX: Resolve node type to canonical form for comparison
         const canonicalNodeType = resolveNodeType(nodeType, false);
         
@@ -399,7 +417,7 @@ export class WorkflowLifecycleManager {
     if (resolution.success && resolution.nodeIds.length > 0) {
       // Normalize existing node types to canonical forms for comparison
       const existingNodeTypes = workflow.nodes.map((node: any) => {
-        const normalized = normalizeNodeType(node);
+        const normalized = unifiedNormalizeNodeType(node);
         // Also resolve aliases to canonical form (e.g., "gmail" → "google_gmail")
         return resolveNodeType(normalized);
       });
@@ -450,8 +468,8 @@ export class WorkflowLifecycleManager {
     
     // STEP 2.5: Validate workflow structure
     console.log('[WorkflowLifecycle] Step 2.5: Validating workflow structure...');
-    const validation = await workflowValidator.validateAndFix(workflow);
-    let finalWorkflow = validation.fixedWorkflow || workflow;
+    const validation = workflowValidationPipeline.validateWorkflow(workflow);
+    let finalWorkflow = workflow;
     
     // STEP 2.6: Ensure final workflow also has canonical types (after validation fixes)
     finalWorkflow = this.normalizeAllNodeTypesToCanonical(finalWorkflow);
@@ -462,7 +480,7 @@ export class WorkflowLifecycleManager {
     if (!plannerSpec) {
       try {
         const finalNodeTypes = finalWorkflow.nodes.map((node: any) => 
-          normalizeNodeType(node)
+          unifiedNormalizeNodeType(node)
         );
         nodeResolver.assertGmailIntegrity(userPrompt, finalNodeTypes);
         console.log('[WorkflowLifecycle] ✅ Gmail integrity check passed');
@@ -525,7 +543,7 @@ export class WorkflowLifecycleManager {
       credentialDiscovery.requiredCredentials.forEach(cred => {
         cred.nodeTypes.forEach(nodeType => {
           // Check if any node of this type exists
-          const hasNodeType = finalWorkflow.nodes.some((n: any) => normalizeNodeType(n) === nodeType);
+          const hasNodeType = finalWorkflow.nodes.some((n: any) => unifiedNormalizeNodeType(n) === nodeType);
           if (!hasNodeType) {
             nodeTypesToAdd.add(nodeType);
           }
@@ -576,7 +594,7 @@ export class WorkflowLifecycleManager {
     let duplicateCount = 0;
 
     for (const node of workflow.nodes) {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       if (!nodeType || nodeType === 'custom') {
         // Keep nodes without valid types (they'll be handled elsewhere)
         nodesToKeep.push(node);
@@ -625,7 +643,7 @@ export class WorkflowLifecycleManager {
     let normalizedCount = 0;
     
     const normalizedNodes = workflow.nodes.map((node: any) => {
-      const originalType = normalizeNodeType(node);
+      const originalType = unifiedNormalizeNodeType(node);
       if (!originalType || originalType === 'custom') {
         return node; // Skip nodes without valid types
       }
@@ -709,7 +727,7 @@ export class WorkflowLifecycleManager {
 
     const updatedNodes = workflow.nodes.map((node: any) => {
       const nodeId = node.id;
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       const credsForNode = credsByNodeId.get(nodeId) || [];
       if (credsForNode.length === 0) return node;
 
@@ -789,7 +807,7 @@ export class WorkflowLifecycleManager {
     };
 
     for (const node of workflow.nodes) {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       const schema = nodeLibrary.getSchema(nodeType);
       
       if (!schema) {
@@ -1148,7 +1166,7 @@ export class WorkflowLifecycleManager {
 
     // Inject credentials into nodes using connector registry
     const updatedNodes = workflow.nodes.map((node: WorkflowNode) => {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       const config = { ...(node.data?.config || {}) };
       let updated = false;
 
@@ -1252,16 +1270,38 @@ export class WorkflowLifecycleManager {
         ];
         for (const explicitKey of explicitKeys) {
           if (credentials[explicitKey]) {
-            credentialValue = extractCredentialValue(credentials[explicitKey]);
-            if (credentialValue) break;
+            const extractedValue = extractCredentialValue(credentials[explicitKey]);
+            
+            // ✅ WORLD-CLASS: Validate webhook URL before accepting
+            if (extractedValue) {
+              const { validateWebhookUrl } = require('../core/validation/webhook-url-validator');
+              const urlValidation = validateWebhookUrl(extractedValue);
+              if (!urlValidation.valid) {
+                console.error(`[WorkflowLifecycle] ❌ Invalid webhook URL for ${explicitKey}: ${urlValidation.error}`);
+                throw new Error(`Invalid webhook URL: ${urlValidation.error}`);
+              }
+              credentialValue = extractedValue;
+              if (credentialValue) break;
+            }
           }
           // Also try case-insensitive match
           const matchingKey = Object.keys(credentials).find(
             k => k.toLowerCase() === explicitKey.toLowerCase()
           );
           if (matchingKey) {
-            credentialValue = extractCredentialValue(credentials[matchingKey]);
-            if (credentialValue) break;
+            const extractedValue = extractCredentialValue(credentials[matchingKey]);
+            
+            // ✅ WORLD-CLASS: Validate webhook URL before accepting
+            if (extractedValue) {
+              const { validateWebhookUrl } = require('../core/validation/webhook-url-validator');
+              const urlValidation = validateWebhookUrl(extractedValue);
+              if (!urlValidation.valid) {
+                console.error(`[WorkflowLifecycle] ❌ Invalid webhook URL for ${matchingKey}: ${urlValidation.error}`);
+                throw new Error(`Invalid webhook URL: ${urlValidation.error}`);
+              }
+              credentialValue = extractedValue;
+              if (credentialValue) break;
+            }
           }
         }
       }
@@ -1277,27 +1317,145 @@ export class WorkflowLifecycleManager {
           // Must contain provider AND (webhook OR url)
           if (keyLower.includes(providerLower) && 
               (keyLower.includes('webhook') || keyLower.includes('url'))) {
-            credentialValue = extractCredentialValue(value);
-            if (credentialValue) break;
+            const extractedValue = extractCredentialValue(value);
+            
+            // ✅ WORLD-CLASS: Validate webhook URL before accepting
+            if (extractedValue) {
+              const { validateWebhookUrl } = require('../core/validation/webhook-url-validator');
+              const urlValidation = validateWebhookUrl(extractedValue);
+              if (!urlValidation.valid) {
+                console.error(`[WorkflowLifecycle] ❌ Invalid webhook URL for ${key}: ${urlValidation.error}`);
+                throw new Error(`Invalid webhook URL: ${urlValidation.error}`);
+              }
+              credentialValue = extractedValue;
+              if (credentialValue) break;
+            }
           }
         }
       }
 
-      // ✅ CRITICAL: Check for explicit credentialId field from question answers
-      // Questions use field: 'credentialId', so answers come as 'credentialId' or 'req_<nodeId>_credentialId'
+      // ✅ ROOT-LEVEL: Check for node-specific credential fields (cred_${nodeId}_${fieldName})
+      // This ensures credentials go to the correct node based on question ID format
+      for (const [key, value] of Object.entries(credentials)) {
+        const keyLower = key.toLowerCase();
+        
+        // ✅ ROOT-LEVEL: Match node-specific credential format: cred_${nodeId}_${fieldName}
+        if (keyLower.startsWith(`cred_${node.id.toLowerCase()}_`)) {
+          const fieldName = key.substring(`cred_${node.id}_`.length);
+          const credValue = extractCredentialValue(value);
+          
+          if (credValue) {
+            // ✅ WORLD-CLASS: Validate webhook URLs before accepting
+            if (fieldName.toLowerCase().includes('webhook') || fieldName.toLowerCase().includes('url')) {
+              const { validateWebhookUrl } = require('../core/validation/webhook-url-validator');
+              const urlValidation = validateWebhookUrl(credValue);
+              if (!urlValidation.valid) {
+                console.error(`[WorkflowLifecycle] ❌ Invalid webhook URL for ${fieldName}: ${urlValidation.error}`);
+                throw new Error(`Invalid webhook URL: ${urlValidation.error}`);
+              }
+            }
+
+            // Get node schema to validate field exists
+            const schema = nodeLibrary.getSchema(nodeType);
+            if (schema && schema.configSchema) {
+              const requiredFields = schema.configSchema.required || [];
+              const optionalFields = Object.keys(schema.configSchema.optional || {});
+              const allFields = [...requiredFields, ...optionalFields];
+              
+              // ✅ ROOT-LEVEL: Only apply if field exists in schema (prevents invalid fields)
+              if (allFields.includes(fieldName)) {
+                config[fieldName] = credValue;
+                updated = true;
+                console.log(`[WorkflowLifecycle] ✅ Applied node-specific credential ${fieldName} = ${credValue.substring(0, 20)}... to node ${node.id} (${nodeType})`);
+              } else {
+                console.warn(`[WorkflowLifecycle] ⚠️ Field ${fieldName} not found in schema for ${nodeType}, skipping`);
+              }
+            } else {
+              // No schema - apply anyway (for backward compatibility)
+              config[fieldName] = credValue;
+              updated = true;
+              console.log(`[WorkflowLifecycle] ✅ Applied node-specific credential ${fieldName} to node ${node.id} (${nodeType}) - no schema validation`);
+            }
+          }
+        }
+        // ✅ ROOT-LEVEL: Also support legacy formats for backward compatibility
+        else if (keyLower === `req_${node.id.toLowerCase()}_credentialid` ||
+                 keyLower === `${node.id.toLowerCase()}_credentialid`) {
+          const credValue = extractCredentialValue(value);
+          if (credValue) {
+            config.credentialId = credValue;
+            updated = true;
+            console.log(`[WorkflowLifecycle] Applied credentialId = ${credValue} to node ${node.id} (${nodeType})`);
+          }
+        }
+      }
+      
+      // ✅ WORLD-CLASS: Extract credentials from node input when viewing/editing
+      // This ensures credentials provided via comprehensive questions are properly connected
+      // Note: Inputs are stored in config, not a separate input property
+      const nodeInput = (node.data as any)?.input || {};
+      for (const [inputKey, inputValue] of Object.entries(nodeInput)) {
+        const inputKeyLower = inputKey.toLowerCase();
+        
+        // ✅ Match credential fields from input (e.g., from comprehensive questions)
+        if (
+          inputKeyLower.includes('apikey') ||
+          inputKeyLower.includes('api_key') ||
+          inputKeyLower.includes('accesstoken') ||
+          inputKeyLower.includes('access_token') ||
+          inputKeyLower.includes('webhook') ||
+          inputKeyLower.includes('credentialid') ||
+          inputKeyLower.includes('credential_id')
+        ) {
+          // Extract field name from input key
+          // Format: "cred_nodeId_fieldName" or "req_nodeId_fieldName" or just "fieldName"
+          let fieldName = inputKey;
+          if (inputKeyLower.startsWith('cred_') || inputKeyLower.startsWith('req_')) {
+            const parts = inputKey.split('_');
+            if (parts.length >= 3) {
+              fieldName = parts.slice(2).join('_'); // Extract field name after nodeId
+            }
+          }
+          
+          // ✅ Only apply if not already in config (config takes precedence)
+          if (!config[fieldName] && inputValue) {
+            const credValue = extractCredentialValue(inputValue);
+            if (credValue) {
+              // Validate field exists in schema
+              const schema = nodeLibrary.getSchema(nodeType);
+              if (schema && schema.configSchema) {
+                const requiredFields = schema.configSchema.required || [];
+                const optionalFields = Object.keys(schema.configSchema.optional || {});
+                const allFields = [...requiredFields, ...optionalFields];
+                
+                if (allFields.includes(fieldName)) {
+                  config[fieldName] = credValue;
+                  updated = true;
+                  console.log(`[WorkflowLifecycle] ✅ Extracted credential ${fieldName} from node input for node ${node.id} (${nodeType})`);
+                }
+              } else {
+                // No schema - apply anyway (for backward compatibility)
+                config[fieldName] = credValue;
+                updated = true;
+                console.log(`[WorkflowLifecycle] ✅ Extracted credential ${fieldName} from node input for node ${node.id} (${nodeType}) - no schema validation`);
+              }
+            }
+          }
+        }
+      }
+
+      // ✅ ROOT-LEVEL: Also check for generic credentialId (backward compatibility)
       const credentialIdKey = Object.keys(credentials).find(key => 
         key.toLowerCase() === 'credentialid' ||
-        key.toLowerCase().endsWith('_credentialid') ||
-        key.toLowerCase() === `req_${node.id}_credentialid` ||
-        key.toLowerCase() === `${node.id}_credentialid`
+        (key.toLowerCase().endsWith('_credentialid') && !key.toLowerCase().includes('_'))
       );
       
-      if (credentialIdKey) {
+      if (credentialIdKey && !config.credentialId) {
         const credentialIdValue = extractCredentialValue(credentials[credentialIdKey]);
         if (credentialIdValue) {
           config.credentialId = credentialIdValue;
           updated = true;
-          console.log(`[WorkflowLifecycle] Applied credentialId = ${credentialIdValue} to node ${node.id} (${nodeType})`);
+          console.log(`[WorkflowLifecycle] Applied generic credentialId = ${credentialIdValue} to node ${node.id} (${nodeType})`);
         }
       }
 
@@ -1312,6 +1470,16 @@ export class WorkflowLifecycleManager {
           // ✅ PRIORITY 1: Use credentialFieldName from connector if specified (data-driven mapping)
           // This takes precedence - HubSpot uses credentialFieldName: 'apiKey'
           if (credentialContract.credentialFieldName && allFields.includes(credentialContract.credentialFieldName)) {
+            // ✅ WORLD-CLASS: Validate webhook URLs before accepting
+            const fieldNameLower = credentialContract.credentialFieldName.toLowerCase();
+            if (fieldNameLower.includes('webhook') || fieldNameLower.includes('url')) {
+              const { validateWebhookUrl } = require('../core/validation/webhook-url-validator');
+              const urlValidation = validateWebhookUrl(credentialValue);
+              if (!urlValidation.valid) {
+                console.error(`[WorkflowLifecycle] ❌ Invalid webhook URL for ${credentialContract.credentialFieldName}: ${urlValidation.error}`);
+                throw new Error(`Invalid webhook URL: ${urlValidation.error}`);
+              }
+            }
             config[credentialContract.credentialFieldName] = credentialValue;
             updated = true;
             console.log(`[WorkflowLifecycle] ✅ Applied ${credentialContract.credentialFieldName} to ${nodeType} node ${node.id} (data-driven from connector)`);
@@ -1340,6 +1508,13 @@ export class WorkflowLifecycleManager {
           
           // Map credential to node config fields based on connector type
           if (credentialContract.type === 'webhook' && credentialContract.provider === 'slack') {
+            // ✅ WORLD-CLASS: Validate webhook URL before accepting
+            const { validateWebhookUrl } = require('../../core/validation/webhook-url-validator');
+            const urlValidation = validateWebhookUrl(credentialValue);
+            if (!urlValidation.valid) {
+              console.error(`[WorkflowLifecycle] ❌ Invalid Slack webhook URL: ${urlValidation.error}`);
+              throw new Error(`Invalid Slack webhook URL: ${urlValidation.error}`);
+            }
             config.webhookUrl = credentialValue;
             updated = true;
           } else if (credentialContract.type === 'oauth') {
@@ -1501,7 +1676,8 @@ export class WorkflowLifecycleManager {
 
     // Validate workflow after credential injection
     console.log('[WorkflowLifecycle] Validating workflow after credential injection...');
-    const validation = await workflowValidator.validateAndFix(workflowWithCredentials);
+    // ✅ WORLD-CLASS: Use WorkflowValidationPipeline (SINGLE SOURCE OF TRUTH)
+    const validation = workflowValidationPipeline.validateWorkflow(workflowWithCredentials);
 
     // ✅ CRITICAL: Check credentials FIRST - this is the primary purpose of credential injection
     // Workflow structure validation errors are less critical and can be fixed later
@@ -1523,17 +1699,17 @@ export class WorkflowLifecycleManager {
     
     // ✅ SECONDARY CHECK: Workflow structure validation (warnings, not blockers for credential injection)
     if (!validation.valid) {
-      console.log(`[WorkflowLifecycle] ⚠️ Workflow validation found ${validation.errors.length} error(s) (non-blocking for credential injection):`, validation.errors.map(e => e.message));
+      console.log(`[WorkflowLifecycle] ⚠️ Workflow validation found ${validation.errors.length} error(s) (non-blocking for credential injection):`, validation.errors);
       // Only add critical workflow errors that would prevent saving
       // Don't block credential injection for minor structure issues
-      validation.errors.forEach(err => {
+      validation.errors.forEach((err: string) => {
         // Only include critical severity errors (high/medium are warnings for credential injection)
         // Also ignore common non-blocking warnings
-        if (err.severity === 'critical' && 
-            !err.message.includes('no outgoing connection') && 
-            !err.message.includes('no output nodes') &&
-            !err.message.includes('no incoming connection')) {
-          errors.push(err.message);
+        if ((err.includes('critical') || err.includes('required') || err.includes('missing')) && 
+            !err.includes('no outgoing connection') && 
+            !err.includes('no output nodes') &&
+            !err.includes('no incoming connection')) {
+          errors.push(err);
         }
       });
     } else {
@@ -1550,7 +1726,7 @@ export class WorkflowLifecycleManager {
     }
 
     return {
-      workflow: validation.fixedWorkflow || workflowWithCredentials,
+      workflow: workflowWithCredentials,
       validation,
       success,
       errors: errors.length > 0 ? errors : undefined,
@@ -1583,11 +1759,10 @@ export class WorkflowLifecycleManager {
     const missingCredentialMessages: string[] = [];
 
     // Validate workflow structure
-    const validation = await workflowValidator.validateAndFix(workflow);
+    // ✅ WORLD-CLASS: Use WorkflowValidationPipeline (SINGLE SOURCE OF TRUTH)
+    const validation = workflowValidationPipeline.validateWorkflow(workflow);
     if (!validation.valid) {
-      validation.errors.forEach(err => {
-        errors.push(err.message);
-      });
+      errors.push(...validation.errors);
     }
 
     // ✅ CRITICAL: Check credentials with vault lookup
@@ -1613,7 +1788,7 @@ export class WorkflowLifecycleManager {
           }
           
           const config = node.data?.config || {};
-          const nodeType = normalizeNodeType(node);
+          const nodeType = unifiedNormalizeNodeType(node);
           
           // Get connector for this node to determine expected credential fields
           const connector = connectorRegistry.getConnectorByNodeType(nodeType);

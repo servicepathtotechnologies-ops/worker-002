@@ -20,7 +20,7 @@ import { getSupabaseClient } from '../core/database/supabase-compat';
 import { workflowLifecycleManager } from '../services/workflow-lifecycle-manager';
 import { workflowValidator } from '../services/ai/workflow-validator';
 import { nodeLibrary } from '../services/nodes/node-library';
-import { normalizeNodeType } from '../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../core/utils/unified-node-type-normalizer';
 import { connectorRegistry } from '../services/connectors/connector-registry';
 import { normalizeWorkflowGraph, validateNormalizedGraph } from '../core/utils/workflow-graph-normalizer';
 import { ErrorCode, createError } from '../core/utils/error-codes';
@@ -402,7 +402,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     let updatedNodes: any[];
     try {
       updatedNodes = clonedWorkflow.nodes.map((node: any) => {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       const schema = nodeLibrary.getSchema(nodeType);
       
       if (!schema) {
@@ -1190,18 +1190,31 @@ export default async function attachInputsHandler(req: Request, res: Response) {
           metadata: (updateData as any).metadata || {},
         };
 
-        await versionManager.createVersion(
-          workflowId,
-          currentDefinition,
-          previousDefinition,
-          createdBy,
-          {
-            description: 'Inputs attached and workflow updated',
+        // ✅ CRITICAL FIX: Create version only if workflow exists
+        // Versioning is optional - if it fails, workflow still saves successfully
+        try {
+          const version = await versionManager.createVersion(
+            workflowId,
+            currentDefinition,
+            previousDefinition,
+            createdBy,
+            {
+              description: 'Inputs attached and workflow updated',
+            }
+          );
+          
+          if (version) {
+            console.log(`[AttachInputs] ✅ Created workflow version ${version.version} for ${workflowId}`);
+          } else {
+            console.log(`[AttachInputs] ⚠️  Versioning skipped - workflow ${workflowId} not found in workflows_new table`);
           }
-        );
-      } catch (versionError) {
-        // Versioning is non-critical - log but don't fail the update
-        console.warn('[AttachInputs] Versioning failed (non-critical):', versionError);
+        } catch (versionError) {
+          // Versioning is non-critical - log but don't fail the update
+          console.warn('[AttachInputs] Versioning failed (non-critical):', versionError);
+        }
+      } catch (versioningSetupError) {
+        // Non-critical - log but don't fail the update
+        console.warn('[AttachInputs] Versioning setup failed (non-critical):', versioningSetupError);
       }
     }
 
@@ -1235,7 +1248,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     // ✅ DEBUG: Log the config for each node in the response
     console.log(`[AttachInputs] 📋 Final nodes config summary:`);
     finalNormalizedGraph.nodes.forEach((node: any) => {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       const config = node.data?.config || {};
       const configKeys = Object.keys(config).filter(k => config[k] !== undefined && config[k] !== '' && !k.startsWith('_'));
       if (configKeys.length > 0) {

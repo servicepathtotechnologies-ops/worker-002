@@ -404,8 +404,12 @@ export class OllamaOrchestrator {
           maxTokens = 300; // Default to 300 tokens for faster chat responses
         }
         
-        // Enforce temperature <= 0.2 for deterministic responses
-        const temperature = Math.min(options?.temperature ?? 0.2, 0.2);
+        // Allow higher temperature for summarize layer (needs creativity for variations)
+        // For other types, enforce temperature <= 0.2 for deterministic responses
+        const isSummarizeLayer = type === 'workflow-analysis' && options?.temperature && options.temperature > 0.2;
+        const temperature = isSummarizeLayer 
+          ? options.temperature // Allow higher temperature for summarize layer
+          : Math.min(options?.temperature ?? 0.2, 0.2); // Cap at 0.2 for others
         return await ollamaManager.generate(prompt, {
           model,
           system: input.system,

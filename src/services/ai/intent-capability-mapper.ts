@@ -27,7 +27,7 @@
 import { StructuredIntent } from './intent-structurer';
 import { nodeLibrary } from '../nodes/node-library';
 import { capabilityResolver } from './capability-resolver';
-import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 
 export enum CapabilityType {
   DATA_SOURCE = 'data_source',
@@ -188,7 +188,7 @@ export class IntentCapabilityMapper {
     }
     
     // STEP 4: Fallback - try direct node type lookup
-    const normalized = normalizeNodeType({ type: 'custom', data: { type: actionType } });
+    const normalized = unifiedNormalizeNodeTypeString(actionType);
     const schema = nodeLibrary.getSchema(normalized);
     if (schema) {
       // Determine capability based on node category
@@ -271,7 +271,7 @@ export class IntentCapabilityMapper {
     
     // Check for read operations on known data source types
     if (operation === 'read' || operation === 'get' || operation === 'fetch') {
-      const normalized = normalizeNodeType({ type: 'custom', data: { type: actionType } });
+      const normalized = unifiedNormalizeNodeTypeString(actionType);
       const schema = nodeLibrary.getSchema(normalized);
       if (schema) {
         const category = schema.category?.toLowerCase() || '';
@@ -340,7 +340,7 @@ export class IntentCapabilityMapper {
     
     // Check for transformation operations on known types
     if (operation === 'process' || operation === 'transform' || operation === 'analyze') {
-      const normalized = normalizeNodeType({ type: 'custom', data: { type: actionType } });
+      const normalized = unifiedNormalizeNodeTypeString(actionType);
       const schema = nodeLibrary.getSchema(normalized);
       if (schema) {
         const category = schema.category?.toLowerCase() || '';
@@ -395,7 +395,7 @@ export class IntentCapabilityMapper {
     
     // Check for send/write operations on known output types
     if (operation === 'send' || operation === 'write' || operation === 'post') {
-      const normalized = normalizeNodeType({ type: 'custom', data: { type: actionType } });
+      const normalized = unifiedNormalizeNodeTypeString(actionType);
       const schema = nodeLibrary.getSchema(normalized);
       if (schema) {
         const category = schema.category?.toLowerCase() || '';

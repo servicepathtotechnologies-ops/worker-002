@@ -63,6 +63,48 @@ async function executeGmailSend(context: NodeExecutionContext, schema: NodeSchem
                    filteredBaseConfig.to || 
                    context.config?.to;
 
+  // ✅ NEW: Check for recipientUrl field - extract email from URL if provided
+  const recipientUrl = configWithResolvedInputs.recipientUrl || 
+                       filteredBaseConfig.recipientUrl || 
+                       context.config?.recipientUrl;
+  
+  if (recipientUrl && typeof recipientUrl === 'string' && recipientUrl.trim()) {
+    try {
+      const { parseRecipientEmails, extractEmailsFromText } = await import('../../utils/recipient-resolver');
+      // Try to extract email from URL (could be in query params, path, or content)
+      const emailsFromUrl = extractEmailsFromText(recipientUrl);
+      
+      // If URL doesn't contain email directly, try fetching content (for Google Sheets, etc.)
+      if (emailsFromUrl.length === 0 && recipientUrl.startsWith('http')) {
+        try {
+          // Fetch URL content and extract emails
+          const response = await fetch(recipientUrl);
+          if (response.ok) {
+            const content = await response.text();
+            const emailsFromContent = extractEmailsFromText(content);
+            if (emailsFromContent.length > 0) {
+              recipientEmails = emailsFromContent.join(', ');
+              console.log('[Gmail Override] ✅ Extracted emails from URL content:', recipientEmails);
+            }
+          }
+        } catch (fetchError) {
+          console.warn('[Gmail Override] ⚠️  Could not fetch URL to extract emails:', fetchError);
+          // Fallback: try to extract from URL string itself
+          const emailsFromUrlString = extractEmailsFromText(recipientUrl);
+          if (emailsFromUrlString.length > 0) {
+            recipientEmails = emailsFromUrlString.join(', ');
+            console.log('[Gmail Override] ✅ Extracted emails from URL string:', recipientEmails);
+          }
+        }
+      } else if (emailsFromUrl.length > 0) {
+        recipientEmails = emailsFromUrl.join(', ');
+        console.log('[Gmail Override] ✅ Extracted emails from URL:', recipientEmails);
+      }
+    } catch (error) {
+      console.warn('[Gmail Override] ⚠️  Error extracting emails from URL:', error);
+    }
+  }
+
   // ✅ FALLBACK: If recipientSource contains an email address (user entered email in wrong field),
   // extract it and use it as recipientEmails
   if (!recipientEmails && !explicitTo && recipientSource) {

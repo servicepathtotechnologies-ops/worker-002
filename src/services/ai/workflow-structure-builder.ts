@@ -26,10 +26,11 @@
 import { StructuredIntent } from './intent-structurer';
 import { workflowTrainingService } from './workflow-training-service';
 import { nodeLibrary } from '../nodes/node-library';
-import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 import { ollamaOrchestrator } from './ollama-orchestrator';
 import type { WorkflowGenerationStructure, WorkflowStepDefinition } from '../../core/types/ai-types';
 import { getEmbeddingGenerator } from '../../memory/utils/embeddings';
+import { dagValidator } from '../../core/validation/dag-validator';
 
 export interface WorkflowStructure {
   trigger: string;
@@ -44,6 +45,7 @@ export interface WorkflowStructure {
     target: string;
     sourceOutput: string;
     targetInput: string;
+    type?: string; // DAG Rule: "true", "false", "case_1", "case_2", etc. for IF/SWITCH edges
   }>;
   /**
    * Optional metadata used for analysis/UX (does NOT affect graph building)
@@ -249,7 +251,7 @@ export class WorkflowStructureBuilder {
     
     // Step 0.2: Validate intent actions are in allowed node list
     const disallowedActions = intent.actions?.filter(action => {
-      const normalized = normalizeNodeType({ type: 'custom', data: { type: action.type } });
+      const normalized = unifiedNormalizeNodeTypeString(action.type);
       return !allowedNodeTypes.has(normalized);
     }) || [];
     
@@ -257,24 +259,17 @@ export class WorkflowStructureBuilder {
       console.warn(`[WorkflowStructureBuilder] ⚠️  Some actions not in allowed capability list: ${disallowedActions.map(a => a.type).join(', ')}`);
       // Filter out disallowed actions (they will be handled by capability mapper)
       intent.actions = intent.actions.filter(action => {
-        const normalized = normalizeNodeType({ type: 'custom', data: { type: action.type } });
+        const normalized = unifiedNormalizeNodeTypeString(action.type);
         return allowedNodeTypes.has(normalized);
       });
       console.log(`[WorkflowStructureBuilder] ✅ Filtered intent actions to allowed nodes only`);
     }
 
-    // Step 1: Find matching sample workflow (with AI-based description matching)
-    const matchedWorkflow = await this.findMatchingSampleWorkflow(intent, userPrompt);
-    
-    // Step 2: Build base structure from sample or create new
-    let structure: WorkflowStructure;
-    if (matchedWorkflow) {
-      console.log(`[WorkflowStructureBuilder] Using matched sample workflow: ${matchedWorkflow.id}`);
-      structure = this.buildFromSampleWorkflow(matchedWorkflow, intent);
-    } else {
-      console.log(`[WorkflowStructureBuilder] No matching sample workflow found, building from scratch`);
-      structure = this.buildFromScratch(intent);
-    }
+    // ✅ PERFORMANCE FIX: Removed slow sample workflow matching (30+ min delay)
+    // AI generates good workflows from prompts - no need for expensive matching
+    // Sample workflows are still used as few-shot examples in prompts (fast, no matching overhead)
+    console.log(`[WorkflowStructureBuilder] Building workflow from user intent (AI-generated, no sample matching)`);
+    let structure = this.buildFromScratch(intent);
 
     // Step 3: Add missing required nodes (only from allowed capability list)
     structure = this.addMissingNodes(structure, intent, allowedNodeTypes);
@@ -293,7 +288,69 @@ export class WorkflowStructureBuilder {
     // Step 7: Validate acyclic graph and remove cycles
     structure = this.validateAcyclicGraph(structure);
 
-    return structure;
+    // Step 8: ✅ ROOT-LEVEL FIX - Validate DAG rules and enforce structure
+    const dagValidation = dagValidator.validateAndFix(structure);
+    if (!dagValidation.result.valid) {
+      console.error(`[WorkflowStructureBuilder] ❌ DAG validation failed:`);
+      dagValidation.result.errors.forEach(error => {
+        console.error(`  - ${error}`);
+      });
+      
+      // If critical errors, rebuild as linear chain (fallback)
+      if (dagValidation.result.errors.some(e => 
+        e.includes('Trigger must have') || 
+        e.includes('Burst flow') || 
+        e.includes('Cycle detected')
+      )) {
+        console.warn(`[WorkflowStructureBuilder] ⚠️  Critical DAG errors detected, rebuilding as linear chain`);
+        structure = this.rebuildAsLinearChain(intent, structure);
+        // Re-validate after rebuild
+        const revalidation = dagValidator.validateAndFix(structure);
+        if (!revalidation.result.valid) {
+          console.error(`[WorkflowStructureBuilder] ❌ DAG validation still failing after rebuild`);
+          revalidation.result.errors.forEach(error => {
+            console.error(`  - ${error}`);
+          });
+        }
+        // Ensure trigger and connection fields are always set (validator may return optional fields)
+        const validatedStructure = revalidation.structure;
+        return {
+          ...validatedStructure,
+          trigger: validatedStructure.trigger || structure.trigger || 'manual_trigger',
+          connections: validatedStructure.connections.map(conn => ({
+            ...conn,
+            sourceOutput: conn.sourceOutput || 'output',
+            targetInput: conn.targetInput || 'input',
+          })),
+        };
+      }
+    }
+    
+    if (dagValidation.result.warnings.length > 0) {
+      dagValidation.result.warnings.forEach(warning => {
+        console.warn(`[WorkflowStructureBuilder] ⚠️  ${warning}`);
+      });
+    }
+
+    // Ensure trigger and connection fields are always set (validator may return optional fields)
+    const validatedStructure = dagValidation.structure;
+    // Preserve original connection fields if available, otherwise use defaults
+    const originalConnectionsMap = new Map(
+      structure.connections.map(conn => [`${conn.source}→${conn.target}`, conn])
+    );
+    
+    return {
+      ...validatedStructure,
+      trigger: validatedStructure.trigger || structure.trigger || 'manual_trigger',
+      connections: validatedStructure.connections.map(conn => {
+        const originalConn = originalConnectionsMap.get(`${conn.source}→${conn.target}`);
+        return {
+          ...conn,
+          sourceOutput: conn.sourceOutput || originalConn?.sourceOutput || 'output',
+          targetInput: conn.targetInput || originalConn?.targetInput || 'input',
+        };
+      }),
+    };
   }
 
   /**
@@ -748,7 +805,7 @@ Return ONLY valid JSON, no markdown, no explanations.`;
   private workflowHasActionType(workflow: any, actionType: string): boolean {
     const selectedNodes = workflow?.phase1?.step5?.selectedNodes || [];
     return selectedNodes.some((node: string) => 
-      normalizeNodeType({ type: 'custom', data: { type: node } }) === actionType
+      unifiedNormalizeNodeTypeString(node) === actionType
     );
   }
 
@@ -937,10 +994,11 @@ Return ONLY valid JSON, no markdown, no explanations.`;
       });
     });
 
-    // ✅ Step 3: Build smart connections: trigger → data source → processor → output
+    // ✅ Step 3: Build STRICT LINEAR connections (DAG Rule: Linear by default)
+    // DAG Rule: If no conditions/branching requested → STRICTLY LINEAR
     const connections: WorkflowStructure['connections'] = [];
-    
-    // Connect trigger to first node (if nodes exist)
+
+    // DAG Rule: Trigger must have exactly 1 outgoing edge
     if (orderedNodes.length > 0) {
       connections.push({
         source: 'trigger',
@@ -948,9 +1006,13 @@ Return ONLY valid JSON, no markdown, no explanations.`;
         sourceOutput: 'output',
         targetInput: 'input',
       });
+    } else {
+      // If no nodes, workflow is invalid - but we'll let DAG validator catch this
+      console.warn(`[WorkflowStructureBuilder] ⚠️  No nodes to connect from trigger`);
     }
 
-    // Connect nodes in logical flow: data source → processor → output
+    // DAG Rule: Connect nodes sequentially (linear chain)
+    // Each node: in-degree = 1, out-degree = 1 (except terminal)
     for (let i = 0; i < orderedNodes.length - 1; i++) {
       const sourceNode = orderedNodes[i];
       const targetNode = orderedNodes[i + 1];
@@ -960,9 +1022,11 @@ Return ONLY valid JSON, no markdown, no explanations.`;
       if (!validation.valid) {
         console.warn(`[WorkflowStructureBuilder] ⚠️  Blocked connection: ${sourceNode.id} (${sourceNode.type}) → ${targetNode.id} (${targetNode.type})`);
         console.warn(`[WorkflowStructureBuilder]   Reason: ${validation.reason}`);
+        // Skip this connection - will create gap (DAG validator will catch)
         continue;
       }
 
+      // DAG Rule: Each normal node has exactly 1 output
       connections.push({
         source: sourceNode.id,
         target: targetNode.id,
@@ -970,6 +1034,9 @@ Return ONLY valid JSON, no markdown, no explanations.`;
         targetInput: 'input',
       });
     }
+    
+    // DAG Rule: Last node should be terminal (log_output) or have out-degree = 0
+    // If last node is not terminal, we'll add log_output (handled in addMissingNodes if needed)
 
     console.log(`[WorkflowStructureBuilder] ✅ Created ${connections.length} connection(s) with smart flow`);
     console.log(`[WorkflowStructureBuilder] Connection sequence: trigger → ${orderedNodes.map(n => `${n.id}(${n.type})`).join(' → ')}`);
@@ -1053,7 +1120,7 @@ Return ONLY valid JSON, no markdown, no explanations.`;
     ]);
 
     actions.forEach(action => {
-      const normalizedType = normalizeNodeType(action.type);
+      const normalizedType = unifiedNormalizeNodeTypeString(action.type);
       
       if (dataSourceTypes.has(normalizedType)) {
         dataSources.push(action);
@@ -1139,7 +1206,7 @@ Return ONLY valid JSON, no markdown, no explanations.`;
     const missingActions: StructuredIntent['actions'] = [];
 
     intent.actions.forEach(action => {
-      const normalized = normalizeNodeType({ type: 'custom', data: { type: action.type } });
+      const normalized = unifiedNormalizeNodeTypeString(action.type);
       
       // ✅ CRITICAL: Only add nodes that are in allowed capability list
       if (!existingTypes.has(action.type) && !existingTypes.has(normalized)) {
@@ -1159,7 +1226,7 @@ Return ONLY valid JSON, no markdown, no explanations.`;
 
     if (missingActions.length > 0) {
       const newNodes = missingActions.map((action, index) => {
-        const normalized = normalizeNodeType({ type: 'custom', data: { type: action.type } });
+        const normalized = unifiedNormalizeNodeTypeString(action.type);
         return {
           id: `step${structure.nodes.length + index + 1}`,
           type: normalized, // Use normalized type
@@ -1176,14 +1243,20 @@ Return ONLY valid JSON, no markdown, no explanations.`;
 
   /**
    * Add conditional logic nodes
+   * DAG Rule: IF node must have exactly 2 outputs (true/false)
+   * DAG Rule: If branches reconverge → insert MERGE node
    */
   private addConditionalLogic(
     structure: WorkflowStructure,
     conditions: StructuredIntent['conditions']
   ): WorkflowStructure {
-    conditions?.forEach((condition, index) => {
+    if (!conditions || conditions.length === 0) {
+      return structure;
+    }
+
+    conditions.forEach((condition, index) => {
       if (condition.type === 'if_else') {
-        // Insert if_else node before the conditional actions
+        // DAG Rule: IF node must have exactly 2 outputs (true/false)
         const ifElseNode = {
           id: `if_else_${index}`,
           type: 'if_else',
@@ -1191,6 +1264,14 @@ Return ONLY valid JSON, no markdown, no explanations.`;
             condition: condition.condition,
           },
         };
+
+        // Find nodes in true_path and false_path
+        const truePathNodes = structure.nodes.filter(n => 
+          condition.true_path?.includes(n.type)
+        );
+        const falsePathNodes = structure.nodes.filter(n => 
+          condition.false_path?.includes(n.type)
+        );
 
         // Find insertion point (before first conditional action)
         const firstConditionalActionIndex = structure.nodes.findIndex(n => 
@@ -1201,6 +1282,93 @@ Return ONLY valid JSON, no markdown, no explanations.`;
           structure.nodes.splice(firstConditionalActionIndex, 0, ifElseNode);
         } else {
           structure.nodes.push(ifElseNode);
+        }
+
+        // Remove existing connections to true/false path nodes (will be replaced)
+        structure.connections = structure.connections.filter(conn => {
+          const isTruePathTarget = truePathNodes.some(n => n.id === conn.target);
+          const isFalsePathTarget = falsePathNodes.some(n => n.id === conn.target);
+          return !(isTruePathTarget || isFalsePathTarget);
+        });
+
+        // DAG Rule: Connect IF node to true path (type: "true")
+        if (truePathNodes.length > 0) {
+          const firstTrueNode = truePathNodes[0];
+          structure.connections.push({
+            source: ifElseNode.id,
+            target: firstTrueNode.id,
+            sourceOutput: 'true',
+            targetInput: 'input',
+          });
+
+          // Connect true path nodes sequentially
+          for (let i = 0; i < truePathNodes.length - 1; i++) {
+            structure.connections.push({
+              source: truePathNodes[i].id,
+              target: truePathNodes[i + 1].id,
+              sourceOutput: 'output',
+              targetInput: 'input',
+            });
+          }
+        }
+
+        // DAG Rule: Connect IF node to false path (type: "false")
+        if (falsePathNodes.length > 0) {
+          const firstFalseNode = falsePathNodes[0];
+          structure.connections.push({
+            source: ifElseNode.id,
+            target: firstFalseNode.id,
+            sourceOutput: 'false',
+            targetInput: 'input',
+          });
+
+          // Connect false path nodes sequentially
+          for (let i = 0; i < falsePathNodes.length - 1; i++) {
+            structure.connections.push({
+              source: falsePathNodes[i].id,
+              target: falsePathNodes[i + 1].id,
+              sourceOutput: 'output',
+              targetInput: 'input',
+            });
+          }
+        }
+
+        // DAG Rule: If branches reconverge → insert MERGE node
+        const truePathEnd = truePathNodes[truePathNodes.length - 1];
+        const falsePathEnd = falsePathNodes[falsePathNodes.length - 1];
+        
+        // Check if both paths need to continue to the same next node
+        const nodesAfterTrue = structure.connections.filter(c => c.source === truePathEnd?.id);
+        const nodesAfterFalse = structure.connections.filter(c => c.source === falsePathEnd?.id);
+        
+        // If both paths have outputs, we need a MERGE
+        if (truePathEnd && falsePathEnd && (nodesAfterTrue.length > 0 || nodesAfterFalse.length > 0)) {
+          const mergeNode = {
+            id: `merge_${index}`,
+            type: 'merge',
+            config: {},
+          };
+          
+          structure.nodes.push(mergeNode);
+          
+          // Connect both paths to MERGE
+          if (truePathEnd) {
+            structure.connections.push({
+              source: truePathEnd.id,
+              target: mergeNode.id,
+              sourceOutput: 'output',
+              targetInput: 'input',
+            });
+          }
+          
+          if (falsePathEnd) {
+            structure.connections.push({
+              source: falsePathEnd.id,
+              target: mergeNode.id,
+              sourceOutput: 'output',
+              targetInput: 'input',
+            });
+          }
         }
       }
     });
@@ -1495,6 +1663,104 @@ Return ONLY valid JSON, no markdown, no explanations.`;
     }
 
     return { outputField, inputField };
+  }
+
+  /**
+   * Rebuild workflow as strict linear chain (fallback when DAG validation fails)
+   * DAG Rule: Linear by default - no branching unless explicitly required
+   */
+  private rebuildAsLinearChain(
+    intent: StructuredIntent,
+    originalStructure: WorkflowStructure
+  ): WorkflowStructure {
+    console.log(`[WorkflowStructureBuilder] 🔄 Rebuilding as strict linear chain (DAG fallback)`);
+    
+    // Get all nodes in order (excluding IF/SWITCH/MERGE if they caused issues)
+    const linearNodes = originalStructure.nodes
+      .filter(n => !['if_else', 'switch', 'merge'].includes(n.type))
+      .map((node, index) => ({
+        id: `step${index + 1}`,
+        type: node.type,
+        config: node.config || {},
+      }));
+
+    // If no nodes, create minimal fallback
+    if (linearNodes.length === 0) {
+      return {
+        trigger: intent.trigger || 'manual_trigger',
+        trigger_config: intent.trigger_config || {},
+        nodes: [
+          {
+            id: 'step1',
+            type: 'log_output',
+            config: {},
+          },
+        ],
+        connections: [
+          {
+            source: 'trigger',
+            target: 'step1',
+            sourceOutput: 'output',
+            targetInput: 'input',
+          },
+        ],
+        meta: {
+          origin: 'scratch',
+        },
+      };
+    }
+
+    // Build strict linear connections
+    const connections: WorkflowStructure['connections'] = [];
+
+    // DAG Rule: Trigger → first node (exactly 1 edge)
+    connections.push({
+      source: 'trigger',
+      target: linearNodes[0].id,
+      sourceOutput: 'output',
+      targetInput: 'input',
+    });
+
+    // DAG Rule: Connect nodes sequentially (each node: in=1, out=1)
+    for (let i = 0; i < linearNodes.length - 1; i++) {
+      connections.push({
+        source: linearNodes[i].id,
+        target: linearNodes[i + 1].id,
+        sourceOutput: 'output',
+        targetInput: 'input',
+      });
+    }
+
+    // Ensure last node is terminal (log_output)
+    const lastNode = linearNodes[linearNodes.length - 1];
+    const normalizedLastType = unifiedNormalizeNodeTypeString(lastNode.type);
+    if (normalizedLastType !== 'log_output') {
+      // Add log_output as terminal node
+      const logNode = {
+        id: `step${linearNodes.length + 1}`,
+        type: 'log_output',
+        config: {},
+      };
+      linearNodes.push(logNode);
+      connections.push({
+        source: lastNode.id,
+        target: logNode.id,
+        sourceOutput: 'output',
+        targetInput: 'input',
+      });
+    }
+
+    console.log(`[WorkflowStructureBuilder] ✅ Rebuilt as linear chain: ${linearNodes.length} nodes, ${connections.length} edges`);
+
+    return {
+      trigger: intent.trigger || originalStructure.trigger || 'manual_trigger',
+      trigger_config: intent.trigger_config || originalStructure.trigger_config || {},
+      nodes: linearNodes,
+      connections,
+      meta: {
+        origin: 'scratch',
+      },
+    };
   }
 
   /**

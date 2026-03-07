@@ -21,7 +21,7 @@
  */
 
 import { nodeLibrary } from '../nodes/node-library';
-import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 import { DataType } from './node-data-type-system';
 
 export interface NodeCapability {
@@ -74,8 +74,20 @@ export class CapabilityRegistry {
       this.initialize();
     }
     
-    const normalized = normalizeNodeType({ type: 'custom', data: { type: nodeType } });
-    return this.capabilities.get(normalized) || null;
+    // ✅ ROOT-LEVEL FIX: Use resolveNodeType() to handle aliases (typeform → form)
+    // This ensures aliases are resolved to canonical types before capability lookup
+    let resolvedType = nodeType;
+    try {
+      const { resolveNodeType } = require('../../core/utils/node-type-resolver-util');
+      resolvedType = resolveNodeType(nodeType, false);
+    } catch (error) {
+      // If resolution fails, try normalization as fallback
+      const normalized = unifiedNormalizeNodeTypeString(nodeType);
+      resolvedType = normalized || nodeType;
+    }
+    
+    // Lookup using resolved canonical type
+    return this.capabilities.get(resolvedType) || null;
   }
   
   /**

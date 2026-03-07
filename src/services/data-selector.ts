@@ -22,7 +22,7 @@
 import { ollamaOrchestrator } from './ai/ollama-orchestrator';
 import { getNodeOutputSchema, NODE_OUTPUT_SCHEMAS } from '../core/types/node-output-types';
 import { nodeLibrary } from './nodes/node-library';
-import { normalizeNodeType } from '../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../core/utils/unified-node-type-normalizer';
 import { WorkflowNode } from '../core/types/ai-types';
 
 /**
@@ -77,7 +77,7 @@ export class DataSelector {
     }
   ): Promise<DataSelectionResult> {
     console.log(`[DataSelector] Selecting data from prompt: "${userPrompt}"`);
-    console.log(`[DataSelector] Source node: ${sourceNode.id} (${normalizeNodeType(sourceNode)})`);
+    console.log(`[DataSelector] Source node: ${sourceNode.id} (${unifiedNormalizeNodeType(sourceNode)})`);
 
     // Get source node information
     const sourceInfo = this.getSourceNodeInfo(sourceNode, context?.sampleData);
@@ -173,7 +173,7 @@ export class DataSelector {
    * Get source node information
    */
   private getSourceNodeInfo(sourceNode: WorkflowNode, sampleData?: any[]): SourceNodeInfo {
-    const nodeType = normalizeNodeType(sourceNode);
+    const nodeType = unifiedNormalizeNodeType(sourceNode);
     const schema = nodeLibrary.getSchema(nodeType);
     const outputSchema = getNodeOutputSchema(nodeType);
 

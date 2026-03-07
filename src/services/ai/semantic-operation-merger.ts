@@ -13,7 +13,7 @@ import { SemanticOperation, SemanticOperationType } from './intent-extraction-la
 import { ExecutionStep } from './dependency-planner';
 import { nodeLibrary } from '../nodes/node-library';
 import { capabilityRegistry } from './capability-registry';
-import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 
 export interface MergedOperation {
   operation: SemanticOperation;

@@ -13,9 +13,13 @@
  * 1. If prompt contains transformation verb → transformation step must exist
  * 2. Map transformation verbs to appropriate nodes using TRANSFORMATION_NODE_MAP
  * 3. Validate workflow includes required transformations
+ * 
+ * ✅ ROOT-LEVEL FIX: Uses UnifiedNodeTypeMatcher for semantic equivalence checking
+ * This ensures ollama = ai_chat_model for AI processing requirements (universal for ALL nodes)
  */
 
 import { TRANSFORMATION_NODE_MAP, getTransformationNodeType } from './transformation-node-config';
+import { unifiedNodeTypeMatcher } from '../../core/utils/unified-node-type-matcher';
 
 export enum TransformationVerb {
   SUMMARIZE = 'summarize',
@@ -140,6 +144,17 @@ export class TransformationDetector {
    * @param workflowNodeTypes - Node types in the workflow
    * @returns Validation result with missing transformations
    */
+  /**
+   * ✅ ROOT-LEVEL FIX: Validate transformations using semantic matching
+   * 
+   * Uses UnifiedNodeTypeMatcher to recognize semantic equivalence:
+   * - ollama = ai_chat_model (both in 'ai' category)
+   * - openai_gpt = ai_chat_model (both in 'ai' category)
+   * - google_gmail = outlook (both in 'communication' category)
+   * 
+   * This is UNIVERSAL - works for ALL node types automatically via registry
+   * No hardcoded mappings needed - uses category and semantic equivalence
+   */
   validateTransformations(
     detection: TransformationDetection,
     workflowNodeTypes: string[]
@@ -151,21 +166,43 @@ export class TransformationDetector {
     const errors: string[] = [];
     const missing: string[] = [];
     
-    // Check if any required node type exists in workflow
-    const hasRequiredNode = detection.requiredNodeTypes.some(nodeType => 
-      workflowNodeTypes.some(workflowType => 
-        workflowType.toLowerCase().includes(nodeType.toLowerCase()) ||
-        nodeType.toLowerCase().includes(workflowType.toLowerCase())
-      )
-    );
+    // ✅ ROOT-LEVEL FIX: Use semantic matching via UnifiedNodeTypeMatcher
+    // This recognizes that ollama = ai_chat_model for AI processing requirements
+    // Works universally for ALL node types - no hardcoding needed
+    const satisfiedRequirements: string[] = [];
+    const missingRequirements: string[] = [];
     
-    if (!hasRequiredNode) {
-      const error = `Workflow missing required transformation node. Detected verbs: ${detection.verbs.join(', ')}. Required node types: ${detection.requiredNodeTypes.join(', ')}`;
+    for (const requiredType of detection.requiredNodeTypes) {
+      const matchResult = unifiedNodeTypeMatcher.isRequirementSatisfied(
+        requiredType,
+        workflowNodeTypes,
+        {
+          strict: false, // Use semantic equivalence (category matching)
+        }
+      );
+      
+      if (matchResult.matches && matchResult.matchingType) {
+        satisfiedRequirements.push(requiredType);
+        console.log(
+          `[TransformationDetector] ✅ Requirement "${requiredType}" satisfied by ` +
+          `workflow node "${matchResult.matchingType}" (${matchResult.reason}, confidence: ${matchResult.confidence}%)`
+        );
+      } else {
+        missingRequirements.push(requiredType);
+      }
+    }
+    
+    // Only report truly missing requirements (not semantically satisfied ones)
+    if (missingRequirements.length > 0) {
+      const error = `Workflow missing required transformation node. Detected verbs: ${detection.verbs.join(', ')}. Missing node types: ${missingRequirements.join(', ')}`;
       errors.push(error);
-      missing.push(...detection.requiredNodeTypes);
+      missing.push(...missingRequirements);
       console.error(`[TransformationDetector] ❌ ${error}`);
     } else {
-      console.log(`[TransformationDetector] ✅ Workflow includes required transformation nodes`);
+      console.log(
+        `[TransformationDetector] ✅ All required transformation nodes satisfied ` +
+        `(${satisfiedRequirements.length} requirement(s) satisfied by semantic matching)`
+      );
     }
     
     return {

@@ -188,7 +188,20 @@ export class WorkflowVersionManager {
     },
     createdBy?: string,
     metadata?: WorkflowVersion['metadata']
-  ): Promise<WorkflowVersion> {
+  ): Promise<WorkflowVersion | null> {
+    // ✅ CRITICAL FIX: Verify workflow exists before creating version
+    // This prevents foreign key constraint violations
+    const { data: workflow, error: workflowError } = await this.supabase
+      .from('workflows_new')
+      .select('id')
+      .eq('id', workflowId)
+      .single();
+    
+    if (workflowError || !workflow) {
+      console.warn(`[WorkflowVersioning] ⚠️  Workflow ${workflowId} not found in workflows_new table, skipping versioning. Error:`, workflowError?.message || 'Workflow not found');
+      // Return null instead of throwing - versioning is optional
+      return null;
+    }
     // Get current version number
     const currentVersion = await this.getCurrentVersion(workflowId);
     const nextVersion = currentVersion ? currentVersion.version + 1 : 1;

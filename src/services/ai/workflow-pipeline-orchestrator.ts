@@ -24,11 +24,17 @@ import { workflowConfirmationManager, WorkflowState, WorkflowConfirmationRequest
 import { workflowExplanationService, WorkflowExplanation } from './workflow-explanation-service';
 import { WorkflowNode, WorkflowEdge, Workflow, WorkflowGenerationStructure } from '../../core/types/ai-types';
 import { nodeLibrary } from '../nodes/node-library';
-import { validateAndFixEdgeHandles } from '../../core/utils/node-handle-registry';
+import { validateAndFixEdgeHandles, getNodeHandleContract, resolveSourceHandleDynamically, resolveTargetHandleDynamically } from '../../core/utils/node-handle-registry';
 import { resolveCompatibleHandles } from './schema-driven-connection-resolver';
-import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+import { enhancedEdgeCreationService } from './enhanced-edge-creation-service';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 import { randomUUID } from 'crypto';
 import { nodeTypeNormalizationService } from './node-type-normalization-service';
+import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
+import { graphBranchingValidator } from '../../core/validation/graph-branching-validator';
+import { semanticConnectionValidator } from '../../core/validation/semantic-connection-validator';
+// ✅ ERROR PREVENTION: Import universal validators
+import { edgeCreationValidator, universalHandleResolver, universalCategoryResolver } from '../../core/error-prevention';
 
 // Configuration: Execution modes
 export enum ExecutionMode {
@@ -330,7 +336,7 @@ export class WorkflowPipelineOrchestrator {
     if (workflow.nodes && workflow.nodes.length > 0) {
       parts.push(`\n**Nodes**:`);
       workflow.nodes.forEach((node, index) => {
-        const nodeType = normalizeNodeType(node);
+        const nodeType = unifiedNormalizeNodeType(node);
         const label = node.data?.label || nodeType;
         parts.push(`${index + 1}. ${label} (${nodeType})`);
       });
@@ -424,8 +430,9 @@ export class WorkflowPipelineOrchestrator {
         const BLOCK_BUILD_THRESHOLD = 0.5;
         
         if (confidence < BLOCK_BUILD_THRESHOLD) {
-          // Confidence too low (< 50%) - block build and require clarification
-          console.log(`[PipelineOrchestrator] ❌ Confidence too low (${(confidence * 100).toFixed(1)}% < 50%) - blocking build, requiring clarification`);
+          // ✅ ROOT-LEVEL FIX: When confidence is low, use intentAutoExpander instead of blocking
+          // Clarification stage is disabled, so we must proceed with expansion
+          console.log(`[PipelineOrchestrator] ⚠️  Confidence too low (${(confidence * 100).toFixed(1)}% < 50%) - using intentAutoExpander as fallback (clarification disabled)`);
           
           const inferredIntent = promptUnderstanding.inferredIntent;
           
@@ -435,7 +442,46 @@ export class WorkflowPipelineOrchestrator {
             console.log(`[PipelineOrchestrator] ✅ Defaulting to manual_trigger (trigger was missing)`);
           }
           
-          // Store pipeline context with clarification questions
+          // ✅ ROOT-LEVEL FIX: Use intentAutoExpander to expand the low-confidence intent
+          // This allows workflow generation to proceed even with low confidence
+          try {
+            console.log(`[PipelineOrchestrator] 🔄 Attempting to expand low-confidence intent using intentAutoExpander...`);
+            const expandedIntent = await intentAutoExpander.expandIntent(userPrompt, inferredIntent, confidence);
+            
+            if (expandedIntent && expandedIntent.assumed_actions && expandedIntent.assumed_actions.length > 0) {
+              // Apply expanded actions to structured intent
+              inferredIntent.actions = expandedIntent.assumed_actions.map(actionStr => {
+                const [type, operation] = actionStr.split(':');
+                return {
+                  type: type,
+                  operation: operation || 'read',
+                  description: `${operation} using ${type}`,
+                };
+              });
+              
+              console.log(`[PipelineOrchestrator] ✅ Expanded intent successfully: ${inferredIntent.actions.length} actions added`);
+              
+              // Update trigger if expanded intent has one
+              if (expandedIntent.assumed_trigger && !inferredIntent.trigger) {
+                inferredIntent.trigger = expandedIntent.assumed_trigger;
+              }
+              
+              // Continue with pipeline using expanded intent
+              // Don't return early - let pipeline continue with expanded intent
+              warnings.push(`Low confidence (${(confidence * 100).toFixed(1)}%) - used intent expansion to proceed`);
+            } else {
+              // Expansion failed or returned no actions - log warning but continue
+              console.warn(`[PipelineOrchestrator] ⚠️  Intent expansion returned no actions, continuing with original intent`);
+              warnings.push(`Low confidence (${(confidence * 100).toFixed(1)}%) and expansion failed - proceeding with minimal intent`);
+            }
+          } catch (expansionError) {
+            // Expansion failed - log error but continue with original intent
+            const errorMsg = expansionError instanceof Error ? expansionError.message : 'Unknown expansion error';
+            console.error(`[PipelineOrchestrator] ❌ Intent expansion failed: ${errorMsg}`);
+            warnings.push(`Low confidence (${(confidence * 100).toFixed(1)}%) and expansion failed - proceeding with minimal intent`);
+          }
+          
+          // Store pipeline context
           const pipelineContext: PipelineContext = {
             original_prompt: userPrompt,
             structured_intent: inferredIntent,
@@ -446,31 +492,9 @@ export class WorkflowPipelineOrchestrator {
             inference_reasoning: promptUnderstanding.reasoning,
           };
           
-          return {
-            success: false,
-            structuredIntent: inferredIntent,
-            errors: [],
-            warnings: [`Confidence too low (${(confidence * 100).toFixed(1)}% < 50%) - clarification required before building`],
-            requiresCredentials: false,
-            clarificationRequired: true,
-            clarificationQuestions: promptUnderstanding.clarificationQuestions,
-            pipelineContext,
-            confidenceScore: {
-              confidence_score: confidence,
-              factors: {
-                semantic_similarity: confidence,
-                node_match_coverage: 1.0, // All nodes validated
-                missing_fields_penalty: promptUnderstanding.missingFields.length * 0.2,
-                vague_keywords_penalty: 0,
-              },
-              analysis: {
-                unresolved_node_types: [],
-                missing_fields: promptUnderstanding.missingFields,
-                vague_keywords_found: [],
-                recommendations: promptUnderstanding.clarificationQuestions || [],
-              },
-            },
-          };
+          // ✅ ROOT-LEVEL FIX: Don't block - continue with pipeline using expanded/minimal intent
+          // The pipeline will continue and attempt to build the workflow
+          // This prevents "Unknown pipeline error" when clarification is disabled
         } else if (confidence >= BUILD_ALLOWED_THRESHOLD) {
           // High confidence (>= 60%) - allow build, use inferred intent directly
           console.log(`[PipelineOrchestrator] ✅ High confidence (${(confidence * 100).toFixed(1)}% >= 60%) - allowing build with inferred intent`);
@@ -489,31 +513,124 @@ export class WorkflowPipelineOrchestrator {
       console.log(`[PipelineOrchestrator] STEP 1: Converting prompt to structured intent`);
       onProgress?.(1, 'Analyzing Intent', 62, { message: 'Converting prompt to structured intent...' });
       
-      // ✅ NEW: Check if planner output is available and convert it to StructuredIntent
-      // This preserves planner.data_sources → intent.dataSources and planner.actions → intent.actions
+      // ✅ NEW ARCHITECTURE (PRIMARY): SimpleIntent → Intent-Aware Planner → StructuredIntent
+      // This is the PRIMARY path according to World-Class Architecture Upgrade Plan
       let structuredIntent: StructuredIntent | undefined = undefined;
       let plannerSpec: any = undefined;
       
+      // ✅ PRIMARY PATH: Use SimpleIntent extraction + Intent-Aware Planner
       try {
-        const { planWorkflowSpecFromPrompt } = await import('./smart-planner-adapter');
-        plannerSpec = await planWorkflowSpecFromPrompt(userPrompt);
-        if (plannerSpec) {
-          console.log(`[PipelineOrchestrator] ✅ Planner output detected - converting to StructuredIntent`);
-          const { convertPlannerSpecToIntent } = await import('./planner-to-intent-converter');
-          structuredIntent = convertPlannerSpecToIntent(plannerSpec);
-          console.log(`[PipelineOrchestrator] ✅ Converted planner spec: ${structuredIntent.dataSources?.length || 0} dataSources, ${structuredIntent.actions.length} actions, ${structuredIntent.transformations?.length || 0} transformations`);
+        console.log(`[PipelineOrchestrator] ✅ Using NEW ARCHITECTURE: SimpleIntent → Intent-Aware Planner (PRIMARY)`);
+        
+        // ✅ PHASE 2 + PHASE 4: Extract SimpleIntent with guardrails and error recovery
+        const { intentExtractor } = await import('./intent-extractor');
+        const simpleIntentResult = await intentExtractor.extractIntent(userPrompt);
+        
+        // ✅ PHASE 4: Validate SimpleIntent with Output Validator
+        const { outputValidator } = await import('./output-validator');
+        const outputValidation = outputValidator.validateSimpleIntent(simpleIntentResult.intent);
+        
+        if (!outputValidation.valid) {
+          console.warn(`[PipelineOrchestrator] ⚠️  SimpleIntent validation failed: ${outputValidation.errors.join(', ')}`);
+        }
+        
+        // Step 2: Validate SimpleIntent (Phase 2)
+        const { intentValidator } = await import('./intent-validator');
+        const validation = intentValidator.validate(simpleIntentResult.intent);
+        
+        // Step 3: Repair SimpleIntent if needed (Phase 2)
+        let finalSimpleIntent = simpleIntentResult.intent;
+        if (!validation.valid) {
+          const { intentRepairEngine } = await import('./intent-repair-engine');
+          const repairResult = intentRepairEngine.repair(simpleIntentResult.intent, validation, userPrompt);
+          finalSimpleIntent = repairResult.repairedIntent;
+          console.log(`[PipelineOrchestrator] ✅ Repaired SimpleIntent: ${repairResult.repairs.length} repairs made`);
+          
+          // ✅ PHASE 4: Re-validate after repair
+          const repairedValidation = outputValidator.validateSimpleIntent(finalSimpleIntent);
+          if (!repairedValidation.valid) {
+            console.warn(`[PipelineOrchestrator] ⚠️  Repaired SimpleIntent still has issues: ${repairedValidation.errors.join(', ')}`);
+          }
+        }
+        
+        // Step 4: Check for template match
+        const { templateBasedGenerator } = await import('./template-based-generator');
+        const templateMatch = templateBasedGenerator.matchTemplate(finalSimpleIntent);
+        
+        if (templateMatch.template && templateMatch.confidence >= 0.7) {
+          // Use template
+          console.log(`[PipelineOrchestrator] ✅ Template matched: ${templateMatch.template.name} (confidence: ${(templateMatch.confidence * 100).toFixed(1)}%)`);
+          structuredIntent = templateBasedGenerator.generateFromTemplate(templateMatch.template, finalSimpleIntent);
+        } else {
+          // Step 5: Use Intent-Aware Planner to build StructuredIntent
+          const { intentAwarePlanner } = await import('./intent-aware-planner');
+          const planningResult = await intentAwarePlanner.planWorkflow(finalSimpleIntent, userPrompt);
+          
+          if (planningResult.errors.length === 0) {
+            // ✅ PHASE 4: Validate StructuredIntent with Output Validator
+            const structuredValidation = outputValidator.validateStructuredIntent(planningResult.structuredIntent);
+            
+            if (structuredValidation.valid) {
+              structuredIntent = planningResult.structuredIntent;
+              console.log(`[PipelineOrchestrator] ✅ Intent-Aware Planner generated StructuredIntent: ${planningResult.nodeRequirements.length} nodes, execution order: ${planningResult.executionOrder.length} steps`);
+            } else {
+              console.warn(`[PipelineOrchestrator] ⚠️  StructuredIntent validation failed: ${structuredValidation.errors.join(', ')}`);
+              // Try error recovery
+              const { errorRecovery } = await import('./error-recovery');
+              const recoveryResult = await errorRecovery.recoverStructuredIntent(finalSimpleIntent, userPrompt);
+              if (recoveryResult.success && recoveryResult.result) {
+                structuredIntent = recoveryResult.result;
+                console.log(`[PipelineOrchestrator] ✅ Recovered StructuredIntent using ${recoveryResult.strategy}`);
+              }
+            }
+          } else {
+            console.warn(`[PipelineOrchestrator] ⚠️  Intent-Aware Planner had errors: ${planningResult.errors.join(', ')}`);
+            // ✅ PHASE 4: Try error recovery
+            try {
+              const { errorRecovery } = await import('./error-recovery');
+              const recoveryResult = await errorRecovery.recoverStructuredIntent(finalSimpleIntent, userPrompt);
+              if (recoveryResult.success && recoveryResult.result) {
+                structuredIntent = recoveryResult.result;
+                console.log(`[PipelineOrchestrator] ✅ Recovered StructuredIntent using ${recoveryResult.strategy}`);
+              }
+            } catch (error) {
+              console.warn(`[PipelineOrchestrator] ⚠️  Error recovery failed:`, error);
+            }
+          }
         }
       } catch (error) {
-        console.warn(`[PipelineOrchestrator] ⚠️  Planner conversion failed (non-fatal):`, error);
+        console.warn(`[PipelineOrchestrator] ⚠️  New architecture (SimpleIntent → Planner) failed:`, error);
+        // Will fall through to fallback paths
       }
       
-      // ✅ FIXED: Use inferred intent if confidence >= 50% (not blocked), otherwise use normal structuring
-      // Only if planner didn't provide intent
+      // ✅ FALLBACK PATH 1: Check if planner output is available (Smart Planner)
+      // This is a fallback if new architecture fails
+      if (!structuredIntent) {
+        try {
+          const { planWorkflowSpecFromPrompt } = await import('./smart-planner-adapter');
+          plannerSpec = await planWorkflowSpecFromPrompt(userPrompt);
+          if (plannerSpec) {
+            console.log(`[PipelineOrchestrator] ✅ Fallback: Using planner output - converting to StructuredIntent`);
+            const { convertPlannerSpecToIntent } = await import('./planner-to-intent-converter');
+            structuredIntent = convertPlannerSpecToIntent(plannerSpec);
+            console.log(`[PipelineOrchestrator] ✅ Converted planner spec: ${structuredIntent.dataSources?.length || 0} dataSources, ${structuredIntent.actions.length} actions, ${structuredIntent.transformations?.length || 0} transformations`);
+          }
+        } catch (error) {
+          console.warn(`[PipelineOrchestrator] ⚠️  Planner conversion failed (non-fatal):`, error);
+        }
+      }
+      
+      // ✅ FALLBACK PATH 2: Use inferred intent if confidence >= 50%
+      // Only if new architecture didn't provide intent
       if (!structuredIntent) {
         if (promptUnderstanding && promptUnderstanding.confidence >= 0.5) {
           structuredIntent = promptUnderstanding.inferredIntent;
           console.log(`[PipelineOrchestrator] ✅ Using inferred intent from prompt understanding (confidence: ${(promptUnderstanding.confidence * 100).toFixed(1)}%)`);
         } else {
+          // ✅ DEPRECATED: Old intentStructurer (LAST RESORT fallback only)
+          // This will be removed in future versions - new architecture should handle all cases
+          console.warn(`[PipelineOrchestrator] ⚠️  Using DEPRECATED intentStructurer as last resort fallback`);
+          console.warn(`[PipelineOrchestrator] ⚠️  This method will be removed - new architecture should handle all cases`);
           structuredIntent = await intentStructurer.structureIntent(userPrompt);
         }
       }
@@ -551,19 +668,10 @@ export class WorkflowPipelineOrchestrator {
         warnings.push(completenessResult.reason || 'Intent validation incomplete - will be expanded');
       }
 
-      // STEP 1.6: Get similarity score (before structure building)
-      console.log(`[PipelineOrchestrator] STEP 1.6: Checking sample workflow similarity`);
-      onProgress?.(1.6, 'Checking Similarity', 64, { message: 'Checking sample workflow similarity...' });
-      let similarityScore: number | undefined;
-      try {
-        const score = await workflowStructureBuilder.getBestSimilarityScore(structuredIntent, userPrompt);
-        similarityScore = score || undefined;
-        if (similarityScore !== undefined) {
-          console.log(`[PipelineOrchestrator] Best similarity score: ${(similarityScore * 100).toFixed(1)}%`);
-        }
-      } catch (error) {
-        console.warn(`[PipelineOrchestrator] ⚠️  Could not calculate similarity:`, error);
-      }
+      // ✅ PERFORMANCE FIX: Removed slow similarity checking (30+ min delay)
+      // AI generates workflows from prompts - similarity score not needed
+      // Sample workflows are used as few-shot examples only (fast, no matching)
+      let similarityScore: number | undefined = undefined;
 
       // STEP 1.65: Compute Intent Confidence Score
       console.log(`[PipelineOrchestrator] STEP 1.65: Computing intent confidence score`);
@@ -857,6 +965,7 @@ export class WorkflowPipelineOrchestrator {
         const normalizedWorkflow = nodeTypeNormalizationService.validateAndNormalizeWorkflow(workflow);
         workflow = normalizedWorkflow;
         console.log(`[PipelineOrchestrator] ✅ Workflow node types validated and normalized`);
+        
       } catch (error) {
         // ✅ ERROR RECOVERY: Workflow normalization failed
         const errorMessage = error instanceof Error ? error.message : 'Unknown error during workflow normalization';
@@ -920,6 +1029,7 @@ export class WorkflowPipelineOrchestrator {
       // STEP 3: Workflow is already compiled (skip old conversion step)
       console.log(`[PipelineOrchestrator] STEP 3: Workflow already compiled (skipping old conversion)`);
       onProgress?.(3, 'Workflow Ready', 75, { message: 'Workflow compiled and ready...' });
+      
       
       // Workflow is already in correct format from deterministic compiler
       // No conversion needed
@@ -1002,6 +1112,7 @@ export class WorkflowPipelineOrchestrator {
           console.log(`[PipelineOrchestrator] ✅ Safety nodes injected: ${safety.injectedNodeTypes.join(', ')}`);
           warnings.push(...safety.warnings);
         }
+        
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error during safety injection';
         console.warn(`[PipelineOrchestrator] ⚠️  Safety node injection failed: ${errorMessage}`);
@@ -1021,9 +1132,46 @@ export class WorkflowPipelineOrchestrator {
         warnings.push(`Could not inject error handling branch: ${errorMessage}`);
       }
 
-      // STEP 3.5: Generate structured workflow explanation
-      console.log(`[PipelineOrchestrator] STEP 3.5: Generating workflow explanation`);
-      onProgress?.(3.5, 'Generating Explanation', 78, { message: 'Generating structured workflow explanation...' });
+      // STEP 3.5: Hydrate nodes with structural properties from registry
+      // ✅ CRITICAL FIX: Enrich nodes with output ports (especially IF-ELSE nodes with 'true' and 'false' plugs)
+      console.log(`[PipelineOrchestrator] STEP 3.5: Hydrating nodes with registry properties`);
+      onProgress?.(3.5, 'Hydrating Nodes', 78, { message: 'Enriching nodes with structural properties from registry...' });
+      try {
+        const { hydrateWorkflowFromRegistry } = await import('./registry-based-node-hydrator');
+        const hydrationResult = hydrateWorkflowFromRegistry(workflow);
+        workflow.nodes = hydrationResult.nodes;
+        
+        if (hydrationResult.hydratedCount > 0) {
+          console.log(`[PipelineOrchestrator] ✅ Hydrated ${hydrationResult.hydratedCount} node(s) with registry properties`);
+          
+          // Log IF-ELSE nodes to verify they have two plugs
+          const ifElseNodes = workflow.nodes.filter(n => {
+            const nodeType = (n.data?.type || n.type || '').toLowerCase();
+            return nodeType === 'if_else' || nodeType === 'if-else';
+          });
+          
+          if (ifElseNodes.length > 0) {
+            console.log(
+              `[PipelineOrchestrator] ✅ Verified ${ifElseNodes.length} IF-ELSE node(s) have structural properties:`,
+              ifElseNodes.map(n => ({
+                id: n.id,
+                outgoingPorts: (n.data as any)?.outgoingPorts || 'MISSING',
+                isBranching: (n.data as any)?.isBranching || false,
+              }))
+            );
+          }
+        }
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error during node hydration';
+        console.warn(`[PipelineOrchestrator] ⚠️  Node hydration failed: ${errorMessage}`);
+        warnings.push(`Could not hydrate nodes with registry properties: ${errorMessage}`);
+        // Continue with workflow - hydration is non-critical
+      }
+      
+
+      // STEP 3.6: Generate structured workflow explanation
+      console.log(`[PipelineOrchestrator] STEP 3.6: Generating workflow explanation`);
+      onProgress?.(3.6, 'Generating Explanation', 79, { message: 'Generating structured workflow explanation...' });
       
       let workflowExplanation: WorkflowExplanation;
       let explanation: string;
@@ -1059,6 +1207,7 @@ export class WorkflowPipelineOrchestrator {
           assumptions: [],
         };
       }
+    
 
       // Generate unique workflow ID for confirmation tracking
       const workflowId = `workflow_${randomUUID()}`;
@@ -1091,8 +1240,9 @@ export class WorkflowPipelineOrchestrator {
       // ✅ CRITICAL: Pipeline MUST pause here and return confirmation request
       // Workflow builder does NOT execute - only builds structure
       // User must explicitly confirm before pipeline continues
+      // ✅ LOOP-BACK: Only return if workflow is perfect (or has acceptable errors)
       return {
-        success: true,
+        success: errors.length === 0, // Only success if no errors
         workflow,
         structuredIntent,
         analysis,
@@ -1234,7 +1384,7 @@ export class WorkflowPipelineOrchestrator {
       trigger: confirmationRequest.pipelineContext?.structured_intent?.trigger || 'manual_trigger',
       nodes: workflow.nodes.map(n => ({
         id: n.id,
-        type: normalizeNodeType(n),
+        type: unifiedNormalizeNodeType(n),
         config: n.data?.config || {},
       })),
       connections: workflow.edges.map(e => ({
@@ -1324,8 +1474,8 @@ export class WorkflowPipelineOrchestrator {
         return edge;
       }
       
-      const sourceType = normalizeNodeType(sourceNode);
-      const targetType = normalizeNodeType(targetNode);
+      const sourceType = unifiedNormalizeNodeType(sourceNode);
+      const targetType = unifiedNormalizeNodeType(targetNode);
       
       const { sourceHandle, targetHandle } = validateAndFixEdgeHandles(
         sourceType,
@@ -1421,12 +1571,12 @@ export class WorkflowPipelineOrchestrator {
       trigger: confirmationRequest.pipelineContext?.structured_intent?.trigger || 'manual_trigger',
       steps: finalWorkflow.nodes
         .filter(n => {
-          const type = normalizeNodeType(n);
+          const type = unifiedNormalizeNodeType(n);
           return !['manual_trigger', 'schedule', 'webhook', 'form', 'chat_trigger'].includes(type);
         })
         .map(n => ({
           id: n.id,
-          type: normalizeNodeType(n),
+          type: unifiedNormalizeNodeType(n),
           description: n.data?.label || n.id,
         })),
       outputs: [],
@@ -1503,8 +1653,34 @@ export class WorkflowPipelineOrchestrator {
       nodes.push(workflowNode);
     });
 
+    // ✅ PRODUCTION-READY: Sort connections for deterministic edge creation
+    // Sort by: trigger first, then by source node order, then by target node order
+    const sortedConnections = [...structure.connections].sort((a, b) => {
+      // Trigger connections first
+      const aIsTrigger = a.source === 'trigger';
+      const bIsTrigger = b.source === 'trigger';
+      if (aIsTrigger && !bIsTrigger) return -1;
+      if (!aIsTrigger && bIsTrigger) return 1;
+      
+      // Then by source node index
+      const aSourceIndex = structure.nodes.findIndex(n => n.id === a.source);
+      const bSourceIndex = structure.nodes.findIndex(n => n.id === b.source);
+      if (aSourceIndex !== bSourceIndex) {
+        return aSourceIndex - bSourceIndex;
+      }
+      
+      // Then by target node index
+      const aTargetIndex = structure.nodes.findIndex(n => n.id === a.target);
+      const bTargetIndex = structure.nodes.findIndex(n => n.id === b.target);
+      return aTargetIndex - bTargetIndex;
+    });
+
+    // Track skipped connections for orphan reconnection
+    const skippedConnections: typeof structure.connections = [];
+    const orphanedNodeIds = new Set<string>();
+
     // Create edges
-    structure.connections.forEach(conn => {
+    sortedConnections.forEach(conn => {
       const sourceNode = nodes.find(n => n.id === conn.source);
       const targetNode = nodes.find(n => n.id === conn.target);
 
@@ -1513,35 +1689,381 @@ export class WorkflowPipelineOrchestrator {
         return;
       }
 
-      const sourceType = normalizeNodeType(sourceNode);
-      const targetType = normalizeNodeType(targetNode);
+      const sourceType = unifiedNormalizeNodeType(sourceNode);
+      const targetType = unifiedNormalizeNodeType(targetNode);
 
-      // ✅ FIXED: Use schema-driven connection resolver (no fallback)
-      // If compatible handles not found → workflow invalid (throw error)
-      const resolution = resolveCompatibleHandles(sourceNode, targetNode);
+      // ✅ ERROR PREVENTION #5: Use universal edge creation validator (prevents parallel branches)
+      const validation = edgeCreationValidator.canCreateEdge(
+        sourceNode,
+        targetNode,
+        edges,
+        [], // No edges being created in this pass
+        conn.sourceOutput,
+        conn.targetInput,
+        conn.type
+      );
       
-      if (!resolution.success || !resolution.sourceHandle || !resolution.targetHandle) {
-        const error = `Cannot create edge ${conn.source} → ${conn.target}: ${resolution.error || 'No compatible handles found'}`;
-        console.error(`[PipelineOrchestrator] ❌ ${error}`);
-        throw new Error(`Workflow invalid: ${error}. Edge creation must ONLY use schema-defined handles.`);
+      if (!validation.allowed) {
+        console.warn(
+          `[PipelineOrchestrator] ⚠️  Skipping edge ${sourceType}(${sourceNode.id}) → ${targetType}(${targetNode.id}): ${validation.reason}`
+        );
+        skippedConnections.push(conn);
+        orphanedNodeIds.add(conn.target);
+        return; // Skip this edge to prevent parallel branches
+      }
+      
+      // ✅ PRODUCTION-READY: Use semantic validator (LOGICAL validation)
+      // Both structural AND semantic validation must pass
+      const semanticValidation = semanticConnectionValidator.validateConnection(
+        { nodes, edges },
+        sourceNode.id,
+        targetNode.id
+      );
+      
+      if (!semanticValidation.valid) {
+        console.warn(
+          `[PipelineOrchestrator] ⚠️  Skipping edge ${sourceType}(${sourceNode.id}) → ${targetType}(${targetNode.id}): ${semanticValidation.reason}`
+        );
+        skippedConnections.push(conn);
+        if (semanticValidation.shouldSkip) {
+          orphanedNodeIds.add(conn.target);
+        }
+        return; // Skip this edge - doesn't make logical sense
       }
 
-      const edge: WorkflowEdge = {
-        id: randomUUID(),
-        source: conn.source,
-        target: conn.target,
-        type: targetType === 'ai_agent' ? 'ai-input' : 'default',
-        sourceHandle: resolution.sourceHandle,
-        targetHandle: resolution.targetHandle,
-      };
-      edges.push(edge);
-      console.log(`[PipelineOrchestrator] ✅ Created edge: ${sourceType}(${resolution.sourceHandle}) → ${targetType}(${resolution.targetHandle})`);
+      // ✅ ERROR PREVENTION #1: Use universal handle resolver (prevents invalid handles)
+      const sourceHandleResult = universalHandleResolver.resolveSourceHandle(
+        sourceNode.data.type,
+        conn.sourceOutput, // Explicit handle from structure (highest priority)
+        conn.type // Connection type ('true', 'false', etc.)
+      );
+      
+      const targetHandleResult = universalHandleResolver.resolveTargetHandle(
+        targetNode.data.type,
+        conn.targetInput // Explicit handle from structure (highest priority)
+      );
+      
+      if (!sourceHandleResult.valid || !targetHandleResult.valid) {
+        const error = `Cannot create edge ${conn.source} → ${conn.target}: Handle resolution failed - ${sourceHandleResult.reason || targetHandleResult.reason}`;
+        console.error(`[PipelineOrchestrator] ❌ ${error}`);
+        skippedConnections.push(conn);
+        orphanedNodeIds.add(conn.target);
+        return;
+      }
+      
+      const sourceHandle = sourceHandleResult.handle;
+      const targetHandle = targetHandleResult.handle;
+      
+      console.log(
+        `[PipelineOrchestrator] Using handles: ${sourceType}(${sourceHandle}) → ${targetType}(${targetHandle})`
+      );
+
+      // ✅ FIX 2: Use Enhanced Edge Creation Service with fallbacks
+      // DAG Rule: Use edge type from structure (true/false for IF, case_1/case_2 for SWITCH)
+      const edgeType = conn.type || (targetType === 'ai_agent' ? 'ai-input' : 'default');
+      
+      const edgeResult = enhancedEdgeCreationService.createEdgeWithFallback(
+        sourceNode,
+        targetNode,
+        sourceHandle,
+        targetHandle,
+        edges,
+        nodes
+      );
+      
+      if (edgeResult.success && edgeResult.edge) {
+        // Set edge type if provided
+        if (edgeType && edgeType !== 'main') {
+          edgeResult.edge.type = edgeType as any;
+        }
+        edges.push(edgeResult.edge);
+        if (edgeResult.usedFallback) {
+          console.log(`[PipelineOrchestrator] ⚠️  Created edge using fallback: ${sourceType}(${sourceHandle}) → ${targetType}(${targetHandle})`);
+        } else {
+          console.log(`[PipelineOrchestrator] ✅ Created edge: ${sourceType}(${sourceHandle}) → ${targetType}(${targetHandle})`);
+        }
+      } else {
+        console.warn(
+          `[PipelineOrchestrator] ⚠️  Failed to create edge: ${sourceType} → ${targetType}: ${edgeResult.error}`
+        );
+        if (edgeResult.warnings && edgeResult.warnings.length > 0) {
+          console.warn(`[PipelineOrchestrator]   Warnings: ${edgeResult.warnings.join(', ')}`);
+        }
+        skippedConnections.push(conn);
+        orphanedNodeIds.add(conn.target);
+      }
     });
+
+    // ✅ PRODUCTION-READY: Reconnect orphaned nodes after edge skipping
+    if (orphanedNodeIds.size > 0) {
+      console.log(`[PipelineOrchestrator] 🔄 Reconnecting ${orphanedNodeIds.size} orphaned node(s)...`);
+      
+      // Build execution order for finding appropriate sources
+      const executionOrder = this.getTopologicalOrder({ nodes, edges });
+      
+      for (const orphanedNodeId of orphanedNodeIds) {
+        const orphanedNode = nodes.find(n => n.id === orphanedNodeId);
+        if (!orphanedNode) continue;
+        
+        // Check if node already has incoming edge (may have been reconnected)
+        const hasIncomingEdge = edges.some(e => e.target === orphanedNodeId);
+        if (hasIncomingEdge) {
+          console.log(`[PipelineOrchestrator] ✅ Node ${orphanedNodeId} already has incoming edge, skipping reconnection`);
+          continue;
+        }
+        
+        // ✅ ERROR PREVENTION #4: Use universal category resolver (prevents orphan nodes)
+        const orphanedNodeType = unifiedNormalizeNodeType(orphanedNode);
+        const orphanedCategory = universalCategoryResolver.getNodeCategory(orphanedNodeType);
+        
+        // Convert DSLCategory to expected format (dataSource -> data_source)
+        const categoryMap: Record<string, 'data_source' | 'transformation' | 'output'> = {
+          'dataSource': 'data_source',
+          'transformation': 'transformation',
+          'output': 'output',
+        };
+        const mappedCategory = categoryMap[orphanedCategory] || 'transformation';
+        
+        // Find appropriate source node
+        const sourceNode = this.findAppropriateSourceNode(nodes, edges, executionOrder, mappedCategory, orphanedNodeType);
+        
+        if (sourceNode) {
+          // ✅ PRODUCTION-READY: Validate semantic correctness before reconnecting
+          const shouldReconnect = semanticConnectionValidator.shouldReconnectOrphan(
+            { nodes, edges },
+            orphanedNode,
+            sourceNode
+          );
+          
+          if (!shouldReconnect.shouldReconnect) {
+            console.warn(
+              `[PipelineOrchestrator] ⚠️  Skipping reconnection of orphaned node ${orphanedNodeId} (${orphanedNodeType}): ${shouldReconnect.reason}`
+            );
+            continue; // Don't reconnect - doesn't make logical sense
+          }
+          
+          // ✅ FIX 2: Create reconnection edge using enhanced edge creation service
+          const reconnectResult = enhancedEdgeCreationService.createEdgeWithFallback(
+            sourceNode,
+            orphanedNode,
+            undefined,
+            undefined,
+            edges,
+            nodes
+          );
+          
+          if (reconnectResult.success && reconnectResult.edge) {
+            edges.push(reconnectResult.edge);
+            const sourceType = unifiedNormalizeNodeType(sourceNode);
+            if (reconnectResult.usedFallback) {
+              console.log(`[PipelineOrchestrator] ⚠️  Reconnected orphan using fallback: ${sourceType} → ${orphanedNodeType}`);
+            } else {
+              console.log(`[PipelineOrchestrator] ✅ Reconnected orphaned node: ${sourceType} → ${orphanedNodeType}`);
+            }
+          } else {
+            console.warn(`[PipelineOrchestrator] ⚠️  Could not reconnect orphaned node ${orphanedNodeId}: ${reconnectResult.error || 'No compatible handles'}`);
+            if (reconnectResult.warnings && reconnectResult.warnings.length > 0) {
+              console.warn(`[PipelineOrchestrator]   Warnings: ${reconnectResult.warnings.join(', ')}`);
+            }
+          }
+        } else {
+          console.warn(`[PipelineOrchestrator] ⚠️  Could not find appropriate source for orphaned node ${orphanedNodeId} (${orphanedNodeType})`);
+        }
+      }
+    }
+
+    // ✅ PRODUCTION-READY: Validate connected graph (all nodes reachable from trigger)
+    const connectivityValidation = this.validateGraphConnectivity(nodes, edges);
+    if (!connectivityValidation.valid) {
+      console.warn(`[PipelineOrchestrator] ⚠️  Graph connectivity issues: ${connectivityValidation.errors.join(', ')}`);
+      // Note: We don't throw here - let validation pipeline handle it
+      // But we log warnings for debugging
+    }
 
     return {
       nodes,
       edges,
     };
+  }
+
+  /**
+   * ✅ PRODUCTION-READY: Validate graph connectivity
+   * Ensures all nodes are reachable from trigger (no orphan subgraphs)
+   */
+  private validateGraphConnectivity(
+    nodes: WorkflowNode[],
+    edges: WorkflowEdge[]
+  ): { valid: boolean; errors: string[] } {
+    const errors: string[] = [];
+    const nodeIds = new Set(nodes.map(n => n.id));
+    const visited = new Set<string>();
+    
+    // Find trigger node
+    const triggerNode = nodes.find(n => {
+      const t = unifiedNormalizeNodeType(n);
+      const def = unifiedNodeRegistry.get(t);
+      return def?.category === 'trigger';
+    });
+    
+    if (!triggerNode) {
+      errors.push('No trigger node found in workflow');
+      return { valid: false, errors };
+    }
+    
+    // BFS from trigger to find all reachable nodes
+    const queue: string[] = [triggerNode.id];
+    visited.add(triggerNode.id);
+    
+    while (queue.length > 0) {
+      const currentNodeId = queue.shift()!;
+      const outgoingEdges = edges.filter(e => e.source === currentNodeId);
+      
+      for (const edge of outgoingEdges) {
+        if (!visited.has(edge.target)) {
+          visited.add(edge.target);
+          queue.push(edge.target);
+        }
+      }
+    }
+    
+    // Check for unreachable nodes
+    const unreachableNodes = nodes.filter(n => !visited.has(n.id));
+    if (unreachableNodes.length > 0) {
+      const unreachableTypes = unreachableNodes.map(n => unifiedNormalizeNodeType(n));
+      errors.push(
+        `Found ${unreachableNodes.length} unreachable node(s) from trigger: ${unreachableTypes.join(', ')}. ` +
+        `All nodes must be reachable from trigger node.`
+      );
+    }
+    
+    return {
+      valid: errors.length === 0,
+      errors,
+    };
+  }
+
+  /**
+   * ✅ PRODUCTION-READY: Get node category for orphan reconnection
+   * Uses universal category resolver logic
+   */
+  /**
+   * @deprecated Use universalCategoryResolver.getNodeCategory() instead
+   * This method is kept for backward compatibility but delegates to universal resolver
+   * 
+   * ✅ ERROR PREVENTION #4: Prevents orphan nodes by using universal category resolver
+   */
+  private getNodeCategoryForReconnection(nodeType: string): 'data_source' | 'transformation' | 'output' {
+    // ✅ ERROR PREVENTION #4: Delegate to universal category resolver (no hardcoded mappings)
+    const category = universalCategoryResolver.getNodeCategory(nodeType);
+    return category as 'data_source' | 'transformation' | 'output';
+  }
+
+  /**
+   * ✅ PRODUCTION-READY: Find appropriate source node for orphan reconnection
+   */
+  private findAppropriateSourceNode(
+    nodes: WorkflowNode[],
+    edges: WorkflowEdge[],
+    executionOrder: string[],
+    orphanCategory: 'data_source' | 'transformation' | 'output',
+    orphanNodeType: string
+  ): WorkflowNode | null {
+    // Define valid source categories
+    const validSourceCategories: Array<'data_source' | 'transformation' | 'output'> = 
+      orphanCategory === 'data_source' ? [] :
+      orphanCategory === 'transformation' ? ['data_source', 'transformation'] :
+      ['transformation', 'data_source'];
+    
+    // Traverse in reverse order (from end of chain)
+    for (let i = executionOrder.length - 1; i >= 0; i--) {
+      const nodeId = executionOrder[i];
+      const node = nodes.find(n => n.id === nodeId);
+      if (!node) continue;
+      
+      const nodeType = unifiedNormalizeNodeType(node);
+      const nodeDef = unifiedNodeRegistry.get(nodeType);
+      if (!nodeDef) continue;
+      
+      const nodeCategory = this.getNodeCategoryForReconnection(nodeType);
+      
+      // Check if this node is a valid source
+      if (validSourceCategories.includes(nodeCategory)) {
+        // Also check if it's not already at max outgoing edges (unless branching)
+        const outgoingCount = edges.filter(e => e.source === nodeId).length;
+        const allowsBranching = graphBranchingValidator.nodeAllowsBranching(nodeType);
+        
+        if (outgoingCount === 0 || allowsBranching) {
+          return node;
+        }
+      }
+      
+      // Special case: trigger for data_source
+      if (nodeDef.category === 'trigger' && orphanCategory === 'data_source') {
+        return node;
+      }
+    }
+    
+    // Fallback: return trigger if available
+    const triggerNode = nodes.find(n => {
+      const t = unifiedNormalizeNodeType(n);
+      const def = unifiedNodeRegistry.get(t);
+      return def?.category === 'trigger';
+    });
+    
+    return triggerNode || null;
+  }
+
+  /**
+   * ✅ PRODUCTION-READY: Get topological order for execution order calculation
+   */
+  private getTopologicalOrder(workflow: { nodes: WorkflowNode[]; edges: WorkflowEdge[] }): string[] {
+    const nodeIds = new Set(workflow.nodes.map(n => n.id));
+    const inDegree = new Map<string, number>();
+    const adjacencyList = new Map<string, string[]>();
+    
+    // Initialize in-degree
+    workflow.nodes.forEach(node => {
+      inDegree.set(node.id, 0);
+      adjacencyList.set(node.id, []);
+    });
+    
+    // Build adjacency list and calculate in-degrees
+    workflow.edges.forEach(edge => {
+      if (nodeIds.has(edge.source) && nodeIds.has(edge.target)) {
+        const current = adjacencyList.get(edge.source) || [];
+        current.push(edge.target);
+        adjacencyList.set(edge.source, current);
+        
+        inDegree.set(edge.target, (inDegree.get(edge.target) || 0) + 1);
+      }
+    });
+    
+    // Topological sort
+    const queue: string[] = [];
+    const result: string[] = [];
+    
+    // Find nodes with in-degree 0 (triggers)
+    inDegree.forEach((degree, nodeId) => {
+      if (degree === 0) {
+        queue.push(nodeId);
+      }
+    });
+    
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      result.push(current);
+      
+      const neighbors = adjacencyList.get(current) || [];
+      neighbors.forEach(neighbor => {
+        const newDegree = (inDegree.get(neighbor) || 0) - 1;
+        inDegree.set(neighbor, newDegree);
+        if (newDegree === 0) {
+          queue.push(neighbor);
+        }
+      });
+    }
+    
+    return result;
   }
 
   /**

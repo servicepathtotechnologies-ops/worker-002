@@ -6,34 +6,16 @@
  */
 
 import { WorkflowNode, WorkflowEdge } from '../types/ai-types';
-import { normalizeNodeType } from './node-type-normalizer';
+import { isTriggerNode as universalIsTriggerNode } from './universal-node-type-checker';
 
 /**
- * Trigger node types
- */
-const TRIGGER_TYPES = [
-  'manual_trigger',
-  'webhook',
-  'schedule',
-  'interval',
-  'chat_trigger',
-  'form',
-  'error_trigger',
-  'workflow_trigger',
-];
-
-/**
- * Check if a node is a trigger
+ * ✅ UNIVERSAL: Check if a node is a trigger using registry as single source of truth
+ * 
+ * Re-exports the universal isTriggerNode function for backward compatibility.
+ * All trigger detection now uses the universal node type checker.
  */
 export function isTriggerNode(node: WorkflowNode): boolean {
-  const nodeType = normalizeNodeType(node);
-  const category = node.data?.category || '';
-  
-  return (
-    TRIGGER_TYPES.includes(nodeType) ||
-    category.toLowerCase() === 'triggers' ||
-    category.toLowerCase() === 'trigger'
-  );
+  return universalIsTriggerNode(node);
 }
 
 /**

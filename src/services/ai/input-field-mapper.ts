@@ -7,7 +7,7 @@
 import { WorkflowNode } from '../../core/types/ai-types';
 import { getNodeOutputSchema, NodeOutputSchema } from '../../core/types/node-output-types';
 import { nodeLibrary } from '../nodes/node-library';
-import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 
 export interface FieldMapping {
   field: string;
@@ -27,6 +27,10 @@ export interface NodeOutputFields {
   outputFields: string[];
   outputSchema: NodeOutputSchema | null;
   commonFields: string[]; // Fields like 'data', 'output', 'result'
+  // ✅ ENHANCED: Schema-aware template generation support
+  fieldPaths?: Record<string, string>;  // Field name → full path (e.g., "body" → "response.body")
+  fieldTypes?: Record<string, string>;  // Field name → type (e.g., "body" → "string")
+  sampleValues?: Record<string, any>;   // Field name → sample value (for LLM context)
 }
 
 /**
@@ -45,7 +49,7 @@ export class InputFieldMapper {
     allNodes: WorkflowNode[],
     nodeIndex: number
   ): FieldMapping {
-    const targetNodeType = normalizeNodeType(targetNode);
+    const targetNodeType = unifiedNormalizeNodeType(targetNode);
     
     // If no previous node, try to use input from trigger
     if (!previousNode) {
@@ -127,7 +131,7 @@ export class InputFieldMapper {
    * Public method for use in validation
    */
   getNodeOutputFields(node: WorkflowNode): NodeOutputFields {
-    const nodeType = normalizeNodeType(node);
+    const nodeType = unifiedNormalizeNodeType(node);
     const outputSchema = getNodeOutputSchema(nodeType);
     const nodeSchema = nodeLibrary.getSchema(nodeType);
 
@@ -154,13 +158,92 @@ export class InputFieldMapper {
     // Remove duplicates
     const uniqueFields = Array.from(new Set(outputFields));
 
+    // ✅ ENHANCED: Extract field paths, types, and sample values for schema-aware generation
+    const fieldPaths: Record<string, string> = {};
+    const fieldTypes: Record<string, string> = {};
+    const sampleValues: Record<string, any> = {};
+
+    for (const field of uniqueFields) {
+      // Set field path (default to field name, can be nested)
+      fieldPaths[field] = field;
+      
+      // Get field type from output schema
+      if (outputSchema?.structure?.fields?.[field]) {
+        fieldTypes[field] = outputSchema.structure.fields[field];
+      } else {
+        // Infer type from node type
+        fieldTypes[field] = this.inferFieldType(field, nodeType);
+      }
+      
+      // Generate sample value for LLM context
+      sampleValues[field] = this.generateSampleValue(field, fieldTypes[field], nodeType);
+    }
+
     return {
       nodeId: node.id,
       nodeType,
       outputFields: uniqueFields,
       outputSchema,
       commonFields,
+      fieldPaths,
+      fieldTypes,
+      sampleValues,
     };
+  }
+
+  /**
+   * Infer field type from field name and node type
+   */
+  private inferFieldType(fieldName: string, nodeType: string): string {
+    const fieldLower = fieldName.toLowerCase();
+    
+    // Common patterns
+    if (fieldLower.includes('id') || fieldLower === 'id') return 'string';
+    if (fieldLower.includes('email')) return 'string';
+    if (fieldLower.includes('url') || fieldLower.includes('link')) return 'string';
+    if (fieldLower.includes('timestamp') || fieldLower.includes('date') || fieldLower.includes('time')) return 'string';
+    if (fieldLower.includes('count') || fieldLower.includes('number') || fieldLower.includes('amount')) return 'number';
+    if (fieldLower.includes('is') || fieldLower.includes('has') || fieldLower === 'active') return 'boolean';
+    if (fieldLower.includes('items') || fieldLower.includes('rows') || fieldLower.includes('list')) return 'array';
+    if (fieldLower.includes('data') || fieldLower.includes('body') || fieldLower.includes('content')) return 'object';
+    
+    // Default to string
+    return 'string';
+  }
+
+  /**
+   * Generate sample value for a field (for LLM context)
+   */
+  private generateSampleValue(fieldName: string, fieldType: string, nodeType: string): any {
+    const fieldLower = fieldName.toLowerCase();
+    
+    switch (fieldType) {
+      case 'string':
+        if (fieldLower.includes('email')) return 'user@example.com';
+        if (fieldLower.includes('url')) return 'https://example.com';
+        if (fieldLower.includes('id')) return '12345';
+        if (fieldLower.includes('name')) return 'John Doe';
+        if (fieldLower.includes('title')) return 'Sample Title';
+        if (fieldLower.includes('body') || fieldLower.includes('content')) return 'Sample content text';
+        return 'sample string';
+      
+      case 'number':
+        if (fieldLower.includes('count')) return 10;
+        if (fieldLower.includes('amount') || fieldLower.includes('price')) return 99.99;
+        return 42;
+      
+      case 'boolean':
+        return true;
+      
+      case 'array':
+        return [{ example: 'item' }];
+      
+      case 'object':
+        return { example: 'value' };
+      
+      default:
+        return null;
+    }
   }
 
   /**
@@ -219,7 +302,8 @@ export class InputFieldMapper {
     }
 
     // Communication nodes
-    else if (typeLower === 'google_gmail' || typeLower === 'gmail') {
+    else if (typeLower === 'google_gmail') {
+      // ✅ PERMANENT: Only google_gmail exists - gmail is NOT a separate node type
       fields.push('sentMessage', 'messageId', 'messages');
     } else if (typeLower === 'slack_message' || typeLower === 'slack') {
       fields.push('message', 'ts', 'channel');
@@ -477,7 +561,7 @@ export class InputFieldMapper {
     mappings: FieldMapping[];
     errors: string[];
   } {
-    const nodeType = normalizeNodeType(node);
+    const nodeType = unifiedNormalizeNodeType(node);
     const nodeSchema = nodeLibrary.getSchema(nodeType);
     
     if (!nodeSchema?.configSchema) {

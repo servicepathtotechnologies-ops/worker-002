@@ -25,7 +25,7 @@ import {
   NODE_HANDLE_REGISTRY
 } from '../core/utils/node-handle-registry';
 import { connectionValidator, ConnectionValidationResult } from './ai/connection-validator';
-import { normalizeNodeType } from '../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType } from '../core/utils/unified-node-type-normalizer';
 import { randomUUID } from 'crypto';
 import { fieldMapper, FieldMappingConfig } from './field-mapper';
 
@@ -97,7 +97,7 @@ export class ConnectionBuilder {
       return { edges, validationResults, errors, warnings };
     }
     
-    console.log(`[ConnectionBuilder] Trigger node: ${triggerNode.id} (${normalizeNodeType(triggerNode)})`);
+    console.log(`[ConnectionBuilder] Trigger node: ${triggerNode.id} (${unifiedNormalizeNodeType(triggerNode)})`);
     
     // Get action nodes (all nodes except trigger)
     const actionNodes = nodes.filter(n => n.id !== triggerNode.id);
@@ -204,8 +204,8 @@ export class ConnectionBuilder {
     targetNode: WorkflowNode,
     connectionName: string
   ): Promise<WorkflowEdge | null> {
-    const sourceType = normalizeNodeType(sourceNode);
-    const targetType = normalizeNodeType(targetNode);
+    const sourceType = unifiedNormalizeNodeType(sourceNode);
+    const targetType = unifiedNormalizeNodeType(targetNode);
     
     // Get valid handles for both nodes
     const sourceContract = getNodeHandleContract(sourceType);
@@ -335,14 +335,14 @@ export class ConnectionBuilder {
     
     // Check first node
     const firstNode = nodes[0];
-    const firstNodeType = normalizeNodeType(firstNode);
+    const firstNodeType = unifiedNormalizeNodeType(firstNode);
     if (triggerTypes.includes(firstNodeType)) {
       return firstNode;
     }
     
     // Search for trigger node
     for (const node of nodes) {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       if (triggerTypes.includes(nodeType)) {
         console.log(`[ConnectionBuilder] Found trigger node: ${node.id} (${nodeType})`);
         return node;

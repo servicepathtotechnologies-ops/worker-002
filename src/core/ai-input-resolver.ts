@@ -109,7 +109,9 @@ export class AIInputResolver {
     }
     
     // API/Data nodes typically need structured JSON
-    if (nodeType.includes('api') || nodeType.includes('database') || 
+    // ✅ CRITICAL: Explicitly handle HTTP Request nodes
+    if (nodeType === 'http_request' || nodeType.includes('http_request') || 
+        nodeType.includes('api') || nodeType.includes('database') || 
         nodeType.includes('sheets') || nodeType.includes('airtable')) {
       return 'json';
     }
@@ -184,6 +186,19 @@ MODE: Generate ONLY structured JSON data.
         break;
     }
     
+    // ✅ CRITICAL: Special handling for HTTP Request nodes
+    let specialInstructions = '';
+    if (nodeType === 'http_request' || nodeType.includes('http_request')) {
+      specialInstructions = `
+SPECIAL INSTRUCTIONS FOR HTTP REQUEST NODE:
+- The "body" field should contain the data to send in the POST/PUT/PATCH request
+- Extract relevant data from previous output and format as JSON object
+- If previous output has a "response" field (from AI Chat Model), use that as the body
+- If previous output has structured data, format it appropriately for the API
+- The "headers" field should include Content-Type: application/json if body is present
+- Example: If previous output is {"response": "Hello"}, body should be {"message": "Hello"} or {"text": "Hello"} depending on API needs`;
+    }
+    
     return `You are an AI Input Resolver for a workflow automation system.
 
 TASK: Generate the correct input for a node based on previous output and user intent.
@@ -198,6 +213,7 @@ TARGET NODE INPUT SCHEMA:
 ${schemaStr}
 
 ${modeInstructions}
+${specialInstructions}
 
 REQUIREMENTS:
 1. Analyze the previous output structure

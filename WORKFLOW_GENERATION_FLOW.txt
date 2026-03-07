@@ -1,0 +1,486 @@
+WORKFLOW GENERATION AND VALIDATION FLOW (TEXT SUMMARY)
+======================================================
+
+This file explains, in order, how the AI in this repo goes from:
+  User Prompt → Structured Intent/DSL → Workflow Graph → Validated DAG → Executable Nodes.
+
+It focuses on the real code paths and the important if/else conditions that decide what happens.
+
+-------------------------------------------------------------------------------
+1. API ENTRYPOINT: /api/generate-workflow (worker/src/api/generate-workflow.ts)
+-------------------------------------------------------------------------------
+
+Request body fields:
+  - prompt / refinedPrompt
+  - mode: "analyze" | "refine" | "create"
+  - currentWorkflow, executionHistory, answers, config, etc.
+
+1.1. Prompt presence
+  - IF finalPrompt is missing/empty
+      → 400 error: "Prompt is required".
+
+1.2. Mode === "analyze" (question generation only, no graph)
+  - TRY fastAnalyzePromptWithNodeOptions(finalPrompt, { existingWorkflow: currentWorkflow })
+    - IF analysis.questions is empty
+        → return autoContinue: true (frontend auto-continues to next stage).
+    - ELSE
+        → return summary + questions + nodeOptionsDetected + hasNodeChoices.
+  - CATCH
+    → return fallback:
+         - summary: "Build an automated workflow to accomplish: …"
+         - one generic schedule question.
+
+1.3. Mode === "refine" (requirements + system prompt, no graph)
+  - usePhasedApproach = req.body.usePhasedApproach !== false (default true).
+  - IF usePhasedApproach === true
+      → handlePhasedRefine(...) (phased credential-aware refine path).
+  - ELSE (legacy refine):
+      - Build refinedPrompt by appending answers if present.
+      - requirements = requirementsExtractor.extractRequirements(finalPrompt, refinedPrompt, answers).
+      - systemPrompt:
+          IF refinedPrompt has ≥ 20 words
+            → first ~30 words
+          ELSE
+            → first words + "Build an automated workflow to accomplish this task."
+      - requiredCredentials = identifyRequiredCredentialsFromRequirements(...).
+  - CATCH (any refine error)
+      → return fallback requirements object with all arrays empty and a simple systemPrompt.
+
+1.4. Mode === "create" (actual workflow build)
+  - streamProgress = (header "x-stream-progress" === "true").
+  - Both streaming and non-streaming do the same logical steps:
+      1) Optional memory context and prompt enhancement.
+      2) Call workflowLifecycleManager.generateWorkflowGraph().
+      3) Shape response: workflow + requiredInputs + requiredCredentials (missing only).
+
+1.4.1. Memory context
+  - TRY get referenceBuilder.buildContext(currentWorkflowId, "modification"/"creation", finalPrompt).
+    - IF similarPatterns exists and non-empty
+        → enhancedPrompt = finalPrompt + top 3 similar workflow names + instruction to use them as patterns.
+  - CATCH
+    → log warning and continue with original finalPrompt (graceful degradation).
+
+1.4.2. Generate graph via WorkflowLifecycleManager
+  - TRY lifecycleResult = workflowLifecycleManager.generateWorkflowGraph(enhancedPrompt, constraints, onProgress?).
+  - CATCH lifecycleError
+      - IF lifecycleError.pipelineResult exists
+          → pipelineResultFromError = lifecycleError.pipelineResult (for diagnostics / fallback detection).
+      - Rethrow error → handled by outer try/catch.
+
+1.4.3. Discover credentials AFTER graph
+  - lifecycleResult already includes requiredCredentials & requiredInputs.
+  - Missing credentials are filtered before returning:
+      - For each cred in lifecycleResult.requiredCredentials.missingCredentials:
+          IF cred.provider === "google" AND cred.type === "oauth"
+            → EXCLUDE from discoveredCredentials (Google OAuth must be connected via header bar, never in config modal).
+          ELSE
+            → include in discoveredCredentials with satisfied=false.
+
+1.4.4. Non-streaming final response (simplified)
+  - finalWorkflow = lifecycleResult.workflow.
+  - validation = lifecycleResult.validation.
+  - discoveredInputs = lifecycleResult.requiredInputs.inputs.
+  - discoveredCredentials = filtered missingCredentials (excluding Google OAuth).
+  - IF isChatbotWorkflow(finalWorkflow)
+      → also compute chatbotPageInfo (pageUrl, embedUrl, endpointUrl, memoryEnabled, etc.).
+  - Response contains:
+      - workflow, nodes, edges
+      - discoveredInputs (per-node required config fields)
+      - discoveredCredentials (missing only, no Google OAuth)
+      - validation summary (errors/warnings as messages)
+      - optional chatbotPageInfo.
+
+--------------------------------------------------------------
+2. WORKFLOW LIFECYCLE MANAGER (worker/src/services/workflow-lifecycle-manager.ts)
+--------------------------------------------------------------
+
+Main entry: generateWorkflowGraph(userPrompt, constraints, onProgress?).
+
+High-level phases:
+  1) Optional Smart Planner spec
+  2) Node resolution (planner-driven or legacy)
+  3) Choose generation engine (new deterministic pipeline vs legacy builder)
+  4) Post-build normalization, dedupe, and validation
+  5) Credential discovery (AFTER graph)
+  6) Node input discovery
+
+2.1. Smart Planner spec (optional)
+  - TRY plannerSpec = planWorkflowSpecFromPrompt(userPrompt).
+  - IF plannerSpec exists:
+      - Map plannerSpec.trigger to node types:
+          manual   → manual_trigger
+          schedule → schedule
+          webhook  → webhook
+          event    → manual_trigger (generic).
+      - Data sources / storage / actions:
+          - Take provider part before "." and add to nodeIds.
+      - Transformations:
+          - For "loop":
+              - Only add loop node if userPrompt mentions iteration concepts (for each / loop / each row / etc.).
+          - For summarize-like operations:
+              - Add ai_chat_model node.
+          - IF planner transformation is a real node type (nodeLibrary.getSchema(tf))
+              → add it.
+      - mentioned_only providers:
+          - Resolve raw name to canonical via resolveNodeType(rawType, false).
+          - IF nodeIds includes rawType OR canonicalType
+              → remove from nodeIds (these are “mentioned only”, not required nodes).
+      - resolution.success = true, resolution.nodeIds = planner-driven nodeIds.
+  - ELSE (no plannerSpec)
+      - resolution = NodeResolver.resolvePrompt(userPrompt).
+      - IF resolution.success === false AND resolution.errors not empty
+          → log error, but continue (builder still allowed to attempt).
+
+2.2. Choose generation engine
+  - useNewPipeline = constraints?.useNewPipeline !== false (DEFAULT: true).
+  - IF useNewPipeline === true
+      → call generateWorkflowWithNewPipeline(userPrompt, constraints, onProgress).
+    ELSE
+      → call agenticWorkflowBuilder.generateFromPrompt(userPrompt, { ...constraints, plannerSpec }).
+
+2.2.1. generateWorkflowWithNewPipeline
+  - Loads existing credentials from vault (if user is known) into existingCredentials (currently TODO).
+  - Calls workflowPipelineOrchestrator.executePipeline(userPrompt, existingCredentials, constraints.providedCredentials, { mode: "build", onProgress }).
+  - Checks pipelineResult:
+      - IF pipelineResult.clarificationRequired
+          → warn; clarification stage is deprecated/disabled, but this is non-fatal.
+      - IF pipelineResult.requiresCredentials AND !pipelineResult.workflow
+          → throw Error("Credentials required: ...").
+      - IF !pipelineResult.success OR !pipelineResult.workflow
+          → wrap reason into Error("Pipeline failed: ...") and attach error.pipelineResult = pipelineResult, then throw.
+  - On success:
+      - requiredCredentials = pipelineResult.credentialDetection.required_credentials.map(provider).
+      - Returns workflow + documentation + suggestions + estimatedComplexity + confidenceScore + analysis.
+
+2.3. Post-generation steps (common to both engines)
+  - workflow = generationResult.workflow.
+
+2.3.1. Planner-mentioned services cleanup (if plannerSpec present)
+  - IF plannerSpec.mentioned_only is non-empty:
+      - Build mentionedOnlyTypes as canonical types from mentioned_only list.
+      - Build connectedNodeIds from edges (any source/target).
+      - For each node:
+          - nodeType = normalizeNodeType(node), canonicalNodeType = resolveNodeType(nodeType, false).
+          - IF canonicalNodeType ∈ mentionedOnlyTypes:
+              - IF node.id ∈ connectedNodeIds
+                  → KEEP (node is actually used).
+              - ELSE IF node has non-empty data.config
+                  → KEEP (user has configured it).
+              - ELSE
+                  → REMOVE this node.
+      - After filtering nodes:
+          - IF any nodes removed
+              → also filter edges to only edges whose source and target are still present.
+
+2.3.2. Ensure resolved nodes exist
+  - IF resolution.success AND resolution.nodeIds not empty:
+      - existingNodeTypes = canonical types for all current nodes (normalizeNodeType → resolveNodeType).
+      - For each nodeType in resolution.nodeIds:
+          - resolvedNodeType = resolveNodeType(nodeType).
+          - IF resolvedNodeType not in existingNodeTypes:
+              → look up schema = nodeLibrary.getSchema(resolvedNodeType).
+              → IF schema exists:
+                  - CREATE new node:
+                      - id: randomUUID()
+                      - type: "custom" (for frontend)
+                      - data.type = resolvedNodeType (canonical)
+                      - label = schema.label
+                      - category = schema.category
+                      - config = {}.
+                  - Push node into workflow.nodes and add resolvedNodeType to existingNodeTypes.
+          - ELSE
+              → skip (avoid duplicates).
+
+2.3.3. Deduplicate nodes by canonical type
+  - For each node:
+      - nodeType = normalizeNodeType(node)
+      - IF nodeType is empty/custom → keep as-is.
+      - canonical = resolveNodeType(nodeType).
+      - IF canonical already seen once:
+          → mark this node.id for removal (duplicate), log which original node is kept.
+      - ELSE:
+          → record canonical → node.id and keep node.
+  - IF duplicates existed:
+      - Remove nodes with ids in nodesToRemove.
+      - Filter edges to only those whose source and target are not in nodesToRemove.
+
+2.3.4. Normalize all node types to canonical forms
+  - For each node:
+      - originalType = normalizeNodeType(node).
+      - IF originalType is empty/custom → node unchanged.
+      - canonicalFromLibrary = nodeLibrary.getCanonicalType(originalType).
+      - canonicalFromResolver = resolveNodeType(originalType).
+      - canonicalType = (canonicalFromResolver != originalType) ? canonicalFromResolver : (canonicalFromLibrary || originalType).
+      - IF canonicalType != originalType:
+          - Update node.data.type = canonicalType.
+          - node.type = "custom" (frontend compatibility).
+          - increment normalizedCount.
+      - ELSE:
+          - Ensure node.data.type = canonicalType.
+          - node.type = "custom".
+
+2.3.5. Structural validation and auto-fix
+  - validation = workflowValidator.validateAndFix(workflow).
+  - finalWorkflow = validation.fixedWorkflow || workflow.
+  - Re-run normalizeAllNodeTypesToCanonical(finalWorkflow) after fixes (ensures canonical type consistency).
+
+2.3.6. Gmail integrity enforcement (legacy, only when plannerSpec is absent)
+  - IF plannerSpec is undefined:
+      - TRY nodeResolver.assertGmailIntegrity(userPrompt, finalNodeTypes).
+      - CATCH: log error, but DO NOT fail workflow.
+  - ELSE:
+      - Skip Gmail integrity check when Smart Planner is active.
+
+2.4. Credential discovery AFTER graph
+  - TRY get userId from Supabase auth.getUser().
+  - credentialDiscovery = credentialDiscoveryPhase.discoverCredentials(finalWorkflow, userId).
+  - Logs:
+      - requiredCredentials count
+      - satisfied vs missing
+      - each credential with nodeIds and SATISFIED/MISSING status.
+
+2.4.1. Auto-inject satisfied credential references
+  - satisfied = credentialDiscovery.satisfiedCredentials (if any).
+  - IF satisfied array is non-empty:
+      - Map nodeId → satisfied creds for that node.
+      - For each node:
+          - IF nodeId has satisfied OAuth creds AND config.credentialId is empty:
+              → set config.credentialId = cred.vaultKey || cred.provider.
+      - This injects a non-secret reference so UI can show “connected” state for OAuth-based connectors.
+
+2.4.2. Sanity check: credentials referencing missing nodes
+  - Build existingNodeIds from finalWorkflow.nodes.
+  - For each credential.requiredCredentials:
+      - For each nodeId in cred.nodeIds:
+          - IF nodeId not in existingNodeIds:
+              → add to missingNodeIds set.
+  - IF missingNodeIds not empty:
+      - Log warning: credentials discovered for missing nodes.
+      - Derive nodeTypesToAdd (but synthetic node generation is disabled).
+      - Log that those node types must exist in workflow before credentials can be attached.
+
+2.5. Discover required node inputs (non-credential config fields)
+  - discoverNodeInputs(finalWorkflow):
+      - For each node:
+          - nodeType = normalizeNodeType(node).
+          - schema = nodeLibrary.getSchema(nodeType).
+          - IF schema missing → skip.
+          - For each required config field:
+              - existingValue = node.data.config[fieldName].
+              - Special handling for if_else.conditions:
+                  - IF nodeType === "if_else" AND fieldName === "conditions":
+                      - IF conditions is array and has at least one condition with:
+                          * expression string non-empty, OR
+                          * field/operator/value triple non-empty,
+                        then it is considered present.
+                      - ELSE → treated as missing field.
+              - For all other fields:
+                  - IF value is missing/empty OR a pure template without actual value:
+                      → add an entry to requiredInputs.inputs with metadata (nodeId, nodeType, label, fieldName, fieldType, description, default, examples, etc.).
+
+-----------------------------------------------------------------------
+3. DSL AND PRODUCTION PIPELINE CORRECTNESS (core of deterministic build)
+-----------------------------------------------------------------------
+
+3.1. DSLGenerator (workflow-dsl.ts)
+  - Generates DSL from StructuredIntent and detects:
+      - Missing minimum components (trigger + at least one dataSource OR output OR transformation).
+      - Operation requirements:
+          * Read operations require at least one dataSource.
+          * Write operations require at least one output.
+  - Violations throw DSLGenerationError with:
+      - uncategorizedActions
+      - missingIntentActions
+      - minimumComponentViolations.
+
+3.2. DSL validation (dslGenerator.validateDSL)
+  - IF no trigger or no trigger.type → error.
+  - IF executionOrder is empty → error.
+  - StepRefs:
+      - Build set of valid IDs: "trigger" + all dataSource ids + all transformation ids + all output ids.
+      - For each execution step:
+          * IF stepType === "trigger" and stepRef != "trigger" → error.
+          * ELSE IF stepRef not in set → error.
+          * IF step.dependsOn includes any unknown stepId → error.
+  - Transformations and outputs:
+      - IF transformation has no input → warning.
+      - IF output has no input → warning.
+
+3.3. WorkflowDSLCompiler.compile(dsl)
+  - STEP 0: validate and normalize all node types:
+      - IF node type is "custom" or empty → error (DSL MUST NOT contain "custom").
+      - IF node type is registered in NodeLibrary → ok.
+      - ELSE: try nodeTypeNormalizationService, normalizeNodeType utility, and nodeTypeResolver.
+      - IF still unknown after all attempts → error.
+      - Final pass:
+          * IF any node type in validated DSL is still not registered → CRITICAL error.
+  - Validate DSL again with dslGenerator.validateDSL (structural).
+      - IF invalid → return with errors and success=false.
+  - Node creation:
+      - For trigger/dataSource/transformation/output:
+          * schema = nodeLibrary.getSchema(type).
+          * IF schema is missing → throw error "Unknown ... node type".
+  - Deterministic wiring (buildLinearPipeline):
+      - Trigger → all dataSources (parallel).
+      - IF there are transformations:
+          * IF there are dataSources:
+              - each dataSource → first transformation.
+          * ELSE:
+              - trigger → first transformation (fix for no dataSource case).
+          * Chain transformations sequentially T1 → T2 → T3.
+          * lastTransformation → all outputs.
+        ELSE:
+          * dataSources → outputs directly.
+      - Before adding any edge:
+          * IF source === target → skip (prevents self-cycle).
+          * ELSE IF detectCycleBeforeInsert(source, target, existingEdges).wouldCreateCycle === true:
+              - skip edge and log error.
+  - Final pipeline validation:
+      - detectCycles on full edge set:
+          * IF cycle found → error.
+      - BFS reachability from trigger:
+          * IF some nodes are not reachable from trigger → warning.
+
+3.4. ProductionWorkflowBuilder.build(...)
+  - Strict wrapper around DSL + compiler + validation pipeline.
+  - DSLGenerationError at any stage → immediate failure (no retries).
+  - DSL structural validation failure → immediate failure.
+  - preCompilationValidator:
+      - IF isStructuralFailure → throw PipelineContractError (hard pipeline contract violation).
+  - Required nodes detection:
+      - IF requiredNodes empty → fail.
+      - IF any required node missing from capability registry → fail.
+  - DSL compilation:
+      - IF DSL compilation errors include non-retryable (structural) patterns
+          → fail immediately (no retry).
+      - ELSE IF errors are retryable (network, provider, timeout) AND attempt < maxRetries
+          → retry compile.
+  - Type validation and workflow pruning:
+      - Type validation failure → structural → fail fast.
+      - Graph pruning:
+          * After removing nodes/edges that are not needed, check invariant again:
+              requiredNodes ⊆ workflow.nodes.
+          * IF invariant violation after pruning → fail.
+  - Layered validation pipeline (workflowValidationPipeline):
+      - For each registered layer:
+          * IF layer.shouldRun(context) is false → skip.
+          * TRY layer.validate(context).
+            - Any thrown error becomes a validation error.
+      - IF pipelineValidation.errors contain retryable issues → may retry.
+      - IF pipelineValidation has structural errors → fail immediately.
+  - Final validator (single source of truth):
+      - IF finalValidation.valid:
+          * Enforce invariant: requiredNodes ⊆ workflow.nodeTypes.
+          * IF violated → throw PipelineContractError.
+          * ELSE → SUCCESS.
+      - ELSE:
+          * IF errors are transient and shouldRegenerate AND attempt < maxRetries
+              → retry.
+          * ELSE → FAIL.
+
+---------------------------------------------------------------
+4. RUNTIME EXECUTION CORRECTNESS (execute-workflow + dynamic executor)
+---------------------------------------------------------------
+
+4.1. executeNode(...) in execute-workflow.ts
+  - TRY dynamic executor first:
+      - dynamicResult = executeNodeDynamically({ node, input, nodeOutputs, supabase, workflowId, userId, currentUserId }).
+      - IF dynamicResult is an object AND does NOT have _error
+          → return dynamicResult (success via registry).
+      - ELSE IF dynamicResult has _error containing "not found in registry" or "not registered"
+          → log and fall back to legacy executor (unmigrated node).
+      - ELSE (error but not "not registered")
+          → return dynamicResult as error response.
+  - CATCH any error loading or running dynamic executor:
+      → warn and fall back to legacy executor.
+
+4.2. executeNodeDynamically(...) in dynamic-node-executor.ts
+  - Node definition:
+      - nodeType = normalizeNodeType(node) or node.data.type or node.type.
+      - definition = unifiedNodeRegistry.get(nodeType).
+      - IF definition is missing
+          → return {_error: "Node type '...' is not registered in the system"}.
+  - Config migration + validation:
+      - migratedConfig = unifiedNodeRegistry.migrateConfig(nodeType, config).
+      - validation = unifiedNodeRegistry.validateConfig(nodeType, migratedConfig).
+      - IF !validation.valid AND VALIDATION_STRICT === "true"
+          → return {_error: "Configuration validation failed: ...", _validationErrors: validation.errors}.
+      - ELSE (non-strict)
+          → log warnings and continue for backward compatibility.
+  - Intent router:
+      - For each upstream output in nodeOutputs:
+          * Decide shouldRoute = shouldActivateRouter(fieldMetadata, output, userPrompt).
+          * IF shouldRoute:
+              - Use IntentDrivenJsonRouter to filter/transform payload.
+              - IF router throws → fallback to original output.
+          * ELSE:
+              - Use original output directly.
+  - AI input resolution:
+      - previousOutput = nodeOutputs.getMostRecentOutput(ignoring $json/json/trigger/input).
+      - userIntent = global.currentWorkflowIntent if any.
+      - resolved = aiInputResolver.resolveInput({ previousOutput, nodeInputSchema, userIntent, nodeType, nodeLabel }).
+      - mapped = mapResolvedValueToSchema(resolved.value, inputSchema, resolved.mode).
+      - IF resolveInput throws:
+          → fallback to resolveInputsFromConfig(inputSchema, config, nodeOutputs) (legacy template path).
+  - Template context preparation:
+      - IF input is non-null:
+          * nodeOutputs.set("input", input, true).
+          * IF no $json entry:
+              - set "$json" and "json" to input for backward compatibility.
+  - Execution:
+      - execContext = { nodeId, nodeType, config: migratedConfig, inputs: resolvedInputs, rawInput: input, upstreamOutputs, workflowId, userId, currentUserId, supabase }.
+      - result = await definition.execute(execContext).
+      - IF result.success === false:
+          → return {_error: result.error.message || "Node execution failed", details... }.
+  - Output schema validation:
+      - validateOutputAgainstSchema(result.output, definition.outputSchema):
+          * IF expected type is object and actual is not object → warning.
+          * IF expected type is array and actual is not array → warning.
+      - Warnings only; does not fail execution.
+  - Output cleaning:
+      - cleanedOutput = cleanOutputFromConfig(result.output, migratedConfig).
+      - return cleanedOutput.
+  - Error handling around execute():
+      - CATCH any error:
+          * Build {_error, _errorDetails, _nodeType}.
+          * Pass through cleanOutputFromConfig to scrub config values from error payload.
+
+4.3. Legacy executor special correctness guards (executeNodeLegacy)
+  - Node type normalization:
+      - type = normalizeNodeType(node) or node.data.type or node.type.
+  - If/Else compatibility:
+      - IF type === "if_else":
+          * IF config.condition exists AND config.conditions missing:
+              - convert to config.conditions = [{ expression: conditionString }].
+          * ELSE IF config.conditions exists but is not array:
+              - IF string → wrap into [{ expression: string }].
+              - IF object with expression → wrap into [object].
+  - Config validation:
+      - configValidation = validationMiddleware.validateConfig(type, normalizedConfig, node.id).
+      - IF !success AND VALIDATION_STRICT === "true":
+          → return {_error: "Configuration validation failed: ...", _validationError: true}.
+      - ELSE: log warning and continue (non-strict mode).
+
+-------------------------------------------------------------
+5. SUMMARY
+-------------------------------------------------------------
+
+At a high level, the system enforces correctness at three layers:
+  1) DSL + Production Builder layer:
+       - DSL generation and validation, minimum components, operation coverage, node registry coverage,
+         deterministic DSL → graph compilation, strict pipeline invariants, and layered validation pipeline.
+  2) Workflow Lifecycle layer:
+       - Node resolution (planner + resolver), normalization, deduplication, canonicalization, structural
+         validation + auto-fix, credential discovery AFTER graph, input discovery, and connector-aware
+         credential injection/reference.
+  3) Runtime Execution layer:
+       - UnifiedNodeRegistry-based dynamic execution with config migration/validation, AI input resolution,
+         universal template resolution, schema-aware output checks, and a legacy fallback executor with
+         strict-if-else normalization and optional strict config validation.
+
+All of these combined make sure that:
+  - The AI cannot directly emit arbitrary graphs (it must go through DSL + compiler or deterministic pipeline).
+  - Invalid or partial AI output is repaired or rejected at the right stage.
+  - Node types and configs are validated against a single source of truth (registry + nodeLibrary).
+  - Credentials are discovered and validated after the graph is built, and only missing creds surface to the UI.
+

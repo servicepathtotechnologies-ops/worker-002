@@ -5,7 +5,7 @@
  */
 
 import { nodeLibrary, NodeSchema } from '../../services/nodes/node-library';
-import { normalizeNodeType } from '../utils/node-type-normalizer';
+import { unifiedNormalizeNodeType } from '../utils/unified-node-type-normalizer';
 import type { 
   NodeContract, 
   ValidationResult, 
@@ -43,13 +43,12 @@ export class NodeSchemaRegistry {
     console.log(`[NodeSchemaRegistry] 📚 Found ${allSchemas.length} schemas in NodeLibrary`);
     
     let registeredCount = 0;
-    // Use resolver to get canonical node types for critical nodes
-    const { resolveNodeType } = require('../utils/node-type-resolver-util');
+    // ✅ PRODUCTION-GRADE: Use canonical types directly - registry should NOT depend on runtime alias resolution
+    // Critical nodes are verified using their canonical types only
     const criticalNodes = [
       'ai_service',
-      resolveNodeType('gmail', true), // Resolves 'gmail' → 'google_gmail'
-      'google_gmail'
-    ].filter((node, index, arr) => arr.indexOf(node) === index); // Remove duplicates
+      'google_gmail' // ✅ Canonical type only - 'gmail' is alias, not a node
+    ];
     const foundCriticalNodes: string[] = [];
     
     allSchemas.forEach(schema => {
@@ -72,10 +71,9 @@ export class NodeSchemaRegistry {
       console.log(`[NodeSchemaRegistry] ✅ All critical nodes found: ${foundCriticalNodes.join(', ')}`);
     }
     
-    // Verify ai_service and gmail specifically (use resolver for gmail)
+    // ✅ PRODUCTION-GRADE: Verify using canonical types directly (no alias resolution in registry)
     const aiServiceSchema = this.get('ai_service');
-    const gmailResolved = resolveNodeType('gmail', false);
-    const gmailSchema = this.get(gmailResolved); // Use resolved type (google_gmail)
+    const gmailSchema = this.get('google_gmail'); // ✅ Direct canonical lookup - no alias resolution
     
     if (!aiServiceSchema) {
       console.error('[NodeSchemaRegistry] ❌ ai_service node not found in registry!');
@@ -84,9 +82,9 @@ export class NodeSchemaRegistry {
     }
     
     if (!gmailSchema) {
-      console.error(`[NodeSchemaRegistry] ❌ gmail node not found in registry! (resolved to "${gmailResolved}")`);
+      console.error(`[NodeSchemaRegistry] ❌ google_gmail node not found in registry!`);
     } else {
-      console.log(`[NodeSchemaRegistry] ✅ gmail node registered: ${gmailSchema.nodeType} (resolved from "gmail" → "${gmailResolved}")`);
+      console.log(`[NodeSchemaRegistry] ✅ google_gmail node registered: ${gmailSchema.nodeType}`);
     }
   }
 
@@ -130,7 +128,7 @@ export class NodeSchemaRegistry {
    * Validate a node against its schema
    */
   validateNode(node: any): ValidationResult {
-    const nodeType = normalizeNodeType(node);
+    const nodeType = unifiedNormalizeNodeType(node);
     
     if (!nodeType || nodeType === 'custom') {
       return {
@@ -177,8 +175,8 @@ export class NodeSchemaRegistry {
     targetNode: any,
     edge: any
   ): EdgeValidationResult {
-    const sourceType = normalizeNodeType(sourceNode);
-    const targetType = normalizeNodeType(targetNode);
+    const sourceType = unifiedNormalizeNodeType(sourceNode);
+    const targetType = unifiedNormalizeNodeType(targetNode);
 
     const sourceSchema = this.get(sourceType);
     const targetSchema = this.get(targetType);

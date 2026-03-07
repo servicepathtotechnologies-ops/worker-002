@@ -13,7 +13,7 @@
 
 import { WorkflowNode, WorkflowEdge, Workflow } from '../../core/types/ai-types';
 import { nodeLibrary } from '../nodes/node-library';
-import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 import { getSupabaseClient } from '../../core/database/supabase-compat';
 
 /**
@@ -300,7 +300,7 @@ export const TOOL_EQUIVALENCE_REGISTRY: Record<string, ToolEquivalence> = {
  * Get equivalent tools for a given tool
  */
 export function getEquivalentTools(toolType: string): string[] {
-  const normalized = normalizeNodeType(toolType);
+  const normalized = unifiedNormalizeNodeTypeString(toolType);
   const equivalence = TOOL_EQUIVALENCE_REGISTRY[normalized];
   
   if (equivalence) {
@@ -403,7 +403,7 @@ export class ToolSubstitutionEngine {
       };
     }
 
-    const currentTool = normalizeNodeType(node);
+    const currentTool = unifiedNormalizeNodeType(node);
     
     // Validate substitution
     if (!areToolsEquivalent(currentTool, newTool)) {
@@ -610,7 +610,7 @@ export class ToolSubstitutionEngine {
       return [];
     }
 
-    const currentTool = normalizeNodeType(node);
+    const currentTool = unifiedNormalizeNodeType(node);
     return getEquivalentTools(currentTool);
   }
 
@@ -627,7 +627,7 @@ export class ToolSubstitutionEngine {
 
     // Check all nodes exist in library
     workflow.nodes?.forEach(node => {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       const schema = nodeLibrary.getSchema(nodeType);
       if (!schema) {
         errors.push(`Node ${node.id} has invalid type: ${nodeType}`);

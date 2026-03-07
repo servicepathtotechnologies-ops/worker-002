@@ -5,7 +5,7 @@
 
 import { NodeSchemaRegistry } from '../node-schema-registry';
 import { WorkflowAutoRepair } from '../workflow-auto-repair';
-import { normalizeNodeType } from '../../utils/node-type-normalizer';
+import { unifiedNormalizeNodeType } from '../../utils/unified-node-type-normalizer';
 import { Workflow, WorkflowNode, WorkflowEdge } from '../../types/ai-types';
 
 describe('Integration Tests', () => {
@@ -205,7 +205,7 @@ describe('Integration Tests', () => {
       ];
 
       nodes.forEach(node => {
-        const normalized = normalizeNodeType(node);
+        const normalized = unifiedNormalizeNodeType(node);
         expect(normalized).not.toBe('custom');
         expect(normalized).not.toBe('');
 

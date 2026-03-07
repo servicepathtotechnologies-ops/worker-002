@@ -210,12 +210,110 @@ CRITICAL:
       
       // Parse JSON response (handle both string and object responses)
       const responseText = typeof response === 'string' ? response : (response?.content || JSON.stringify(response));
-      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) {
-        throw new Error('No JSON found in LLM response');
+      
+      // ✅ ROOT-LEVEL FIX: Multiple JSON parsing strategies with fallbacks
+      let inference: WorkflowInference | null = null;
+      
+      // Strategy 1: Try to find and parse complete JSON object
+      try {
+        const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          inference = JSON.parse(jsonMatch[0]);
+          console.log(`[PromptUnderstandingService] ✅ Parsed JSON using strategy 1 (complete match)`);
+        }
+      } catch (e) {
+        console.warn(`[PromptUnderstandingService] ⚠️  Strategy 1 failed: ${e instanceof Error ? e.message : 'Unknown error'}`);
       }
       
-      const inference: WorkflowInference = JSON.parse(jsonMatch[0]);
+      // Strategy 2: Try to extract and fix common JSON errors (unclosed braces, trailing commas)
+      if (!inference) {
+        try {
+          // Try to fix common JSON errors
+          let fixedJson = responseText;
+          
+          // Remove markdown code fences if present
+          fixedJson = fixedJson.replace(/```json\s*/g, '').replace(/```\s*/g, '');
+          
+          // Find JSON object boundaries
+          const firstBrace = fixedJson.indexOf('{');
+          const lastBrace = fixedJson.lastIndexOf('}');
+          
+          if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+            let jsonCandidate = fixedJson.substring(firstBrace, lastBrace + 1);
+            
+            // Try to fix trailing commas before closing braces/brackets
+            jsonCandidate = jsonCandidate.replace(/,(\s*[}\]])/g, '$1');
+            
+            // Try to fix unclosed strings (basic heuristic)
+            const openQuotes = (jsonCandidate.match(/"/g) || []).length;
+            if (openQuotes % 2 !== 0) {
+              // Odd number of quotes - try to close the last string
+              const lastQuote = jsonCandidate.lastIndexOf('"');
+              if (lastQuote > 0 && jsonCandidate[lastQuote - 1] !== '\\') {
+                // Find the property name before this quote
+                const beforeQuote = jsonCandidate.substring(0, lastQuote);
+                const colonIndex = beforeQuote.lastIndexOf(':');
+                if (colonIndex !== -1) {
+                  // Add closing quote and continue
+                  jsonCandidate = jsonCandidate.substring(0, lastQuote + 1) + '"' + jsonCandidate.substring(lastQuote + 1);
+                }
+              }
+            }
+            
+            inference = JSON.parse(jsonCandidate);
+            console.log(`[PromptUnderstandingService] ✅ Parsed JSON using strategy 2 (fixed common errors)`);
+          }
+        } catch (e) {
+          console.warn(`[PromptUnderstandingService] ⚠️  Strategy 2 failed: ${e instanceof Error ? e.message : 'Unknown error'}`);
+        }
+      }
+      
+      // Strategy 3: Try to extract partial JSON and build minimal inference
+      if (!inference) {
+        try {
+          // Extract trigger if mentioned
+          const triggerMatch = responseText.match(/"trigger"\s*:\s*"([^"]+)"/i) || 
+                               responseText.match(/trigger[:\s]+(\w+)/i);
+          const trigger = triggerMatch ? triggerMatch[1] : 'manual_trigger';
+          
+          // Extract actions array (even if partial)
+          const actionsMatch = responseText.match(/"actions"\s*:\s*\[([^\]]*)\]/i);
+          const actions: Array<{ type: string; operation: string; description: string }> = [];
+          
+          if (actionsMatch) {
+            // Try to extract action objects
+            const actionsText = actionsMatch[1];
+            const actionMatches = actionsText.matchAll(/\{"type"\s*:\s*"([^"]+)"/gi);
+            for (const match of actionMatches) {
+              actions.push({
+                type: match[1],
+                operation: 'read',
+                description: `Action using ${match[1]}`,
+              });
+            }
+          }
+          
+          // Extract confidence if mentioned
+          const confidenceMatch = responseText.match(/"confidence"\s*:\s*([0-9.]+)/i);
+          const confidence = confidenceMatch ? parseFloat(confidenceMatch[1]) : 0.4;
+          
+          inference = {
+            trigger,
+            actions,
+            confidence: Math.max(0.2, Math.min(1.0, confidence)),
+            reasoning: 'Partially inferred from LLM response (JSON parse failed, extracted partial data)',
+          };
+          
+          console.log(`[PromptUnderstandingService] ✅ Parsed JSON using strategy 3 (partial extraction)`);
+        } catch (e) {
+          console.warn(`[PromptUnderstandingService] ⚠️  Strategy 3 failed: ${e instanceof Error ? e.message : 'Unknown error'}`);
+        }
+      }
+      
+      // If all strategies failed, throw error to trigger fallback
+      if (!inference) {
+        throw new Error('All JSON parsing strategies failed');
+      }
       
       // Validate inference
       this.validateInference(inference, availableNodes);
@@ -226,12 +324,42 @@ CRITICAL:
     } catch (error) {
       console.error(`[PromptUnderstandingService] ❌ Failed to infer workflow: ${error instanceof Error ? error.message : 'Unknown error'}`);
       
-      // Fallback: Return minimal safe workflow
+      // ✅ ROOT-LEVEL FIX: Better fallback - infer from prompt keywords instead of returning empty
+      // Extract basic intent from prompt keywords
+      const promptLower = prompt.toLowerCase();
+      const inferredActions: Array<{ type: string; operation: string; description: string }> = [];
+      
+      // Keyword-based inference
+      if (promptLower.includes('webhook') || promptLower.includes('http')) {
+        inferredActions.push({ type: 'webhook', operation: 'receive', description: 'Receive webhook data' });
+      }
+      if (promptLower.includes('gmail') || promptLower.includes('email')) {
+        inferredActions.push({ type: 'google_gmail', operation: 'read', description: 'Read emails' });
+      }
+      if (promptLower.includes('slack')) {
+        inferredActions.push({ type: 'slack_message', operation: 'send', description: 'Send Slack message' });
+      }
+      if (promptLower.includes('sheets') || promptLower.includes('spreadsheet')) {
+        inferredActions.push({ type: 'google_sheets', operation: 'read', description: 'Read from Google Sheets' });
+      }
+      if (promptLower.includes('hubspot') || promptLower.includes('crm')) {
+        inferredActions.push({ type: 'hubspot', operation: 'create_contact', description: 'Create contact in HubSpot' });
+      }
+      if (promptLower.includes('ai') || promptLower.includes('gpt') || promptLower.includes('openai')) {
+        inferredActions.push({ type: 'ai_chat_model', operation: 'chat', description: 'AI analysis' });
+      }
+      
+      // Infer trigger
+      let inferredTrigger = 'manual_trigger';
+      if (promptLower.includes('webhook')) inferredTrigger = 'webhook';
+      else if (promptLower.includes('schedule') || promptLower.includes('daily') || promptLower.includes('hourly')) inferredTrigger = 'schedule';
+      else if (promptLower.includes('form')) inferredTrigger = 'form';
+      
       return {
-        trigger: 'manual_trigger',
-        actions: [],
-        confidence: 0.3,
-        reasoning: 'Failed to infer workflow - prompt too vague or inference failed',
+        trigger: inferredTrigger,
+        actions: inferredActions,
+        confidence: inferredActions.length > 0 ? 0.5 : 0.3, // Higher confidence if we inferred actions
+        reasoning: `Failed to parse LLM JSON response, but inferred basic workflow from prompt keywords (${inferredActions.length} actions found)`,
       };
     }
   }

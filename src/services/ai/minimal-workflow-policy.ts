@@ -23,7 +23,7 @@
 import { StructuredIntent } from './intent-structurer';
 import { Workflow, WorkflowNode, WorkflowEdge } from '../../core/types/ai-types';
 import { getRequiredNodes } from './intent-constraint-engine';
-import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 import { isTriggerNodeType } from '../../core/utils/node-role';
 import { nodeLibrary } from '../nodes/node-library';
 import { resolveCompatibleHandles } from './schema-driven-connection-resolver';
@@ -281,7 +281,7 @@ export class MinimalWorkflowPolicy {
                               intentText.includes('catch');
 
     for (const node of nodes) {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       let shouldRemove = false;
       let violation: PolicyViolation | null = null;
 
@@ -353,7 +353,7 @@ export class MinimalWorkflowPolicy {
     const violations: PolicyViolation[] = [];
 
     for (const node of nodes) {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
 
       if (transformerTypes.has(nodeType)) {
         if (seenTransformers.has(nodeType)) {
@@ -390,7 +390,7 @@ export class MinimalWorkflowPolicy {
     const violations: PolicyViolation[] = [];
 
     for (const node of nodes) {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
 
       // Always keep trigger nodes
       if (this.isTriggerNode(nodeType)) {
@@ -440,7 +440,7 @@ export class MinimalWorkflowPolicy {
 
     // Find trigger node
     const triggerNode = nodes.find(node => {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       return this.isTriggerNode(nodeType);
     });
 

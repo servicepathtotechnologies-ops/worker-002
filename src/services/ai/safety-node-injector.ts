@@ -13,7 +13,8 @@
 import { randomUUID } from 'crypto';
 import { Workflow, WorkflowNode, WorkflowEdge } from '../../core/types/ai-types';
 import { nodeLibrary } from '../nodes/node-library';
-import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+import { NodeMetadataHelper } from '../../core/types/node-metadata';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 import { resolveCompatibleHandles } from './schema-driven-connection-resolver';
 
 export interface SafetyInjectionResult {
@@ -23,7 +24,7 @@ export interface SafetyInjectionResult {
 }
 
 function getType(node: WorkflowNode): string {
-  return normalizeNodeType(node) || node.data?.type || node.type || '';
+  return unifiedNormalizeNodeType(node) || node.data?.type || node.type || '';
 }
 
 function createNode(nodeType: string, label: string, config: Record<string, unknown>): WorkflowNode {
@@ -41,15 +42,35 @@ function createNode(nodeType: string, label: string, config: Record<string, unkn
   };
 }
 
-function createEdge(source: WorkflowNode, target: WorkflowNode): WorkflowEdge {
-  const res = resolveCompatibleHandles(source, target);
-  return {
-    id: randomUUID(),
-    source: source.id,
-    target: target.id,
-    ...(res.success && res.sourceHandle ? { sourceHandle: res.sourceHandle } : {}),
-    ...(res.success && res.targetHandle ? { targetHandle: res.targetHandle } : {}),
-  };
+/**
+ * ✅ UNIVERSAL: Create edge using Universal Edge Creation Service
+ * This ensures all edge creation follows consistent rules.
+ */
+function createEdge(
+  source: WorkflowNode,
+  target: WorkflowNode,
+  existingEdges: WorkflowEdge[] = [],
+  allNodes: WorkflowNode[] = [],
+  edgeType?: string,
+  sourceHandle?: string
+): WorkflowEdge | null {
+  const { universalEdgeCreationService } = require('../edges/universal-edge-creation-service');
+  
+  const result = universalEdgeCreationService.createEdge({
+    sourceNode: source,
+    targetNode: target,
+    sourceHandle,
+    edgeType,
+    existingEdges,
+    allNodes: allNodes.length > 0 ? allNodes : [source, target],
+  });
+  
+  if (result.success && result.edge) {
+    return result.edge;
+  } else {
+    console.warn(`[SafetyNodeInjector] ⚠️  Failed to create edge: ${result.error || result.reason}`);
+    return null;
+  }
 }
 
 /**
@@ -65,8 +86,34 @@ export function injectSafetyNodes(
   const nodes = [...(workflow.nodes || [])];
   const edges = [...(workflow.edges || [])];
 
-  const hasAutoLimit = nodes.some(n => getType(n) === 'limit' && (n.data?.config as any)?._autoInjected);
-  const hasAutoEmptyCheck = nodes.some(n => getType(n) === 'if_else' && (n.data?.config as any)?._autoInjected);
+  // ✅ ROOT-LEVEL UNIVERSAL FIX: Use standardized metadata system
+  const hasAutoLimit = nodes.some(n => {
+    const metadata = NodeMetadataHelper.getMetadata(n);
+    return getType(n) === 'limit' && metadata?.injection?.autoInjected === true;
+  });
+  const hasAutoEmptyCheck = nodes.some(n => {
+    const metadata = NodeMetadataHelper.getMetadata(n);
+    return getType(n) === 'if_else' && metadata?.injection?.autoInjected === true;
+  });
+
+  // ✅ FIX 2: DSL-AWARE CHECK - Check if safety nodes already exist from DSL before injecting
+  // This prevents duplicate injection when DSL compiler already created safety nodes
+  const hasIfElseFromDSL = nodes.some(n => {
+    const metadata = NodeMetadataHelper.getMetadata(n);
+    return getType(n) === 'if_else' && metadata?.dsl?.dslId; // From DSL, not injection
+  });
+
+  const hasLimitFromDSL = nodes.some(n => {
+    const metadata = NodeMetadataHelper.getMetadata(n);
+    return getType(n) === 'limit' && metadata?.dsl?.dslId; // From DSL, not injection
+  });
+
+  // ✅ FIX 2: Skip injection if safety nodes already exist from DSL
+  // DSL compiler now creates safety nodes in correct order, so we don't need to inject again
+  if (hasIfElseFromDSL && hasLimitFromDSL) {
+    console.log('[SafetyNodeInjector] ✅ Safety nodes (if_else, limit) already exist from DSL - skipping injection to prevent duplicates');
+    return { workflow, injectedNodeTypes, warnings };
+  }
 
   const aiNodes = nodes.filter(n => {
     const t = getType(n);
@@ -77,6 +124,11 @@ export function injectSafetyNodes(
     return { workflow, injectedNodeTypes, warnings };
   }
 
+  // ✅ ROOT-LEVEL FIX: Only inject safety nodes if truly necessary
+  // Check if user explicitly wants safety nodes or if data source produces arrays
+  const promptLower = (userPrompt || '').toLowerCase();
+  const wantsSafetyNodes = /\b(limit|safety|prevent|protect|max|top|first|empty check|validate)\b/i.test(promptLower);
+  
   // Find any direct edge * -> ai (data source to AI)
   const candidateEdges = edges.filter(e => {
     const src = nodes.find(n => n.id === e.source);
@@ -88,7 +140,14 @@ export function injectSafetyNodes(
     // Don't inject when source is already a safety node
     const st = getType(src);
     if (['limit', 'if_else', 'aggregate', 'sort', 'wait', 'stop_and_error'].includes(st)) return false;
-    return true;
+    
+    // ✅ CRITICAL FIX: Only inject if source produces arrays (google_sheets, database, etc.)
+    // Don't inject for simple data sources that don't produce arrays
+    const arrayProducingSources = ['google_sheets', 'airtable', 'notion', 'database', 'sql', 'postgres', 'mysql'];
+    const sourceProducesArrays = arrayProducingSources.some(type => st.includes(type));
+    
+    // Only inject if source produces arrays OR user explicitly wants safety nodes
+    return sourceProducesArrays || wantsSafetyNodes;
   });
 
   let edgeToSplit = candidateEdges[0];
@@ -104,11 +163,15 @@ export function injectSafetyNodes(
     return { workflow, injectedNodeTypes, warnings };
   }
 
+  // ✅ ROOT-LEVEL FIX: Check if source produces arrays before injecting safety nodes
+  const sourceType = getType(sourceNode);
+  const arrayProducingSources = ['google_sheets', 'airtable', 'notion', 'database', 'sql', 'postgres', 'mysql'];
+  const sourceProducesArrays = arrayProducingSources.some(type => sourceType.includes(type));
+
   // Remove old edge; we'll rebuild below
   let newEdges = edges.filter(e => e.id !== edgeToSplit.id);
   let upstreamNode: WorkflowNode = sourceNode;
 
-  const promptLower = (userPrompt || '').toLowerCase();
   const wantsSort = /\b(sort|order by|descending|ascending)\b/i.test(promptLower);
   // CRITICAL FIX: prevent false positives like "summarize" containing "sum"
   const wantsAggregate =
@@ -120,27 +183,60 @@ export function injectSafetyNodes(
     /\baverage\b/i.test(promptLower) ||
     /\bcount\b/i.test(promptLower);
 
-  const hasAutoSort = nodes.some(n => getType(n) === 'sort' && (n.data?.config as any)?._autoInjected);
-  const hasAutoAggregate = nodes.some(n => getType(n) === 'aggregate' && (n.data?.config as any)?._autoInjected);
+  // ✅ ROOT-LEVEL UNIVERSAL FIX: Use standardized metadata system
+  const hasAutoSort = nodes.some(n => {
+    const metadata = NodeMetadataHelper.getMetadata(n);
+    return getType(n) === 'sort' && metadata?.injection?.autoInjected === true;
+  });
+  const hasAutoAggregate = nodes.some(n => {
+    const metadata = NodeMetadataHelper.getMetadata(n);
+    return getType(n) === 'aggregate' && metadata?.injection?.autoInjected === true;
+  });
 
+  // ✅ ROOT-LEVEL FIX: Only inject empty-check if user explicitly wants it or data source produces arrays
   // 1) Inject empty-check If/Else + Stop node unless already auto-injected
   // CRITICAL: must run BEFORE any transformations so condition checks raw rows/items from Google Sheets
-  if (!hasAutoEmptyCheck) {
+  if (!hasAutoEmptyCheck && (wantsSafetyNodes || sourceProducesArrays)) {
+    // ✅ ROOT-LEVEL UNIVERSAL FIX: Use standardized metadata system
     const ifNode = createNode('if_else', 'If items exist?', {
       // Use canonical JSON conditions format expected by backend schema/executor
       conditions: [{ expression: '{{$json.items.length}} > 0' }],
       combineOperation: 'AND',
       reason: 'Auto-inserted empty-check before AI',
-      _autoInjected: true,
     });
+    NodeMetadataHelper.setMetadata(ifNode, {
+      origin: {
+        source: 'system',
+        approach: 'safety_injection',
+        stage: 'safety_injection',
+      },
+      injection: {
+        autoInjected: true,
+        reason: 'Auto-inserted empty-check before AI',
+        priority: 1,
+      },
+    });
+    
     const stopNode = createNode('stop_and_error', 'Stop (No data)', {
       errorMessage: 'No rows found in Google Sheets.',
       errorCode: 'EMPTY_INPUT',
-      _autoInjected: true,
+    });
+    NodeMetadataHelper.setMetadata(stopNode, {
+      origin: {
+        source: 'system',
+        approach: 'safety_injection',
+        stage: 'safety_injection',
+      },
+      injection: {
+        autoInjected: true,
+        reason: 'Auto-inserted stop node for empty data',
+        priority: 1,
+      },
     });
 
     // upstream -> if_else
-    newEdges.push(createEdge(upstreamNode, ifNode));
+    const edge1 = createEdge(upstreamNode, ifNode, workflow.edges, workflow.nodes);
+    if (edge1) newEdges.push(edge1);
 
     // Build TRUE path safety chain: if_else(true) -> [limit] -> [sort?] -> [aggregate?] -> AI
     let trueUpstream: WorkflowNode = ifNode;
@@ -150,7 +246,18 @@ export function injectSafetyNodes(
       const limitNode = createNode('limit', 'Limit', {
         limit: 50,
         reason: 'Auto-inserted safety limit before AI to prevent token overflow',
-        _autoInjected: true,
+      });
+      NodeMetadataHelper.setMetadata(limitNode, {
+        origin: {
+          source: 'system',
+          approach: 'safety_injection',
+          stage: 'safety_injection',
+        },
+        injection: {
+          autoInjected: true,
+          reason: 'Auto-inserted safety limit before AI to prevent token overflow',
+          priority: 2,
+        },
       });
       {
         const res = resolveCompatibleHandles(ifNode, limitNode);
@@ -176,9 +283,21 @@ export function injectSafetyNodes(
         direction: 'asc',
         type: 'auto',
         reason: 'Auto-inserted sort before AI due to prompt intent',
-        _autoInjected: true,
       });
-      newEdges.push(createEdge(trueUpstream, sortNode));
+      NodeMetadataHelper.setMetadata(sortNode, {
+        origin: {
+          source: 'system',
+          approach: 'safety_injection',
+          stage: 'safety_injection',
+        },
+        injection: {
+          autoInjected: true,
+          reason: 'Auto-inserted sort before AI due to prompt intent',
+          priority: 3,
+        },
+      });
+      const edge2 = createEdge(trueUpstream, sortNode, [...workflow.edges, ...newEdges], [...workflow.nodes, ...nodes]);
+      if (edge2) newEdges.push(edge2);
       trueUpstream = sortNode;
       nodes.push(sortNode);
       injectedNodeTypes.push('sort');
@@ -191,16 +310,29 @@ export function injectSafetyNodes(
         field: '',
         delimiter: '\n',
         reason: 'Auto-inserted aggregate before AI due to prompt intent',
-        _autoInjected: true,
       });
-      newEdges.push(createEdge(trueUpstream, aggregateNode));
+      NodeMetadataHelper.setMetadata(aggregateNode, {
+        origin: {
+          source: 'system',
+          approach: 'safety_injection',
+          stage: 'safety_injection',
+        },
+        injection: {
+          autoInjected: true,
+          reason: 'Auto-inserted aggregate before AI due to prompt intent',
+          priority: 4,
+        },
+      });
+      const edge3 = createEdge(trueUpstream, aggregateNode, [...workflow.edges, ...newEdges], [...workflow.nodes, ...nodes]);
+      if (edge3) newEdges.push(edge3);
       trueUpstream = aggregateNode;
       nodes.push(aggregateNode);
       injectedNodeTypes.push('aggregate');
     }
 
     // trueUpstream -> AI
-    newEdges.push(createEdge(trueUpstream, targetNode));
+    const edge4 = createEdge(trueUpstream, targetNode, [...workflow.edges, ...newEdges], [...workflow.nodes, ...nodes]);
+    if (edge4) newEdges.push(edge4);
 
     // if_else false -> stop_and_error
     {
@@ -218,27 +350,30 @@ export function injectSafetyNodes(
     injectedNodeTypes.push('if_else', 'stop_and_error');
   } else {
     // If empty-check already exists, connect upstream directly to target.
-    newEdges.push(createEdge(upstreamNode, targetNode));
+    const edge5 = createEdge(upstreamNode, targetNode, [...workflow.edges, ...newEdges], [...workflow.nodes, ...nodes]);
+    if (edge5) newEdges.push(edge5);
   }
 
   // --------------------------------------------
   // AI SUMMARIZATION → GMAIL AUTO-MAPPING (STRICT)
   // --------------------------------------------
-  // If the AI node is ai_chat_model, enforce a fully-defined JSON prompt and response format.
+  // ✅ UNIVERSAL FIX: AI Input Resolver will generate prompts dynamically at runtime
+  // NO hardcoded prompts - AI will analyze previous node output and user intent
+  // If the AI node is ai_chat_model, leave prompt empty - AI Input Resolver will fill it
   if (getType(targetNode) === 'ai_chat_model') {
     const cfg = (targetNode.data?.config || {}) as any;
     const needsPrompt = !cfg.prompt || String(cfg.prompt).trim() === '';
     if (needsPrompt) {
-      cfg.systemPrompt = `You are an intelligent email content generator that analyzes data and creates well-structured, informative email content.`;
-      cfg.prompt =
-`Analyze the following spreadsheet data and generate a comprehensive, well-structured email response.
-
-Data:\n{{google_sheets.items}}\n\nReturn output strictly in this JSON format:\n{\n  \"subject\": \"concise, informative email subject line\",\n  \"body\": \"professional email body with clear paragraphs and formatting\",\n  \"summary\": \"brief executive summary of the data\",\n  \"keyPoints\": [\"key point 1\", \"key point 2\", \"key point 3\"],\n  \"insights\": \"important insights or patterns discovered in the data\",\n  \"actionItems\": [\"action item 1\", \"action item 2\"],\n  \"metadata\": {\n    \"dataSource\": \"Google Sheets\",\n    \"rowCount\": number_of_rows,\n    \"analysisDate\": \"current date\"\n  }\n}\n\nRules:\n- Subject: Must be concise (max 60 characters), informative, and action-oriented\n- Body: Must be well-formatted with paragraphs, use professional tone, include all important information\n- Summary: Brief 2-3 sentence overview of the data\n- KeyPoints: Array of 3-5 most important points extracted from the data\n- Insights: Detailed analysis of patterns, trends, or notable findings\n- ActionItems: Array of recommended next steps or actions (if applicable)\n- Metadata: Additional context about the data source and analysis\n- All fields are required - provide meaningful content for each\n- Output ONLY valid JSON - no explanations, no markdown, no code blocks`;
-      cfg.responseFormat = 'json';
+      // ✅ UNIVERSAL: Leave prompt empty - AI Input Resolver will generate it dynamically
+      // based on previous node output (whatever it is - HTTP Request, Database, Webhook, etc.)
+      // and user intent. No hardcoded assumptions about Google Sheets or any specific node.
+      cfg.prompt = ''; // AI Input Resolver will fill this at runtime
+      cfg.responseFormat = 'text'; // Default, can be overridden by AI Input Resolver
       // Use low temp for determinism
       if (cfg.temperature === undefined) cfg.temperature = 0.2;
       targetNode.data.config = cfg;
       injectedNodeTypes.push('ai_prompt');
+      console.log(`[SafetyNodeInjector] ✅ AI Chat Model prompt will be generated dynamically by AI Input Resolver at runtime`);
     }
   }
 

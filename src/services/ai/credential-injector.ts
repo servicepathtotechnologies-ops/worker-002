@@ -14,7 +14,7 @@
 import { WorkflowNode, Workflow } from '../../core/types/ai-types';
 import { RequiredCredential } from './credential-detector';
 import { nodeLibrary } from '../nodes/node-library';
-import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType } from '../../core/utils/unified-node-type-normalizer';
 
 export interface CredentialInjectionResult {
   success: boolean;
@@ -46,7 +46,7 @@ export class CredentialInjector {
 
     // Inject credentials into each node
     workflow.nodes.forEach(node => {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       const requiredCredential = requiredCredentials.find(rc => rc.node_id === node.id || rc.node_type === nodeType);
 
       if (requiredCredential) {
@@ -122,7 +122,7 @@ export class CredentialInjector {
     credentialData: Record<string, any>
   ): WorkflowNode {
     // Get node schema to determine credential field name
-    const nodeType = normalizeNodeType(node);
+    const nodeType = unifiedNormalizeNodeType(node);
     const schema = nodeLibrary.getSchema(nodeType);
 
     // Determine credential field name (usually 'credentialId' or provider-specific)
@@ -175,7 +175,7 @@ export class CredentialInjector {
     const nodeCredentialMap = new Map<string, boolean>();
 
     workflow.nodes.forEach(node => {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       const requiredCredential = requiredCredentials.find(rc => rc.node_id === node.id || rc.node_type === nodeType);
 
       if (requiredCredential) {
@@ -194,7 +194,7 @@ export class CredentialInjector {
    */
   private nodeHasCredential(node: WorkflowNode, provider: string): boolean {
     const config = node.data?.config || {};
-    return !!(config.credentialId || config[this.getCredentialFieldName(normalizeNodeType(node), provider)]);
+    return !!(config.credentialId || config[this.getCredentialFieldName(unifiedNormalizeNodeType(node), provider)]);
   }
 }
 

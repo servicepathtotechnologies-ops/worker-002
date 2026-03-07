@@ -103,11 +103,30 @@ const OPERATION_TO_CAPABILITY: Record<string, RequiredCapability> = {
 
 /**
  * Map operation to specific capability strings
+ * 
+ * ✅ ROOT-LEVEL FIX: Checks node type to determine if it's a transformation node
+ * Transformation nodes (like ai_chat_model) should use TRANSFORM capability even with "create" operation
  */
 function mapOperationToCapabilities(operation: string, intentType: string): string[] {
   const op = operation.toLowerCase();
   const type = intentType.toLowerCase();
   const capabilities: string[] = [];
+  
+  // ✅ ROOT-LEVEL FIX: Check if this is a transformation node type
+  // Transformation nodes should use TRANSFORM capability regardless of operation
+  const isTransformationNode = nodeCapabilityRegistryDSL.isTransformation(type);
+  if (isTransformationNode) {
+    capabilities.push('transformation', 'ai_processing');
+    // Add specific transformation capabilities based on node type
+    if (type.includes('summar') || type.includes('summariz')) {
+      capabilities.push('summarize');
+    } else if (type.includes('analyz') || type.includes('analyse')) {
+      capabilities.push('analyze', 'ai_processing');
+    } else if (type.includes('chat') || type.includes('llm') || type.includes('gpt') || type.includes('claude') || type.includes('gemini')) {
+      capabilities.push('llm', 'ai_processing', 'transformation');
+    }
+    return capabilities; // Return early - transformation nodes don't need output/write capabilities
+  }
   
   // Map to core capability
   const coreCapability = OPERATION_TO_CAPABILITY[op];
@@ -130,6 +149,12 @@ function mapOperationToCapabilities(operation: string, intentType: string): stri
       capabilities.push('send_email');
     } else if (op === 'notify') {
       capabilities.push('notification');
+    } else if (op === 'post' || op === 'create') {
+      // Social media posts
+      if (type.includes('twitter') || type.includes('linkedin') || type.includes('instagram') || 
+          type.includes('facebook') || type.includes('social')) {
+        capabilities.push('send_post', 'social_media');
+      }
     }
   }
   
@@ -138,6 +163,8 @@ function mapOperationToCapabilities(operation: string, intentType: string): stri
 
 /**
  * Extract capability requirements from intent actions
+ * 
+ * ✅ ROOT-LEVEL FIX: Transformation nodes use TRANSFORM capability regardless of operation
  */
 export function extractCapabilityRequirements(intent: StructuredIntent): CapabilityRequirement[] {
   const requirements: CapabilityRequirement[] = [];
@@ -154,10 +181,20 @@ export function extractCapabilityRequirements(intent: StructuredIntent): Capabil
       continue;
     }
     
-    // Map operation to core capability
-    const coreCapability = OPERATION_TO_CAPABILITY[operation];
-    if (!coreCapability) {
-      continue; // Unknown operation
+    // ✅ ROOT-LEVEL FIX: Check if this is a transformation node type first
+    // Transformation nodes should use TRANSFORM capability regardless of operation
+    const isTransformationNode = nodeCapabilityRegistryDSL.isTransformation(type);
+    let coreCapability: RequiredCapability;
+    
+    if (isTransformationNode) {
+      // Force transformation nodes to use TRANSFORM capability
+      coreCapability = RequiredCapability.TRANSFORM;
+    } else {
+      // Map operation to core capability for non-transformation nodes
+      coreCapability = OPERATION_TO_CAPABILITY[operation];
+      if (!coreCapability) {
+        continue; // Unknown operation
+      }
     }
     
     // Get specific capabilities needed
@@ -223,6 +260,8 @@ export function extractCapabilityProviders(dsl: WorkflowDSL): CapabilityProvider
 
 /**
  * Check if a capability requirement is satisfied by providers
+ * 
+ * ✅ ROOT-LEVEL FIX: Handles capability equivalence and category-aware validation
  */
 function checkCapabilityCoverage(
   requirement: CapabilityRequirement,
@@ -232,17 +271,54 @@ function checkCapabilityCoverage(
   const satisfiedCapabilities: Set<string> = new Set();
   const missingCapabilities: string[] = [];
   
+  // ✅ ROOT-LEVEL FIX: Capability equivalence mapping
+  // Some capabilities are equivalent (e.g., send_post = write_data, output = write_data for outputs)
+  const capabilityEquivalents: Record<string, string[]> = {
+    'write_data': ['send_post', 'send_email', 'send_message', 'write_crm', 'output'],
+    'output': ['send_post', 'send_email', 'send_message', 'write_crm', 'write_data'],
+    'transformation': ['ai_processing', 'transform', 'summarize', 'analyze', 'llm'],
+    'ai_processing': ['transformation', 'transform', 'llm'],
+  };
+  
   // Check each required capability
   for (const requiredCap of requirement.requiredCapabilities) {
     const requiredCapLower = requiredCap.toLowerCase();
     let found = false;
     
-    // Find providers that have this capability
+    // Get equivalent capabilities
+    const equivalents = capabilityEquivalents[requiredCapLower] || [];
+    const allPossibleCaps = [requiredCapLower, ...equivalents.map(e => e.toLowerCase())];
+    
+    // Find providers that have this capability (or equivalent)
     for (const provider of providers) {
       const providerCaps = provider.providedCapabilities.map(c => c.toLowerCase());
       
-      // Check exact match
-      if (providerCaps.includes(requiredCapLower)) {
+      // ✅ ROOT-LEVEL FIX: Check if provider category matches requirement
+      // Transformation nodes don't need output/write_data - they need transformation capabilities
+      if (requirement.capability === RequiredCapability.TRANSFORM && provider.category === 'transformation') {
+        // For transformation requirements, check if provider has transformation capabilities
+        const hasTransformationCap = providerCaps.some(cap => 
+          ['transformation', 'ai_processing', 'transform', 'llm', 'summarize', 'analyze'].includes(cap)
+        );
+        if (hasTransformationCap) {
+          if (!matchingProviders.some(p => p.nodeType === provider.nodeType)) {
+            matchingProviders.push(provider);
+          }
+          satisfiedCapabilities.add(requiredCap);
+          found = true;
+          break; // Found matching transformation provider
+        }
+      }
+      
+      // ✅ ROOT-LEVEL FIX: For write requirements, only check output category nodes
+      if (requirement.capability === RequiredCapability.WRITE && provider.category !== 'output') {
+        continue; // Skip non-output nodes for write requirements
+      }
+      
+      // Check exact match or equivalent
+      const hasCapability = allPossibleCaps.some(cap => providerCaps.includes(cap));
+      
+      if (hasCapability) {
         if (!matchingProviders.some(p => p.nodeType === provider.nodeType)) {
           matchingProviders.push(provider);
         }
@@ -251,7 +327,9 @@ function checkCapabilityCoverage(
       }
       // Check substring match
       else if (providerCaps.some(cap => 
-        cap.includes(requiredCapLower) || requiredCapLower.includes(cap)
+        allPossibleCaps.some(reqCap => 
+          cap.includes(reqCap) || reqCap.includes(cap)
+        )
       )) {
         if (!matchingProviders.some(p => p.nodeType === provider.nodeType)) {
           matchingProviders.push(provider);

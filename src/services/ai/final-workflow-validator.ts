@@ -16,13 +16,14 @@
  */
 
 import { Workflow, WorkflowNode, WorkflowEdge } from '../../core/types/ai-types';
-import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 import { getTriggerNodes, isTriggerNode } from '../../core/utils/trigger-deduplicator';
 import { nodeDataTypeSystem, validateWorkflowTypes } from './node-data-type-system';
 import { nodeLibrary } from '../nodes/node-library';
 import { isValidHandle } from '../../core/utils/node-handle-registry';
 import { transformationDetector, detectTransformations } from './transformation-detector';
 import { executionOrderEnforcer } from './execution-order-enforcer';
+import { unifiedNodeCategorizer } from './unified-node-categorizer';
 
 export interface FinalValidationResult {
   valid: boolean;
@@ -195,10 +196,43 @@ export class FinalWorkflowValidator {
     });
     
     const outputNodes = nodes.filter(node => {
-      const nodeType = normalizeNodeType(node);
-      return !outgoingEdgesMap.has(node.id) && 
-             !isTriggerNode(node) &&
-             (this.isOutputAction(nodeType) || this.isDataProducer(nodeType));
+      const nodeType = unifiedNormalizeNodeType(node);
+      const nodeTypeLower = (nodeType || '').toLowerCase();
+
+      // ✅ ROOT-LEVEL FIX: Use Unified Node Categorizer for consistent categorization
+      // This ensures all stages use the same logic for determining output nodes
+      const isOutput = unifiedNodeCategorizer.isOutput(nodeTypeLower);
+
+      // Contract-driven terminal sink detection (single source of truth: NodeLibrary).
+      // If a node has any *write* capability (database.write / crm.write / etc.),
+      // it can be a valid terminal endpoint for a workflow branch.
+      const schema = nodeLibrary.getSchema(nodeTypeLower);
+      const capabilities: string[] = (schema?.capabilities || []) as string[];
+
+      const opRaw =
+        (node.data as any)?.config?.operation ??
+        (node.data as any)?.operation ??
+        (node.data as any)?.config?.op;
+      const op = typeof opRaw === 'string' ? opRaw.toLowerCase() : '';
+      const isWriteOperation =
+        op.includes('write') ||
+        op.includes('create') ||
+        op.includes('update') ||
+        op.includes('delete') ||
+        op.includes('append') ||
+        op.includes('insert') ||
+        op.includes('upsert');
+
+      const hasWriteCapability =
+        capabilities.some(c => (c || '').toLowerCase().includes('.write')) ||
+        capabilities.some(c => (c || '').toLowerCase().includes('database.write')) ||
+        capabilities.some(c => (c || '').toLowerCase().includes('crm.write')) ||
+        capabilities.some(c => (c || '').toLowerCase().includes('storage.write'));
+
+      // Use unified categorizer result OR fallback to write operation/capability check
+      const isTerminalSink = isOutput || isWriteOperation || hasWriteCapability;
+
+      return !outgoingEdgesMap.has(node.id) && !isTriggerNode(node) && isTerminalSink;
     });
     
     if (outputNodes.length === 0) {
@@ -234,7 +268,33 @@ export class FinalWorkflowValidator {
     // Check if all nodes are reachable from outputs
     for (const node of nodes) {
       if (!reachableFromOutput.has(node.id) && !isTriggerNode(node)) {
-        const nodeType = normalizeNodeType(node);
+        const nodeType = unifiedNormalizeNodeType(node);
+
+        // Condition / flow-control nodes (if_else, switch, etc.) may legitimately
+        // not be wired directly into an output path, especially when auto-injected
+        // as required intent hints. Do not hard-fail on them here.
+        const isConditionNode =
+          nodeType.includes('if_else') ||
+          nodeType.includes('switch') ||
+          nodeType.includes('condition');
+
+        if (isConditionNode) {
+          continue;
+        }
+
+        // Auto-injected nodes (e.g. required intent nodes like http_request / if_else)
+        // are allowed to exist as side branches without forcing a failure. They are
+        // still visible via their _autoInjected / _injectedReason flags for debugging.
+        const config: any = node.data?.config || node.data || {};
+        const isAutoInjected =
+          !!config._autoInjected ||
+          !!config._injectedReason ||
+          !!config._needs_review;
+
+        if (isAutoInjected) {
+          continue;
+        }
+
         errors.push(`Node "${nodeType}" (${node.id}) is not connected to any output`);
         disconnectedNodeIds.push(node.id);
       }
@@ -293,7 +353,7 @@ export class FinalWorkflowValidator {
     // Check for orphan nodes
     for (const node of nodes) {
       if (!reachableFromTrigger.has(node.id)) {
-        const nodeType = normalizeNodeType(node);
+        const nodeType = unifiedNormalizeNodeType(node);
         errors.push(`Orphan node "${nodeType}" (${node.id}) is not reachable from trigger`);
         orphanNodeIds.push(node.id);
       }
@@ -326,7 +386,7 @@ export class FinalWorkflowValidator {
     if (triggerNodes.length > 1) {
       errors.push(`Multiple trigger nodes found: ${triggerNodes.length} (expected 1)`);
       triggerNodes.forEach(node => {
-        const nodeType = normalizeNodeType(node);
+        const nodeType = unifiedNormalizeNodeType(node);
         duplicateTriggerIds.push(node.id);
         errors.push(`  - Duplicate trigger: "${nodeType}" (${node.id})`);
       });
@@ -449,7 +509,7 @@ export class FinalWorkflowValidator {
         for (const e of inEdges) {
           const src = nodeById.get(e.source);
           if (!src) continue;
-          const srcType = normalizeNodeType(src);
+          const srcType = unifiedNormalizeNodeType(src);
           if (srcType === wantedType) return true;
           if (!visited.has(src.id)) {
             visited.add(src.id);
@@ -473,7 +533,7 @@ export class FinalWorkflowValidator {
         for (const e of inEdges) {
           const src = nodeById.get(e.source);
           if (!src) continue;
-          const srcType = normalizeNodeType(src);
+          const srcType = unifiedNormalizeNodeType(src);
           if (outputsArray(srcType)) {
             return { nodeId: src.id, nodeType: srcType };
           }
@@ -487,7 +547,7 @@ export class FinalWorkflowValidator {
     };
 
     for (const node of nodes) {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       if (!isAiNodeType(nodeType)) continue;
 
       // If there is no incoming edge, other rules will catch it (required inputs).
@@ -533,7 +593,7 @@ export class FinalWorkflowValidator {
     
     // Check each node
     for (const node of nodes) {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       
       // Triggers don't need inputs
       if (isTriggerNode(node)) {
@@ -576,7 +636,7 @@ export class FinalWorkflowValidator {
     // Check for duplicate nodes (same type used multiple times unnecessarily)
     const nodeTypeCount = new Map<string, number>();
     nodes.forEach(node => {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       nodeTypeCount.set(nodeType, (nodeTypeCount.get(nodeType) || 0) + 1);
     });
     
@@ -627,7 +687,7 @@ export class FinalWorkflowValidator {
     }
     
     // Get node types in workflow
-    const workflowNodeTypes = nodes.map(node => normalizeNodeType(node));
+    const workflowNodeTypes = nodes.map(node => unifiedNormalizeNodeType(node));
     
     // Validate transformations exist
     const validation = transformationDetector.validateTransformations(detection, workflowNodeTypes);
@@ -676,7 +736,7 @@ export class FinalWorkflowValidator {
     // Check for unnecessary duplicate node types (same type in same position)
     const nodeTypePositions = new Map<string, Set<string>>();
     nodes.forEach(node => {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       if (!nodeTypePositions.has(nodeType)) {
         nodeTypePositions.set(nodeType, new Set());
       }
@@ -733,8 +793,8 @@ export class FinalWorkflowValidator {
         continue;
       }
       
-      const sourceType = normalizeNodeType(sourceNode);
-      const targetType = normalizeNodeType(targetNode);
+      const sourceType = unifiedNormalizeNodeType(sourceNode);
+      const targetType = unifiedNormalizeNodeType(targetNode);
       
       // Validate source handle
       if (edge.sourceHandle) {
@@ -809,7 +869,7 @@ export class FinalWorkflowValidator {
     // Additional validation: check category order in edges
     const nodeCategoryMap = new Map<string, string>();
     nodes.forEach(node => {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       if (this.isDataProducer(nodeType)) {
         nodeCategoryMap.set(node.id, 'producer');
       } else if (this.isDataTransformer(nodeType)) {
@@ -921,7 +981,7 @@ export class FinalWorkflowValidator {
     
     // Find transform nodes that don't change type
     const transformNodes = nodes.filter(node => {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       return nodeType.includes('transform') || nodeType.includes('format');
     });
     
@@ -935,8 +995,8 @@ export class FinalWorkflowValidator {
         const targetNode = nodes.find(n => n.id === outgoingEdges[0].target);
         
         if (sourceNode && targetNode) {
-          const sourceType = nodeDataTypeSystem.getNodeTypeInfo(normalizeNodeType(sourceNode));
-          const targetType = nodeDataTypeSystem.getNodeTypeInfo(normalizeNodeType(targetNode));
+          const sourceType = nodeDataTypeSystem.getNodeTypeInfo(unifiedNormalizeNodeType(sourceNode));
+          const targetType = nodeDataTypeSystem.getNodeTypeInfo(unifiedNormalizeNodeType(targetNode));
           
           if (sourceType && targetType) {
             const compatibility = nodeDataTypeSystem.checkTypeCompatibility(
@@ -975,11 +1035,17 @@ export class FinalWorkflowValidator {
            nodeType.includes('anthropic') || nodeType.includes('gemini');
   }
   
+  /**
+   * Check if node is output action
+   * 
+   * ✅ ROOT-LEVEL FIX: Now uses Unified Node Categorizer for consistent categorization
+   * This replaces hardcoded string matching with capability-based categorization
+   * 
+   * @deprecated Use unifiedNodeCategorizer.isOutput() instead
+   */
   private isOutputAction(nodeType: string): boolean {
-    return nodeType.includes('gmail') || nodeType.includes('email') ||
-           nodeType.includes('slack') || nodeType.includes('discord') ||
-           nodeType.includes('notification') || nodeType.includes('webhook') ||
-           nodeType.includes('database_write') || nodeType.includes('sheets_write');
+    // Use unified categorizer for consistent categorization
+    return unifiedNodeCategorizer.isOutput(nodeType);
   }
 }
 

@@ -36,12 +36,12 @@ export function isPlaceholderValue(value: any): boolean {
   const lowerValue = trimmed.toLowerCase();
 
   // Common placeholder patterns
+  // ✅ CRITICAL FIX: Use exact matches or word boundaries to avoid false positives
+  // Don't match valid URLs like "jsonplaceholder.typicode.com" or "example-api.com"
   const placeholderPatterns = [
-    'placeholder',
     'enter your',
     'enter ',
     'your ',
-    'example',
     'https://example.com',
     'http://example.com',
     'https://example',
@@ -55,9 +55,30 @@ export function isPlaceholderValue(value: any): boolean {
     'select your',
   ];
 
-  // Check if value contains any placeholder pattern
+  // Check for exact placeholder patterns (not substring matches)
   for (const pattern of placeholderPatterns) {
     if (lowerValue.includes(pattern)) {
+      return true;
+    }
+  }
+
+  // ✅ CRITICAL FIX: Only match "placeholder" or "example" as standalone words or in specific contexts
+  // Don't match valid domains like "jsonplaceholder.typicode.com" or "example-api.com"
+  // Match only if it's clearly a placeholder instruction, not a valid URL/domain
+  if (lowerValue.includes('placeholder') || lowerValue.includes('example')) {
+    // Check if it's a valid URL/domain (has TLD like .com, .org, etc.)
+    const hasValidTLD = /\.(com|org|net|io|co|dev|app|xyz|info|edu|gov|mil|int|biz|name|pro|museum|aero|coop|jobs|mobi|travel|tel|asia|cat|jobs|tel|xxx|arpa|xxx|test|localhost)(\/|$|\s|$)/i.test(trimmed);
+    
+    // Check if it's clearly an instruction (starts with "enter", "your", etc.)
+    const isInstruction = /^(enter|your|add|paste|insert|provide|select|fill|use|set)\s+(your\s+)?(placeholder|example)/i.test(trimmed);
+    
+    // Only treat as placeholder if it's NOT a valid URL/domain AND it's an instruction
+    if (!hasValidTLD && isInstruction) {
+      return true;
+    }
+    
+    // Also match if it's exactly "placeholder" or "example" (standalone)
+    if (trimmed === 'placeholder' || trimmed === 'example' || trimmed === 'https://example.com' || trimmed === 'http://example.com') {
       return true;
     }
   }

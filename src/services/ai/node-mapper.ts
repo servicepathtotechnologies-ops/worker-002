@@ -9,7 +9,7 @@
 import { ExecutionStep } from './dependency-planner';
 import { SemanticOperationType } from './intent-extraction-layer';
 import { capabilityRegistry } from './capability-registry';
-import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 import { nodeLibrary } from '../nodes/node-library';
 import { getTransformationNodeType } from './transformation-node-config';
 
@@ -256,7 +256,7 @@ export class NodeMapper {
     }
     
     // Try direct lookup
-    const normalized = normalizeNodeType({ type: 'custom', data: { type: source } });
+    const normalized = unifiedNormalizeNodeTypeString(source);
     const schema = nodeLibrary.getSchema(normalized);
     if (schema) {
       return normalized;
@@ -439,7 +439,7 @@ export class NodeMapper {
     }
     
     // Try direct lookup
-    const normalized = normalizeNodeType({ type: 'custom', data: { type: op } });
+    const normalized = unifiedNormalizeNodeTypeString(op);
     const schema = nodeLibrary.getSchema(normalized);
     if (schema) {
       return normalized;
@@ -497,7 +497,7 @@ export class NodeMapper {
     }
     
     // Try direct lookup
-    const normalized = normalizeNodeType({ type: 'custom', data: { type: destination } });
+    const normalized = unifiedNormalizeNodeTypeString(destination);
     const schema = nodeLibrary.getSchema(normalized);
     if (schema) {
       return normalized;

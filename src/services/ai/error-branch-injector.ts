@@ -11,11 +11,11 @@
 import { randomUUID } from 'crypto';
 import { Workflow, WorkflowNode, WorkflowEdge } from '../../core/types/ai-types';
 import { nodeLibrary } from '../nodes/node-library';
-import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 import { resolveCompatibleHandles } from './schema-driven-connection-resolver';
 
 function getType(node: WorkflowNode): string {
-  return normalizeNodeType(node) || node.data?.type || node.type || '';
+  return unifiedNormalizeNodeType(node) || node.data?.type || node.type || '';
 }
 
 function createNode(nodeType: string, label: string, config: Record<string, unknown>): WorkflowNode {

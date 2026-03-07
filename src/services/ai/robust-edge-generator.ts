@@ -3,7 +3,8 @@
 
 import { WorkflowNode, WorkflowEdge } from '../../core/types/ai-types';
 import { randomUUID } from 'crypto';
-import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
+import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 
 export interface WorkflowStructure {
   connections?: Array<{
@@ -91,37 +92,58 @@ export class RobustEdgeGenerator {
       if (existingEdge) continue;
 
       // ✅ CRITICAL FIX: Use normalizeNodeType to handle 'custom' type nodes
-      const sourceNodeType = normalizeNodeType(sourceNode);
-      const targetNodeType = normalizeNodeType(targetNode);
+      const sourceNodeType = unifiedNormalizeNodeType(sourceNode);
+      const targetNodeType = unifiedNormalizeNodeType(targetNode);
       
-      // CRITICAL: Skip edge if manual_trigger → google_sheets (Google Sheets doesn't need input from trigger)
+      // ✅ PHASE 1 FIX: Use registry to check if source is trigger
+      // CRITICAL: Skip edge if trigger → google_sheets (Google Sheets doesn't need input from trigger)
       // Google Sheets only needs spreadsheetId configured, not data input
-      if (sourceNodeType === 'manual_trigger' && targetNodeType === 'google_sheets') {
-        console.log(`[EdgeSystem] Skipping edge from manual_trigger to google_sheets (Google Sheets doesn't need input from trigger)`);
+      const normalizedSourceType = unifiedNormalizeNodeTypeString(sourceNode.type || sourceNode.data?.type || '');
+      if (unifiedNodeRegistry.isTrigger(normalizedSourceType) && targetNodeType === 'google_sheets') {
+        console.log(`[EdgeSystem] Skipping edge from ${normalizedSourceType} to google_sheets (Google Sheets doesn't need input from trigger)`);
         continue;
       }
       
       // ✅ REMOVED: Input/output guessing - use schema-driven resolver only
       
-      // ✅ FIXED: Use schema-driven connection resolver (no fallback)
-      // If compatible handles not found → workflow invalid
-      const { resolveCompatibleHandles } = require('./schema-driven-connection-resolver');
-      const resolution = resolveCompatibleHandles(sourceNode, targetNode);
+      // ✅ UNIVERSAL: Use Universal Edge Creation Service
+      const { universalEdgeCreationService } = require('../edges/universal-edge-creation-service');
       
-      if (!resolution.success || !resolution.sourceHandle || !resolution.targetHandle) {
-        throw new Error(`Cannot create edge ${connection.source} → ${connection.target}: ${resolution.error || 'No compatible handles found'}. Edge creation must ONLY use schema-defined handles.`);
+      const edgeResult = universalEdgeCreationService.createEdge({
+        sourceNode,
+        targetNode,
+        sourceHandle: connection.outputField,
+        targetHandle: connection.inputField,
+        existingEdges: edges,
+        allNodes: nodes,
+      });
+      
+      if (edgeResult.success && edgeResult.edge) {
+        edges.push(edgeResult.edge);
+      } else {
+        // If handles not provided, try to resolve them
+        const { resolveCompatibleHandles } = require('./schema-driven-connection-resolver');
+        const resolution = resolveCompatibleHandles(sourceNode, targetNode);
+        
+        if (resolution.success && resolution.sourceHandle && resolution.targetHandle) {
+          const edgeResult2 = universalEdgeCreationService.createEdge({
+            sourceNode,
+            targetNode,
+            sourceHandle: resolution.sourceHandle,
+            targetHandle: resolution.targetHandle,
+            existingEdges: edges,
+            allNodes: nodes,
+          });
+          
+          if (edgeResult2.success && edgeResult2.edge) {
+            edges.push(edgeResult2.edge);
+          } else {
+            throw new Error(`Cannot create edge ${connection.source} → ${connection.target}: ${edgeResult2.error || edgeResult2.reason || 'No compatible handles found'}. Edge creation must ONLY use schema-defined handles.`);
+          }
+        } else {
+          throw new Error(`Cannot create edge ${connection.source} → ${connection.target}: ${edgeResult.error || edgeResult.reason || resolution.error || 'No compatible handles found'}. Edge creation must ONLY use schema-defined handles.`);
+        }
       }
-      
-      const edge: WorkflowEdge = {
-        id: randomUUID(),
-        source: connection.source,
-        target: connection.target,
-        type: 'default',
-        sourceHandle: resolution.sourceHandle,
-        targetHandle: resolution.targetHandle,
-      };
-
-      edges.push(edge);
     }
 
     return edges;

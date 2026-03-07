@@ -4,18 +4,19 @@
 
 import { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
-import { agenticWorkflowBuilder } from '../services/ai/workflow-builder';
+// ✅ MIGRATION: Legacy builder import removed - using new pipeline exclusively
 import { workflowAnalyzer } from '../services/ai/workflow-analyzer';
 import { enhancedWorkflowAnalyzer } from '../services/ai/enhanced-workflow-analyzer';
 import { requirementsExtractor } from '../services/ai/requirements-extractor';
 import { workflowValidator, ValidationResult } from '../services/ai/workflow-validator';
 import { ExtractedRequirements } from '../services/ai/requirements-extractor';
 import { chatbotPageGenerator } from '../services/chatbot-page-generator';
+import { fixAgent } from '../services/fix-agent';
 import { RobustEdgeGenerator } from '../services/ai/robust-edge-generator';
 import { nodeLibrary } from '../services/nodes/node-library';
 import { WorkflowNode } from '../core/types/ai-types';
 import { config } from '../core/config';
-import { normalizeNodeType } from '../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../core/utils/unified-node-type-normalizer';
 import { resolveNodeType } from '../core/utils/node-type-resolver-util';
 import { getMemoryManager, getReferenceBuilder } from '../memory';
 import { getSupabaseClient } from '../core/database/supabase-compat';
@@ -23,6 +24,7 @@ import { ComprehensiveCredentialScanner } from '../services/ai/comprehensive-cre
 import { CredentialResolver } from '../services/ai/credential-resolver';
 import { workflowLifecycleManager } from '../services/workflow-lifecycle-manager';
 import { generateComprehensiveNodeQuestions } from '../services/ai/comprehensive-node-questions-generator';
+import { summarizeLayerService } from '../services/ai/summarize-layer';
 
 /**
  * Identify required credentials from requirements and answers
@@ -379,47 +381,80 @@ async function handlePhasedRefine(
     // Skip authentication check for local development
     console.log('[PhasedRefine] Skipping auth check - local development mode');
 
-    // STEP 1: Analyze prompt and generate clarifying questions if no answers
+    // STEP 1: Summarize Layer - Generate prompt variations for user selection
     if (!answers || Object.keys(answers).length === 0) {
-      console.log('[PhasedRefine] No answers provided - checking if questions are needed...');
+      console.log('[PhasedRefine] No answers provided - processing through summarize layer...');
       
-      // ⚡ FAST CHECK: Use fast analysis first to see if questions are needed
+      // Check if user has selected a prompt variation
+      const selectedPromptVariation = (req.body as any).selectedPromptVariation;
+      
+      if (!selectedPromptVariation) {
+        // User hasn't selected a variation yet - generate variations
+        console.log('[PhasedRefine] No prompt variation selected - generating variations...');
+        
+        try {
+          const summarizeResult = await summarizeLayerService.processPrompt(finalPrompt);
+          
+          // ✅ ALWAYS show summarize layer if we have variations (even if only 1)
+          // This ensures user sees the refined prompt before proceeding
+          if (summarizeResult.promptVariations && summarizeResult.promptVariations.length > 0) {
+            console.log(`[PhasedRefine] ✅ Generated ${summarizeResult.promptVariations.length} prompt variations`);
+            
+            return res.json({
+              phase: 'summarize',
+              promptVariations: summarizeResult.promptVariations,
+              originalPrompt: summarizeResult.originalPrompt,
+              clarifiedIntent: summarizeResult.clarifiedIntent,
+              matchedKeywords: summarizeResult.matchedKeywords,
+              allKeywords: summarizeResult.allKeywords.slice(0, 100), // Limit for response size
+            });
+          }
+          
+          // Fallback: If no variations generated, use clarified intent or original
+          const promptToUse = summarizeResult.clarifiedIntent || finalPrompt;
+          console.log('[PhasedRefine] No variations generated, using clarified/original prompt, continuing to analysis...');
+          
+          // Continue to analysis with clarified prompt
+          finalPrompt = promptToUse;
+        } catch (error) {
+          console.error('[PhasedRefine] ⚠️ Error in summarize layer, continuing with original prompt:', error);
+          // Continue with original prompt if summarize layer fails
+        }
+      } else {
+        // User has selected a variation - use it
+        console.log('[PhasedRefine] Using selected prompt variation');
+        finalPrompt = selectedPromptVariation;
+      }
+      
+      // STEP 1.5: Analyze prompt for summary (after summarize layer)
+      console.log('[PhasedRefine] Getting analysis summary...');
+      console.log('[PhasedRefine] ✅ Using prompt for analysis:', finalPrompt.substring(0, 200));
       const fastAnalysis = enhancedWorkflowAnalyzer.fastAnalyzePromptWithNodeOptions(finalPrompt, {});
       
-      // If no questions are needed (e.g., chatbot workflows), skip question generation and continue directly
-      if (!fastAnalysis.questions || fastAnalysis.questions.length === 0) {
-        console.log('[PhasedRefine] ⚡ No questions needed - auto-continuing to workflow generation');
-        // Continue to workflow generation with empty answers
-        // Fall through to STEP 2 with empty answers object
-        answers = {};
-      } else {
-        // Questions are needed - do full analysis and return questions
-        console.log('[PhasedRefine] Questions needed - generating full analysis...');
-        const analysis = await enhancedWorkflowAnalyzer.analyzePromptWithNodeOptions(finalPrompt, {});
-        
-        // Build a comprehensive final prompt from analysis
-        const enhancedPrompt = buildFinalPromptFromAnalysis(finalPrompt, analysis);
-        
-        // Filter out credential questions at this stage (credentials asked later)
-        const nonCredentialQuestions = analysis.questions.filter(
-          (q: any) => !q.category || (q.category !== 'credential' && !q.id?.includes('credential'))
-        );
-
-        console.log('[PhasedRefine] Generated enhanced prompt from analysis:', enhancedPrompt.substring(0, 200));
-
-        return res.json({
-          phase: 'clarification',
-          questions: nonCredentialQuestions,
-          analysis: {
-            detectedWorkflowType: analysis.summary,
-            estimatedNodeCount: analysis.nodeOptionsDetected?.length || 0,
-            complexity: 'medium',
-            enhancedPrompt: enhancedPrompt, // Send enhanced prompt to frontend
-          },
-          prompt: finalPrompt,
-          enhancedPrompt: enhancedPrompt, // Also include at top level
-        });
-      }
+      // Build enhanced prompt from analysis (for better workflow generation)
+      const enhancedPrompt = buildFinalPromptFromAnalysis(finalPrompt, fastAnalysis);
+      
+      console.log('[PhasedRefine] Generated enhanced prompt from analysis:', enhancedPrompt.substring(0, 200));
+      
+      // ✅ CRITICAL: Return the selected prompt variation as refinedPrompt
+      // This ensures handleBuild() uses the selected variation, not the original user prompt
+      const refinedPromptToReturn = finalPrompt; // This is the selected variation prompt
+      console.log('[PhasedRefine] ✅ Returning refinedPrompt (selected variation):', refinedPromptToReturn.substring(0, 200));
+      
+      // Return summary with empty questions - AI will work directly from summary
+      return res.json({
+        phase: 'clarification',
+        questions: [], // Always return empty questions - AI understands from summary
+        analysis: {
+          detectedWorkflowType: fastAnalysis.summary,
+          estimatedNodeCount: fastAnalysis.nodeOptionsDetected?.length || 0,
+          complexity: 'medium',
+          enhancedPrompt: enhancedPrompt, // Send enhanced prompt to frontend
+        },
+        prompt: finalPrompt,
+        refinedPrompt: refinedPromptToReturn, // ✅ CRITICAL: Return selected variation as refinedPrompt
+        enhancedPrompt: enhancedPrompt, // Also include at top level
+      });
     }
 
     // STEP 2: Check if this is a credential submission (workflow already built)
@@ -548,11 +583,20 @@ async function handlePhasedRefine(
     // STEP 3: Generate workflow SILENTLY (don't return it yet)
     console.log('[PHASE] WORKFLOW_BUILT - Generating workflow structure...');
     
+    // ✅ MIGRATION: Use new pipeline instead of legacy builder
     let workflowResult;
     try {
-      workflowResult = await agenticWorkflowBuilder.generateFromPrompt(finalEnhancedPrompt, {
+      const { workflowLifecycleManager } = await import('../services/workflow-lifecycle-manager');
+      const lifecycleResult = await workflowLifecycleManager.generateWorkflowGraph(finalEnhancedPrompt, {
         answers: filteredAnswers, // Only pass non-credential answers
       });
+      // Convert lifecycle result to expected format
+      workflowResult = {
+        workflow: lifecycleResult.workflow,
+        requirements: (lifecycleResult as any).requirements || {},
+        documentation: lifecycleResult.documentation || '',
+        requiredCredentials: lifecycleResult.requiredCredentials || [],
+      };
     } catch (error) {
       // CRITICAL: If Ollama connection fails, use pattern-based fallback for simple workflows
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -729,7 +773,7 @@ async function handlePhasedRefine(
     // No node is allowed into the graph unless its schema exists
     const schemaValidationErrors: string[] = [];
     for (const node of validatedWorkflow.nodes) {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       const schema = nodeLibrary.getSchema(nodeType);
       if (!schema) {
         const error = `Node ${node.id} (type: ${nodeType}) has no schema in node library. Cannot proceed.`;
@@ -772,7 +816,7 @@ async function handlePhasedRefine(
     const resolvedNodeTypes = resolution.nodeIds;
     // Normalize existing node types to canonical forms for comparison
     const existingNodeTypes = validatedWorkflow.nodes.map((node: any) => {
-      const normalized = normalizeNodeType(node);
+      const normalized = unifiedNormalizeNodeType(node);
       // Also resolve aliases to canonical form (e.g., "gmail" → "google_gmail")
       return resolveNodeType(normalized);
     });
@@ -1052,8 +1096,9 @@ async function handlePhasedRefine(
       category: 'configuration',
     }));
 
-    // ✅ COMPREHENSIVE: Generate per-node questions (cred/resource/op/config) for step-by-step wizard
-    const comprehensiveQuestions = generateComprehensiveNodeQuestions(validatedWorkflow, {}).questions;
+    // ✅ CRITICAL: Only generate CREDENTIAL questions - user should only fill authentication, not all config
+    // Configuration fields are handled separately via discoveredInputs
+    const comprehensiveQuestions = generateComprehensiveNodeQuestions(validatedWorkflow, {}, { categories: ['credential'] }).questions;
   
     return res.json({
       phase: 'ready', // ✅ CRITICAL: Must be "ready" for frontend to show unified modal
@@ -1192,26 +1237,27 @@ async function handlePhasedRefine(
       }
     }
     
-    // PERMANENT FIX: Try to return a basic workflow even on error, don't fail completely
+    // ✅ MIGRATION: Use new pipeline for fallback instead of legacy builder
+    // If all else fails, attempt to generate using new pipeline
     try {
-      // Attempt to generate a minimal workflow as fallback
-      const fallbackWorkflow = await agenticWorkflowBuilder.generateFromPrompt(finalPrompt, {
+      const { workflowLifecycleManager } = await import('../services/workflow-lifecycle-manager');
+      const lifecycleResult = await workflowLifecycleManager.generateWorkflowGraph(finalPrompt, {
         answers: answers || {},
       });
       
       return res.json({
         phase: 'complete',
-        workflow: fallbackWorkflow.workflow,
+        workflow: lifecycleResult.workflow,
         summary: {
-          nodes: fallbackWorkflow.workflow.nodes.length,
-          edges: fallbackWorkflow.workflow.edges.length,
+          nodes: lifecycleResult.workflow.nodes.length,
+          edges: lifecycleResult.workflow.edges.length,
           credentialsConfigured: 0,
           autoConfigured: 0,
         },
-        requirements: fallbackWorkflow.requirements || {},
-        documentation: fallbackWorkflow.documentation || 'Workflow generated with fallback method',
+        requirements: (lifecycleResult as any).requirements || {},
+        documentation: lifecycleResult.documentation || 'Workflow generated with fallback method',
         prompt: finalPrompt,
-        requiredCredentials: [],
+        requiredCredentials: lifecycleResult.requiredCredentials || [],
         warning: error instanceof Error ? error.message : String(error),
       });
     } catch (fallbackError) {
@@ -1487,8 +1533,8 @@ function extractCredentialsFromNodes(workflow: { nodes: WorkflowNode[] }): strin
   }
   
   for (const node of workflow.nodes || []) {
-    // CRITICAL FIX: Use normalizeNodeType to get actual node type (handles 'custom' type)
-    const nodeType = normalizeNodeType(node);
+    // CRITICAL FIX: Use unifiedNormalizeNodeType to get actual node type (handles 'custom' type)
+    const nodeType = unifiedNormalizeNodeType(node);
     const config = node.data?.config || {};
     
     if (!nodeType) {
@@ -1757,8 +1803,8 @@ function checkMissingRequiredFields(workflow: { nodes: WorkflowNode[] }): {
   };
   
   for (const node of workflow.nodes || []) {
-    // CRITICAL FIX: Use normalizeNodeType to get actual node type
-    const nodeType = normalizeNodeType(node);
+    // CRITICAL FIX: Use unifiedNormalizeNodeType to get actual node type
+    const nodeType = unifiedNormalizeNodeType(node);
     const nodeLabel = node.data?.label || nodeType;
     const nodeId = node.id;
     const config = node.data?.config || {};
@@ -1931,7 +1977,7 @@ export default async function generateWorkflow(req: Request, res: Response) {
     const { prompt, refinedPrompt, mode = 'create', currentWorkflow, executionHistory, answers } = req.body;
 
     // Use refinedPrompt if prompt is not provided (for create mode from frontend)
-    const finalPrompt = prompt || refinedPrompt;
+    let finalPrompt = prompt || refinedPrompt;
 
     if (!finalPrompt || typeof finalPrompt !== 'string' || !finalPrompt.trim()) {
       return res.status(400).json({ 
@@ -1940,41 +1986,95 @@ export default async function generateWorkflow(req: Request, res: Response) {
       });
     }
 
-    // Handle analyze mode - Step 2: Questions for confirming
+    // Handle analyze mode - STEP 1: Summarize Layer FIRST, then analysis
     if (mode === 'analyze') {
       try {
-        // ⚡ FAST MODE: Use pattern matching for instant question generation
-        // Full LLM analysis happens AFTER questions are answered (in refine/create mode)
-        console.log('⚡ Using FAST question generation (pattern matching) for instant response');
+        // Check if user has selected a prompt variation
+        const selectedPromptVariation = (req.body as any).selectedPromptVariation;
+        
+        if (!selectedPromptVariation) {
+          // ✅ STEP 1: Summarize Layer - Generate prompt variations FIRST
+          console.log('[Analyze Mode] No prompt variation selected - running summarize layer...');
+          
+          try {
+            const summarizeResult = await summarizeLayerService.processPrompt(finalPrompt);
+            
+            // ✅ ALWAYS return variations if generated
+            // Prefer 3-4 variations, but accept any number >= 1
+            if (summarizeResult.promptVariations && summarizeResult.promptVariations.length > 0) {
+              console.log(`[Analyze Mode] ✅ Generated ${summarizeResult.promptVariations.length} prompt variations`);
+              
+              // If we only have 1 variation, still show it (but log warning)
+              if (summarizeResult.promptVariations.length === 1) {
+                console.warn(`[Analyze Mode] ⚠️ Only 1 variation generated (expected 3-4). AI may need better prompting.`);
+              }
+              
+              return res.json({
+                phase: 'summarize',
+                promptVariations: summarizeResult.promptVariations,
+                originalPrompt: summarizeResult.originalPrompt,
+                clarifiedIntent: summarizeResult.clarifiedIntent,
+                matchedKeywords: summarizeResult.matchedKeywords,
+                allKeywords: summarizeResult.allKeywords.slice(0, 100),
+              });
+            }
+            
+            // Fallback: Use clarified intent if no variations
+            const promptToUse = summarizeResult.clarifiedIntent || finalPrompt;
+            console.log('[Analyze Mode] No variations generated, using clarified prompt for analysis...');
+            finalPrompt = promptToUse;
+          } catch (error) {
+            console.error('[Analyze Mode] ⚠️ Error in summarize layer, continuing with original prompt:', error);
+            // Continue with original prompt if summarize layer fails
+          }
+        } else {
+          // User has selected a variation - use it for analysis
+          console.log('[Analyze Mode] Using selected prompt variation for analysis');
+          finalPrompt = selectedPromptVariation;
+        }
+        
+        // ✅ STEP 2: After summarize layer (or if variation selected), run analysis
+        console.log('[Analyze Mode] Running workflow analysis...');
         const analysis = enhancedWorkflowAnalyzer.fastAnalyzePromptWithNodeOptions(finalPrompt, {
           existingWorkflow: currentWorkflow,
         });
 
+        // Build enhanced prompt from analysis
+        const enhancedPrompt = buildFinalPromptFromAnalysis(finalPrompt, analysis);
+        
         // ⚡ AUTO-CONTINUE FLAG: If no questions, signal frontend to auto-continue
         const hasNoQuestions = !analysis.questions || analysis.questions.length === 0;
         
         return res.json({
+          phase: 'clarification',
           summary: analysis.summary,
-          questions: analysis.questions,
-          prompt: prompt,
+          questions: analysis.questions || [], // Always return empty array (no clarifying questions)
+          prompt: finalPrompt,
+          enhancedPrompt: enhancedPrompt,
           nodeOptionsDetected: analysis.nodeOptionsDetected,
           hasNodeChoices: analysis.hasNodeChoices,
-          autoContinue: hasNoQuestions, // Signal frontend to auto-continue
+          autoContinue: hasNoQuestions,
+          analysis: {
+            detectedWorkflowType: analysis.summary,
+            estimatedNodeCount: analysis.nodeOptionsDetected?.length || 0,
+            complexity: 'medium',
+            enhancedPrompt: enhancedPrompt,
+          },
         });
       } catch (error) {
         console.error('Analysis error:', error);
-        // Return fallback questions on error - use a simple fallback
+        // Return fallback on error
         return res.json({
+          phase: 'clarification',
           summary: `Build an automated workflow to accomplish: ${finalPrompt.substring(0, 100)}`,
-          questions: [
-            {
-              id: 'q1',
-              text: 'When should this workflow run?',
-              options: ['Fixed Schedule', 'Regular Intervals', 'Event Trigger', 'Manual Run'],
-              category: 'schedule',
-            },
-          ],
+          questions: [],
           prompt: finalPrompt,
+          analysis: {
+            detectedWorkflowType: finalPrompt.substring(0, 100),
+            estimatedNodeCount: 0,
+            complexity: 'medium',
+            enhancedPrompt: finalPrompt,
+          },
         });
       }
     }
@@ -2122,11 +2222,11 @@ export default async function generateWorkflow(req: Request, res: Response) {
             throw lifecycleError; // Re-throw to be caught by outer catch
           }
 
-          const finalWorkflow = lifecycleResult.workflow;
-          const validation = lifecycleResult.validation;
+          const lifecycleWorkflow = lifecycleResult.workflow;
+          const lifecycleValidation = lifecycleResult.validation;
           
           // Step 2: Credential discovery (already done in generateWorkflowGraph, AFTER graph creation)
-          sendProgress({ step: 6, stepName: 'Discovering Credentials', progress: 90, details: { message: 'Identifying required credentials...' } });
+          sendProgress({ step: 6, stepName: 'Discovering Credentials', progress: 80, details: { message: 'Identifying required credentials...' } });
           
           // Get user ID for credential vault checks
           let userId: string | undefined;
@@ -2145,6 +2245,27 @@ export default async function generateWorkflow(req: Request, res: Response) {
           } catch (error) {
             console.warn('[GenerateWorkflow] Could not get user ID:', error);
           }
+          
+          // ✅ FIXAGENT: Run FixAgent auto-fix pass AFTER lifecycle graph + discovery
+          sendProgress({
+            step: 6,
+            stepName: 'FixAgent Processing',
+            progress: 90,
+            details: { status: 'processing', etaSeconds: 10 },
+          });
+
+          const fixResult = await fixAgent.runAutoFix({
+            workflow: lifecycleWorkflow,
+            lifecycleValidation,
+            lifecycleCredentials: lifecycleResult.requiredCredentials,
+            userId,
+            config: {
+              maxRuntimeMs: 30_000,
+            },
+          });
+
+          const finalWorkflow = fixResult.workflow;
+          const finalValidation = fixResult.validation;
           
           // ✅ PRODUCTION FLOW: Return workflow graph + discovered credentials
           // NO credential questions before generation - credentials are discovered AFTER graph creation
@@ -2197,7 +2318,8 @@ export default async function generateWorkflow(req: Request, res: Response) {
           
           // ✅ PRODUCTION FLOW: Return workflow graph + discovered inputs + missing credentials
           // Frontend will show credential modal ONLY when phase === "ready"
-          const comprehensiveQuestions = generateComprehensiveNodeQuestions(finalWorkflow, {}).questions;
+          // ✅ CRITICAL: Only generate CREDENTIAL questions - user should only fill authentication
+          const comprehensiveQuestions = generateComprehensiveNodeQuestions(finalWorkflow, {}, { categories: ['credential'] }).questions;
           res.write(JSON.stringify({
             success: true,
             status: 'completed',
@@ -2213,10 +2335,12 @@ export default async function generateWorkflow(req: Request, res: Response) {
             suggestions: lifecycleResult.suggestions || [],
             estimatedComplexity: lifecycleResult.estimatedComplexity,
             validation: {
-              valid: validation.valid,
-              errors: validation.errors.map((e: any) => e.message),
-              warnings: validation.warnings.map((w: any) => w.message),
+              valid: finalValidation.valid,
+              errors: finalValidation.errors.map((e: any) => e.message),
+              warnings: finalValidation.warnings.map((w: any) => w.message),
             },
+            fixAudit: fixResult.audit,
+            fixConfidence: fixResult.confidence,
           }) + '\n');
           res.end();
           return;
@@ -2275,8 +2399,21 @@ export default async function generateWorkflow(req: Request, res: Response) {
           throw lifecycleError; // Re-throw to be caught by outer catch
         }
 
-        const finalWorkflow = lifecycleResult.workflow;
-        const validation = lifecycleResult.validation;
+        const lifecycleWorkflow = lifecycleResult.workflow;
+        const lifecycleValidation = lifecycleResult.validation;
+
+        // ✅ FIXAGENT: run FixAgent synchronously in non-streaming mode (within 30s budget)
+        const fixResult = await fixAgent.runAutoFix({
+          workflow: lifecycleWorkflow,
+          lifecycleValidation,
+          lifecycleCredentials: lifecycleResult.requiredCredentials,
+          config: {
+            maxRuntimeMs: 30_000,
+          },
+        });
+
+        const finalWorkflow = fixResult.workflow;
+        const validation = fixResult.validation;
         
         // ✅ CRITICAL: Only return MISSING credentials - satisfied OAuth won't appear
         const missingCredentials = lifecycleResult.requiredCredentials.missingCredentials || [];
@@ -2400,7 +2537,8 @@ export default async function generateWorkflow(req: Request, res: Response) {
           discoveredInputs: formattedInputs, // ✅ Node inputs (to, subject, body, etc.)
           discoveredCredentials: discoveredCredentials, // ✅ Only MISSING credentials
           requiredCredentials: allFinalCredentialsArray, // Legacy format for compatibility
-          comprehensiveQuestions: generateComprehensiveNodeQuestions(finalWorkflow, {}).questions,
+          // ✅ CRITICAL: Only generate CREDENTIAL questions - user should only fill authentication
+          comprehensiveQuestions: generateComprehensiveNodeQuestions(finalWorkflow, {}, { categories: ['credential'] }).questions,
           validation: {
             valid: validation.valid,
             errors: validation.errors.map((e: any) => e.message),

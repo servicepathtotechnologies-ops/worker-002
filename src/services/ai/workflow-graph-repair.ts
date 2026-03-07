@@ -2,7 +2,7 @@
 // Automatically detects and repairs missing structural nodes in workflows
 
 import type { WorkflowGenerationStructure, WorkflowNode, WorkflowEdge, Requirements } from '../../core/types/ai-types';
-import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 
 export interface RepairResult {
   repaired: boolean;
@@ -34,9 +34,9 @@ export class WorkflowGraphRepair {
     const promptLower = userPrompt.toLowerCase();
     const stepTypes = structure.steps.map(s => {
       const stepAny = s as any;
-      return normalizeNodeType({ type: stepAny.type || stepAny.nodeType || '' }) || stepAny.type || '';
+      return unifiedNormalizeNodeTypeString(stepAny.type || stepAny.nodeType || '') || stepAny.type || '';
     });
-    const nodeTypes = nodes.map(n => normalizeNodeType(n) || n.type || '');
+    const nodeTypes = nodes.map(n => unifiedNormalizeNodeType(n) || n.type || '');
 
     // Check 1: Form trigger requires form data extraction
     if (structure.trigger === 'form') {
@@ -118,7 +118,7 @@ export class WorkflowGraphRepair {
     const readOps = stepTypes.filter((t, idx) => {
       const step = structure.steps[idx] as any;
       const operation = step?.operation || (nodes.find(n => {
-        const nType = normalizeNodeType(n) || n.type || '';
+        const nType = unifiedNormalizeNodeType(n) || n.type || '';
         return nType === t;
       })?.data as any)?.config?.operation || '';
       return ['get', 'getMany', 'read', 'search'].includes(String(operation).toLowerCase());
@@ -126,7 +126,7 @@ export class WorkflowGraphRepair {
     const writeOps = stepTypes.filter((t, idx) => {
       const step = structure.steps[idx] as any;
       const operation = step?.operation || (nodes.find(n => {
-        const nType = normalizeNodeType(n) || n.type || '';
+        const nType = unifiedNormalizeNodeType(n) || n.type || '';
         return nType === t;
       })?.data as any)?.config?.operation || '';
       return ['create', 'update', 'write', 'delete'].includes(String(operation).toLowerCase());

@@ -3,7 +3,7 @@
  */
 
 import { NodeSchemaRegistry } from '../node-schema-registry';
-import { normalizeNodeType } from '../../utils/node-type-normalizer';
+import { unifiedNormalizeNodeType } from '../../utils/unified-node-type-normalizer';
 
 describe('NodeSchemaRegistry', () => {
   let registry: NodeSchemaRegistry;
@@ -20,7 +20,7 @@ describe('NodeSchemaRegistry', () => {
         data: { type: 'schedule' }
       };
 
-      const normalized = normalizeNodeType(node);
+      const normalized = unifiedNormalizeNodeType(node);
       expect(normalized).toBe('schedule');
     });
 
@@ -31,7 +31,7 @@ describe('NodeSchemaRegistry', () => {
         data: { type: 'manual_trigger' }
       };
 
-      const normalized = normalizeNodeType(node);
+      const normalized = unifiedNormalizeNodeType(node);
       expect(normalized).toBe('manual_trigger');
     });
   });

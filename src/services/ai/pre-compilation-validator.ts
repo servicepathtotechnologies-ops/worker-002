@@ -13,6 +13,10 @@
 import { WorkflowDSL } from './workflow-dsl';
 import { TransformationDetection } from './transformation-detector';
 import { StructuredIntent } from './intent-structurer';
+import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
+import { semanticNodeEquivalenceRegistry } from '../../core/registry/semantic-node-equivalence-registry';
+import { unifiedNodeTypeMatcher } from '../../core/utils/unified-node-type-matcher';
+import { nodeCapabilityRegistryDSL } from './node-capability-registry-dsl';
 
 export interface PreCompilationValidationResult {
   valid: boolean;
@@ -102,17 +106,51 @@ export class PreCompilationValidator {
       }
     }
 
-    // Rule 3: DSL must have at least one output if intent has output actions
+    // Rule 3: ✅ WORLD-CLASS UNIVERSAL FIX - Capability-based output validation
+    // If intent has output actions, DSL must have either:
+    // - A separate output node, OR
+    // - A terminal-capable node (can serve as output itself)
+    // 
+    // This is universal - works for ALL node types based on their capabilities.
+    // No hardcoding - uses node capability registry.
     const hasOutputActions = intent.actions?.some(a => {
       const op = a.operation?.toLowerCase() || '';
       return ['send', 'write', 'create', 'update', 'notify'].includes(op);
     });
     
     if (hasOutputActions && dsl.outputs.length === 0) {
-      const error = 'Pipeline contract violation: Intent has output actions but DSL has 0 outputs';
-      errors.push(error);
-      isStructuralFailure = true;
-      console.error(`[PreCompilationValidator] ❌ ${error}`);
+      // Check if any node in DSL can serve as output (terminal-capable)
+      const allDSLNodes = [
+        ...dsl.dataSources,
+        ...dsl.transformations,
+        ...dsl.outputs
+      ];
+      
+      const hasTerminalNode = allDSLNodes.some(node => {
+        const nodeType = node.type || '';
+        const canServeAsOutput = nodeCapabilityRegistryDSL.canServeAsOutput(nodeType);
+        
+        if (canServeAsOutput) {
+          console.log(
+            `[PreCompilationValidator] ✅ Found terminal-capable node: ${nodeType} ` +
+            `(can serve as output - no separate output node needed)`
+          );
+        }
+        
+        return canServeAsOutput;
+      });
+      
+      if (!hasTerminalNode) {
+        const error = 'Pipeline contract violation: Intent has output actions but DSL has no output-capable nodes (needs output node or terminal-capable node)';
+        errors.push(error);
+        isStructuralFailure = true;
+        console.error(`[PreCompilationValidator] ❌ ${error}`);
+      } else {
+        console.log(
+          `[PreCompilationValidator] ✅ Output requirement satisfied: ` +
+          `Terminal-capable node found in DSL (no separate output node needed)`
+        );
+      }
     }
 
     // Rule 4: DSL must have trigger
@@ -164,7 +202,7 @@ export class PreCompilationValidator {
     const warnings: string[] = [];
     
     const missingNodes = requiredNodes.filter(required => 
-      !workflowNodeTypes.some(actual => actual === required || actual.includes(required))
+      !this.isRequirementSatisfied(required, workflowNodeTypes)
     );
     
     if (missingNodes.length > 0) {
@@ -181,6 +219,40 @@ export class PreCompilationValidator {
       warnings,
       isStructuralFailure: errors.length > 0,
     };
+  }
+
+  /**
+   * ✅ WORLD-CLASS ARCHITECTURE: Capability-aware requirement satisfaction check
+   * 
+   * Uses UnifiedNodeTypeMatcher for consistent matching across all layers.
+   * 
+   * A required node type can be satisfied by any workflow node that:
+   * - Matches by canonical type name (exact or contains, for legacy compatibility), OR
+   * - Shares the same registry category (e.g., any 'ai' provider fulfilling an AI transformer requirement)
+   * 
+   * This allows abstract requirements like "ai_chat_model" to be fulfilled by concrete
+   * AI providers such as "ollama", "openai_gpt", "anthropic_claude", etc., as long as
+   * they are registered under the same 'ai' category in the UnifiedNodeRegistry.
+   */
+  private isRequirementSatisfied(required: string, workflowNodeTypes: string[]): boolean {
+    // ✅ WORLD-CLASS: Use unified matcher for consistent behavior across all layers
+    const matchResult = unifiedNodeTypeMatcher.isRequirementSatisfied(
+      required,
+      workflowNodeTypes,
+      {
+        strict: false, // Use semantic equivalence
+      }
+    );
+    
+    if (matchResult.matches) {
+      console.log(
+        `[PreCompilationValidator] ✅ Requirement "${required}" is satisfied by ` +
+        `workflow node "${matchResult.matchingType}" (${matchResult.reason}, confidence: ${matchResult.confidence}%)`
+      );
+      return true;
+    }
+    
+    return false;
   }
 }
 

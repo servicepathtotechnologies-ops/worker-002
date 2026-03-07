@@ -5,7 +5,7 @@
 import { Workflow, WorkflowNode, WorkflowEdge } from '../../core/types/ai-types';
 import { normalizeWorkflowGraph } from '../../core/utils/workflow-graph-normalizer';
 import { isTransformationNode } from './transformation-templates';
-import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 import { randomUUID } from 'crypto';
 import { nodeDefinitionRegistry } from '../../core/types/node-definition';
 
@@ -90,8 +90,37 @@ export class WorkflowValidator {
 
   /**
    * Validate workflow and attempt auto-fix
+   * 
+   * @param workflow - Workflow to validate
+   * @param depth - Recursion depth for auto-fix
+   * @param originalPrompt - Optional: Original user prompt for transformation/AI validation
+   * @param userPrompt - Optional: User prompt for required services validation
    */
-  async validateAndFix(workflow: Workflow, depth: number = 0): Promise<ValidationResult> {
+  async validateAndFix(
+    workflow: Workflow, 
+    depth: number = 0,
+    originalPrompt?: string,
+    userPrompt?: string
+  ): Promise<ValidationResult> {
+    // ✅ PHASE 2: Validate input contract at stage boundary
+    const { validateWorkflow } = require('../../core/contracts/pipeline-stage-contracts');
+    const workflowValidation = validateWorkflow(workflow);
+    if (!workflowValidation.valid) {
+      return {
+        valid: false,
+        errors: workflowValidation.errors.map((err: string) => ({
+          type: 'invalid_configuration' as ErrorType,
+          severity: 'critical' as const,
+          message: err,
+          fixable: false,
+        })),
+        warnings: workflowValidation.warnings.map((warn: string) => ({
+          type: 'missing_logging' as WarningType,
+          message: warn,
+        })),
+        fixesApplied: [],
+      };
+    }
     // Prevent infinite recursion
     if (depth >= this.maxFixIterations) {
       console.warn(`⚠️  Max fix iterations (${this.maxFixIterations}) reached. Stopping validation to prevent infinite loop.`);
@@ -137,66 +166,40 @@ export class WorkflowValidator {
     this.validateStructure(normalizedWorkflow, result);
     this.validateConfiguration(normalizedWorkflow, result);
     this.validateBusinessLogic(normalizedWorkflow, result);
-
-    // Attempt auto-fix if there are fixable errors and we haven't exceeded max iterations
-    if (result.errors.some(e => e.fixable) && depth < this.maxFixIterations) {
-      // First, fix transformation nodes (our enhancement)
-      const transformationIssues = result.errors.filter(
-        e => e.nodeId && e.fixable && this.isTransformationNode(
-          workflow.nodes.find(n => n.id === e.nodeId)?.type || ''
-        )
-      );
-      
-      if (transformationIssues.length > 0) {
-        const fixedWorkflow = this.fixTransformationNodes(workflow, transformationIssues);
-        result.fixedWorkflow = fixedWorkflow;
-        result.fixesApplied.push({
-          type: 'fix_configuration',
-          description: `Fixed ${transformationIssues.length} transformation node(s) with missing properties`,
-          changes: { nodesFixed: transformationIssues.length },
-        });
-        // Update workflow for next iteration
-        workflow = fixedWorkflow;
-        // Remove fixed errors from result
-        result.errors = result.errors.filter(e => !transformationIssues.includes(e));
-      }
-      
-      const errorsBeforeFix = result.errors.length;
-      const fixed = await this.attemptAutoFix(workflow, result);
-      
-      // Only re-validate if fixes were actually applied AND we made progress
-      if (fixed && result.fixesApplied.length > 0) {
-        // Check if we actually fixed any errors (not just applied fixes that don't help)
-        const errorsAfterFix = result.errors.filter(e => 
-          !result.fixesApplied.some(fix => 
-            fix.description.includes(e.message) || 
-            (e.nodeId && fix.nodeId === e.nodeId)
-          )
-        );
-        
-        // Only re-validate if we made progress (fewer errors or different errors)
-        if (errorsAfterFix.length < errorsBeforeFix || errorsAfterFix.length !== result.errors.length) {
-          result.fixedWorkflow = fixed;
-          // Re-validate fixed workflow with incremented depth
-          const revalidation = await this.validateAndFix(fixed, depth + 1);
-          result.errors = revalidation.errors;
-          result.warnings = revalidation.warnings;
-          // Merge fixes applied (avoid duplicates)
-          const existingFixDescriptions = new Set(result.fixesApplied.map(f => f.description));
-          revalidation.fixesApplied.forEach(fix => {
-            if (!existingFixDescriptions.has(fix.description)) {
-              result.fixesApplied.push(fix);
-            }
-          });
-        } else {
-          // Fixes were applied but didn't help - stop trying to fix
-          result.fixedWorkflow = fixed;
-        }
-      }
+    
+    // ✅ ENHANCED: Additional validations from consolidated validators
+    this.validateExecutionOrder(normalizedWorkflow, result);
+    this.validateDataFlow(normalizedWorkflow, result);
+    this.validateTypeCompatibilityEnhanced(normalizedWorkflow, result);
+    
+    // ✅ 100% COMPLETE: Transformation and AI validation (if prompt provided)
+    if (originalPrompt) {
+      this.validateTransformations(normalizedWorkflow, originalPrompt, result);
+    }
+    
+    // ✅ 100% COMPLETE: AI usage and required services validation (if prompt provided)
+    if (userPrompt) {
+      this.validateAIUsage(normalizedWorkflow, userPrompt, result);
+      this.validateRequiredServices(normalizedWorkflow, userPrompt, result);
+    }
+    
+    // ✅ REQUIRED: AI Intent Matching Validation (Core for prompt-to-workflow systems)
+    // This is REQUIRED because our project is primarily AI-driven prompt-to-workflow conversion
+    if (userPrompt || originalPrompt) {
+      await this.validateAIIntentMatching(normalizedWorkflow, userPrompt || originalPrompt || '', result);
     }
 
-    // Determine if workflow is valid
-    result.valid = result.errors.filter(e => e.severity === 'critical' || e.severity === 'high').length === 0;
+    // ✅ PHASE 4: PROACTIVE PREVENTION - Fail-fast instead of reactive fixing
+    // All errors should have been prevented at DSL compilation stage via proactive-error-prevention.ts
+    // If errors reach here, they are structural issues that cannot be auto-fixed
+    // Return validation result immediately without attempting fixes
+    
+    // ✅ PHASE 4: PROACTIVE PREVENTION - Fail-fast instead of reactive fixing
+    // All errors should have been prevented at DSL compilation stage
+    // If errors reach here, return immediately without attempting fixes
+    
+    // Determine if workflow is valid (fail-fast on any errors)
+    result.valid = result.errors.length === 0;
 
     return result;
   }
@@ -229,6 +232,7 @@ export class WorkflowValidator {
     }
 
     // Rule 2: No orphaned nodes (all nodes must be connected)
+    // ✅ FIX 1: DSL-AWARE VALIDATION - Check reachability following DSL execution order, not direct connections
     const connectedNodeIds = new Set<string>();
     
     // Start from trigger nodes
@@ -237,16 +241,41 @@ export class WorkflowValidator {
       this.traverseConnections(trigger.id, workflow.edges, connectedNodeIds);
     });
 
+    // ✅ FIX 1: DSL-AWARE VALIDATION - Validate against DSL intent, not blind connection rules
+    // Check if nodes are reachable following DSL execution order (allowing intermediate nodes)
     workflow.nodes.forEach(node => {
       if (!connectedNodeIds.has(node.id) && !this.isTriggerNode(this.getCanonicalNodeType(node))) {
-        result.errors.push({
-          type: 'orphaned_node',
-          severity: 'high',
-          message: `Node "${node.data?.label || node.id}" is not connected to the workflow`,
-          nodeId: node.id,
-          fixable: true,
-          suggestedFix: 'Connect this node to the workflow graph',
-        });
+        // ✅ Check if node has DSL metadata - if so, validate against DSL execution order
+        const { NodeMetadataHelper } = require('../../core/types/node-metadata');
+        const metadata = NodeMetadataHelper.getMetadata(node);
+        
+        if (metadata?.dsl?.dslId) {
+          // Node came from DSL - check if it's reachable following DSL execution order
+          // This allows intermediate nodes (limit, if_else) between data source and transformation
+          const isReachableViaDSL = this.isNodeReachableViaDSLOrder(node, workflow, connectedNodeIds);
+          
+          if (!isReachableViaDSL) {
+            result.errors.push({
+              type: 'orphaned_node',
+              severity: 'high',
+              message: `Node "${node.data?.label || node.id}" (from DSL) is not reachable following DSL execution order`,
+              nodeId: node.id,
+              fixable: true,
+              suggestedFix: 'Connect this node following DSL execution order (allowing intermediate safety nodes)',
+            });
+          }
+          // If reachable via DSL order, don't report as orphaned (even if not directly connected)
+        } else {
+          // Node not from DSL - use standard validation
+          result.errors.push({
+            type: 'orphaned_node',
+            severity: 'high',
+            message: `Node "${node.data?.label || node.id}" is not connected to the workflow`,
+            nodeId: node.id,
+            fixable: true,
+            suggestedFix: 'Connect this node to the workflow graph',
+          });
+        }
       }
     });
 
@@ -412,7 +441,10 @@ export class WorkflowValidator {
   }
 
   /**
-   * Fix transformation nodes with missing properties
+   * ❌ PHASE 4: DEPRECATED - Reactive fixing removed
+   * This method is no longer used - errors should be prevented at source
+   * Kept for backward compatibility only
+   * @deprecated Use proactive-error-prevention.ts instead
    */
   private fixTransformationNodes(
     workflow: Workflow,
@@ -571,7 +603,10 @@ export class WorkflowValidator {
   }
 
   /**
-   * Attempt to auto-fix errors
+   * ❌ PHASE 4: DEPRECATED - Reactive fixing removed
+   * This method is no longer used - errors should be prevented at source
+   * Kept for backward compatibility only
+   * @deprecated Use proactive-error-prevention.ts instead
    */
   private async attemptAutoFix(
     workflow: Workflow,
@@ -691,7 +726,7 @@ export class WorkflowValidator {
    */
   private getCanonicalNodeType(node: WorkflowNode): string {
     try {
-      return normalizeNodeType(node as any);
+      return unifiedNormalizeNodeType(node as any);
     } catch {
       const t = (node as any)?.data?.type || (node as any)?.type || 'unknown';
       return String(t).toLowerCase();
@@ -699,7 +734,10 @@ export class WorkflowValidator {
   }
 
   /**
-   * Apply fix to workflow
+   * ❌ PHASE 4: DEPRECATED - Reactive fixing removed
+   * This method is no longer used - errors should be prevented at source
+   * Kept for backward compatibility only
+   * @deprecated Use proactive-error-prevention.ts instead
    */
   private applyFix(workflow: Workflow, fix: Fix): Workflow {
     const fixed = JSON.parse(JSON.stringify(workflow));
@@ -772,6 +810,58 @@ export class WorkflowValidator {
       });
   }
 
+  /**
+   * ✅ FIX 1: DSL-AWARE VALIDATION - Check if node is reachable following DSL execution order
+   * This allows intermediate nodes (limit, if_else) between data source and transformation
+   * 
+   * @param node - Node to check
+   * @param workflow - Workflow graph
+   * @param connectedNodeIds - Set of already connected node IDs
+   * @returns true if node is reachable following DSL execution order
+   */
+  private isNodeReachableViaDSLOrder(
+    node: WorkflowNode,
+    workflow: Workflow,
+    connectedNodeIds: Set<string>
+  ): boolean {
+    const { NodeMetadataHelper } = require('../../core/types/node-metadata');
+    const metadata = NodeMetadataHelper.getMetadata(node);
+    
+    if (!metadata?.dsl?.dslId) {
+      // Not a DSL node - use standard reachability check
+      return connectedNodeIds.has(node.id);
+    }
+
+    // Check if there's a path from any connected node to this node
+    // This allows intermediate nodes (limit, if_else) between data source and transformation
+    const targetNodeId = node.id;
+    const visited = new Set<string>();
+    
+    // Start from all connected nodes (trigger and its descendants)
+    const queue = Array.from(connectedNodeIds);
+    
+    while (queue.length > 0) {
+      const currentId = queue.shift()!;
+      if (visited.has(currentId)) continue;
+      visited.add(currentId);
+      
+      if (currentId === targetNodeId) {
+        return true; // Found path to target node
+      }
+      
+      // Follow edges from current node
+      workflow.edges
+        .filter(e => e.source === currentId)
+        .forEach(e => {
+          if (!visited.has(e.target)) {
+            queue.push(e.target);
+          }
+        });
+    }
+    
+    return false; // No path found
+  }
+
   private detectCycles(workflow: Workflow): string[][] {
     const cycles: string[][] = [];
     const visited = new Set<string>();
@@ -808,17 +898,11 @@ export class WorkflowValidator {
     return cycles;
   }
 
+  /**
+   * Legacy method - delegates to enhanced version
+   */
   private validateTypeCompatibility(workflow: Workflow, result: ValidationResult): void {
-    // Basic type checking - can be enhanced
-    workflow.edges.forEach(edge => {
-      const sourceNode = workflow.nodes.find(n => n.id === edge.source);
-      const targetNode = workflow.nodes.find(n => n.id === edge.target);
-
-      if (sourceNode && targetNode) {
-        // Check if types are compatible
-        // This is a simplified check - can be enhanced with actual type system
-      }
-    });
+    this.validateTypeCompatibilityEnhanced(workflow, result);
   }
 
   private getRequiredFields(nodeType: string): string[] {
@@ -826,9 +910,114 @@ export class WorkflowValidator {
     return def?.requiredInputs || [];
   }
 
+  /**
+   * ✅ PERMANENT FIX: Improved field detection to prevent false positives
+   * 
+   * Checks for fields in multiple locations and formats:
+   * 1. Direct config field: config.field
+   * 2. Nested paths: config.nested.field
+   * 3. Alternative field names (aliases)
+   * 4. Schema defaults (if field has default, it's considered present)
+   * 5. Different config locations (node.data.config vs node.config)
+   */
   private hasField(node: WorkflowNode, field: string): boolean {
-    const config = node.data?.config || {};
-    return field in config && config[field] !== null && config[field] !== '';
+    // Check multiple config locations
+    const configs = [
+      node.data?.config || {},
+      (node as any).config || {}, // Some nodes might have config at root level
+      node.data || {},
+      node as any
+    ];
+
+    // Check direct field access
+    for (const config of configs) {
+      if (field in config && config[field] !== null && config[field] !== undefined && config[field] !== '') {
+        return true;
+      }
+    }
+
+    // Check nested paths (e.g., "nested.field")
+    if (field.includes('.')) {
+      const parts = field.split('.');
+      for (const config of configs) {
+        let value = config;
+        for (const part of parts) {
+          if (value && typeof value === 'object' && part in value) {
+            value = value[part];
+          } else {
+            value = undefined;
+            break;
+          }
+        }
+        if (value !== null && value !== undefined && value !== '') {
+          return true;
+        }
+      }
+    }
+
+    // Check alternative field names (common aliases)
+    const fieldAliases = this.getFieldAliases(field);
+    for (const alias of fieldAliases) {
+      for (const config of configs) {
+        if (alias in config && config[alias] !== null && config[alias] !== undefined && config[alias] !== '') {
+          return true;
+        }
+      }
+    }
+
+    // Check if field has default value in schema (if it has default, it's considered present)
+    const canonicalType = this.getCanonicalNodeType(node);
+    if (this.hasDefaultValue(canonicalType, field)) {
+      return true; // Field has default, so it's effectively present
+    }
+
+    return false;
+  }
+
+  /**
+   * Get alternative field names (aliases) for a field
+   * Helps detect fields that might be named differently
+   */
+  private getFieldAliases(field: string): string[] {
+    const aliasMap: Record<string, string[]> = {
+      'prompt': ['message', 'input', 'text', 'query'],
+      'subject': ['title', 'header'],
+      'body': ['content', 'message', 'text'],
+      'recipient': ['to', 'recipientEmails', 'recipients'],
+      'url': ['endpoint', 'webhookUrl', 'apiUrl', 'link'],
+      'spreadsheetId': ['sheetId', 'spreadsheet_id', 'sheet_id'],
+      'sheetName': ['sheet_name', 'worksheet', 'tab'],
+    };
+
+    return aliasMap[field] || [];
+  }
+
+  /**
+   * Check if a field has a default value in the node schema
+   * If it has a default, the field is effectively present
+   */
+  private hasDefaultValue(nodeType: string, field: string): boolean {
+    try {
+      const def = nodeDefinitionRegistry.get(nodeType);
+      if (!def) return false;
+
+      // Check if field has default in schema
+      // NodeDefinition uses inputSchema, which is a Record<string, NodeInputField>
+      const inputSchema = def.inputSchema;
+      if (inputSchema && field in inputSchema) {
+        const fieldDef = inputSchema[field];
+        if (fieldDef?.default !== undefined) {
+          return true; // Field has default value, so it's effectively present
+        }
+      }
+
+      // Check required inputs (if it's required but has no default, it's not present)
+      // But if it's in optional with default, it's present
+      return false;
+    } catch (error) {
+      // If we can't check schema, assume no default (conservative)
+      return false;
+    }
   }
 
   private extractUrls(node: WorkflowNode): string[] {
@@ -920,6 +1109,646 @@ export class WorkflowValidator {
     };
 
     return defaults[nodeType]?.[field] || '';
+  }
+
+  /**
+   * ✅ ENHANCED: Validate execution order
+   * Merged from comprehensive-workflow-validator and strict-workflow-validator
+   */
+  private validateExecutionOrder(workflow: Workflow, result: ValidationResult): void {
+    // Execution order priority (lower number = executes first)
+    const EXECUTION_ORDER: Record<string, number> = {
+      // Triggers (0-10)
+      'manual_trigger': 0,
+      'schedule': 1,
+      'interval': 2,
+      'webhook': 3,
+      'form': 4,
+      'chat_trigger': 5,
+      'workflow_trigger': 6,
+      'error_trigger': 7,
+      
+      // Data Sources (10-20)
+      'google_sheets': 10,
+      'google_drive': 11,
+      'http_request': 12,
+      'http_post': 13,
+      'database_read': 14,
+      'supabase': 15,
+      
+      // Data Processing (20-30)
+      'set_variable': 20,
+      'edit_fields': 21,
+      'json_parser': 22,
+      'csv_processor': 23,
+      
+      // Logic (30-40)
+      'if_else': 30,
+      'switch': 31,
+      'filter': 32,
+      'loop': 33,
+      'merge': 34,
+      'split_in_batches': 35,
+      
+      // AI/Transformation (40-50)
+      'ai_agent': 40,
+      'openai_gpt': 41,
+      'anthropic_claude': 42,
+      'google_gemini': 43,
+      'javascript': 44,
+      'text_formatter': 45,
+      'text_summarizer': 46,
+      
+      // Output (50-60)
+      'slack_message': 50,
+      'email': 51,
+      'google_gmail': 52,
+      'log_output': 53,
+      'respond_to_webhook': 54,
+      'database_write': 55,
+    };
+
+    // Check execution order on edges
+    for (const edge of workflow.edges) {
+      const sourceNode = workflow.nodes.find(n => n.id === edge.source);
+      const targetNode = workflow.nodes.find(n => n.id === edge.target);
+      
+      if (sourceNode && targetNode) {
+        const sourceType = this.getCanonicalNodeType(sourceNode);
+        const targetType = this.getCanonicalNodeType(targetNode);
+        const sourceOrder = EXECUTION_ORDER[sourceType] ?? 100;
+        const targetOrder = EXECUTION_ORDER[targetType] ?? 100;
+        
+        // Rule: email/send must come after summarization/transform
+        const isEmailNode = targetType.includes('gmail') || targetType.includes('email') || targetType.includes('send');
+        const isTransformNode = sourceType.includes('summarizer') || sourceType.includes('transform') || 
+                                sourceType.includes('ai') || sourceType.includes('llm') || 
+                                sourceType.includes('gemini') || sourceType.includes('gpt') || sourceType.includes('claude');
+        
+        if (isEmailNode && !isTransformNode && sourceOrder < 40) {
+          result.warnings.push({
+            type: 'inefficient_structure',
+            message: `Email/send operation "${targetType}" should come after transformation/summarization`,
+            nodeId: targetNode.id,
+            suggestion: 'Consider adding transformation step before email/send',
+          });
+        }
+        
+        // Rule: fetch_data must come before transform/send
+        const isFetchNode = sourceType.includes('sheets') || sourceType.includes('database') || 
+                            sourceType.includes('http_request') || sourceType.includes('read');
+        
+        if (isTransformNode && !isFetchNode && sourceOrder >= 40) {
+          result.warnings.push({
+            type: 'inefficient_structure',
+            message: `Transform operation "${targetType}" should come after data source`,
+            nodeId: targetNode.id,
+            suggestion: 'Ensure data source comes before transformation',
+          });
+        }
+        
+        // General order violation
+        if (sourceOrder > targetOrder && Math.abs(sourceOrder - targetOrder) > 10) {
+          result.warnings.push({
+            type: 'inefficient_structure',
+            message: `Execution order violation: ${sourceType} (order ${sourceOrder}) connects to ${targetType} (order ${targetOrder})`,
+            nodeId: targetNode.id,
+            suggestion: 'Consider reordering nodes for better execution flow',
+          });
+        }
+      }
+    }
+  }
+  
+  /**
+   * ✅ ENHANCED: Validate data flow
+   * Merged from comprehensive-workflow-validator
+   */
+  private validateDataFlow(workflow: Workflow, result: ValidationResult): void {
+    const triggerNodeTypes = ['manual_trigger', 'schedule', 'interval', 'webhook', 'form', 'chat_trigger', 'workflow_trigger', 'error_trigger'];
+    const outputNodeTypes = ['slack_message', 'email', 'google_gmail', 'log_output', 'respond_to_webhook', 'database_write'];
+    
+    const triggerNodes = workflow.nodes.filter(n => {
+      const type = this.getCanonicalNodeType(n);
+      return triggerNodeTypes.includes(type);
+    });
+    const outputNodes = workflow.nodes.filter(n => {
+      const type = this.getCanonicalNodeType(n);
+      return outputNodeTypes.includes(type);
+    });
+    
+    if (triggerNodes.length === 0) {
+      result.errors.push({
+        type: 'missing_trigger',
+        severity: 'critical',
+        message: 'Workflow has no trigger node',
+        fixable: true,
+        suggestedFix: 'Add a trigger node (manual_trigger, schedule, webhook, etc.)',
+      });
+    }
+    
+    if (outputNodes.length === 0) {
+      result.warnings.push({
+        type: 'inefficient_structure',
+        message: 'Workflow has no output node - consider adding one',
+      });
+    }
+    
+    // Check if there's a path from at least one trigger to at least one output
+    let hasValidPath = false;
+    for (const trigger of triggerNodes) {
+      for (const output of outputNodes) {
+        if (this.canReach(trigger.id, output.id, workflow.edges, workflow.nodes)) {
+          hasValidPath = true;
+          break;
+        }
+      }
+      if (hasValidPath) break;
+    }
+    
+    if (!hasValidPath && triggerNodes.length > 0 && outputNodes.length > 0) {
+      result.errors.push({
+        type: 'orphaned_node',
+        severity: 'critical',
+        message: 'No valid path exists from trigger to output node',
+        fixable: true,
+        suggestedFix: 'Add connections to create a path from trigger to output',
+      });
+    }
+  }
+  
+  /**
+   * ✅ ENHANCED: Validate type compatibility with comprehensive checks
+   * Merged from comprehensive-workflow-validator
+   */
+  private validateTypeCompatibilityEnhanced(workflow: Workflow, result: ValidationResult): void {
+    workflow.edges.forEach(edge => {
+      const sourceNode = workflow.nodes.find(n => n.id === edge.source);
+      const targetNode = workflow.nodes.find(n => n.id === edge.target);
+
+      if (sourceNode && targetNode && edge.sourceHandle && edge.targetHandle) {
+        const sourceType = this.getCanonicalNodeType(sourceNode);
+        const targetType = this.getCanonicalNodeType(targetNode);
+        
+        // Get output/input field types
+        const sourceOutputType = this.getOutputFieldType(sourceType, edge.sourceHandle);
+        const targetInputType = this.getInputFieldType(targetType, edge.targetHandle);
+        
+        if (sourceOutputType && targetInputType && !this.areTypesCompatible(sourceOutputType, targetInputType)) {
+          result.warnings.push({
+            type: 'potential_performance_issue',
+            message: `Potential type mismatch: ${sourceType}.${edge.sourceHandle} (${sourceOutputType}) → ${targetType}.${edge.targetHandle} (${targetInputType})`,
+            nodeId: targetNode.id,
+            suggestion: 'Verify data types are compatible',
+          });
+        }
+      }
+    });
+  }
+  
+  /**
+   * ✅ ENHANCED: Get output field type for a node
+   * Merged from comprehensive-workflow-validator
+   */
+  private getOutputFieldType(nodeType: string, fieldName: string): string | null {
+    // Use connection validator's output schema if available
+    try {
+      const { connectionValidator } = require('./connection-validator');
+      const outputSchema = (connectionValidator as any).getNodeOutputSchema?.(nodeType);
+      if (outputSchema?.fields?.[fieldName]) {
+        return outputSchema.fields[fieldName];
+      }
+    } catch {
+      // Connection validator not available, use fallback
+    }
+    
+    // Fallback: infer type from field name
+    if (fieldName.includes('json') || fieldName.includes('data') || fieldName.includes('body')) return 'object';
+    if (fieldName.includes('text') || fieldName.includes('message')) return 'string';
+    if (fieldName.includes('status') || fieldName.includes('count')) return 'number';
+    return 'string'; // Default
+  }
+  
+  /**
+   * ✅ ENHANCED: Get input field type for a node
+   * Merged from comprehensive-workflow-validator
+   */
+  private getInputFieldType(nodeType: string, fieldName: string): string | null {
+    // Use connection validator's input schema if available
+    try {
+      const { connectionValidator } = require('./connection-validator');
+      const inputSchema = (connectionValidator as any).getNodeInputSchema?.(nodeType);
+      if (inputSchema?.fields?.[fieldName]) {
+        return inputSchema.fields[fieldName].type;
+      }
+    } catch {
+      // Connection validator not available, use fallback
+    }
+    
+    // Fallback: infer type from field name
+    if (fieldName.includes('json') || fieldName.includes('data') || fieldName.includes('body')) return 'object';
+    if (fieldName.includes('text') || fieldName.includes('message') || fieldName.includes('input')) return 'string';
+    if (fieldName.includes('count') || fieldName.includes('number')) return 'number';
+    return 'string'; // Default
+  }
+  
+  /**
+   * ✅ ENHANCED: Check if types are compatible
+   * Merged from comprehensive-workflow-validator
+   */
+  private areTypesCompatible(sourceType: string, targetType: string): boolean {
+    // Exact match
+    if (sourceType === targetType) return true;
+    
+    // Object is compatible with most types (flexible)
+    if (sourceType === 'object') return true;
+    if (targetType === 'object') return true;
+    
+    // String is compatible with most types
+    if (sourceType === 'string') return true;
+    
+    // Number and string are somewhat compatible
+    if ((sourceType === 'number' && targetType === 'string') || 
+        (sourceType === 'string' && targetType === 'number')) {
+      return true; // Can convert
+    }
+    
+    return false;
+  }
+  
+  /**
+   * ✅ ENHANCED: Check if target node is reachable from source node
+   * Merged from comprehensive-workflow-validator
+   */
+  private canReach(sourceId: string, targetId: string, edges: WorkflowEdge[], nodes: WorkflowNode[]): boolean {
+    if (sourceId === targetId) return true;
+    
+    const visited = new Set<string>();
+    const queue = [sourceId];
+    visited.add(sourceId);
+    
+    while (queue.length > 0) {
+      const currentId = queue.shift()!;
+      const outgoingEdges = edges.filter(e => e.source === currentId);
+      
+      for (const edge of outgoingEdges) {
+        if (edge.target === targetId) {
+          return true;
+        }
+        
+        if (!visited.has(edge.target)) {
+          visited.add(edge.target);
+          queue.push(edge.target);
+        }
+      }
+    }
+    
+    return false;
+  }
+  
+  /**
+   * ✅ 100% COMPLETE: Validate transformations
+   * Merged from deterministic-workflow-validator
+   * 
+   * @param workflow - Workflow to validate
+   * @param originalPrompt - Original user prompt
+   * @param result - Validation result to populate
+   */
+  private validateTransformations(
+    workflow: Workflow,
+    originalPrompt: string,
+    result: ValidationResult
+  ): void {
+    try {
+      // Dynamically import to avoid circular dependencies
+      const { transformationDetector, detectTransformations } = require('./transformation-detector');
+      
+      // Detect transformation verbs in prompt
+      const detection = detectTransformations(originalPrompt);
+      
+      if (!detection.detected) {
+        return; // No transformations required
+      }
+      
+      // Get node types in workflow
+      const workflowNodeTypes = workflow.nodes.map(node => this.getCanonicalNodeType(node));
+      
+      // Validate transformations exist
+      const validation = transformationDetector.validateTransformations(detection, workflowNodeTypes);
+      
+      if (!validation.valid) {
+        validation.errors.forEach((error: string) => {
+          result.errors.push({
+            type: 'missing_required_field',
+            severity: 'high',
+            message: error,
+            fixable: true,
+            suggestedFix: `Add transformation node(s): ${validation.missing.join(', ')}`,
+          });
+        });
+      }
+    } catch (error) {
+      // Transformation validation is optional - don't fail if detector unavailable
+      console.warn(`[WorkflowValidator] Could not validate transformations: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+  
+  /**
+   * ✅ 100% COMPLETE: Validate AI usage
+   * Merged from strict-workflow-validator
+   * 
+   * @param workflow - Workflow to validate
+   * @param userPrompt - User prompt
+   * @param result - Validation result to populate
+   */
+  private validateAIUsage(
+    workflow: Workflow,
+    userPrompt: string,
+    result: ValidationResult
+  ): void {
+    const aiNodes = workflow.nodes.filter(n => {
+      const type = this.getCanonicalNodeType(n);
+      return type.includes('ai_agent') || 
+             type.includes('gpt') || 
+             type.includes('claude') || 
+             type.includes('gemini') ||
+             type.includes('ollama');
+    });
+    
+    if (aiNodes.length === 0) {
+      return; // No AI nodes to validate
+    }
+    
+    const promptLower = userPrompt.toLowerCase();
+    
+    // Check if this is a chatbot workflow (AI is always required for chatbots)
+    const isChatbotWorkflow = 
+      promptLower.includes('chatbot') ||
+      promptLower.includes('chat bot') ||
+      promptLower.includes('ai chat') ||
+      promptLower.includes('conversational ai') ||
+      promptLower.includes('assistant') ||
+      workflow.nodes.some(n => {
+        const type = this.getCanonicalNodeType(n);
+        return type === 'chat_trigger';
+      });
+    
+    const needsAI =
+      isChatbotWorkflow ||
+      promptLower.includes('personalized') ||
+      promptLower.includes('personalize') ||
+      promptLower.includes('ai-generated') ||
+      promptLower.includes('generate content') ||
+      promptLower.includes('summarize') ||
+      promptLower.includes('classify') ||
+      promptLower.includes('transform');
+    
+    if (!needsAI && aiNodes.length > 0) {
+      aiNodes.forEach(aiNode => {
+        result.warnings.push({
+          type: 'inefficient_structure',
+          message: `AI node "${aiNode.data?.label || aiNode.id}" may be unnecessary - prompt doesn't require AI`,
+          nodeId: aiNode.id,
+          suggestion: 'AI should only be used for personalization, summarization, classification, or transformation',
+        });
+      });
+    }
+    
+    // Check AI node position (should be after trigger, before final communication)
+    const executionOrder = this.calculateExecutionOrder(workflow);
+    aiNodes.forEach(aiNode => {
+      const aiIndex = executionOrder.indexOf(aiNode.id);
+      if (aiIndex === -1) return;
+      
+      // AI should be early in the flow (after trigger, before storage/communication)
+      if (aiIndex > executionOrder.length / 2) {
+        result.warnings.push({
+          type: 'inefficient_structure',
+          message: `AI node "${aiNode.data?.label || aiNode.id}" is placed too late in execution order`,
+          nodeId: aiNode.id,
+          suggestion: 'AI should be placed earlier in the workflow (after trigger, before storage/communication)',
+        });
+      }
+    });
+  }
+  
+  /**
+   * ✅ 100% COMPLETE: Validate required services
+   * Merged from strict-workflow-validator
+   * 
+   * @param workflow - Workflow to validate
+   * @param userPrompt - User prompt
+   * @param result - Validation result to populate
+   */
+  private validateRequiredServices(
+    workflow: Workflow,
+    userPrompt: string,
+    result: ValidationResult
+  ): void {
+    const promptLower = userPrompt.toLowerCase();
+    const workflowNodeTypes = new Set(workflow.nodes.map(n => this.getCanonicalNodeType(n)));
+    const missingServices: string[] = [];
+    
+    // Check for Google Sheets
+    if ((promptLower.includes('google sheets') || 
+         promptLower.includes('sheets') || 
+         promptLower.includes('save to') || 
+         promptLower.includes('store')) &&
+        !workflowNodeTypes.has('google_sheets')) {
+      missingServices.push('Google Sheets');
+    }
+    
+    // Check for Slack
+    if ((promptLower.includes('slack') || 
+         promptLower.includes('notify') || 
+         promptLower.includes('sales team')) &&
+        !workflowNodeTypes.has('slack_message') &&
+        !workflowNodeTypes.has('slack_webhook')) {
+      missingServices.push('Slack');
+    }
+    
+    // Check for Gmail/Email
+    if ((promptLower.includes('gmail') || 
+         promptLower.includes('email') || 
+         promptLower.includes('send email') || 
+         promptLower.includes('follow-up')) &&
+        !workflowNodeTypes.has('google_gmail') &&
+        !workflowNodeTypes.has('email')) {
+      missingServices.push('Gmail/Email');
+    }
+    
+    if (missingServices.length > 0) {
+      result.errors.push({
+        type: 'missing_required_field',
+        severity: 'high',
+        message: `Missing required services: ${missingServices.join(', ')}`,
+        fixable: true,
+        suggestedFix: `Add missing service nodes: ${missingServices.join(', ')}`,
+      });
+    }
+  }
+  
+  /**
+   * ✅ REQUIRED: AI Intent Matching Validation
+   * Core validation for prompt-to-workflow systems
+   * 
+   * @param workflow - Workflow to validate
+   * @param userPrompt - User prompt to match against
+   * @param result - Validation result to populate
+   */
+  private async validateAIIntentMatching(
+    workflow: Workflow,
+    userPrompt: string,
+    result: ValidationResult
+  ): Promise<void> {
+    try {
+      // Dynamically import to avoid circular dependencies
+      const { aiWorkflowValidator } = await import('./ai-workflow-validator');
+      
+      // Create workflow structure for AI validation
+      const structure: any = {
+        trigger: workflow.nodes.find(n => {
+          const type = this.getCanonicalNodeType(n);
+          return this.isTriggerNode(type);
+        })?.id || null,
+        nodes: workflow.nodes.map(n => ({
+          id: n.id,
+          type: this.getCanonicalNodeType(n),
+          label: n.data?.label || n.id,
+        })),
+        edges: workflow.edges.map(e => ({
+          source: e.source,
+          target: e.target,
+        })),
+      };
+      
+      // Perform AI validation
+      const aiValidation = await aiWorkflowValidator.validateWorkflowStructure(
+        userPrompt,
+        structure,
+        workflow.nodes,
+        workflow.edges
+      );
+      
+      // Add AI validation results to result
+      if (!aiValidation.valid) {
+        aiValidation.issues.forEach(issue => {
+          result.errors.push({
+            type: 'invalid_configuration',
+            severity: 'high',
+            message: `AI Intent Mismatch: ${issue}`,
+            fixable: false,
+            suggestedFix: 'Review workflow structure against user prompt',
+          });
+        });
+      }
+      
+      // Add confidence-based warnings
+      if (aiValidation.confidence < 70) {
+        result.warnings.push({
+          type: 'inefficient_structure',
+          message: `AI validation confidence is low (${aiValidation.confidence}%). Workflow may not fully match user intent.`,
+          suggestion: aiValidation.suggestions.join('; ') || 'Review workflow against user prompt',
+        });
+      }
+      
+      // Add specific validation flags
+      if (!aiValidation.nodeOrderValid) {
+        result.warnings.push({
+          type: 'inefficient_structure',
+          message: 'AI validation: Node order may not match user intent',
+          suggestion: 'Review node execution order',
+        });
+      }
+      
+      if (!aiValidation.connectionsValid) {
+        result.warnings.push({
+          type: 'inefficient_structure',
+          message: 'AI validation: Connections may not form logical flow',
+          suggestion: 'Review workflow connections',
+        });
+      }
+      
+      if (!aiValidation.completenessValid) {
+        result.warnings.push({
+          type: 'inefficient_structure',
+          message: 'AI validation: Workflow may be missing required nodes',
+          suggestion: aiValidation.suggestions.join('; ') || 'Review workflow completeness',
+        });
+      }
+      
+      // Add AI suggestions as warnings
+      if (aiValidation.suggestions.length > 0) {
+        aiValidation.suggestions.forEach(suggestion => {
+          result.warnings.push({
+            type: 'inefficient_structure',
+            message: `AI Suggestion: ${suggestion}`,
+            suggestion: suggestion,
+          });
+        });
+      }
+      
+      console.log(`[WorkflowValidator] ✅ AI Intent Matching: valid=${aiValidation.valid}, confidence=${aiValidation.confidence}%`);
+    } catch (error) {
+      // AI validation is important but shouldn't block workflow if it fails
+      console.warn(`[WorkflowValidator] ⚠️  AI Intent Matching validation failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      result.warnings.push({
+        type: 'inefficient_structure',
+        message: 'AI intent matching validation unavailable - workflow may not match user intent',
+        suggestion: 'Review workflow manually against user prompt',
+      });
+    }
+  }
+  
+  /**
+   * ✅ 100% COMPLETE: Calculate execution order from edges
+   * Merged from strict-workflow-validator
+   * 
+   * @param workflow - Workflow to analyze
+   * @returns Array of node IDs in execution order
+   */
+  private calculateExecutionOrder(workflow: Workflow): string[] {
+    const order: string[] = [];
+    const visited = new Set<string>();
+    const inDegree = new Map<string, number>();
+    
+    // Initialize in-degree
+    workflow.nodes.forEach(node => {
+      inDegree.set(node.id, 0);
+    });
+    
+    // Calculate in-degree
+    workflow.edges.forEach(edge => {
+      const current = inDegree.get(edge.target) || 0;
+      inDegree.set(edge.target, current + 1);
+    });
+    
+    // Find trigger nodes (in-degree 0)
+    const queue: string[] = [];
+    workflow.nodes.forEach(node => {
+      if (inDegree.get(node.id) === 0) {
+        queue.push(node.id);
+      }
+    });
+    
+    // Topological sort
+    while (queue.length > 0) {
+      const nodeId = queue.shift()!;
+      order.push(nodeId);
+      visited.add(nodeId);
+      
+      workflow.edges
+        .filter(e => e.source === nodeId)
+        .forEach(edge => {
+          const targetDegree = (inDegree.get(edge.target) || 0) - 1;
+          inDegree.set(edge.target, targetDegree);
+          if (targetDegree === 0 && !visited.has(edge.target)) {
+            queue.push(edge.target);
+          }
+        });
+    }
+    
+    return order;
   }
 }
 

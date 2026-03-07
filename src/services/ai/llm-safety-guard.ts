@@ -21,7 +21,7 @@
 import { StructuredIntent } from './intent-structurer';
 import { Workflow, WorkflowNode, WorkflowEdge } from '../../core/types/ai-types';
 import { nodeLibrary, NodeSchema } from '../nodes/node-library';
-import { normalizeNodeType } from '../../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 import { randomUUID } from 'crypto';
 
 /**
@@ -184,7 +184,7 @@ export class LLMSafetyGuard {
     const validNodes: WorkflowNode[] = [];
 
     for (const node of nodes) {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       const schema = nodeLibrary.getSchema(nodeType);
 
       if (!schema) {
@@ -213,7 +213,7 @@ export class LLMSafetyGuard {
     const validNodes: WorkflowNode[] = [];
 
     for (const node of nodes) {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       const schema = nodeLibrary.getSchema(nodeType);
 
       if (!schema) {
@@ -272,7 +272,7 @@ export class LLMSafetyGuard {
     const validNodes: WorkflowNode[] = [];
 
     for (const node of nodes) {
-      const nodeType = normalizeNodeType(node);
+      const nodeType = unifiedNormalizeNodeType(node);
       const schema = nodeLibrary.getSchema(nodeType);
 
       if (!schema) {
@@ -408,7 +408,7 @@ export class LLMSafetyGuard {
     for (const schemaError of schemaValidation.schemaErrors) {
       const node = workflow.nodes.find(n => n.id === schemaError.nodeId);
       if (node && !nodesToRemove.has(node.id)) {
-        const nodeType = normalizeNodeType(node);
+        const nodeType = unifiedNormalizeNodeType(node);
         const schema = nodeLibrary.getSchema(nodeType);
         
         if (schema && node.data?.config) {

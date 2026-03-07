@@ -185,8 +185,18 @@ export class NodeDefinitionRegistry {
 
   /**
    * Validate node inputs against schema
+   * ✅ STRICT ARCHITECTURE: Pre-validation guard before registry
    */
   validateNodeInputs(nodeType: string, inputs: Record<string, any>): { valid: boolean; errors: string[] } {
+    // Pre-validation: ensure node type is canonical
+    try {
+      const { assertValidNodeType } = require('../../core/utils/node-authority');
+      assertValidNodeType(nodeType);
+    } catch (error: any) {
+      return { valid: false, errors: [error.message] };
+    }
+    
+    // Registry validation (only reached if pre-validation passes)
     const res = unifiedNodeRegistry.validateConfig(nodeType, inputs || {});
     return { valid: res.valid, errors: res.errors };
   }

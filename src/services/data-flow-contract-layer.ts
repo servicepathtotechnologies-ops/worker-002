@@ -19,7 +19,7 @@ import { Workflow, WorkflowNode, WorkflowEdge } from '../core/types/ai-types';
 import { executeNode } from '../api/execute-workflow';
 import { LRUNodeOutputsCache } from '../core/cache/lru-node-outputs-cache';
 import { getSupabaseClient } from '../core/database/supabase-compat';
-import { normalizeNodeType } from '../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../core/utils/unified-node-type-normalizer';
 import { parseIntent, IntentModel } from '../shared/intent-parser';
 import * as crypto from 'crypto';
 
@@ -641,7 +641,7 @@ export class DataFlowContractLayer {
         }
         
         // Find best match from real JSON
-        const normalizedType = normalizeNodeType(node);
+        const normalizedType = unifiedNormalizeNodeType(node);
         
         // Special handling for Gmail nodes with AI upstream
         // AI returns: { response: { subject, body, summary, ... } }
@@ -822,7 +822,7 @@ export class DataFlowContractLayer {
    */
   private getNodeRequiredFields(node: WorkflowNode): string[] {
     const config = node.data?.config || {};
-    const nodeType = normalizeNodeType(node) || node.type;
+    const nodeType = unifiedNormalizeNodeType(node) || node.type;
     
     // Common required fields by node type
     const commonRequiredFields: Record<string, string[]> = {
@@ -852,7 +852,7 @@ export class DataFlowContractLayer {
    * Get schema-based output keys as fallback
    */
   private getSchemaBasedOutputKeys(node: WorkflowNode): string[] {
-    const nodeType = normalizeNodeType(node) || node.type;
+    const nodeType = unifiedNormalizeNodeType(node) || node.type;
     const typeLower = nodeType.toLowerCase();
     
     // Common output fields by node type

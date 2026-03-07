@@ -17,7 +17,7 @@
 import { WorkflowNode, WorkflowEdge } from '../core/types/ai-types';
 import { getNodeOutputSchema, NodeOutputSchema } from '../core/types/node-output-types';
 import { nodeLibrary } from './nodes/node-library';
-import { normalizeNodeType } from '../core/utils/node-type-normalizer';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../core/utils/unified-node-type-normalizer';
 import { inputFieldMapper, NodeOutputFields } from './ai/input-field-mapper';
 import { EmbeddingGenerator, getEmbeddingGenerator } from '../memory/utils/embeddings';
 
@@ -116,7 +116,7 @@ export class FieldMapper {
       return null;
     }
     
-    const targetNodeType = normalizeNodeType(targetNode);
+    const targetNodeType = unifiedNormalizeNodeType(targetNode);
     const targetFieldType = this.getFieldType(targetField, targetNodeType);
     
     // Try exact match first (synchronous)
@@ -490,7 +490,7 @@ export class FieldMapper {
    * Get input fields for target node
    */
   private getTargetInputFields(targetNode: WorkflowNode): string[] {
-    const nodeType = normalizeNodeType(targetNode);
+    const nodeType = unifiedNormalizeNodeType(targetNode);
     const schema = nodeLibrary.getSchema(nodeType);
     
     if (!schema) {

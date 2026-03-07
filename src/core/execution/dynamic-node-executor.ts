@@ -18,11 +18,13 @@
 
 import { unifiedNodeRegistry } from '../registry/unified-node-registry';
 import { NodeExecutionContext, NodeExecutionResult } from '../types/unified-node-contract';
-import { WorkflowNode } from '../../core/types/ai-types';
+import { WorkflowNode, Workflow } from '../../core/types/ai-types';
 import { LRUNodeOutputsCache } from '../cache/lru-node-outputs-cache';
 import { SupabaseClient } from '@supabase/supabase-js';
-import { normalizeNodeType } from '../utils/node-type-normalizer';
+// ✅ PRODUCTION-GRADE: Removed normalizeNodeType - node types must be canonical before reaching executor
 import { IntentDrivenJsonRouter, shouldActivateRouter } from '../intent-driven-json-router';
+import { universalNodeAIContext } from '../../services/ai/universal-node-ai-context';
+import { aiFieldDetector } from '../../services/ai/ai-field-detector';
 
 export interface DynamicExecutionContext {
   node: WorkflowNode;
@@ -45,17 +47,33 @@ export async function executeNodeDynamically(
 ): Promise<unknown> {
   const { node, input, nodeOutputs, supabase, workflowId, userId, currentUserId } = context;
   
-  // Step 1: Normalize node type
-  const normalizedType = normalizeNodeType(node);
-  const nodeType = normalizedType || node.data?.type || node.type;
+  // Step 1: Extract node type
+  const nodeType = node.data?.type || node.type;
   
-  // Step 2: Get node definition from registry (SINGLE SOURCE OF TRUTH)
+  // Step 2: ✅ PRODUCTION-GRADE: Strict validation BEFORE registry
+  // This ensures only canonical node types reach the registry
+  try {
+    const { assertValidNodeType } = require('../utils/node-authority');
+    assertValidNodeType(nodeType);
+  } catch (error: any) {
+    console.error(`[DynamicExecutor] ❌ ${error.message}`);
+    return {
+      _error: error.message,
+      _nodeType: nodeType,
+    };
+  }
+  
+  // Step 3: Get node definition from registry (SINGLE SOURCE OF TRUTH)
+  // At this point, nodeType is guaranteed to be canonical
   const definition = unifiedNodeRegistry.get(nodeType);
   
   if (!definition) {
-    console.error(`[DynamicExecutor] ❌ Node type '${nodeType}' not found in registry`);
+    // This should NEVER happen if assertValidNodeType passed
+    // If it does, it's an integrity issue
+    const errorMsg = `[DynamicExecutor] ❌ Integrity error: Canonical node type '${nodeType}' not found in registry. This indicates a system initialization failure.`;
+    console.error(errorMsg);
     return {
-      _error: `Node type '${nodeType}' is not registered in the system`,
+      _error: errorMsg,
       _nodeType: nodeType,
     };
   }
@@ -63,17 +81,73 @@ export async function executeNodeDynamically(
   console.log(`[DynamicExecutor] ✅ Executing ${nodeType} using definition from registry`);
   
   // Step 3: Migrate config to current schema version (backward compatibility)
-  const config = node.data?.config || {};
+  let config = node.data?.config || {};
   const migratedConfig = unifiedNodeRegistry.migrateConfig(nodeType, config);
+  config = migratedConfig;
+  
+  // ✅ ROOT-LEVEL: Auto-fill text fields using AI before validation
+  // This ensures message, subject, body, etc. are auto-generated if empty
+  try {
+    const aiFields = aiFieldDetector.detectAIFields(node);
+    const emptyAIFields = aiFields
+      .filter(f => f.shouldAutoGenerate)
+      .map(f => f.fieldName)
+      .filter(fieldName => {
+        const currentValue = config[fieldName];
+        return !currentValue || (typeof currentValue === 'string' && currentValue.trim() === '');
+      });
+    
+    if (emptyAIFields.length > 0) {
+      console.log(`[DynamicExecutor] 🤖 Auto-generating ${emptyAIFields.length} text field(s) for ${nodeType}: ${emptyAIFields.join(', ')}`);
+      
+      // Get previous node outputs for context
+      const previousOutputs: Record<string, any> = {};
+      try {
+        // Extract previous outputs from nodeOutputs cache
+        const allOutputs = nodeOutputs.getAll();
+        Object.assign(previousOutputs, allOutputs);
+      } catch (e) {
+        console.warn(`[DynamicExecutor] ⚠️ Could not get previous outputs for AI context:`, e);
+      }
+      
+      // Get user prompt from workflow metadata (if available)
+      const userPrompt = (global as any).currentWorkflowIntent || 'Process workflow data';
+      
+      // Create workflow context (minimal - just for AI context)
+      const workflowContext: Workflow = {
+        nodes: [node], // Minimal workflow for context
+        edges: [],
+        metadata: { workflowId },
+      };
+      
+      // Auto-fill using AI
+      const autoFilledNode = await universalNodeAIContext.autoFillNode(
+        { ...node, data: { ...node.data, config } },
+        workflowContext,
+        userPrompt,
+        previousOutputs
+      );
+      
+      // Update config with AI-generated fields
+      config = autoFilledNode.data?.config || config;
+      console.log(`[DynamicExecutor] ✅ AI auto-filled ${emptyAIFields.length} field(s) for ${nodeType}`);
+    }
+  } catch (error) {
+    console.warn(`[DynamicExecutor] ⚠️ AI auto-fill failed (non-blocking):`, error);
+    // Continue without auto-fill - use existing config
+  }
   
   // Step 4: Validate config against node schema
-  const validation = unifiedNodeRegistry.validateConfig(nodeType, migratedConfig);
+  const validation = unifiedNodeRegistry.validateConfig(nodeType, config);
   
   if (!validation.valid) {
     console.error(`[DynamicExecutor] ❌ Config validation failed for ${nodeType}:`, validation.errors);
     
-    // In strict mode, return error immediately
-    if (process.env.VALIDATION_STRICT === 'true') {
+    // ✅ DEFAULT: Strict mode enabled (production-grade)
+    // Can be overridden with VALIDATION_STRICT=false if needed
+    const isStrictMode = process.env.VALIDATION_STRICT !== 'false';
+    
+    if (isStrictMode) {
       return {
         _error: `Configuration validation failed: ${validation.errors.join(', ')}`,
         _validationErrors: validation.errors,
@@ -81,7 +155,7 @@ export async function executeNodeDynamically(
       };
     }
     
-    // In non-strict mode, log warnings and continue (backward compatibility)
+    // In non-strict mode, log warnings and continue (backward compatibility - NOT RECOMMENDED)
     if (validation.warnings) {
       console.warn(`[DynamicExecutor] ⚠️  Config warnings for ${nodeType}:`, validation.warnings);
     }
@@ -182,12 +256,27 @@ export async function executeNodeDynamically(
     }
   }
 
+  // ✅ CRITICAL FIX: Merge AI-generated inputs back into config for UI display
+  // This ensures AI-generated values (headers, body, prompts, etc.) are visible in Properties Panel
+  // Only merge if the field is empty in config (don't overwrite user-provided values)
+  const mergedConfig = { ...migratedConfig };
+  for (const [fieldName, aiValue] of Object.entries(resolvedInputs)) {
+    const currentValue = mergedConfig[fieldName];
+    // Only merge if current value is empty/undefined/null
+    if (!currentValue || 
+        (typeof currentValue === 'string' && currentValue.trim() === '') ||
+        (typeof currentValue === 'object' && Object.keys(currentValue).length === 0)) {
+      mergedConfig[fieldName] = aiValue;
+      console.log(`[DynamicExecutor] ✅ Merged AI-generated value for ${fieldName} into config`);
+    }
+  }
+
   // Step 7: Create execution context
   const execContext: NodeExecutionContext = {
     nodeId: node.id,
     nodeType,
-    config: migratedConfig,
-    inputs: resolvedInputs,
+    config: mergedConfig, // Use merged config (includes AI-generated values)
+    inputs: resolvedInputs, // Use resolved inputs for execution
     rawInput: input,
     upstreamOutputs: new Map(),
     workflowId,
@@ -267,6 +356,9 @@ async function resolveInputsWithAI(
   // Get previous node output (from upstream nodes)
   const previousOutput = getPreviousNodeOutput(nodeOutputs);
   
+  // ✅ CRITICAL: Store previous output globally for body mapping
+  (global as any).lastPreviousOutput = previousOutput;
+  
   // Get user intent from workflow context (if available)
   const userIntent = (global as any).currentWorkflowIntent || 'Process workflow data';
   
@@ -275,9 +367,9 @@ async function resolveInputsWithAI(
   
   // Resolve inputs using AI
   try {
-    // ✅ DEBUG: Log AI input resolution for Ollama/AI nodes
-    if (nodeType === 'ollama' || nodeType === 'ai_chat_model') {
-      console.log('[DynamicExecutor] 🔍 Starting AI input resolution for Ollama/AI node:', {
+    // ✅ DEBUG: Log AI input resolution for Ollama/AI nodes and HTTP Request nodes
+    if (nodeType === 'ollama' || nodeType === 'ai_chat_model' || nodeType === 'http_request') {
+      console.log('[DynamicExecutor] 🔍 Starting AI input resolution for node:', {
         nodeId: currentNodeId,
         nodeType,
         nodeLabel,
@@ -285,6 +377,9 @@ async function resolveInputsWithAI(
         previousOutputKeys: previousOutput && typeof previousOutput === 'object' 
           ? Object.keys(previousOutput as Record<string, unknown>)
           : [],
+        previousOutputSample: previousOutput && typeof previousOutput === 'object'
+          ? JSON.stringify(previousOutput).substring(0, 200)
+          : String(previousOutput).substring(0, 200),
         inputSchemaKeys: Object.keys(inputSchema || {}),
         userIntent,
       });
@@ -298,8 +393,8 @@ async function resolveInputsWithAI(
       nodeLabel,
     });
     
-    // ✅ DEBUG: Log resolved input for Ollama/AI nodes
-    if (nodeType === 'ollama' || nodeType === 'ai_chat_model') {
+    // ✅ DEBUG: Log resolved input for Ollama/AI nodes and HTTP Request nodes
+    if (nodeType === 'ollama' || nodeType === 'ai_chat_model' || nodeType === 'http_request') {
       console.log('[DynamicExecutor] ✅ AI input resolution result:', {
         nodeId: currentNodeId,
         nodeType,
@@ -308,10 +403,12 @@ async function resolveInputsWithAI(
         resolvedValueKeys: resolved.value && typeof resolved.value === 'object'
           ? Object.keys(resolved.value as Record<string, unknown>)
           : [],
+        resolvedValueSample: resolved.value && typeof resolved.value === 'object'
+          ? JSON.stringify(resolved.value).substring(0, 300)
+          : String(resolved.value).substring(0, 300),
         hasPrompt: resolved.value && typeof resolved.value === 'object' && 'prompt' in (resolved.value as Record<string, unknown>),
-        promptLength: resolved.value && typeof resolved.value === 'object' && typeof (resolved.value as any).prompt === 'string'
-          ? (resolved.value as any).prompt.length
-          : 'N/A',
+        hasBody: resolved.value && typeof resolved.value === 'object' && 'body' in (resolved.value as Record<string, unknown>),
+        hasHeaders: resolved.value && typeof resolved.value === 'object' && 'headers' in (resolved.value as Record<string, unknown>),
         explanation: resolved.explanation,
       });
     }
@@ -319,14 +416,18 @@ async function resolveInputsWithAI(
     // Map resolved value to input schema fields
     const mapped = mapResolvedValueToSchema(resolved.value, inputSchema, resolved.mode);
     
-    // ✅ DEBUG: Log mapped result for Ollama/AI nodes
-    if (nodeType === 'ollama' || nodeType === 'ai_chat_model') {
+    // ✅ DEBUG: Log mapped result for Ollama/AI nodes and HTTP Request nodes
+    if (nodeType === 'ollama' || nodeType === 'ai_chat_model' || nodeType === 'http_request') {
       console.log('[DynamicExecutor] ✅ Mapped resolved input to schema:', {
         nodeId: currentNodeId,
         mappedKeys: Object.keys(mapped),
+        mappedSample: JSON.stringify(mapped).substring(0, 300),
         hasPrompt: 'prompt' in mapped,
-        promptLength: typeof mapped.prompt === 'string' ? mapped.prompt.length : 'N/A',
-        promptValue: typeof mapped.prompt === 'string' ? mapped.prompt.substring(0, 100) + '...' : mapped.prompt,
+        hasBody: 'body' in mapped,
+        hasHeaders: 'headers' in mapped,
+        bodyType: mapped.body ? typeof mapped.body : 'N/A',
+        bodySample: mapped.body ? JSON.stringify(mapped.body).substring(0, 200) : 'N/A',
+        headersSample: mapped.headers ? JSON.stringify(mapped.headers).substring(0, 200) : 'N/A',
       });
     }
     
@@ -400,6 +501,32 @@ function mapResolvedValueToSchema(
     // For json mode, map all fields from resolved value
     if (typeof resolvedValue === 'object' && resolvedValue !== null) {
       Object.assign(mapped, resolvedValue);
+      
+      // ✅ CRITICAL FIX: Special handling for HTTP Request body field
+      // If previous output has a "response" field (from AI Chat Model), use it as body
+      // This ensures AI Chat Model output is properly sent in HTTP POST body
+      if (inputSchema.body && !mapped.body) {
+        // Check if resolved value has a response field that should be used as body
+        const previousOutput = (global as any).lastPreviousOutput;
+        if (previousOutput && typeof previousOutput === 'object' && 'response' in previousOutput) {
+          // Use the response field as the body
+          mapped.body = { message: previousOutput.response };
+          console.log('[DynamicExecutor] ✅ Mapped previous output.response to HTTP Request body');
+        } else if (resolvedValue.response) {
+          // If AI generated a response field, use it as body
+          mapped.body = typeof resolvedValue.response === 'string' 
+            ? { message: resolvedValue.response }
+            : resolvedValue.response;
+          console.log('[DynamicExecutor] ✅ Mapped resolved response to HTTP Request body');
+        } else if (resolvedValue.body) {
+          // If AI already generated body, use it
+          mapped.body = resolvedValue.body;
+        } else if (previousOutput && typeof previousOutput === 'object') {
+          // Fallback: Use entire previous output as body
+          mapped.body = previousOutput;
+          console.log('[DynamicExecutor] ✅ Using entire previous output as HTTP Request body');
+        }
+      }
     }
   }
   
