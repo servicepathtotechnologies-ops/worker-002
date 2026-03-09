@@ -24,7 +24,46 @@ import { ComprehensiveCredentialScanner } from '../services/ai/comprehensive-cre
 import { CredentialResolver } from '../services/ai/credential-resolver';
 import { workflowLifecycleManager } from '../services/workflow-lifecycle-manager';
 import { generateComprehensiveNodeQuestions } from '../services/ai/comprehensive-node-questions-generator';
-import { summarizeLayerService } from '../services/ai/summarize-layer';
+import { summarizeLayerService, AliasKeywordCollector } from '../services/ai/summarize-layer';
+
+/**
+ * ✅ PHASE 4: Extract nodes from selected variation's matchedKeywords
+ * Maps keywords to node types using the same logic as summarize-layer
+ */
+function extractNodesFromVariationKeywords(
+  matchedKeywords: string[],
+  keywordCollector: AliasKeywordCollector
+): string[] {
+  const nodeTypes = new Set<string>();
+  
+  for (const keyword of matchedKeywords) {
+    // Direct match (keyword is already a node type)
+    if (nodeLibrary.isNodeTypeRegistered(keyword)) {
+      nodeTypes.add(keyword);
+      continue;
+    }
+    
+    // Alias match (keyword maps to node type via keyword collector)
+    const allKeywordData = keywordCollector.getAllAliasKeywords();
+    const keywordData = allKeywordData.find(
+      kd => kd.keyword.toLowerCase() === keyword.toLowerCase()
+    );
+    
+    if (keywordData) {
+      // Verify node type exists in registry
+      if (nodeLibrary.isNodeTypeRegistered(keywordData.nodeType)) {
+        nodeTypes.add(keywordData.nodeType);
+        console.log(`[GenerateWorkflow] ✅ PHASE 4: Mapped keyword "${keyword}" → node type "${keywordData.nodeType}"`);
+      } else {
+        console.warn(`[GenerateWorkflow] ⚠️  Keyword "${keyword}" maps to unregistered node type "${keywordData.nodeType}"`);
+      }
+    }
+  }
+  
+  const result = Array.from(nodeTypes);
+  console.log(`[GenerateWorkflow] ✅ PHASE 4: Extracted ${result.length} node type(s) from selected variation: ${result.join(', ')}`);
+  return result;
+}
 
 /**
  * Identify required credentials from requirements and answers
@@ -395,6 +434,12 @@ async function handlePhasedRefine(
         try {
           const summarizeResult = await summarizeLayerService.processPrompt(finalPrompt);
           
+          // ✅ NEW: Store mandatory nodes in request for later use
+          (req as any).mandatoryNodeTypes = summarizeResult.mandatoryNodeTypes || [];
+          if (summarizeResult.mandatoryNodeTypes && summarizeResult.mandatoryNodeTypes.length > 0) {
+            console.log(`[PhasedRefine] ✅ Extracted ${summarizeResult.mandatoryNodeTypes.length} mandatory node type(s): ${summarizeResult.mandatoryNodeTypes.join(', ')}`);
+          }
+          
           // ✅ ALWAYS show summarize layer if we have variations (even if only 1)
           // This ensures user sees the refined prompt before proceeding
           if (summarizeResult.promptVariations && summarizeResult.promptVariations.length > 0) {
@@ -406,6 +451,7 @@ async function handlePhasedRefine(
               originalPrompt: summarizeResult.originalPrompt,
               clarifiedIntent: summarizeResult.clarifiedIntent,
               matchedKeywords: summarizeResult.matchedKeywords,
+              mandatoryNodeTypes: summarizeResult.mandatoryNodeTypes, // ✅ NEW: Include in response
               allKeywords: summarizeResult.allKeywords.slice(0, 100), // Limit for response size
             });
           }
@@ -421,9 +467,32 @@ async function handlePhasedRefine(
           // Continue with original prompt if summarize layer fails
         }
       } else {
-        // User has selected a variation - use it
-        console.log('[PhasedRefine] Using selected prompt variation');
+        // ✅ PHASE 4: User has selected a variation - extract nodes from matchedKeywords
+        console.log('[PhasedRefine] ✅ PHASE 4: User selected a variation - extracting nodes from matchedKeywords...');
         finalPrompt = selectedPromptVariation;
+        
+        // Extract matchedKeywords from selected variation
+        const selectedVariationId = (req.body as any).selectedVariationId;
+        const selectedVariationMatchedKeywords = (req.body as any).selectedVariationMatchedKeywords;
+        
+        if (selectedVariationMatchedKeywords && Array.isArray(selectedVariationMatchedKeywords)) {
+          // ✅ PHASE 4: Extract nodes from selected variation's matchedKeywords
+          const keywordCollector = new AliasKeywordCollector();
+          const nodesFromVariation = extractNodesFromVariationKeywords(
+            selectedVariationMatchedKeywords,
+            keywordCollector
+          );
+          
+          // ✅ PHASE 4: Use nodes from selected variation as mandatoryNodeTypes
+          if (nodesFromVariation.length > 0) {
+            (req as any).mandatoryNodeTypes = nodesFromVariation;
+            console.log(`[PhasedRefine] ✅ PHASE 4: Using ${nodesFromVariation.length} node(s) from selected variation: ${nodesFromVariation.join(', ')}`);
+          } else {
+            console.warn(`[PhasedRefine] ⚠️  No nodes extracted from selected variation matchedKeywords: ${selectedVariationMatchedKeywords.join(', ')}`);
+          }
+        } else {
+          console.warn(`[PhasedRefine] ⚠️  Selected variation matchedKeywords not provided or invalid`);
+        }
       }
       
       // STEP 1.5: Analyze prompt for summary (after summarize layer)
@@ -587,8 +656,16 @@ async function handlePhasedRefine(
     let workflowResult;
     try {
       const { workflowLifecycleManager } = await import('../services/workflow-lifecycle-manager');
+      // ✅ UNIVERSAL FIX: Extract selected structured prompt from request
+      const selectedStructuredPrompt = (req.body as any).selectedStructuredPrompt || finalEnhancedPrompt;
+      const originalPrompt = (req.body as any).originalPrompt || finalPrompt;
+      const mandatoryNodeTypes = (req as any).mandatoryNodeTypes || []; // ✅ PHASE 5: Get mandatory nodes from request
+      
       const lifecycleResult = await workflowLifecycleManager.generateWorkflowGraph(finalEnhancedPrompt, {
         answers: filteredAnswers, // Only pass non-credential answers
+        selectedStructuredPrompt, // ✅ NEW: Pass selected structured prompt
+        originalPrompt, // ✅ NEW: Pass original prompt for reference
+        mandatoryNodeTypes, // ✅ PHASE 5: Pass mandatory nodes from selected variation
       });
       // Convert lifecycle result to expected format
       workflowResult = {
@@ -1241,8 +1318,16 @@ async function handlePhasedRefine(
     // If all else fails, attempt to generate using new pipeline
     try {
       const { workflowLifecycleManager } = await import('../services/workflow-lifecycle-manager');
+      // ✅ UNIVERSAL FIX: Extract selected structured prompt from request
+      const selectedStructuredPrompt = (req.body as any).selectedStructuredPrompt || finalPrompt;
+      const originalPrompt = (req.body as any).originalPrompt || finalPrompt;
+      const mandatoryNodeTypes = (req as any).mandatoryNodeTypes || []; // ✅ PHASE 5: Get mandatory nodes from request
+      
       const lifecycleResult = await workflowLifecycleManager.generateWorkflowGraph(finalPrompt, {
         answers: answers || {},
+        selectedStructuredPrompt, // ✅ NEW: Pass selected structured prompt
+        originalPrompt, // ✅ NEW: Pass original prompt for reference
+        mandatoryNodeTypes, // ✅ PHASE 5: Pass mandatory nodes from selected variation
       });
       
       return res.json({
@@ -2028,9 +2113,28 @@ export default async function generateWorkflow(req: Request, res: Response) {
             // Continue with original prompt if summarize layer fails
           }
         } else {
-          // User has selected a variation - use it for analysis
-          console.log('[Analyze Mode] Using selected prompt variation for analysis');
+          // ✅ PHASE 4: User has selected a variation - extract nodes from matchedKeywords
+          console.log('[Analyze Mode] ✅ PHASE 4: User selected a variation - extracting nodes from matchedKeywords...');
           finalPrompt = selectedPromptVariation;
+          
+          // Extract matchedKeywords from selected variation
+          const selectedVariationId = (req.body as any).selectedVariationId;
+          const selectedVariationMatchedKeywords = (req.body as any).selectedVariationMatchedKeywords;
+          
+          if (selectedVariationMatchedKeywords && Array.isArray(selectedVariationMatchedKeywords)) {
+            // ✅ PHASE 4: Extract nodes from selected variation's matchedKeywords
+            const keywordCollector = new AliasKeywordCollector();
+            const nodesFromVariation = extractNodesFromVariationKeywords(
+              selectedVariationMatchedKeywords,
+              keywordCollector
+            );
+            
+            // ✅ PHASE 4: Store nodes from selected variation for later use
+            if (nodesFromVariation.length > 0) {
+              (req as any).mandatoryNodeTypes = nodesFromVariation;
+              console.log(`[Analyze Mode] ✅ PHASE 4: Extracted ${nodesFromVariation.length} node(s) from selected variation: ${nodesFromVariation.join(', ')}`);
+            }
+          }
         }
         
         // ✅ STEP 2: After summarize layer (or if variation selected), run analysis
@@ -2204,6 +2308,7 @@ export default async function generateWorkflow(req: Request, res: Response) {
           sendProgress({ step: 5, stepName: 'Generating Workflow Graph', progress: 60, details: { message: 'Creating workflow structure...' } });
           
           try {
+            const mandatoryNodeTypes = (req as any).mandatoryNodeTypes || []; // ✅ PHASE 5: Get mandatory nodes from request
             lifecycleResult = await workflowLifecycleManager.generateWorkflowGraph(
               enhancedPrompt,
               {
@@ -2211,6 +2316,7 @@ export default async function generateWorkflow(req: Request, res: Response) {
                 executionHistory,
                 answers,
                 memoryContext,
+                mandatoryNodeTypes, // ✅ PHASE 5: Pass mandatory nodes from selected variation
                 ...req.body.config,
               }
             );
@@ -2381,6 +2487,12 @@ export default async function generateWorkflow(req: Request, res: Response) {
 
         // ✅ PRODUCTION FLOW: Use WorkflowLifecycleManager
         try {
+          // ✅ NEW: Extract mandatory nodes from request (stored from summarize layer)
+          const mandatoryNodeTypes = (req as any).mandatoryNodeTypes || [];
+          if (mandatoryNodeTypes.length > 0) {
+            console.log(`[GenerateWorkflow] 🔒 Passing ${mandatoryNodeTypes.length} mandatory node type(s) to lifecycle manager: ${mandatoryNodeTypes.join(', ')}`);
+          }
+          
           lifecycleResult = await workflowLifecycleManager.generateWorkflowGraph(
             enhancedPrompt,
             {
@@ -2388,6 +2500,7 @@ export default async function generateWorkflow(req: Request, res: Response) {
               executionHistory,
               answers,
               memoryContext,
+              mandatoryNodeTypes, // ✅ NEW: Pass mandatory nodes
               ...req.body.config,
             }
           );
@@ -2559,8 +2672,12 @@ export default async function generateWorkflow(req: Request, res: Response) {
       const hasExpansionFailed = hasExpansionAttempted && pipelineResult?.expandedIntent?.requires_confirmation === true;
       const hasGenerationFailed = !lifecycleResult?.workflow || lifecycleResult.workflow.nodes.length === 0;
       
-      // Only create fallback if BOTH expansion and generation failed
-      const shouldCreateFallback = hasExpansionFailed && hasGenerationFailed;
+      // ✅ WORLD-CLASS UNIVERSAL: Only create minimal fallback for truly low-confidence intents
+      // Use pipelineContext.confidence_score as the single source of truth for intent confidence
+      const intentConfidence = pipelineResult?.pipelineContext?.confidence_score ?? 0;
+      
+      // Only create fallback if BOTH expansion and generation failed AND intent confidence is low
+      const shouldCreateFallback = hasExpansionFailed && hasGenerationFailed && intentConfidence < 0.5;
       
       if (shouldCreateFallback) {
         console.warn('⚠️  [Fallback] Both expansion and generation failed - creating minimal fallback workflow');

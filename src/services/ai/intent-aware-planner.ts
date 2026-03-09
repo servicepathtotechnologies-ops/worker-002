@@ -67,11 +67,13 @@ export class IntentAwarePlanner {
    * 
    * @param intent - SimpleIntent (entities only)
    * @param originalPrompt - Original user prompt (for context)
+   * @param mandatoryNodes - Optional mandatory node types from keyword extraction (Stage 1)
    * @returns Planning result with StructuredIntent
    */
   async planWorkflow(
     intent: SimpleIntent,
-    originalPrompt?: string
+    originalPrompt?: string,
+    mandatoryNodes?: string[]
   ): Promise<PlanningResult> {
     console.log('[IntentAwarePlanner] Planning workflow from SimpleIntent...');
     
@@ -84,8 +86,15 @@ export class IntentAwarePlanner {
       console.log(`[IntentAwarePlanner] Intent type: ${intentType.type} - ${intentType.description}`);
       
       // Step 2: Map entities to node types using registry
-      const nodeRequirements = await this.determineRequiredNodes(intent, originalPrompt);
+      let nodeRequirements = await this.determineRequiredNodes(intent, originalPrompt);
       console.log(`[IntentAwarePlanner] Determined ${nodeRequirements.length} required nodes`);
+      
+      // ✅ NEW: Enforce mandatory nodes from keyword extraction (Stage 1)
+      if (mandatoryNodes && mandatoryNodes.length > 0) {
+        console.log(`[IntentAwarePlanner] 🔒 Enforcing ${mandatoryNodes.length} mandatory node(s): ${mandatoryNodes.join(', ')}`);
+        nodeRequirements = this.enforceMandatoryNodes(nodeRequirements, mandatoryNodes);
+        console.log(`[IntentAwarePlanner] After enforcement: ${nodeRequirements.length} required nodes`);
+      }
       
       // Step 3: Build dependency graph (CRITICAL - Prevents Error #2)
       const dependencyGraph = this.buildDependencyGraph(nodeRequirements, intent);
@@ -256,6 +265,60 @@ export class IntentAwarePlanner {
     }
     
     return nodes;
+  }
+  
+  /**
+   * ✅ NEW: Enforce mandatory nodes in node requirements
+   * Ensures all mandatory nodes (from keyword extraction) are included
+   */
+  private enforceMandatoryNodes(
+    nodeRequirements: NodeRequirement[],
+    mandatoryNodes: string[]
+  ): NodeRequirement[] {
+    const existingNodeTypes = new Set<string>();
+    nodeRequirements.forEach(req => {
+      existingNodeTypes.add(req.type.toLowerCase());
+    });
+    
+    const missingNodes: NodeRequirement[] = [];
+    for (const mandatoryNode of mandatoryNodes) {
+      const mandatoryLower = mandatoryNode.toLowerCase();
+      const isIncluded = Array.from(existingNodeTypes).some(existing => 
+        existing === mandatoryLower || existing.includes(mandatoryLower) || mandatoryLower.includes(existing)
+      );
+      
+      if (!isIncluded) {
+        // Determine category based on node type
+        const nodeDef = unifiedNodeRegistry.get(mandatoryNode);
+        let category: 'dataSource' | 'transformation' | 'output' = 'output';
+        if (nodeDef) {
+          if (nodeCapabilityRegistryDSL.isDataSource(mandatoryNode)) {
+            category = 'dataSource';
+          } else if (nodeCapabilityRegistryDSL.isTransformation(mandatoryNode)) {
+            category = 'transformation';
+          } else if (nodeCapabilityRegistryDSL.isOutput(mandatoryNode)) {
+            category = 'output';
+          }
+        }
+        
+        missingNodes.push({
+          id: `mandatory_${missingNodes.length}`,
+          type: mandatoryNode,
+          operation: category === 'dataSource' ? 'read' : category === 'transformation' ? 'transform' : 'send',
+          category,
+        });
+        console.log(`[IntentAwarePlanner] ✅ Adding mandatory node: ${mandatoryNode} (category: ${category})`);
+      } else {
+        console.log(`[IntentAwarePlanner] ✅ Mandatory node already included: ${mandatoryNode}`);
+      }
+    }
+    
+    if (missingNodes.length > 0) {
+      console.log(`[IntentAwarePlanner] ✅ Added ${missingNodes.length} mandatory node(s) to requirements`);
+      return [...nodeRequirements, ...missingNodes];
+    }
+    
+    return nodeRequirements;
   }
   
   /**

@@ -491,8 +491,8 @@ export class IntentConstraintEngine {
     // "website" should be resolved to concrete node types (http_request, webhook, etc.)
     // The website URL should be extracted as a credential/configuration parameter
     if (actionType === 'website') {
-      // For "capture leads from website" or "read from website" → use http_request
-      // For "receive data from website" → use webhook
+      // Universal logic: Resolve "website" category to concrete node types based on operation keywords
+      // Keywords like "receive", "webhook", "listen" → webhook; otherwise → http_request
       if (operation.includes('receive') || operation.includes('webhook') || operation.includes('listen')) {
         return ['webhook']; // Webhook for receiving data from website
       } else {

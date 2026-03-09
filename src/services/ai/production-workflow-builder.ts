@@ -61,6 +61,7 @@ export interface ProductionBuildResult {
 }
 
 export interface BuildOptions {
+  mandatoryNodeTypes?: string[]; // ✅ NEW: Mandatory nodes from keyword extraction (Stage 1)
   maxRetries?: number;
   strictMode?: boolean;
   allowRegeneration?: boolean;
@@ -367,7 +368,24 @@ export class ProductionWorkflowBuilder {
     
     // STEP 2: Validate intent and get required nodes (no hallucination)
     console.log('[ProductionWorkflowBuilder] STEP 2: Validating intent and getting required nodes');
-    const requiredNodes = this.getRequiredNodes(intent, originalPrompt);
+    let requiredNodes = this.getRequiredNodes(intent, originalPrompt);
+    
+    // ✅ NEW: Include mandatory nodes from keyword extraction (Stage 1)
+    if (options.mandatoryNodeTypes && options.mandatoryNodeTypes.length > 0) {
+      console.log(`[ProductionWorkflowBuilder] 🔒 Including ${options.mandatoryNodeTypes.length} mandatory node(s) from Stage 1: ${options.mandatoryNodeTypes.join(', ')}`);
+      const mandatoryNodesLower = options.mandatoryNodeTypes.map(n => n.toLowerCase());
+      const requiredNodesLower = requiredNodes.map(n => n.toLowerCase());
+      
+      // Add mandatory nodes that aren't already in required nodes
+      for (const mandatoryNode of mandatoryNodesLower) {
+        if (!requiredNodesLower.includes(mandatoryNode)) {
+          requiredNodes.push(options.mandatoryNodeTypes.find(n => n.toLowerCase() === mandatoryNode)!);
+          console.log(`[ProductionWorkflowBuilder] ✅ Added mandatory node: ${mandatoryNode}`);
+        } else {
+          console.log(`[ProductionWorkflowBuilder] ✅ Mandatory node already in required: ${mandatoryNode}`);
+        }
+      }
+    }
     
     if (requiredNodes.length === 0) {
       return {
@@ -690,7 +708,8 @@ export class ProductionWorkflowBuilder {
         // STEP 6: Enforce minimal workflow (with protected nodes)
         console.log('[ProductionWorkflowBuilder] STEP 6: Enforcing minimal workflow (protected nodes: trigger, data_source, transformation, output)...');
         const confidenceScore = (workflow.metadata as any)?.confidenceScore;
-        const pruningResult = workflowGraphPruner.prune(workflow, intent, originalPrompt, confidenceScore);
+        // ✅ NEW: Pass mandatory nodes to pruner
+        const pruningResult = workflowGraphPruner.prune(workflow, intent, originalPrompt, confidenceScore, options.mandatoryNodeTypes);
         
         if (pruningResult.removedNodes.length > 0 || pruningResult.removedEdges.length > 0) {
           workflow = pruningResult.workflow;
@@ -718,15 +737,35 @@ export class ProductionWorkflowBuilder {
         } else {
           console.log(`[ProductionWorkflowBuilder] ✅ Workflow already minimal`);
         }
+
+        // ✅ CRITICAL FIX: STEP 6.1 - Sanitize workflow graph FIRST (before optimization)
+        // This cleans up topology, duplicates, configs, naming - must run before optimization
+        console.log('[ProductionWorkflowBuilder] STEP 6.1: Sanitizing workflow graph (topology, duplicates, configs, naming)...');
+        const { workflowGraphSanitizer } = await import('./workflow-graph-sanitizer');
+        // ✅ CRITICAL FIX: Pass required node types to sanitizer to protect them from removal
+        const requiredNodeTypesSet = new Set(requiredNodes.map(n => n.toLowerCase()));
+        const sanitizationResult = workflowGraphSanitizer.sanitize(workflow, requiredNodeTypesSet, confidenceScore);
+        workflow = sanitizationResult.workflow;
         
-        // STEP 6.4.5: Optimize workflow by removing duplicate operations
-        // ✅ ROOT-LEVEL: Remove nodes that perform the same operation (e.g., both ai_agent and ai_chat_model doing summarize)
-        // ✅ FIXED: Pass required nodes to prevent removal of required nodes
-        console.log('[ProductionWorkflowBuilder] STEP 6.4.5: Optimizing workflow - removing duplicate operations...');
+        if (sanitizationResult.fixes.duplicateNodesRemoved > 0 ||
+            sanitizationResult.fixes.nodeNamesFixed > 0 ||
+            sanitizationResult.fixes.nodeConfigsFixed > 0 ||
+            sanitizationResult.fixes.ifElseBranchesFixed > 0 ||
+            sanitizationResult.fixes.invalidEdgesRemoved > 0 ||
+            sanitizationResult.fixes.orphanNodesRemoved > 0) {
+          console.log(`[ProductionWorkflowBuilder] ✅ Workflow sanitized: ${sanitizationResult.fixes.duplicateNodesRemoved} duplicates removed, ${sanitizationResult.fixes.nodeNamesFixed} names fixed, ${sanitizationResult.fixes.nodeConfigsFixed} configs fixed`);
+          if (sanitizationResult.warnings.length > 0) {
+            allWarnings.push(...sanitizationResult.warnings);
+          }
+        }
+
+        // ✅ CRITICAL FIX: STEP 6.2 - Optimize workflow AFTER sanitization
+        // Remove nodes that perform the same operation (e.g., both ai_agent and ai_chat_model doing summarize)
+        // Must run AFTER sanitization so it works on a clean graph
+        console.log('[ProductionWorkflowBuilder] STEP 6.2: Optimizing workflow - removing duplicate operations...');
         try {
           const { optimizeWorkflowOperations } = await import('./workflow-operation-optimizer');
           // Convert required nodes array to Set (normalized to lowercase for comparison)
-          const requiredNodeTypesSet = new Set(requiredNodes.map(n => n.toLowerCase()));
           const optimizationResult = optimizeWorkflowOperations(workflow, originalPrompt, {
             requiredNodeTypes: requiredNodeTypesSet,
             preserveRequiredNodes: true,
@@ -756,33 +795,27 @@ export class ProductionWorkflowBuilder {
           // Continue with original workflow
         }
 
-        // STEP 6.5: Layered Validation Pipeline (NEW - Extensible Architecture)
-        // ✅ NEW: Run layered validation pipeline for comprehensive validation
-        // STEP 6.4: Sanitize workflow graph (topology, duplicates, configs, naming)
-        console.log('[ProductionWorkflowBuilder] STEP 6.4: Sanitizing workflow graph...');
-        const { workflowGraphSanitizer } = await import('./workflow-graph-sanitizer');
-        // ✅ CRITICAL FIX: Pass required node types to sanitizer to protect them from removal
-        const requiredNodeTypesSet = new Set(requiredNodes.map(n => n.toLowerCase()));
-        const sanitizationResult = workflowGraphSanitizer.sanitize(workflow, requiredNodeTypesSet, confidenceScore);
-        workflow = sanitizationResult.workflow;
-        
-        if (sanitizationResult.fixes.duplicateNodesRemoved > 0 ||
-            sanitizationResult.fixes.nodeNamesFixed > 0 ||
-            sanitizationResult.fixes.nodeConfigsFixed > 0 ||
-            sanitizationResult.fixes.ifElseBranchesFixed > 0 ||
-            sanitizationResult.fixes.invalidEdgesRemoved > 0 ||
-            sanitizationResult.fixes.orphanNodesRemoved > 0) {
-          console.log(`[ProductionWorkflowBuilder] ✅ Workflow sanitized: ${sanitizationResult.fixes.duplicateNodesRemoved} duplicates removed, ${sanitizationResult.fixes.nodeNamesFixed} names fixed, ${sanitizationResult.fixes.nodeConfigsFixed} configs fixed`);
-          if (sanitizationResult.warnings.length > 0) {
-            allWarnings.push(...sanitizationResult.warnings);
-          }
+        // ✅ CRITICAL FIX: STEP 6.3 - Ensure nodes are connected in order BEFORE ensuring log_output
+        // This ensures proper linear flow: trigger → data_source → transformation → output
+        // Must run AFTER sanitization and optimization, BEFORE ensureLogOutputNode
+        console.log('[ProductionWorkflowBuilder] STEP 6.3: Verifying and fixing node connections in order...');
+        if (!workflow) {
+          throw new Error('Workflow is undefined - cannot verify connections');
+        }
+        const connectionFix = this.verifyAndFixConnections(workflow, []);
+        if (connectionFix.fixed) {
+          workflow.edges = connectionFix.edges;
+          console.log(`[ProductionWorkflowBuilder] ✅ Fixed ${connectionFix.fixedCount} connection(s) to ensure linear flow`);
+        } else {
+          console.log(`[ProductionWorkflowBuilder] ✅ All nodes already properly connected`);
         }
 
-        // ✅ UNIVERSAL FIX: STEP 6.4.5 - Ensure log_output exists BEFORE validation
+        // ✅ UNIVERSAL FIX: STEP 6.4 - Ensure log_output exists BEFORE validation
         // This guarantees EVERY workflow has a terminal output node (log_output)
         // Applied to ALL workflows automatically - no exceptions
         // MUST run BEFORE validation so validation sees the output node
-        console.log('[ProductionWorkflowBuilder] STEP 6.4.5: Ensuring log_output terminal node exists (before validation)...');
+        // ✅ CRITICAL: Now runs AFTER connections are fixed, so it only connects the actual last node
+        console.log('[ProductionWorkflowBuilder] STEP 6.4: Ensuring log_output terminal node exists (before validation)...');
         if (!workflow) {
           throw new Error('Workflow is undefined - cannot ensure log_output node');
         }
@@ -1339,7 +1372,7 @@ export class ProductionWorkflowBuilder {
         let resolvedNodeType = nodeType;
         if (nodeType.toLowerCase() === 'website') {
           // "website" should be resolved to http_request or webhook based on context
-          // For "capture leads from website" → use http_request
+          // Universal logic: Check for keywords to determine node type (not prompt-specific)
           const promptLower = originalPrompt.toLowerCase();
           if (promptLower.includes('webhook') || promptLower.includes('receive') || promptLower.includes('listen')) {
             resolvedNodeType = 'webhook';
@@ -3245,17 +3278,67 @@ export class ProductionWorkflowBuilder {
       }
     }
 
-    // ✅ ROOT-LEVEL FIX: Find ONLY actual terminal nodes (nodes with no outgoing edges, excluding triggers)
-    // Terminal nodes are nodes that have no outgoing edges AND are not log_output itself
-    // These are the nodes that should connect to log_output
-    const terminalNodes = workflow.nodes.filter(node => {
-      const nodeType = node.type || (node.data as any)?.type || '';
-      const nodeTypeLower = (nodeType || '').toLowerCase();
-      const isTerminal = !outgoingEdgesMap.has(node.id) && !isTriggerNode(node);
+    // ✅ CRITICAL FIX: Find ONLY the actual last node in the execution chain (not all disconnected nodes)
+    // Strategy: Find nodes reachable from trigger, then find the LAST node in that path
+    const triggerNode = workflow.nodes.find(n => isTriggerNode(n));
+    
+    let terminalNodes: WorkflowNode[] = [];
+    
+    if (triggerNode) {
+      // Build execution path from trigger using BFS
+      const visited = new Set<string>();
+      const queue: string[] = [triggerNode.id];
+      const executionPath: string[] = [];
       
-      // Exclude log_output itself from terminal nodes
-      return isTerminal && nodeTypeLower !== 'log_output';
-    });
+      // Build incoming edges map to find nodes reachable from trigger
+      const incomingEdgesMap = new Map<string, WorkflowEdge[]>();
+      workflow.edges.forEach(edge => {
+        if (!incomingEdgesMap.has(edge.target)) {
+          incomingEdgesMap.set(edge.target, []);
+        }
+        incomingEdgesMap.get(edge.target)!.push(edge);
+      });
+      
+      // BFS to find all nodes reachable from trigger
+      while (queue.length > 0) {
+        const currentNodeId = queue.shift()!;
+        if (visited.has(currentNodeId)) continue;
+        
+        visited.add(currentNodeId);
+        executionPath.push(currentNodeId);
+        
+        const outgoing = outgoingEdgesMap.get(currentNodeId) || [];
+        for (const edge of outgoing) {
+          if (!visited.has(edge.target)) {
+            queue.push(edge.target);
+          }
+        }
+      }
+      
+      // Find nodes in execution path that have no outgoing edges (true terminal nodes)
+      const pathNodeIds = new Set(executionPath);
+      terminalNodes = workflow.nodes.filter(node => {
+        const nodeType = node.type || (node.data as any)?.type || '';
+        const nodeTypeLower = (nodeType || '').toLowerCase();
+        
+        // Must be: (1) in execution path, (2) no outgoing edges, (3) not trigger, (4) not log_output
+        return pathNodeIds.has(node.id) && 
+               !outgoingEdgesMap.has(node.id) && 
+               !isTriggerNode(node) &&
+               nodeTypeLower !== 'log_output';
+      });
+      
+      console.log(`[ProductionWorkflowBuilder] 🔍 Found ${executionPath.length} node(s) in execution path from trigger, ${terminalNodes.length} true terminal node(s)`);
+    } else {
+      // Fallback: If no trigger found, use old logic (but this shouldn't happen)
+      console.warn(`[ProductionWorkflowBuilder] ⚠️  No trigger node found, using fallback terminal detection`);
+      terminalNodes = workflow.nodes.filter(node => {
+        const nodeType = node.type || (node.data as any)?.type || '';
+        const nodeTypeLower = (nodeType || '').toLowerCase();
+        const isTerminal = !outgoingEdgesMap.has(node.id) && !isTriggerNode(node);
+        return isTerminal && nodeTypeLower !== 'log_output';
+      });
+    }
 
     if (terminalNodes.length === 0) {
       // If log_output exists but no terminal nodes, it might already be connected
@@ -3265,6 +3348,25 @@ export class ProductionWorkflowBuilder {
       }
       console.warn(`[ProductionWorkflowBuilder] ⚠️  No terminal nodes found to connect log_output to`);
       return workflow;
+    }
+    
+    // ✅ CRITICAL: If multiple terminal nodes, prefer the one that's an actual output node
+    // Otherwise, use the first one (should only be one in linear workflows)
+    if (terminalNodes.length > 1) {
+      const originalCount = terminalNodes.length;
+      const outputNodes = terminalNodes.filter(node => {
+        const nodeType = node.type || (node.data as any)?.type || '';
+        return nodeCapabilityRegistryDSL.isOutput(nodeType);
+      });
+      
+      if (outputNodes.length > 0) {
+        terminalNodes = outputNodes;
+        console.log(`[ProductionWorkflowBuilder] ✅ Filtered to ${terminalNodes.length} output terminal node(s) from ${originalCount} candidates`);
+      } else {
+        // If no output nodes, just use the first one (shouldn't happen in proper workflows)
+        terminalNodes = [terminalNodes[0]];
+        console.warn(`[ProductionWorkflowBuilder] ⚠️  Multiple terminal nodes found but none are output nodes, using first: ${terminalNodes[0].id}`);
+      }
     }
 
     // ✅ UNIVERSAL: Always create log_output if it doesn't exist (regardless of other output nodes)

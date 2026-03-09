@@ -81,7 +81,7 @@ export class WorkflowGraphSanitizer {
     };
 
     // STEP 1: Remove duplicate nodes (especially AI provider nodes)
-    const duplicateResult = this.removeDuplicateNodes(sanitizedWorkflow, confidenceScore);
+    const duplicateResult = this.removeDuplicateNodes(sanitizedWorkflow, confidenceScore, requiredNodeTypes);
     sanitizedWorkflow = duplicateResult.workflow;
     fixes.duplicateNodesRemoved = duplicateResult.removedCount;
     warnings.push(...duplicateResult.warnings);
@@ -154,7 +154,7 @@ export class WorkflowGraphSanitizer {
    * 
    * Rule: Only ONE canonical node type allowed per workflow (removes semantic equivalents)
    */
-  private removeDuplicateNodes(workflow: Workflow, confidenceScore?: number): {
+  private removeDuplicateNodes(workflow: Workflow, confidenceScore?: number, requiredNodeTypes?: Set<string>): {
     workflow: Workflow;
     removedCount: number;
     warnings: string[];
@@ -181,8 +181,15 @@ export class WorkflowGraphSanitizer {
       // ✅ CRITICAL: Never remove protected nodes (user-explicit nodes)
       const isProtected = (node.data as any)?.origin?.source === 'user' || 
                          (node.data as any)?.protected === true;
-      if (isProtected) {
-        // User-explicit node - always keep it, even if duplicate
+      
+      // ✅ NEW: Never remove required/mandatory nodes (from keyword extraction)
+      const isRequired = requiredNodeTypes && requiredNodeTypes.has(canonicalLower);
+      
+      if (isProtected || isRequired) {
+        // User-explicit or required node - always keep it, even if duplicate
+        if (isRequired) {
+          console.log(`[WorkflowGraphSanitizer] 🛡️  Protecting required node from duplicate removal: ${nodeType} (canonical: ${canonical})`);
+        }
         seenCanonicals.set(canonicalLower, node.id);
         continue;
       }

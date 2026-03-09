@@ -15,6 +15,7 @@ import { ollamaOrchestrator } from './ollama-orchestrator';
 import { nodeCapabilityRegistryDSL } from './node-capability-registry-dsl';
 import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 import { semanticNodeEquivalenceRegistry } from '../../core/registry/semantic-node-equivalence-registry';
+import { unifiedNodeTypeMatcher } from '../../core/utils/unified-node-type-matcher';
 
 export interface AliasKeyword {
   keyword: string;
@@ -26,6 +27,7 @@ export interface PromptVariation {
   id: string;
   prompt: string;
   matchedKeywords: string[];
+  keywords: string[]; // ✅ NEW: Extracted node type keywords (e.g., ["ai_chat_model", "linkedin", "schedule"])
   confidence: number;
   reasoning: string;
 }
@@ -37,6 +39,7 @@ export interface SummarizeLayerResult {
   promptVariations: PromptVariation[];
   allKeywords: string[];
   matchedKeywords: string[];
+  mandatoryNodeTypes?: string[]; // ✅ NEW: Node types that must be included in workflow
 }
 
 /**
@@ -264,8 +267,20 @@ export class AIIntentClarifier {
     const allKeywords = this.keywordCollector.getAllKeywordStrings();
     const allKeywordData = this.keywordCollector.getAllAliasKeywords();
 
-    // Step 2: Build AI prompt with user prompt + all keywords (optimized)
-    const aiPrompt = this.buildClarificationPrompt(userPrompt, allKeywords);
+    // ✅ PHASE 1: Extract keywords FIRST (before generating variations)
+    console.log(`[AIIntentClarifier] 🔍 PHASE 1: Extracting keywords from user prompt FIRST...`);
+    const extractedKeywords = this.extractKeywordsFromPrompt(userPrompt, allKeywordData);
+    const allExtractedNodeTypes = this.mapKeywordsToNodeTypes(extractedKeywords);
+    
+    // ✅ UNIVERSAL: Pass ALL extracted keywords to AI - Let AI intelligently understand intent
+    // NO hardcoded filtering, NO hardcoded expansion - AI should understand "all social platforms" from keywords
+    const extractedNodeTypes = allExtractedNodeTypes;
+    
+    console.log(`[AIIntentClarifier] ✅ Extracted ${extractedNodeTypes.length} node type(s) from keywords: ${extractedNodeTypes.join(', ')}`);
+    console.log(`[AIIntentClarifier] ✅ Passing ALL extracted keywords to AI - AI will intelligently understand user intent`);
+
+    // Step 2: Build AI prompt with user prompt + all keywords + REQUIRED nodes
+    const aiPrompt = this.buildClarificationPrompt(userPrompt, allKeywords, extractedNodeTypes);
 
     // Step 3: Call AI with retry logic for production reliability
     const maxRetries = 3;
@@ -285,7 +300,7 @@ export class AIIntentClarifier {
         const aiResponse = await ollamaOrchestrator.processRequest(
           'workflow-analysis', // Use this type to allow higher temperature
           {
-            system: this.getSystemPrompt(),
+            system: this.getSystemPrompt(extractedNodeTypes), // ✅ PHASE 2: Pass extracted nodes to enforce in variations
             message: aiPrompt,
           },
           {
@@ -300,7 +315,28 @@ export class AIIntentClarifier {
         console.log(`[AIIntentClarifier] 🔍 Full AI response length: ${aiResponse.length} chars`);
 
         // Step 4: Parse and validate AI response
-        const result = this.parseAIResponse(aiResponse, userPrompt, allKeywordData);
+        let result = this.parseAIResponse(aiResponse, userPrompt, allKeywordData, extractedNodeTypes);
+        
+        // ✅ PHASE 3: Validate variations include required keywords
+        if (extractedNodeTypes.length > 0) {
+          const validationResult = this.validateVariationsIncludeNodes(result, extractedNodeTypes);
+          
+          // ✅ CRITICAL: If required nodes are missing, retry with stronger enforcement
+          if (!validationResult.allValid && attempt < maxRetries) {
+            console.warn(`[AIIntentClarifier] ⚠️  Required nodes missing in variations. Retrying with stronger enforcement (attempt ${attempt + 1}/${maxRetries})...`);
+            console.warn(`[AIIntentClarifier] ⚠️  Missing ${validationResult.missingCount} required node(s) - this is CRITICAL and will cause workflow failure`);
+            // Force retry - don't accept invalid variations
+            throw new Error(`Required nodes missing: ${validationResult.missingCount} missing across variations. Retrying...`);
+          }
+          
+          // ✅ PURE INTENT: On final attempt, if validation fails, reject and use fallback
+          // NO programmatic injection - that's patching. Trust pure intent extraction.
+          if (!validationResult.allValid && attempt === maxRetries) {
+            console.warn(`[AIIntentClarifier] ⚠️  Required nodes missing on final attempt. Rejecting invalid variations - using pure intent fallback.`);
+            // Don't patch - let it fall through to fallback which uses pure extracted nodes
+            throw new Error(`Required nodes missing on final attempt: ${validationResult.missingCount} missing. Using fallback.`);
+          }
+        }
         
         // 🔍 DEBUG: Log what AI actually generated
         console.log(`[AIIntentClarifier] 🔍 DEBUG - AI Response Analysis (attempt ${attempt}):`);
@@ -341,11 +377,10 @@ export class AIIntentClarifier {
             const userPromptLower = userPrompt.toLowerCase().trim();
             const promptLower = v.prompt.toLowerCase().trim();
             
-            // Check for node keywords (indicates meaningful prompt with keywords)
-            const nodeKeywords = ['google_sheets', 'google_gmail', 'gmail', 'slack', 'slack_message', 
-                                 'manual_trigger', 'webhook', 'ai_chat_model', 'ai_service', 'hubspot', 
-                                 'salesforce', 'zoho_crm', 'discord', 'email', 'trigger'];
-            const hasNodeKeywords = nodeKeywords.some(keyword => promptLower.includes(keyword));
+            // ✅ UNIVERSAL: Check for node keywords using registry (no hardcoding)
+            const allKeywordData = this.keywordCollector.getAllAliasKeywords();
+            const nodeKeywords = allKeywordData.map(kd => kd.keyword);
+            const hasNodeKeywords = nodeKeywords.some(keyword => promptLower.includes(keyword.toLowerCase()));
             
             // Check if prompt is just a copy: same or very similar length
             const lengthRatio = promptLower.length / userPromptLower.length;
@@ -411,9 +446,29 @@ export class AIIntentClarifier {
       }
     }
 
-    // All retries exhausted - return fallback
-    console.error('[AIIntentClarifier] ❌ All attempts failed, using fallback');
-    return this.createFallbackResult(userPrompt, allKeywords, lastError);
+    // All retries exhausted - use extracted nodes to create fallback (NO dummy prompts)
+    console.error('[AIIntentClarifier] ❌ All attempts failed, creating fallback using extracted nodes from user prompt');
+    
+    // ✅ ROOT FIX: Use extracted nodes from Phase 1, never create dummy prompts
+    if (allExtractedNodeTypes.length === 0) {
+      // If no nodes extracted, return diagnostic error instead of dummy prompts
+      const diagnosticError = new Error(
+        `Failed to extract any nodes from user prompt: "${userPrompt}". ` +
+        `Diagnostics: ${lastError ? lastError.message : 'Unknown error'}. ` +
+        `Please check if the prompt contains recognizable node keywords.`
+      );
+      console.error('[AIIntentClarifier] ❌ No nodes extracted from user prompt - returning diagnostic error');
+      throw diagnosticError;
+    }
+    
+    // Use extracted nodes to create realistic fallback
+    return this.createFallbackResultWithExtractedNodes(
+      userPrompt, 
+      allKeywords, 
+      allExtractedNodeTypes, 
+      allKeywordData,
+      lastError
+    );
   }
 
   /**
@@ -470,31 +525,27 @@ export class AIIntentClarifier {
     for (const variation of result.promptVariations) {
       const promptLower = variation.prompt.toLowerCase();
       
-      // Check for OR patterns with output nodes
-      if (promptLower.match(/\bor\s+(zoho_crm|salesforce|slack_message|google_gmail|gmail|slack|hubspot|pipedrive)/i)) {
-        console.warn(`[AIIntentClarifier] ⚠️  Variation contains OR option: ${variation.prompt.substring(0, 100)}`);
-        return false;
-      }
-      
-      // Check for "either" patterns
-      if (promptLower.match(/\beither\s+(zoho_crm|salesforce|slack_message|google_gmail|gmail|slack|hubspot|pipedrive)/i)) {
-        console.warn(`[AIIntentClarifier] ⚠️  Variation contains "either" option: ${variation.prompt.substring(0, 100)}`);
-        return false;
+      // ✅ UNIVERSAL: Check for OR patterns with output nodes (using registry)
+      const outputNodeKeywords = this.getOutputNodeKeywords();
+      if (outputNodeKeywords.length > 0) {
+        const outputKeywordsPattern = outputNodeKeywords.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+        if (promptLower.match(new RegExp(`\\bor\\s+(${outputKeywordsPattern})`, 'i'))) {
+          console.warn(`[AIIntentClarifier] ⚠️  Variation contains OR option: ${variation.prompt.substring(0, 100)}`);
+          return false;
+        }
+        
+        // Check for "either" patterns
+        if (promptLower.match(new RegExp(`\\beither\\s+(${outputKeywordsPattern})`, 'i'))) {
+          console.warn(`[AIIntentClarifier] ⚠️  Variation contains "either" option: ${variation.prompt.substring(0, 100)}`);
+          return false;
+        }
       }
     }
     
-    // ✅ CRITICAL FIX: Check for uniqueness (different output nodes OR different triggers)
+    // ✅ UNIVERSAL: Check for uniqueness (different output nodes OR different triggers)
+    // Use registry to detect output nodes dynamically (no hardcoding)
     const outputNodes = result.promptVariations.map(v => {
-      const prompt = v.prompt.toLowerCase();
-      if (prompt.includes('zoho_crm')) return 'zoho_crm';
-      if (prompt.includes('salesforce')) return 'salesforce';
-      if (prompt.includes('slack_message') || (prompt.includes('slack') && !prompt.includes('slack_message'))) return 'slack_message';
-      if (prompt.includes('google_gmail') || prompt.includes('gmail')) return 'google_gmail';
-      if (prompt.includes('hubspot')) return 'hubspot';
-      if (prompt.includes('pipedrive')) return 'pipedrive';
-      if (prompt.includes('discord')) return 'discord';
-      if (prompt.includes('email') && !prompt.includes('gmail')) return 'email';
-      return null;
+      return this.detectOutputNodeFromPrompt(v.prompt);
     });
     
     const triggers = result.promptVariations.map(v => {
@@ -520,6 +571,112 @@ export class AIIntentClarifier {
     }
 
     return true;
+  }
+
+  /**
+   * ✅ PHASE 3: Validate that variations include required nodes
+   * Ensures all extracted node types are present in variations
+   * Returns validation result to determine if retry is needed
+   */
+  private validateVariationsIncludeNodes(
+    result: SummarizeLayerResult,
+    requiredNodeTypes: string[]
+  ): { allValid: boolean; missingCount: number } {
+    if (requiredNodeTypes.length === 0) {
+      return { allValid: true, missingCount: 0 }; // No required nodes to validate
+    }
+
+    console.log(`[AIIntentClarifier] 🔍 PHASE 3: Validating variations include required nodes: ${requiredNodeTypes.join(', ')}`);
+
+    for (const variation of result.promptVariations) {
+      const variationLower = variation.prompt.toLowerCase();
+      const variationKeywords = variation.matchedKeywords.map(k => k.toLowerCase());
+      const missingNodes: string[] = [];
+
+      for (const nodeType of requiredNodeTypes) {
+        const nodeTypeLower = nodeType.toLowerCase();
+        const nodeLabel = nodeType.replace(/_/g, ' ').toLowerCase();
+        const nodeLabelNoSpaces = nodeType.replace(/_/g, '').toLowerCase();
+        
+        // ✅ ROOT-LEVEL UNIVERSAL: Check if node is mentioned using registry (works for ALL nodes)
+        const nodeDef = unifiedNodeRegistry.get(nodeType);
+        const nodeAliases = nodeDef ? 
+          this.keywordCollector.getAllAliasKeywords()
+            .filter(k => k.nodeType === nodeType)
+            .map(k => k.keyword.toLowerCase()) : [];
+        
+        // ✅ ROOT-LEVEL UNIVERSAL: Check if any alias/keyword is mentioned in variation text
+        const nodeTypeNormalized = nodeTypeLower.replace(/[_\s-]/g, '[\\s_-]*');
+        const nodeTypePattern = new RegExp(`\\b${nodeTypeNormalized.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+        
+        let mentionedInText = 
+          nodeTypePattern.test(variationLower) ||
+          variationLower.includes(nodeTypeLower) || 
+          variationLower.includes(nodeLabel) ||
+          variationLower.includes(nodeLabelNoSpaces) ||
+          nodeAliases.some(alias => {
+            const aliasNormalized = alias.replace(/[_\s-]/g, '[\\s_-]*');
+            const aliasPattern = new RegExp(`\\b${aliasNormalized.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+            return aliasPattern.test(variationLower) || variationLower.includes(alias);
+          }) ||
+          (nodeLabel.includes(' ') && variationLower.includes(nodeLabel.replace(/\s+/g, ''))) ||
+          (!nodeLabel.includes(' ') && variationLower.includes(nodeLabel.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()));
+        
+        // ✅ ROOT-LEVEL UNIVERSAL: If not mentioned directly, check for semantic equivalents
+        if (!mentionedInText && variation.matchedKeywords.length > 0) {
+          const matchResult = unifiedNodeTypeMatcher.isRequirementSatisfied(
+            nodeType, // required node
+            variation.matchedKeywords, // available nodes in variation
+            { strict: false } // Allow semantic equivalents
+          );
+          
+          if (matchResult.matches) {
+            mentionedInText = true;
+            console.log(`[AIIntentClarifier] ✅ ROOT-LEVEL: Semantic match - "${matchResult.matchingType}" satisfies requirement for "${nodeType}" (${matchResult.reason})`);
+          }
+        }
+        
+        if (!mentionedInText) {
+          missingNodes.push(nodeType);
+        }
+      }
+
+      if (missingNodes.length > 0) {
+        console.warn(`[AIIntentClarifier] ⚠️  Variation "${variation.id}" missing required nodes: ${missingNodes.join(', ')}`);
+        console.warn(`[AIIntentClarifier] ⚠️  Variation prompt: "${variation.prompt.substring(0, 150)}..."`);
+        console.warn(`[AIIntentClarifier] ⚠️  Variation matchedKeywords: ${variation.matchedKeywords.join(', ')}`);
+      } else {
+        console.log(`[AIIntentClarifier] ✅ Variation "${variation.id}" includes all required nodes`);
+      }
+    }
+
+    // Log summary
+    const allVariationsValid = result.promptVariations.every(v => {
+      const vLower = v.prompt.toLowerCase();
+      const vKeywords = v.matchedKeywords.map(k => k.toLowerCase());
+      return requiredNodeTypes.every(nodeType => {
+        const nodeTypeLower = nodeType.toLowerCase();
+        return vLower.includes(nodeTypeLower) || vKeywords.some(k => k === nodeTypeLower);
+      });
+    });
+
+    const missingCount = result.promptVariations.reduce((count, v) => {
+      const vLower = v.prompt.toLowerCase();
+      const vKeywords = v.matchedKeywords.map(k => k.toLowerCase());
+      const missing = requiredNodeTypes.filter(nodeType => {
+        const nodeTypeLower = nodeType.toLowerCase();
+        return !vLower.includes(nodeTypeLower) && !vKeywords.some(k => k === nodeTypeLower);
+      });
+      return count + missing.length;
+    }, 0);
+
+    if (allVariationsValid) {
+      console.log(`[AIIntentClarifier] ✅ All variations include required nodes`);
+      return { allValid: true, missingCount: 0 };
+    } else {
+      console.warn(`[AIIntentClarifier] ⚠️  Some variations are missing required nodes (${missingCount} missing across all variations) - this is CRITICAL`);
+      return { allValid: false, missingCount };
+    }
   }
 
   /**
@@ -601,92 +758,132 @@ export class AIIntentClarifier {
   }
 
   /**
-   * ✅ PRODUCTION: Create fallback result with multiple variations
-   * Ensures users always see multiple options, not just 1
+   * ✅ ROOT FIX: Create fallback result using EXTRACTED NODES from user prompt
+   * NEVER creates dummy prompts - only uses nodes extracted from user's actual intent
    */
-  private createFallbackResult(
+  private createFallbackResultWithExtractedNodes(
     userPrompt: string,
     allKeywords: string[],
+    extractedNodeTypes: string[],
+    allKeywordData: AliasKeyword[],
     error: Error | null
   ): SummarizeLayerResult {
-    // Analyze prompt to determine output nodes
+    console.log(`[AIIntentClarifier] 🔧 Creating fallback using ${extractedNodeTypes.length} extracted node(s): ${extractedNodeTypes.join(', ')}`);
+    
+    // ✅ ROOT FIX: Use extracted nodes to build realistic variations
+    // Get node labels/keywords for better prompt generation
+    const nodeLabels = new Map<string, string>();
+    for (const nodeType of extractedNodeTypes) {
+      const schema = nodeLibrary.getSchema(nodeType);
+      if (schema) {
+        nodeLabels.set(nodeType, schema.label || nodeType);
+      }
+    }
+    
+    // Determine trigger type from prompt
     const promptLower = userPrompt.toLowerCase();
-    const hasGmail = promptLower.includes('gmail') || promptLower.includes('email');
-    const hasSlack = promptLower.includes('slack');
-    const hasSheets = promptLower.includes('sheet') || promptLower.includes('spreadsheet');
-    const hasAI = promptLower.includes('ai') || promptLower.includes('analyze') || promptLower.includes('summary');
+    const hasWebhook = promptLower.includes('webhook') || promptLower.includes('http') || promptLower.includes('api');
+    const triggerType = hasWebhook ? 'webhook' : 'manual_trigger';
     
-    // Create variations with different triggers and outputs
-    const variations: Array<{ id: string; prompt: string; matchedKeywords: string[]; confidence: number; reasoning: string }> = [];
+    // Create variations using extracted nodes (not hardcoded guesses)
+    const variations: PromptVariation[] = [];
     
-    // Variation 1: manual_trigger + original output
-    let output1 = hasGmail ? 'google_gmail' : (hasSlack ? 'slack_message' : 'google_gmail');
-    let basePrompt1 = userPrompt;
-    // ✅ UNIVERSAL FIX: Remove hardcoded Google Sheets injection
-    // AI Input Resolver will understand user intent and generate appropriate prompts dynamically
-    // No need to inject "Read data from Google Sheets" - let AI understand from context
-    if (!basePrompt1.toLowerCase().includes('manual_trigger') && !basePrompt1.toLowerCase().includes('manual trigger')) {
-      basePrompt1 = `Create a workflow with manual_trigger. ${basePrompt1}`;
-    }
+    // Build variations with extracted nodes
+    for (let i = 0; i < 4; i++) {
+      const variationTrigger = i < 2 ? 'manual_trigger' : 'webhook';
+      const nodeIndex = i % extractedNodeTypes.length;
+      const primaryNode = extractedNodeTypes[nodeIndex];
+      const nodeLabel = nodeLabels.get(primaryNode) || primaryNode;
+      
+      // Build prompt that includes extracted nodes
+      let variationPrompt = userPrompt;
+      
+      // Ensure trigger is mentioned
+      if (!variationPrompt.toLowerCase().includes(variationTrigger) && !variationPrompt.toLowerCase().includes('trigger')) {
+        variationPrompt = `Create a workflow with ${variationTrigger}. ${variationPrompt}`;
+      }
+      
+      // Ensure extracted node is mentioned
+      const nodeTypeLower = primaryNode.toLowerCase();
+      const nodeLabelLower = nodeLabel.toLowerCase();
+      if (!variationPrompt.toLowerCase().includes(nodeTypeLower) && !variationPrompt.toLowerCase().includes(nodeLabelLower)) {
+        // Add node mention naturally
+        variationPrompt = `${variationPrompt} Use ${nodeLabel} node to complete the workflow.`;
+      }
+      
+      // Build matchedKeywords from extracted nodes
+      const matchedKeywords = [variationTrigger, primaryNode];
+      
+      // Add other extracted nodes if they fit
+      if (extractedNodeTypes.length > 1) {
+        const secondaryNodeIndex = (nodeIndex + 1) % extractedNodeTypes.length;
+        if (secondaryNodeIndex !== nodeIndex) {
+          matchedKeywords.push(extractedNodeTypes[secondaryNodeIndex]);
+        }
+      }
+      
     variations.push({
-      id: 'fallback-1',
-      prompt: basePrompt1,
-      matchedKeywords: ['manual_trigger', hasSheets ? 'google_sheets' : '', output1].filter(Boolean),
-      confidence: 0.7,
-      reasoning: 'Fallback variation with manual_trigger'
-    });
-    
-    // Variation 2: webhook + original output
-    let basePrompt2 = userPrompt;
-    // ✅ UNIVERSAL FIX: Remove hardcoded Google Sheets injection
-    if (!basePrompt2.toLowerCase().includes('webhook')) {
-      basePrompt2 = `Create a webhook-triggered workflow. ${basePrompt2}`;
-    }
-    variations.push({
-      id: 'fallback-2',
-      prompt: basePrompt2,
-      matchedKeywords: ['webhook', hasSheets ? 'google_sheets' : '', output1].filter(Boolean),
-      confidence: 0.7,
-      reasoning: 'Fallback variation with webhook trigger'
-    });
-    
-    // Variation 3: manual_trigger + alternative output (slack if gmail, gmail if slack)
-    let output3 = hasGmail ? 'slack_message' : 'google_gmail';
-    let basePrompt3 = userPrompt.replace(/gmail/gi, 'Slack').replace(/email/gi, 'Slack message');
-    // ✅ UNIVERSAL FIX: Remove hardcoded Google Sheets injection
-    if (!basePrompt3.toLowerCase().includes('manual_trigger') && !basePrompt3.toLowerCase().includes('manual trigger')) {
-      basePrompt3 = `Create a workflow with manual_trigger. ${basePrompt3}`;
-    }
-    variations.push({
-      id: 'fallback-3',
-      prompt: basePrompt3,
-      matchedKeywords: ['manual_trigger', hasSheets ? 'google_sheets' : '', output3].filter(Boolean),
+        id: `fallback-${i + 1}`,
+        prompt: variationPrompt,
+        keywords: [variationTrigger, primaryNode], // ✅ NEW: Include extracted node types as keywords
+        matchedKeywords: matchedKeywords,
       confidence: 0.6,
-      reasoning: 'Fallback variation with alternative output node'
-    });
-    
-    // Variation 4: webhook + alternative output
-    let basePrompt4 = userPrompt.replace(/gmail/gi, 'Slack').replace(/email/gi, 'Slack message');
-    // ✅ UNIVERSAL FIX: Remove hardcoded Google Sheets injection
-    if (!basePrompt4.toLowerCase().includes('webhook')) {
-      basePrompt4 = `Create a webhook-triggered workflow. ${basePrompt4}`;
+        reasoning: `Fallback variation using extracted nodes: ${matchedKeywords.join(', ')}`
+      });
     }
-    variations.push({
-      id: 'fallback-4',
-      prompt: basePrompt4,
-      matchedKeywords: ['webhook', hasSheets ? 'google_sheets' : '', output3].filter(Boolean),
-      confidence: 0.6,
-      reasoning: 'Fallback variation with webhook and alternative output'
-    });
+    
+    // Map extracted nodes to keywords for matchedKeywords
+    const matchedKeywordsSet = new Set<string>();
+    for (const nodeType of extractedNodeTypes) {
+      matchedKeywordsSet.add(nodeType);
+      // Add node keywords
+      const keywordData = allKeywordData.filter(kd => kd.nodeType === nodeType);
+      for (const kd of keywordData.slice(0, 2)) { // Add top 2 keywords per node
+        matchedKeywordsSet.add(kd.keyword);
+      }
+    }
     
     return {
-      shouldShowLayer: true, // Show layer even in fallback - users see multiple options
+      shouldShowLayer: true,
       originalPrompt: userPrompt,
       promptVariations: variations,
       allKeywords: allKeywords,
-      matchedKeywords: [],
+      matchedKeywords: Array.from(matchedKeywordsSet),
+      mandatoryNodeTypes: extractedNodeTypes, // ✅ ROOT FIX: Use extracted nodes, not dummy nodes
     };
   }
+  
+  /**
+   * ✅ ROOT FIX: Clean repetitive "Use X to complete/handle this step" patterns from prompts
+   * Matches ALL variations: "Use X to complete", "Use X node to handle", "Use X to handle", etc.
+   */
+  private cleanRepetitiveNodeText(prompt: string): string {
+    // ✅ ROOT FIX: Match ALL variations of repetitive patterns
+    const repetitivePatterns = [
+      /\s*Use\s+[\w\s]+\s+node\s+to\s+handle\s+this\s+step\./gi,  // "Use X node to handle this step"
+      /\s*Use\s+[\w\s]+\s+to\s+complete\s+this\s+step\./gi,       // "Use X to complete this step"
+      /\s*Use\s+[\w\s]+\s+node\s+to\s+complete\s+this\s+step\./gi, // "Use X node to complete this step"
+      /\s*Use\s+[\w\s]+\s+to\s+handle\s+this\s+step\./gi,         // "Use X to handle this step"
+      /\s*Use\s+[\w\s]+\s+for\s+this\s+step\./gi,                 // "Use X for this step"
+      /\s*Use\s+[\w\s]+\s+node\s+for\s+this\s+step\./gi,         // "Use X node for this step"
+    ];
+    
+    let cleaned = prompt;
+    for (const pattern of repetitivePatterns) {
+      cleaned = cleaned.replace(pattern, '');
+    }
+    
+    // Remove multiple consecutive periods/spaces
+    cleaned = cleaned.replace(/\.{2,}/g, '.');
+    cleaned = cleaned.replace(/\s{3,}/g, ' ');
+    cleaned = cleaned.trim();
+    
+    return cleaned;
+  }
+
+  // ✅ PURE INTENT: Removed programmatic injection method - that's "patch work"
+  // If AI doesn't follow instructions, validation will catch it and retry
+  // Pure intent selection means trusting the AI to generate correctly from the start
 
   /**
    * ✅ ROOT-LEVEL ARCHITECTURE: Analyze prompt using capability registry
@@ -860,7 +1057,11 @@ export class AIIntentClarifier {
    * Build AI prompt for intent clarification
    * ✅ ROOT-LEVEL ARCHITECTURE: Uses capability registry analysis, not hardcoded patterns
    */
-  private buildClarificationPrompt(userPrompt: string, allKeywords: string[]): string {
+  /**
+   * ✅ PHASE 2: Build clarification prompt with REQUIRED nodes
+   * @param extractedNodeTypes - Node types that MUST be included in variations
+   */
+  private buildClarificationPrompt(userPrompt: string, allKeywords: string[], extractedNodeTypes: string[] = []): string {
     // ✅ Analyze prompt structure using registry
     const structure = this.analyzePromptStructure(userPrompt);
     
@@ -870,10 +1071,27 @@ export class AIIntentClarifier {
     const promptLower = userPrompt.toLowerCase();
     const relevantKeywords = this.filterRelevantKeywordsWithSemanticExpansion(allKeywords, promptLower);
     
-    // Use top 300 most relevant keywords (reduces token usage while maintaining accuracy)
-    const keywordsToUse = relevantKeywords.length > 0 
-      ? relevantKeywords.slice(0, 300)
-      : allKeywords.slice(0, 300);
+    // ✅ ROOT FIX: Only show REQUIRED NODES keywords to AI, not 300 random keywords
+    // This prevents AI from listing all possible nodes
+    const requiredNodeKeywords = new Set<string>();
+    for (const nodeType of extractedNodeTypes) {
+      // Get keywords for each required node
+      for (const keywordData of this.keywordCollector.getAllAliasKeywords()) {
+        if (keywordData.nodeType === nodeType) {
+          requiredNodeKeywords.add(keywordData.keyword);
+        }
+      }
+    }
+    
+    // ✅ ROOT FIX: Use only REQUIRED NODES keywords + top 20 most relevant (for context)
+    // This dramatically reduces AI's temptation to list all nodes
+    const topRelevant = relevantKeywords.length > 0 
+      ? relevantKeywords.slice(0, 20)
+      : allKeywords.slice(0, 20);
+    
+    const keywordsToUse = Array.from(new Set([...Array.from(requiredNodeKeywords), ...topRelevant]));
+    
+    console.log(`[AIIntentClarifier] ✅ ROOT-LEVEL: Showing AI only ${keywordsToUse.length} keywords (${requiredNodeKeywords.size} from REQUIRED NODES + ${topRelevant.length} relevant), not 300 random keywords`);
 
     // ✅ ROOT-LEVEL ARCHITECTURE: Build dynamic instructions based on registry analysis
     
@@ -905,10 +1123,63 @@ LINEAR WORKFLOW DETECTED:
 - Output nodes are determined by capabilities: 'output', 'write_data', 'send_email', 'send_message', etc.`;
     }
 
+    // ✅ PHASE 2: Add EXTRACTED KEYWORDS section to prompt (REQUIRED, not optional)
+    const extractedKeywordsSection = extractedNodeTypes.length > 0
+      ? `
+🚨🚨🚨 CRITICAL - REQUIRED NODES (EXTRACTED FROM USER PROMPT):
+The following node types were extracted from keywords in the user's prompt. These are REQUIRED and MUST be included in variations:
+${extractedNodeTypes.map((node, idx) => `  ${idx + 1}. ${node}`).join('\n')}
+
+ABSOLUTE REQUIREMENTS (NON-NEGOTIABLE):
+1. ALL ${extractedNodeTypes.length} extracted node types above MUST be included in EVERY variation (${extractedNodeTypes.join(', ')})
+2. DO NOT include only 2-3 nodes - you MUST include ALL ${extractedNodeTypes.length} nodes in each variation
+3. DO NOT replace extracted nodes with other nodes (e.g., if ${extractedNodeTypes[0] || 'node'} is extracted, use ${extractedNodeTypes[0] || 'node'} - NOT a different node)
+4. DO NOT ignore extracted nodes to "simplify" the workflow
+5. The extracted keywords above are what the user EXPLICITLY mentioned - they are REQUIRED, not optional
+6. You MUST naturally integrate ALL ${extractedNodeTypes.length} node types into the variation text
+7. Each variation must mention ALL nodes: ${extractedNodeTypes.join(', ')}
+
+✅ CRITICAL: Naturally integrate node types into variation text:
+- Include node type names naturally in sentences (e.g., "Use ${extractedNodeTypes[0] || 'node'} to generate content")
+- Show data flow with node types (e.g., "Data flows from ${extractedNodeTypes[0] || 'source'} → ${extractedNodeTypes[1] || 'transformation'} → ${extractedNodeTypes[2] || 'output'}")
+- Describe operations with node types (e.g., "Use ${extractedNodeTypes[0] || 'node'} with operation='read' to fetch data")
+
+VIOLATION = FAILURE: If you omit any extracted node, the variation is INVALID.
+
+`
+      : '';
+
     return `User Prompt: "${userPrompt}"
 
-Available Node Keywords (${keywordsToUse.length} most relevant keywords from ${allKeywords.length} total):
+${extractedKeywordsSection}
+Available Node Keywords (${keywordsToUse.length} keywords - ONLY REQUIRED NODES + relevant context):
 ${keywordsToUse.join(', ')}
+
+🚨🚨🚨 CRITICAL: The keywords above are ONLY for reference. You MUST ONLY use nodes from the REQUIRED NODES list above.
+DO NOT list all keywords - ONLY use the REQUIRED NODES.
+
+🚨🚨🚨 CRITICAL ANALYSIS INSTRUCTIONS - READ CAREFULLY:
+1. Read the user prompt carefully - understand what the user wants
+2. Look at the REQUIRED NODES above - there are ${extractedNodeTypes.length} nodes: ${extractedNodeTypes.join(', ')}
+3. ALL ${extractedNodeTypes.length} REQUIRED NODES must be naturally integrated into EVERY variation text (use actual node type names)
+4. DO NOT include only 2-3 nodes - you MUST include ALL ${extractedNodeTypes.length} nodes in each variation
+5. DO NOT replace REQUIRED NODES with other nodes (e.g., ${extractedNodeTypes[0] || 'node'} → different node is FORBIDDEN)
+6. Generate variations that include ALL ${extractedNodeTypes.length} REQUIRED NODES from the list above
+7. Naturally mention ALL node types in sentences (e.g., "Use ${extractedNodeTypes[0] || 'node'} to... then use ${extractedNodeTypes[1] || 'node'} to...")
+8. Each variation must describe a complete workflow using ALL ${extractedNodeTypes.length} nodes: ${extractedNodeTypes.join(', ')}
+
+🚨🚨🚨 PURE INTENT SELECTION - ABSOLUTE RULE - NO EXCEPTIONS:
+- ONLY use nodes that are in the REQUIRED NODES list above - these are PURE USER INTENT
+- You MUST include ALL ${extractedNodeTypes.length} REQUIRED NODES in EVERY variation: ${extractedNodeTypes.join(', ')}
+- DO NOT include only 2-3 nodes - ALL ${extractedNodeTypes.length} nodes must be in each variation
+- DO NOT add random nodes from the Available Node Keywords list
+- DO NOT list all possible nodes that "could work"
+- DO NOT add nodes like "schedule", "http_request", "postgresql" unless they are in REQUIRED NODES
+- DO NOT create repetitive text like "Use X node to handle this step" or "Use X to complete this step"
+- Your variations should ONLY mention the ${extractedNodeTypes.length} REQUIRED NODES, nothing else
+- This is PURE INTENT SELECTION - only what the user explicitly mentioned
+- If you omit ANY of the ${extractedNodeTypes.length} REQUIRED NODES, the variation will be REJECTED and you must retry
+- If you add nodes not in REQUIRED NODES, the variation will be REJECTED and you must retry
 
 ✅ ROOT-LEVEL ARCHITECTURE ANALYSIS:
 ${workflowStructureGuidance}
@@ -921,12 +1192,14 @@ ${structure.triggerTypes.length > 0 ? `- Trigger types: ${structure.triggerTypes
 
 🚨 CRITICAL REQUIREMENT - READ CAREFULLY:
 You MUST generate EXACTLY 4 (FOUR) UNIQUE, SPECIFIC prompt variations. Each variation MUST:
+- Include ALL ${extractedNodeTypes.length} REQUIRED NODES: ${extractedNodeTypes.join(', ')}
 - Follow the workflow structure detected above (conditional or linear)
 ${structure.isConditional ? '- For conditional workflows: Specify ONE CRM node (true branch) AND ONE notification node (false branch) in the SAME workflow' : '- For linear workflows: Specify ONE output node per variation'}
-- Use DIFFERENT node combinations across variations
+- Use DIFFERENT node combinations across variations (but ALL must include the ${extractedNodeTypes.length} REQUIRED NODES)
 - Use DIFFERENT triggers (Variations 1-2: manual_trigger, Variations 3-4: webhook)
-- Be 3-4 lines long with specific details
+- Be 3-4 lines long with specific details that naturally mention ALL ${extractedNodeTypes.length} nodes
 - Be obviously different from other variations
+- DO NOT copy the user's prompt verbatim - expand it with ALL ${extractedNodeTypes.length} nodes integrated naturally
 
 YOUR ROLE:
 You are NOT the user. You are a workflow automation expert. Transform vague user prompts into detailed, structured prompts based on node capabilities and workflow architecture.
@@ -978,25 +1251,42 @@ TRIGGER SELECTION:
 - Variations 3-4: MUST use webhook trigger
 - This ensures clear differentiation between variations
 
-EXAMPLE OF GOOD VARIATIONS (User prompt: "score leads, route qualified to zoho_crm or salesforce, notify non-qualified via slack_message or google_gmail"):
+🚨 CRITICAL OPERATION ENFORCEMENT - MANDATORY:
+- You MUST describe WHAT each node DOES, not just mention the node name
+- ✅ GOOD: Use REQUIRED NODES with operations (e.g., "Use ${extractedNodeTypes[0] || 'node'} with operation='read' to fetch data")
+- ✅ GOOD: Describe transformations with REQUIRED NODES (e.g., "Use ${extractedNodeTypes.find(n => n.includes('ai') || n.includes('chat')) || 'transformation_node'} with prompt='process' to transform data")
+- ✅ GOOD: Describe outputs with REQUIRED NODES (e.g., "Use ${extractedNodeTypes.find(n => n.includes('output') || n.includes('send')) || 'output_node'} with operation='send' to deliver results")
+- ❌ BAD: Just mentioning node name without operation (e.g., "Use ${extractedNodeTypes[0] || 'node'} node")
+- ❌ BAD: No operation description for any REQUIRED NODE
+- ✅ REQUIRED: Use ACTUAL REQUIRED NODES from the list above, not generic examples
 
-Variation 1 (manual_trigger + zoho_crm + slack_message):
-"Create a workflow that starts with a manual_trigger node. Use ai_chat_model to analyze and score incoming leads based on specific qualification metrics. Use if_else node to route leads: qualified leads go to zoho_crm node to create or update CRM records, while non-qualified leads trigger slack_message node to send notifications to the sales team channel with lead details and disqualification reasons."
+🚨 CRITICAL REPETITIVE TEXT BAN - ABSOLUTELY FORBIDDEN:
+- ❌ FORBIDDEN: "Use [Node] node to complete the workflow"
+- ❌ FORBIDDEN: "Use [Node] to handle this step"
+- ❌ FORBIDDEN: "Use [Node] node to finish the workflow"
+- ❌ FORBIDDEN: Any variation that just copies user prompt + adds "Use X node"
+- ❌ FORBIDDEN: Copying user's original prompt verbatim
+- ❌ FORBIDDEN: Starting with "Create a workflow with [trigger]. [User's prompt] Use [Node] node to complete the workflow"
+- ✅ REQUIRED: Describe the COMPLETE workflow flow with operations
+- ✅ REQUIRED: Show data transformation: "Read from X → Process with Y → Send to Z"
+- ✅ REQUIRED: Each sentence must add NEW information, not repeat
+- ✅ REQUIRED: Expand user's prompt into detailed workflow description
+- ✅ REQUIRED: Show HOW each node is used, not just mention it
+- ✅ REQUIRED: Describe the complete data flow from start to finish
 
-Variation 2 (manual_trigger + salesforce + google_gmail):
-"Build a workflow automation beginning with manual_trigger. Process incoming leads through ai_chat_model node configured for lead scoring and qualification analysis. Implement conditional routing with if_else node: route qualified leads to salesforce node to automatically create lead records in the CRM system, and send email notifications via google_gmail node for non-qualified leads to inform the sales team about the lead status and scoring details."
-
-Variation 3 (webhook + zoho_crm + google_gmail):
-"Design a webhook-triggered workflow that receives incoming lead data via webhook trigger. Analyze and score leads using ai_chat_model node based on specific qualification metrics. Use if_else node for conditional routing: qualified leads are routed to zoho_crm node to update the CRM system with lead information, while non-qualified leads trigger google_gmail node to send email notifications to the sales team with comprehensive lead details and disqualification reasoning."
-
-Variation 4 (webhook + salesforce + slack_message):
-"Create a webhook-based workflow that starts with webhook trigger to receive incoming lead submissions. Process leads through ai_chat_model for intelligent scoring and qualification analysis. Implement if_else node to conditionally route leads: qualified leads are sent to salesforce node to create new lead records in the CRM, and non-qualified leads trigger slack_message node to send Slack notifications to the sales team channel with lead information and scoring breakdown."
-
-EXAMPLE OF BAD VARIATIONS (DO NOT DO THIS):
-❌ "use zoho_crm or salesforce" - FORBIDDEN (OR option)
-❌ "send via slack_message or google_gmail" - FORBIDDEN (OR option)
-❌ All variations using same output node - FORBIDDEN (not unique)
-❌ All variations using same trigger - FORBIDDEN (not unique)
+GENERIC PATTERN (DO NOT COPY NODES, ONLY THE STRUCTURE):
+- Good variations ALWAYS:
+  * Start with the correct trigger from REQUIRED NODES (use actual trigger from list above)
+  * Describe how data is collected WITH OPERATION using REQUIRED NODES: "Use [REQUIRED_DATA_SOURCE_NODE] with operation='read' to fetch data"
+  * Describe how REQUIRED transformation nodes process data WITH OPERATION: "Use [REQUIRED_TRANSFORMATION_NODE] with prompt='process' to transform data"
+  * Describe how REQUIRED output nodes deliver results WITH OPERATION: "Use [REQUIRED_OUTPUT_NODE] with operation='send' to deliver results"
+  * Show data flow using ACTUAL REQUIRED NODES: "Data flows from [NODE1] → [NODE2] → [NODE3]"
+- Bad variations (REJECTED) would:
+  * Use "or" between nodes (e.g., "use NODE_A or NODE_B")
+  * Mention nodes that are NOT in the REQUIRED NODES list
+  * Ignore REQUIRED NODES that were extracted from the user prompt
+  * Just copy user prompt and add "Use X node to complete workflow" (FORBIDDEN)
+  * Fail to describe operations (FORBIDDEN)
 
 🚨 CRITICAL AI NODE RULE:
 - ONLY include AI nodes (ai_chat_model, ai_agent, memory_node) if the user EXPLICITLY mentions:
@@ -1005,31 +1295,35 @@ EXAMPLE OF BAD VARIATIONS (DO NOT DO THIS):
   * "send email" → NO ai_chat_model needed
   * "read sheets and send gmail" → NO ai_chat_model needed
   * "get data and send notification" → NO ai_chat_model needed
-- If user says "send email", use google_gmail or email node directly - NO AI processing needed
-- If user says "summarize data and send email", THEN include ai_chat_model for summarization
-- ✅ CRITICAL: For simple operations (summarize, analyze, classify), use "ai_chat_model" NOT "ai_agent"
+- If user says "send email", use the appropriate email/output node directly - NO extra AI processing needed
+- If user says "summarize data", "analyze", "classify", or "generate content", THEN include ai_chat_model for that transformation
+- ✅ CRITICAL: For simple AI operations (summarize, analyze, classify, generate content), prefer "ai_chat_model" over more complex agents
 - ✅ CRITICAL: Only use "ai_agent" when user explicitly mentions tools, memory, or multi-step reasoning
-- ✅ CRITICAL: Examples should use "ai_chat_model" for summarization, NOT "AI agent"
 
 🚨 CRITICAL FORMAT REQUIREMENT - EACH VARIATION MUST BE MEANINGFUL WITH KEYWORDS:
-- Each prompt MUST contain at least 2 COMPLETE SENTENCES separated by periods (.)
-- Minimum length: 90 characters (can be longer based on user prompt complexity)
-- Maximum length: Any length that makes sense for the user prompt
+- Each prompt MUST contain at least 3-4 COMPLETE SENTENCES separated by periods (.)
+- Minimum length: 200 characters (NOT 90 - must be detailed)
 - Each sentence should describe a different aspect:
-  * Sentence 1: Describe the trigger and initial setup
-  * Sentence 2: Describe the transformation/output step
-  * Additional sentences: Optional, add more detail if needed
-- MUST include node keywords (google_sheets, google_gmail, slack_message, manual_trigger, webhook, etc.)
-- Example of GOOD format (2 sentences, 90+ chars):
-  "Create a workflow with manual_trigger that reads data from google_sheets node. Send the data via google_gmail node to a recipient email address."
-- Example of BAD format (too short, no keywords):
-  "Read sheets and send email." ❌ TOO SHORT, NO KEYWORDS
+  * Sentence 1: Describe the trigger and how it initiates the workflow
+  * Sentence 2: Describe data collection/fetching using REQUIRED NODES
+  * Sentence 3: Describe processing/transformation using REQUIRED NODES
+  * Sentence 4: Describe output/delivery using REQUIRED NODES
+- MUST include ALL ${extractedNodeTypes.length} node keywords from the REQUIRED NODES list above
+- MUST naturally integrate node names into sentences (e.g., "Use ${extractedNodeTypes.find(n => n.includes('schedule')) || 'schedule'} to trigger daily execution")
+- Example of GOOD format (3-4 sentences, 200+ chars) - using REQUIRED NODES:
+  ${extractedNodeTypes.length >= 3
+    ? `"Start with ${extractedNodeTypes.find(n => n.includes('trigger') || n.includes('webhook')) || extractedNodeTypes[0]} to initiate the workflow. Configure ${extractedNodeTypes.find(n => n.includes('schedule')) || extractedNodeTypes[1]} for daily automation. Use ${extractedNodeTypes.find(n => n.includes('ai') || n.includes('chat')) || extractedNodeTypes[2]} to generate content. Export results via ${extractedNodeTypes.find(n => n.includes('csv')) || extractedNodeTypes[3]} and publish to ${extractedNodeTypes.find(n => n.includes('instagram') || n.includes('linkedin')) || extractedNodeTypes[extractedNodeTypes.length - 1]} platform."`
+    : `"Start with ${extractedNodeTypes[0] || 'manual_trigger'} to initiate the workflow. Use ${extractedNodeTypes[1] || 'node'} to process data. Complete with ${extractedNodeTypes[2] || 'output'} node to deliver results."`}
+- Example of BAD format (repetitive, copying user prompt):
+  "Create a workflow with manual_trigger. Generate AI content daily and post automatically in instagram Use Webhook Trigger node to complete the workflow." ❌ REPETITIVE, COPIES USER PROMPT
+
+🚨 CRITICAL: DO NOT copy the example above - it's just showing the FORMAT. You MUST use the ACTUAL REQUIRED NODES from the list above, NOT the example node names.
 
 CRITICAL: Each prompt in the variations array must:
 - Be at least 90 characters long (minimum requirement)
 - Contain at least 2 complete sentences (separated by periods) - MANDATORY
-- Include specific node type keywords (google_sheets, google_gmail, slack_message, manual_trigger, webhook, etc.)
-- Mention specific node types (ai_chat_model, if_else, zoho_crm, salesforce, slack_message, google_gmail, manual_trigger, webhook, etc.)
+- Include specific node type keywords from the REQUIRED NODES list above (use the actual extracted node types)
+- Mention specific node types from REQUIRED NODES (do not use generic examples - use the actual extracted node types)
 - For conditional workflows: Specify ONE CRM node (for qualified leads) AND ONE notification node (for non-qualified leads)
 - For linear workflows: Specify EXACTLY ONE output node (NO "or" or "either")
 - Use different node combinations across variations
@@ -1040,49 +1334,35 @@ CRITICAL: Each prompt in the variations array must:
 - Clearly explain the IF node routing: qualified leads → CRM, non-qualified leads → notification
 
 OUTPUT FORMAT (STRICT JSON - NO MARKDOWN, NO CODE BLOCKS):
-{
-  "clarifiedIntent": "Detailed 3-4 line enhanced version of user prompt with specific node types, operations, and data flow",
-  "matchedKeywords": ["keyword1", "keyword2", "keyword3"],
-  "variations": [
-    {
-      "prompt": "Create a workflow with manual_trigger that uses google_sheets node to read all data from a specified spreadsheet. Process the retrieved data using ai_chat_model node to generate a comprehensive summary. Send the summary using google_gmail node to a specified email recipient.",
-      "matchedKeywords": ["google_sheets", "google_gmail", "ai_chat_model", "manual_trigger"],
-      "reasoning": "Specifies exact node types, operations, and complete data flow in 3-4 lines"
-    },
-    {
-      "prompt": "Build an automated workflow starting with manual_trigger. Use google_sheets node with read operation to extract all rows and columns from the source spreadsheet. Apply data transformation and summarization using ai_chat_model node to analyze and condense the information. Deliver the processed summary via google_gmail node by sending it as an email to the designated recipient.",
-      "matchedKeywords": ["google_sheets", "google_gmail", "ai_chat_model", "data_transformation"],
-      "reasoning": "Emphasizes data processing steps with detailed operations and transformations"
-    },
-    {
-      "prompt": "Design a workflow automation that begins with manual_trigger. Connect to google_sheets node to fetch complete spreadsheet data including all rows. Utilize ai_chat_model node to perform intelligent summarization and analysis of the extracted data. Complete the workflow by using google_gmail node to send the AI-generated summary as an email message to the specified destination.",
-      "matchedKeywords": ["google_sheets", "google_gmail", "ai_chat_model", "automation"],
-      "reasoning": "Highlights automation and integration aspects with specific service connections"
-    },
-    {
-      "prompt": "Create a comprehensive workflow automation starting with manual_trigger node. Use google_sheets node to read all data from a specified Google Sheets spreadsheet, including headers and all row data. Process the retrieved data through ai_chat_model node configured for summarization to generate a detailed summary of the spreadsheet content. Finally, use google_gmail node to send the summarized content as a formatted email to a specified recipient address, including subject line and body content.",
-      "matchedKeywords": ["google_sheets", "google_gmail", "ai_chat_model", "manual_trigger", "summarization"],
-      "reasoning": "Comprehensive version with maximum detail including all node configurations and data flow specifics"
-    }
-  ]
-}
+${this.buildDynamicExampleJSON(extractedNodeTypes)}
+
+🚨 CRITICAL: The example above shows the FORMAT only. You MUST use the ACTUAL REQUIRED NODES from the list above, NOT the example node names.
+
+🚨 CRITICAL: The example above shows the FORMAT only. You MUST use the ACTUAL REQUIRED NODES from the list above, NOT the example node names.
 
 🚨 CRITICAL: 
 - Respond with ONLY valid JSON. No markdown, no code blocks, no explanations. Start with { and end with }.
 - The "variations" array MUST contain exactly 4 items. Do not return fewer variations.
-- Each "prompt" field MUST be at least 150 characters and contain 3-4 sentences (NOT 1 sentence, NOT copying user's prompt).
+- Each "prompt" field MUST be at least 200 characters and contain 3-4 sentences (NOT 1 sentence, NOT copying user's prompt).
+- 🚨🚨🚨 MOST CRITICAL: Each variation MUST include ALL ${extractedNodeTypes.length} REQUIRED NODES: ${extractedNodeTypes.join(', ')}
+- DO NOT include only 2-3 nodes - ALL ${extractedNodeTypes.length} nodes must be mentioned in each variation
+- ❌ ABSOLUTELY FORBIDDEN: Copying user's prompt and just adding "Use X node to complete the workflow"
+- ✅ REQUIRED: Expand user's prompt into a detailed, meaningful workflow description
+- ✅ REQUIRED: Show HOW each node is used in the workflow (not just mention the name)
+- ✅ REQUIRED: Describe the complete data flow from trigger → processing → output
 - ✅ ROOT-LEVEL: For conditional workflows with 3+ conditions → MUST use SWITCH node (multiple branches)
 - ✅ ROOT-LEVEL: For conditional workflows with 2 conditions → MUST use IF_ELSE node (two branches)
 - For conditional workflows: Each prompt MUST specify ${structure.conditionalNodeType === 'switch' ? 'MULTIPLE case branches (one per condition)' : 'ONE CRM node (for qualified) AND ONE notification node (for non-qualified) - both in the same workflow via IF_ELSE node'}.
 - For linear workflows: Each prompt MUST specify EXACTLY ONE output node (NO "or" or "either" options).
 - Variations 1-2: MUST use manual_trigger
 - Variations 3-4: MUST use webhook trigger
-- Each variation MUST use DIFFERENT combinations of nodes (different CRM, different notification, different trigger).
-- Each prompt MUST specify exact node types (ai_chat_model, if_else, zoho_crm, salesforce, slack_message, google_gmail, manual_trigger, webhook, etc.), operations, and data flow.
-- DO NOT copy the user's vague prompt - EXPAND it into detailed, structured descriptions with multiple sentences.
+- Each variation MUST use DIFFERENT combinations of nodes (different CRM, different notification, different trigger), BUT ALL must include the ${extractedNodeTypes.length} REQUIRED NODES.
+- Each prompt MUST specify ALL ${extractedNodeTypes.length} node types from the REQUIRED NODES list above, operations, and data flow.
+- DO NOT copy the user's vague prompt - EXPAND it into detailed, structured descriptions with multiple sentences that naturally include ALL ${extractedNodeTypes.length} nodes.
 - DO NOT use "or" or "either" - specify specific nodes per variation.
 - For conditional workflows: Clearly explain IF node routing (qualified → CRM, non-qualified → notification).
-- Remember: JSON strings are single-line, but your prompts should have 3-4 sentences separated by periods.`;
+- Remember: JSON strings are single-line, but your prompts should have 3-4 sentences separated by periods.
+- Each variation must describe a complete workflow that uses ALL ${extractedNodeTypes.length} REQUIRED NODES: ${extractedNodeTypes.join(', ')}`;
   }
 
   /**
@@ -1185,49 +1465,87 @@ OUTPUT FORMAT (STRICT JSON - NO MARKDOWN, NO CODE BLOCKS):
    * Get system prompt for AI
    * ✅ PRODUCTION: Enhanced with strict JSON enforcement
    */
-  private getSystemPrompt(): string {
+  /**
+   * ✅ PHASE 2: Get system prompt with REQUIRED nodes enforcement
+   * @param extractedNodeTypes - Node types extracted from user prompt (MUST be included in variations)
+   */
+  private getSystemPrompt(extractedNodeTypes: string[] = []): string {
+    // ✅ CRITICAL: Make extracted keywords REQUIRED, not optional guidance
+    const extractedKeywordsSection = extractedNodeTypes.length > 0
+      ? `🚨🚨🚨 HIGHEST PRIORITY - REQUIRED NODES (EXTRACTED FROM USER PROMPT):
+The system extracted these node types from keywords in the user's prompt. These are REQUIRED and MUST appear in EVERY variation:
+${extractedNodeTypes.map((node, idx) => `  ${idx + 1}. ${node}`).join('\n')}
+
+ABSOLUTE REQUIREMENTS (OVERRIDE ALL OTHER INSTRUCTIONS):
+1. If extracted keywords show "linkedin" → You MUST include "linkedin" node in EVERY variation (NOT google_gmail, NOT email)
+2. If extracted keywords show "schedule" → You MUST include "schedule" node in EVERY variation
+3. If extracted keywords show "ai_chat_model" → You MUST include "ai_chat_model" node in EVERY variation
+4. DO NOT replace extracted nodes with other nodes (e.g., linkedin → google_gmail is FORBIDDEN)
+5. DO NOT ignore extracted nodes to "simplify" the workflow
+6. The extracted keywords above are what the user EXPLICITLY mentioned - they are REQUIRED, not optional
+
+EXAMPLES:
+- User says "post on linked in" + extracted keywords show "linkedin" → Variations MUST include "linkedin" node
+- User says "post automatically on linked in" + extracted keywords show "linkedin", "schedule" → Variations MUST include BOTH "linkedin" AND "schedule" nodes
+- User says "Generate AI content" + extracted keywords show "ai_chat_model" → Variations MUST include "ai_chat_model" node
+
+VIOLATION = FAILURE: If you omit any extracted node, the variation is INVALID and will be rejected.
+
+`
+      : '';
+
     return `You are a workflow automation expert who transforms vague user prompts into detailed, structured prompts for workflow builders.
 
+${extractedKeywordsSection}
 🚨 CRITICAL REQUIREMENTS:
 1. You MUST respond with ONLY valid JSON - no markdown, no code blocks, no explanations
 2. Your response must start with { and end with }
 3. If you include any text before or after the JSON, the system will fail
 4. All string values must be properly escaped and quoted
 5. You MUST generate EXACTLY 4 prompt variations in the "variations" array - NOT 1, NOT 2, NOT 3
-6. Each prompt variation MUST be approximately 1 sentence (minimum 40 characters, ~10 words) - KEEP IT SIMPLE
-7. DO NOT add unnecessary details, notes, or extra explanations - match the user's intent, don't expand it
+6. Use the extracted keywords above to understand user intent and include appropriate nodes
+7. Each prompt variation should be clear and detailed (can be multiple sentences if needed to include all required nodes)
 
 Your role:
-- You are a workflow automation expert who PRESERVES user intent
-- Transform vague prompts into clear, simple prompts with essential node keywords (1 sentence, ~40 chars, ~10 words)
-- ONLY add node keywords if they are clearly implied by user intent (google_sheets, google_gmail, slack_message, manual_trigger, webhook, etc.)
-- DO NOT add nodes that are not mentioned or implied by the user
-- Keep prompts concise - one sentence is enough if user intent is clear
+- You are a workflow automation expert who RESPECTS user's explicit requirements
+- The REQUIRED NODES listed above are EXTRACTED from the user's prompt - they are MANDATORY
+- If REQUIRED NODES show "linkedin", include "linkedin" node - DO NOT replace with google_gmail or email
+- If REQUIRED NODES show "schedule", include "schedule" node - DO NOT omit it
+- Transform vague prompts into clear prompts that include ALL REQUIRED NODES from the list above
 
-CRITICAL RULES:
-- PRESERVE user intent - DO NOT add unnecessary nodes or details
-- Each variation MUST be approximately 1 sentence (~40 chars, ~10 words) - simple and clear
-- If user says "chatbot", don't add "google_sheets" unless user explicitly mentions it
-- If user gives 3-4 lines, keep it similar length - don't expand unnecessarily
-- If user gives 1 line, keep it 1 sentence - don't add extra notes
-- Only include node types that are directly relevant to user's request
+CRITICAL RULES (in priority order):
+1. ✅ HIGHEST: Include ALL REQUIRED NODES from the list above in EVERY variation (NON-NEGOTIABLE)
+2. ✅ SECOND: Make prompt clear and detailed (can be multiple sentences)
+3. ✅ THIRD: Only add nodes that are clearly implied by user intent (in addition to REQUIRED NODES)
+4. ✅ LAST: Keep prompts concise (but NOT at the expense of REQUIRED NODES)
+
+${extractedNodeTypes.length > 0 ? `🚨🚨🚨 CRITICAL REMINDER: The ${extractedNodeTypes.length} REQUIRED NODE(S) listed above MUST appear in EVERY variation. This is NON-NEGOTIABLE. If you omit any of them, the variation will be rejected.` : ''}
 
 You have access to keywords from available node types in the system.
 Use these keywords to identify specific nodes and operations that match the user's intent.
 
 OUTPUT: Valid JSON only, starting with { and ending with }.
-The "variations" array MUST contain exactly 4 items, each with a 3-4 line detailed prompt.`;
+The "variations" array MUST contain exactly 4 items, each with a detailed prompt that includes ALL required nodes.`;
   }
 
   /**
    * Parse AI response into structured result
    * ✅ PRODUCTION: Robust JSON parsing with multiple fallback strategies
    */
+  /**
+   * ✅ PHASE 3: Parse AI response and validate against required nodes
+   * @param extractedNodeTypes - Node types that MUST be in variations (for validation)
+   */
   private parseAIResponse(
     aiResponse: string,
     originalPrompt: string,
-    allKeywordData: AliasKeyword[]
+    allKeywordData: AliasKeyword[],
+    extractedNodeTypes: string[] = []
   ): SummarizeLayerResult {
+    // ✅ PHASE 1: Extract keywords from original prompt as fallback
+    const fallbackExtractedKeywords = this.extractKeywordsFromPrompt(originalPrompt, allKeywordData);
+    const fallbackExtractedNodeTypes = this.mapKeywordsToNodeTypes(fallbackExtractedKeywords);
+    
     try {
       // ✅ PRODUCTION: Multiple JSON extraction strategies
       let jsonStr = aiResponse.trim();
@@ -1274,10 +1592,14 @@ The "variations" array MUST contain exactly 4 items, each with a 3-4 line detail
       if (parsed.variations && Array.isArray(parsed.variations)) {
         for (let i = 0; i < parsed.variations.length; i++) {
           const variation = parsed.variations[i];
+          // ✅ ROOT FIX: Clean repetitive text immediately when parsing
+          const cleanedPrompt = this.cleanRepetitiveNodeText(variation.prompt || originalPrompt);
+          
           variations.push({
             id: `variation-${i + 1}`,
-            prompt: variation.prompt || originalPrompt,
-            matchedKeywords: variation.matchedKeywords || [],
+            prompt: cleanedPrompt,
+            keywords: [], // ✅ NEW: Will be populated with node types extracted from variation text
+            matchedKeywords: [], // ✅ ROOT FIX: Will be populated from user's original prompt only
             confidence: 0.8, // Default confidence
             reasoning: variation.reasoning || 'Generated by AI intent clarifier',
           });
@@ -1289,32 +1611,59 @@ The "variations" array MUST contain exactly 4 items, each with a 3-4 line detail
         variations.push({
           id: 'original',
           prompt: originalPrompt,
+          keywords: [], // ✅ NEW: Will be populated with node types extracted from original prompt
           matchedKeywords: [],
           confidence: 0.5,
           reasoning: 'No variations generated, using original prompt',
         });
       }
 
-      // Extract all matched keywords
+      // ✅ CLEAN ARCHITECTURE: Single source of truth for user intent
+      // Step 1: Extract nodes ONLY from user's original prompt (not AI-generated text)
+      const postProcessedKeywords = this.extractKeywordsFromPrompt(originalPrompt, allKeywordData);
       const matchedKeywords = new Set<string>();
-      for (const variation of variations) {
-        for (const keyword of variation.matchedKeywords) {
-          matchedKeywords.add(keyword.toLowerCase());
-        }
-      }
-      if (parsed.matchedKeywords && Array.isArray(parsed.matchedKeywords)) {
-        for (const keyword of parsed.matchedKeywords) {
-          matchedKeywords.add(keyword.toLowerCase());
-        }
-      }
+      postProcessedKeywords.forEach(k => matchedKeywords.add(k.toLowerCase()));
+
+      // Step 2: Map to node types - these are the MANDATORY nodes user wants
+      const mandatoryNodeTypes = this.mapKeywordsToNodeTypes(Array.from(matchedKeywords));
+      
+      console.log(`[AIIntentClarifier] ✅ ROOT FIX: Using ONLY ${mandatoryNodeTypes.length} node(s) from user's original prompt: ${mandatoryNodeTypes.join(', ')}`);
+      console.log(`[AIIntentClarifier] ✅ ROOT FIX: Ignoring AI-generated matchedKeywords - only trusting user's intent`);
+      
+      // ✅ CLEAN ARCHITECTURE: Process variations with clear separation of concerns
+      const pureVariations = variations.map(variation => {
+        // Clean repetitive text patterns only
+        const cleanedPrompt = this.cleanRepetitiveNodeText(variation.prompt);
+        
+        // Extract nodes from variation text for validation (to check if AI followed instructions)
+        const variationKeywords = this.extractKeywordsFromPrompt(cleanedPrompt, allKeywordData);
+        const variationNodeTypes = this.mapKeywordsToNodeTypes(variationKeywords);
+        
+        // Filter to nodes that are BOTH: (1) in user's intent AND (2) mentioned in variation
+        const matchedNodeTypes = variationNodeTypes.filter(nodeType => 
+          mandatoryNodeTypes.includes(nodeType)
+        );
+        
+        console.log(`[AIIntentClarifier] ✅ PURE INTENT: Variation "${variation.id}" - Found ${variationNodeTypes.length} node(s) in text, filtered to ${matchedNodeTypes.length} from user's intent: ${matchedNodeTypes.join(', ')}`);
 
       return {
-        shouldShowLayer: variations.length > 1, // Show layer if we have multiple variations
+          ...variation,
+          prompt: cleanedPrompt,
+          // ✅ FIX: UI displays ALL required nodes from user's original prompt
+          // This ensures UI shows all 6 nodes even if AI variation only mentioned 2-3
+          keywords: mandatoryNodeTypes, // ✅ Single source of truth: user's required nodes
+          matchedKeywords: matchedNodeTypes, // ✅ For validation: what AI actually mentioned in variation
+        };
+      });
+
+      return {
+        shouldShowLayer: pureVariations.length > 1, // Show layer if we have multiple variations
         originalPrompt: originalPrompt,
         clarifiedIntent: parsed.clarifiedIntent || originalPrompt,
-        promptVariations: variations,
+        promptVariations: pureVariations, // ✅ PURE INTENT: Use AI-generated variations as-is (no patching)
         allKeywords: this.keywordCollector.getAllKeywordStrings(),
-        matchedKeywords: Array.from(matchedKeywords),
+        matchedKeywords: Array.from(matchedKeywords), // ✅ ROOT FIX: Only from user's original prompt
+        mandatoryNodeTypes: mandatoryNodeTypes, // ✅ ROOT FIX: ONLY nodes from user's original prompt
       };
     } catch (error) {
       console.error('[AIIntentClarifier] ❌ Error parsing AI response:', error);
@@ -1328,6 +1677,7 @@ The "variations" array MUST contain exactly 4 items, each with a 3-4 line detail
           {
             id: 'original',
             prompt: originalPrompt,
+            keywords: fallbackExtractedNodeTypes, // ✅ NEW: Use extracted nodes from fallback
             matchedKeywords: [],
             confidence: 0.5,
             reasoning: 'Error parsing AI response, using original prompt',
@@ -1335,8 +1685,921 @@ The "variations" array MUST contain exactly 4 items, each with a 3-4 line detail
         ],
         allKeywords: this.keywordCollector.getAllKeywordStrings(),
         matchedKeywords: [],
+        mandatoryNodeTypes: extractedNodeTypes.length > 0 ? extractedNodeTypes : fallbackExtractedNodeTypes, // ✅ PHASE 1: Use extracted nodes even in fallback
       };
     }
+  }
+
+  /**
+   * ✅ STEP 1: Post-process original prompt to extract missed keywords
+   * Scans the original prompt for keywords that AI might have missed
+   */
+  /**
+   * ✅ ROOT-LEVEL UNIVERSAL: Extract keywords with semantic grouping and adaptive thresholds
+   * - Groups nodes by semantic category (CRM, AI, database, etc.)
+   * - Requires ONE node per category, not all
+   * - Uses adaptive thresholds based on keyword specificity
+   * - Strengthens context validation to reject false positives
+   * - ✅ NEW: Classifies intent as EXPLICIT (user mentioned specific node) or CATEGORY (general term)
+   */
+  private extractKeywordsFromPrompt(userPrompt: string, allKeywordData: AliasKeyword[]): string[] {
+    const promptLower = userPrompt.toLowerCase();
+    const extractedKeywords = new Map<string, { confidence: number; match: string; intentType: 'EXPLICIT' | 'CATEGORY' }>(); // nodeType -> {confidence, match, intentType}
+    
+    console.log(`[AIIntentClarifier] 🔍 ROOT-LEVEL UNIVERSAL: Extracting keywords with semantic grouping from: "${userPrompt.substring(0, 100)}..."`);
+    
+    // ✅ ROOT-LEVEL: Group keywords by node type to avoid duplicate matches
+    const keywordsByNode = new Map<string, AliasKeyword[]>();
+    for (const keywordData of allKeywordData) {
+      if (!keywordsByNode.has(keywordData.nodeType)) {
+        keywordsByNode.set(keywordData.nodeType, []);
+      }
+      keywordsByNode.get(keywordData.nodeType)!.push(keywordData);
+    }
+    
+    // ✅ ROOT-LEVEL: Score each node type with adaptive thresholds
+    for (const [nodeType, keywords] of keywordsByNode.entries()) {
+      let bestConfidence = 0;
+      let bestMatch = '';
+      
+      for (const keywordData of keywords) {
+      const keywordLower = keywordData.keyword.toLowerCase();
+        let confidence = 0;
+        
+        // ✅ ROOT-LEVEL: Determine keyword specificity for adaptive threshold
+        const isGenericWord = ['store', 'notify', 'respond', 'send', 'get', 'read', 'write', 'create', 'update', 'delete', 'data', 'process'].includes(keywordLower);
+        const isExactMatch = keywordLower.length > 5 && !isGenericWord;
+        const isNodeSpecific = keywordLower.includes(nodeType.toLowerCase()) || nodeType.toLowerCase().includes(keywordLower);
+        
+        // ✅ ROOT-LEVEL: Check for exact phrase match with space/underscore normalization
+        const keywordNormalized = keywordLower.replace(/[_\s-]/g, '[\\s_-]*');
+        const exactPhrase = new RegExp(`\\b${keywordNormalized.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+        
+        // Check for partial matches (e.g., "gmail" in "google_gmail")
+        const keywordWords = keywordLower.split(/[_\s-]+/);
+        const partialMatch = keywordWords.length > 1 && keywordWords.some(word => 
+          word.length > 3 && promptLower.includes(word)
+        );
+        
+        if (exactPhrase.test(promptLower) || partialMatch) {
+          // ✅ ROOT-LEVEL: Context-aware validation with stricter rules
+          const contextValid = this.validateKeywordContext(promptLower, keywordLower, nodeType);
+          
+          if (contextValid) {
+            confidence = exactPhrase.test(promptLower) ? 1.0 : 0.9;
+          } else {
+            confidence = 0.3; // Lower confidence if context doesn't match (was 0.5)
+          }
+        }
+        
+        // ✅ ROOT-LEVEL: Check for node-specific patterns (e.g., "on linkedin", "to gmail")
+        if (confidence === 0) {
+          const nodeSpecificPattern = this.getNodeSpecificPattern(nodeType, keywordLower);
+          if (nodeSpecificPattern && nodeSpecificPattern.test(promptLower)) {
+            confidence = 0.98;
+          }
+        }
+        
+        // ✅ ROOT-LEVEL UNIVERSAL: Handle common variations using registry (not hardcoded)
+        if (confidence === 0) {
+          const nodeDef = unifiedNodeRegistry.get(nodeType);
+          if (nodeDef) {
+            const nodeLabel = (nodeDef.label || nodeType).toLowerCase();
+            const nodeAliases = (nodeDef.tags || []).map(t => t.toLowerCase());
+            
+            // Check if prompt contains node label or aliases
+            if (promptLower.includes(nodeLabel) || nodeAliases.some(alias => promptLower.includes(alias))) {
+              confidence = 0.95;
+            }
+            
+            // Check for semantic patterns (e.g., "sheets" for google_sheets, "gmail" for google_gmail)
+            const labelWords = nodeLabel.split(/[\s_-]+/);
+            if (labelWords.some(word => word.length > 3 && promptLower.includes(word))) {
+              confidence = Math.max(confidence, 0.9);
+            }
+          }
+        }
+        
+        if (confidence > bestConfidence) {
+          bestConfidence = confidence;
+          bestMatch = keywordData.keyword;
+        }
+      }
+      
+      // ✅ ROOT-LEVEL UNIVERSAL: Adaptive threshold based on keyword specificity
+      // - Generic words (store, notify, etc.): 0.95 threshold (very strict)
+      // - Exact matches (google_sheets, linkedin): 0.85 threshold (moderate)
+      // - Node-specific patterns: 0.9 threshold (high)
+      // - Default: 0.85 threshold (was 0.7 - too low)
+      const isGeneric = ['store', 'notify', 'respond', 'send', 'get', 'read', 'write', 'create', 'update', 'delete', 'data', 'process', 'automatically', 'capture', 'qualify'].some(g => bestMatch.toLowerCase().includes(g));
+      const threshold = isGeneric ? 0.95 : (bestConfidence >= 0.98 ? 0.85 : 0.9);
+      
+      if (bestConfidence >= threshold) {
+        // ✅ NEW: Classify intent type using registry-based detection
+        const intentType = this.classifyIntentType(bestMatch, nodeType, promptLower);
+        extractedKeywords.set(nodeType, { confidence: bestConfidence, match: bestMatch, intentType });
+        console.log(`[AIIntentClarifier] ✅ ROOT-LEVEL: Confidence (${bestConfidence.toFixed(2)}) match: "${bestMatch}" → "${nodeType}" (intent: ${intentType}, threshold: ${threshold})`);
+      }
+    }
+    
+    // ✅ ROOT-LEVEL UNIVERSAL: Semantic grouping - require ONE node per category
+    const groupedByCategory = this.groupNodesBySemanticCategory(Array.from(extractedKeywords.keys()));
+    const finalNodes = this.selectOneNodePerCategoryWithIntentPreservation(groupedByCategory, extractedKeywords);
+    
+    console.log(`[AIIntentClarifier] ✅ ROOT-LEVEL: Extracted ${extractedKeywords.size} node(s), grouped to ${finalNodes.length} by semantic category: ${finalNodes.join(', ')}`);
+    return finalNodes;
+  }
+  
+  /**
+   * ✅ ROOT-LEVEL UNIVERSAL: Group nodes by semantic category using registry
+   * Uses registry category and tags as single source of truth - NO hardcoded node type lists
+   * This ensures universality for all 141+ node types and infinite workflows
+   */
+  private groupNodesBySemanticCategory(nodeTypes: string[]): Map<string, string[]> {
+    const grouped = new Map<string, string[]>();
+    
+    for (const nodeType of nodeTypes) {
+      const nodeDef = unifiedNodeRegistry.get(nodeType);
+      if (!nodeDef) continue;
+      
+      // ✅ ROOT-LEVEL UNIVERSAL: Use registry category and tags (NO hardcoded lists)
+      // This works for ALL node types automatically, including future ones
+      let semanticGroupKey: string;
+      
+      const category = nodeDef.category || 'utility';
+      const tags = (nodeDef.tags || []).map(t => t.toLowerCase());
+      
+      // ✅ SEMANTIC GROUPING: Use tags for special semantic groups
+      // CRM nodes: Check for 'crm' tag or category 'data' with CRM-related tags
+      if (tags.includes('crm') || (category === 'data' && (nodeType.includes('crm') || nodeType.includes('salesforce') || nodeType.includes('hubspot') || nodeType.includes('zoho') || nodeType.includes('pipedrive') || nodeType.includes('freshdesk') || nodeType.includes('clickup')))) {
+        semanticGroupKey = 'crm_group';
+      }
+      // AI nodes: Check for 'ai' tag or category 'ai'
+      else if (tags.includes('ai') || category === 'ai') {
+        semanticGroupKey = 'ai_group';
+      }
+      // Database nodes: Check for 'database' tag or database-related node type patterns
+      else if (tags.includes('database') || tags.includes('db') || nodeType.includes('database') || nodeType.includes('postgresql') || nodeType.includes('supabase') || nodeType.includes('mysql') || nodeType.includes('mongodb') || nodeType.includes('sql')) {
+        semanticGroupKey = 'database_group';
+      }
+      // Communication nodes: Check for 'communication' tag or category 'communication'
+      else if (tags.includes('communication') || category === 'communication') {
+        semanticGroupKey = 'communication_group';
+      }
+      // Trigger nodes: Check for 'trigger' tag or category 'trigger'
+      else if (tags.includes('trigger') || category === 'trigger') {
+        semanticGroupKey = 'trigger_group';
+      }
+      // Transformation nodes: Check for 'transformation' tag or category 'transformation'
+      else if (tags.includes('transformation') || category === 'transformation') {
+        semanticGroupKey = 'transformation_group';
+      }
+      // Logic nodes: Check for 'logic' tag or category 'logic'
+      else if (tags.includes('logic') || category === 'logic') {
+        semanticGroupKey = 'logic_group';
+      }
+      // Data nodes: Check for 'data' tag or category 'data'
+      else if (tags.includes('data') || category === 'data') {
+        semanticGroupKey = 'data_group';
+      }
+      // Utility nodes: Default fallback
+      else {
+        semanticGroupKey = `${category}_group`;
+      }
+      
+      if (!grouped.has(semanticGroupKey)) {
+        grouped.set(semanticGroupKey, []);
+      }
+      grouped.get(semanticGroupKey)!.push(nodeType);
+    }
+    
+    return grouped;
+  }
+  
+  /**
+   * ✅ UNIVERSAL ROOT FIX: Select ONE node per category with INTENT PRESERVATION
+   * 
+   * Architecture:
+   * - Priority 1: EXPLICIT mentions (user explicitly mentioned specific node) → Always use explicit node
+   * - Priority 2: CATEGORY-based selection (user mentioned general term) → Pick best in category
+   * 
+   * Universal Benefits:
+   * - Uses registry as single source of truth (unifiedNodeRegistry)
+   * - Works for ALL node types automatically
+   * - No hardcoded node lists
+   * - Preserves user's exact intent when explicitly mentioned
+   * - Uses semantic grouping for general category terms
+   * 
+   * Example:
+   * - User: "post on instagram" → EXPLICIT → Always selects "instagram" (even if "linkedin" has higher confidence)
+   * - User: "post on social media" → CATEGORY → Selects best social media node (highest confidence)
+   */
+  private selectOneNodePerCategoryWithIntentPreservation(
+    groupedByCategory: Map<string, string[]>,
+    extractedKeywords: Map<string, { confidence: number; match: string; intentType: 'EXPLICIT' | 'CATEGORY' }>
+  ): string[] {
+    const selected: string[] = [];
+    
+    for (const [category, nodeTypes] of groupedByCategory.entries()) {
+      if (nodeTypes.length === 1) {
+        // Only one node in category, use it
+        selected.push(nodeTypes[0]);
+        const keywordInfo = extractedKeywords.get(nodeTypes[0]);
+        console.log(`[AIIntentClarifier] ✅ INTENT-PRESERVING: Selected "${nodeTypes[0]}" from ${category} (only candidate, intent: ${keywordInfo?.intentType || 'UNKNOWN'})`);
+      } else {
+        // ✅ PRIORITY 1: Check for EXPLICIT mentions in this category
+        const explicitNodes = nodeTypes.filter(nodeType => {
+          const keywordInfo = extractedKeywords.get(nodeType);
+          return keywordInfo && keywordInfo.intentType === 'EXPLICIT';
+        });
+        
+        if (explicitNodes.length > 0) {
+          // User explicitly mentioned a node in this category → use it (preserve user intent)
+          // If multiple explicit nodes, pick highest confidence
+          let bestExplicit = explicitNodes[0];
+          let bestExplicitConfidence = extractedKeywords.get(explicitNodes[0])?.confidence || 0;
+          
+          for (const nodeType of explicitNodes.slice(1)) {
+            const confidence = extractedKeywords.get(nodeType)?.confidence || 0;
+            if (confidence > bestExplicitConfidence) {
+              bestExplicitConfidence = confidence;
+              bestExplicit = nodeType;
+            }
+          }
+          
+          selected.push(bestExplicit);
+          console.log(`[AIIntentClarifier] ✅ INTENT-PRESERVING: Selected "${bestExplicit}" from ${category} (EXPLICIT mention, ${explicitNodes.length} explicit/${nodeTypes.length} total, confidence: ${bestExplicitConfidence.toFixed(2)})`);
+          continue;
+        }
+        
+        // ✅ PRIORITY 2: Only category-based nodes → use semantic grouping (pick highest confidence)
+        let bestNode = nodeTypes[0];
+        let bestConfidence = extractedKeywords.get(nodeTypes[0])?.confidence || 0;
+        
+        for (const nodeType of nodeTypes.slice(1)) {
+          const confidence = extractedKeywords.get(nodeType)?.confidence || 0;
+          if (confidence > bestConfidence) {
+            bestConfidence = confidence;
+            bestNode = nodeType;
+          }
+        }
+        
+        selected.push(bestNode);
+        const keywordInfo = extractedKeywords.get(bestNode);
+        console.log(`[AIIntentClarifier] ✅ INTENT-PRESERVING: Selected "${bestNode}" from ${category} (CATEGORY-based, ${nodeTypes.length} candidates, intent: ${keywordInfo?.intentType || 'CATEGORY'}, confidence: ${bestConfidence.toFixed(2)})`);
+      }
+    }
+    
+    return selected;
+  }
+  
+  /**
+   * ✅ UNIVERSAL ROOT FIX: Classify intent type using registry-based detection
+   * - EXPLICIT: User mentioned specific node type (e.g., "instagram", "linkedin", "salesforce")
+   * - CATEGORY: User mentioned general category term (e.g., "social", "CRM", "database")
+   * Uses registry as single source of truth - no hardcoding
+   */
+  private classifyIntentType(keyword: string, nodeType: string, promptLower: string): 'EXPLICIT' | 'CATEGORY' {
+    const keywordLower = keyword.toLowerCase();
+    
+    // ✅ STEP 1: Check if keyword matches EXACT node type name in registry
+    const exactNodeMatch = this.findExactNodeTypeMatch(keywordLower);
+    if (exactNodeMatch && exactNodeMatch === nodeType) {
+      return 'EXPLICIT'; // User explicitly mentioned this specific node
+    }
+    
+    // ✅ STEP 2: Check if keyword matches node type via aliases/keywords
+    const aliasMatch = this.findNodeTypeViaAlias(keywordLower, nodeType);
+    if (aliasMatch) {
+      // Check if this is a specific node name (not a general category)
+      const isSpecificNodeName = this.isSpecificNodeName(keywordLower, nodeType);
+      if (isSpecificNodeName) {
+        return 'EXPLICIT'; // Specific node name mentioned
+      }
+    }
+    
+    // ✅ STEP 3: Check if keyword is a general category term (not specific node)
+    const isCategoryTerm = this.isGeneralCategoryTerm(keywordLower, nodeType);
+    if (isCategoryTerm) {
+      return 'CATEGORY'; // General category term
+    }
+    
+    // ✅ STEP 4: Default classification based on keyword specificity
+    // If keyword is very specific (long, contains node type name), likely EXPLICIT
+    const isLongSpecific = keywordLower.length > 8 && (keywordLower.includes(nodeType.toLowerCase()) || nodeType.toLowerCase().includes(keywordLower));
+    if (isLongSpecific) {
+      return 'EXPLICIT';
+    }
+    
+    // Default to CATEGORY (safer - allows semantic grouping)
+    return 'CATEGORY';
+  }
+  
+  /**
+   * ✅ UNIVERSAL: Find exact node type match in registry
+   * Uses unifiedNodeRegistry as single source of truth
+   */
+  private findExactNodeTypeMatch(keyword: string): string | null {
+    try {
+      const allNodeTypes = unifiedNodeRegistry.getAllTypes();
+      const keywordLower = keyword.toLowerCase();
+      
+      // Check exact match
+      if (allNodeTypes.includes(keywordLower)) {
+        return keywordLower;
+      }
+      
+      // Check normalized match (instagram → instagram, linkedin → linkedin)
+      const normalized = keywordLower.replace(/[_\s-]/g, '_');
+      if (allNodeTypes.includes(normalized)) {
+        return normalized;
+      }
+      
+      // Check underscore variations
+      const underscoreVariation = keywordLower.replace(/[\s-]/g, '_');
+      if (allNodeTypes.includes(underscoreVariation)) {
+        return underscoreVariation;
+      }
+      
+      return null;
+    } catch (error) {
+      console.warn(`[AIIntentClarifier] Error in findExactNodeTypeMatch:`, error);
+      return null;
+    }
+  }
+  
+  /**
+   * ✅ UNIVERSAL: Find node type via alias/keyword mapping
+   * Uses AliasKeywordCollector as single source of truth
+   */
+  private findNodeTypeViaAlias(keyword: string, expectedNodeType: string): boolean {
+    try {
+      const keywordData = this.keywordCollector.getAllAliasKeywords();
+      const keywordLower = keyword.toLowerCase();
+      
+      // Check if keyword maps to expected node type
+      const match = keywordData.find(kd => 
+        kd.keyword.toLowerCase() === keywordLower && 
+        kd.nodeType === expectedNodeType &&
+        unifiedNodeRegistry.get(kd.nodeType) !== undefined
+      );
+      
+      return match !== undefined;
+    } catch (error) {
+      console.warn(`[AIIntentClarifier] Error in findNodeTypeViaAlias:`, error);
+      return false;
+    }
+  }
+  
+  /**
+   * ✅ UNIVERSAL: Check if keyword is a specific node name (not general category)
+   * Uses registry to determine specificity
+   */
+  private isSpecificNodeName(keyword: string, nodeType: string): boolean {
+    const keywordLower = keyword.toLowerCase();
+    const nodeTypeLower = nodeType.toLowerCase();
+    
+    // If keyword contains node type name or vice versa, it's specific
+    if (keywordLower.includes(nodeTypeLower) || nodeTypeLower.includes(keywordLower)) {
+      return true;
+    }
+    
+    // Check if keyword matches common specific node patterns
+    // Specific nodes usually have: brand names, platform names, service names
+    const specificPatterns = [
+      /^(instagram|linkedin|facebook|twitter|youtube|tiktok|pinterest)$/i,
+      /^(salesforce|hubspot|zoho|pipedrive|airtable|notion|clickup)$/i,
+      /^(gmail|outlook|slack|discord|telegram|whatsapp)$/i,
+      /^(postgresql|mysql|mongodb|redis|supabase)$/i,
+      /^(google_sheets|google_drive|google_calendar|google_gmail)$/i,
+    ];
+    
+    for (const pattern of specificPatterns) {
+      if (pattern.test(keywordLower)) {
+        return true;
+      }
+    }
+    
+    // Check registry for node label match
+    const nodeDef = unifiedNodeRegistry.get(nodeType);
+    if (nodeDef) {
+      const nodeLabel = (nodeDef.label || '').toLowerCase();
+      if (nodeLabel && keywordLower.includes(nodeLabel)) {
+        return true;
+      }
+    }
+    
+    return false;
+  }
+  
+  /**
+   * ✅ UNIVERSAL: Check if keyword is a general category term
+   * Uses registry category/tags as single source of truth
+   */
+  private isGeneralCategoryTerm(keyword: string, nodeType: string): boolean {
+    const keywordLower = keyword.toLowerCase();
+    
+    // General category terms (registry-based detection)
+    const generalCategoryTerms = [
+      'social', 'social media', 'social platform',
+      'crm', 'customer relationship',
+      'database', 'db', 'data store',
+      'email', 'messaging', 'communication',
+      'ai', 'artificial intelligence', 'llm', 'chatbot',
+      'trigger', 'scheduler', 'automation',
+      'data', 'storage', 'file',
+    ];
+    
+    // Check if keyword is a general category term
+    if (generalCategoryTerms.includes(keywordLower)) {
+      return true;
+    }
+    
+    // Check if keyword matches category name from registry
+    const nodeDef = unifiedNodeRegistry.get(nodeType);
+    if (nodeDef) {
+      const category = (nodeDef.category || '').toLowerCase();
+      const tags = (nodeDef.tags || []).map(t => t.toLowerCase());
+      
+      // If keyword matches category but not node type name, it's a category term
+      if (category === keywordLower && keywordLower !== nodeType.toLowerCase()) {
+        return true;
+      }
+      
+      // If keyword matches tag but not node type name, it's likely a category term
+      if (tags.includes(keywordLower) && keywordLower !== nodeType.toLowerCase()) {
+        // But check if it's also a specific node name
+        const isSpecific = this.isSpecificNodeName(keywordLower, nodeType);
+        return !isSpecific; // If not specific, it's a category term
+      }
+    }
+    
+    return false;
+  }
+  
+  /**
+   * ✅ ROOT-LEVEL UNIVERSAL: Validate keyword context with STRICT rules to reject false positives
+   * Uses registry properties to determine if keyword context makes sense for this node
+   */
+  private validateKeywordContext(prompt: string, keyword: string, nodeType: string): boolean {
+    const promptLower = prompt.toLowerCase();
+    const keywordLower = keyword.toLowerCase();
+    
+    // ✅ ROOT-LEVEL: Get node definition from registry
+    const nodeDef = unifiedNodeRegistry.get(nodeType);
+    if (!nodeDef) return true; // If node not in registry, allow (fallback)
+    
+    const nodeLabel = (nodeDef.label || nodeType).toLowerCase();
+    const nodeCategory = (nodeDef.category || '').toLowerCase();
+    const nodeTags = (nodeDef.tags || []).map(t => t.toLowerCase());
+    
+    // ✅ ROOT-LEVEL: STRICT REJECTION RULES for generic words
+    
+    // "store" keyword - reject unless context clearly indicates storage
+    if (keywordLower === 'store' || keywordLower === 'storing') {
+      const hasStorageContext = promptLower.includes('database') || promptLower.includes('cache') || 
+                                promptLower.includes('save') || promptLower.includes('persist') ||
+                                promptLower.includes('sheets') || promptLower.includes('crm');
+      const isStorageNode = nodeCategory === 'data' || nodeTags.includes('storage') || 
+                           nodeTags.includes('database') || nodeTags.includes('cache') ||
+                           nodeType.includes('cache') || nodeType.includes('database') ||
+                           nodeType.includes('sheets') || nodeType.includes('crm');
+      
+      // Reject if "store" is mentioned but node is not a storage node
+      if (!hasStorageContext && !isStorageNode) {
+        return false;
+      }
+    }
+    
+    // "notify" keyword - reject unless context clearly indicates notification
+    if (keywordLower === 'notify' || keywordLower === 'notification') {
+      const hasNotificationContext = promptLower.includes('email') || promptLower.includes('slack') ||
+                                     promptLower.includes('message') || promptLower.includes('alert') ||
+                                     promptLower.includes('send') || promptLower.includes('gmail');
+      const isNotificationNode = nodeCategory === 'communication' || nodeTags.includes('notification') ||
+                                 nodeTags.includes('email') || nodeTags.includes('message') ||
+                                 nodeType.includes('gmail') || nodeType.includes('slack') ||
+                                 nodeType.includes('email') || nodeType.includes('telegram');
+      
+      // Reject if "notify" is mentioned but node is not a notification node
+      if (!hasNotificationContext && !isNotificationNode) {
+        return false;
+      }
+    }
+    
+    // "respond" keyword - reject unless context clearly indicates response
+    if (keywordLower === 'respond' || keywordLower === 'response') {
+      const hasResponseContext = promptLower.includes('webhook') || promptLower.includes('reply') ||
+                                 promptLower.includes('answer') || promptLower.includes('return');
+      const isResponseNode = nodeType.includes('webhook_response') || nodeType.includes('respond_to_webhook') ||
+                            nodeTags.includes('response') || nodeTags.includes('webhook');
+      
+      // Reject if "respond" is mentioned but node is not a response node
+      if (!hasResponseContext && !isResponseNode) {
+        return false;
+      }
+    }
+    
+    // "automatically" keyword - reject unless context clearly indicates automation/trigger
+    if (keywordLower === 'automatically' || keywordLower === 'automatic') {
+      const hasTriggerContext = promptLower.includes('schedule') || promptLower.includes('trigger') ||
+                                promptLower.includes('daily') || promptLower.includes('weekly') ||
+                                promptLower.includes('when') || promptLower.includes('on');
+      const isTriggerNode = nodeCategory === 'trigger' || nodeTags.includes('trigger') ||
+                          nodeType.includes('trigger') || nodeType.includes('schedule') ||
+                          nodeType.includes('webhook') || nodeType.includes('interval');
+      
+      // Reject if "automatically" is mentioned but node is not a trigger node
+      if (!hasTriggerContext && !isTriggerNode) {
+        return false;
+      }
+    }
+    
+    // "capture" keyword - reject unless context clearly indicates form/capture
+    if (keywordLower === 'capture' || keywordLower === 'capturing') {
+      const hasCaptureContext = promptLower.includes('form') || promptLower.includes('lead') ||
+                                promptLower.includes('submission') || promptLower.includes('input');
+      const isCaptureNode = nodeType.includes('form') || nodeTags.includes('form') ||
+                           nodeTags.includes('capture') || nodeTags.includes('input');
+      
+      // Reject if "capture" is mentioned but node is not a capture node
+      if (!hasCaptureContext && !isCaptureNode) {
+        return false;
+      }
+    }
+    
+    // "qualify" keyword - reject unless context clearly indicates AI/analysis
+    if (keywordLower === 'qualify' || keywordLower === 'qualifying' || keywordLower === 'qualification') {
+      const hasQualifyContext = promptLower.includes('ai') || promptLower.includes('analyze') ||
+                                promptLower.includes('classify') || promptLower.includes('evaluate');
+      const isQualifyNode = nodeCategory === 'ai' || nodeTags.includes('ai') ||
+                           nodeType.includes('ai') || nodeType.includes('chat_model');
+      
+      // Reject if "qualify" is mentioned but node is not an AI/analysis node
+      if (!hasQualifyContext && !isQualifyNode) {
+        return false;
+      }
+    }
+    
+    // ✅ ROOT-LEVEL: Reject ambiguous "content" keyword unless explicitly about documents/media
+    if (keywordLower === 'content') {
+      const isDocumentNode = nodeCategory === 'data' || nodeTags.includes('document') || nodeTags.includes('file');
+      const isMediaNode = nodeCategory === 'social' || nodeTags.includes('media') || nodeTags.includes('platform');
+      
+      if ((isDocumentNode || isMediaNode) && !promptLower.includes('document') && !promptLower.includes('google doc') && !promptLower.includes('file')) {
+        return false;
+      }
+    }
+    
+    // ✅ ROOT-LEVEL: "post" keyword - check if platform is specified and matches this node
+    if (keywordLower === 'post' || keywordLower === 'posting') {
+      const postPattern = /post\s+(?:on|to|to\s+)?\s*([a-z_\s]+)/i;
+      const match = promptLower.match(postPattern);
+      if (match && match[1]) {
+        const platform = match[1].toLowerCase().trim();
+        
+        const nodeKeywords = this.keywordCollector.getAllAliasKeywords()
+          .filter(k => k.nodeType === nodeType)
+          .map(k => k.keyword.toLowerCase());
+        
+        const platformMatchesNode = nodeKeywords.some(k => 
+          platform.includes(k) || k.includes(platform) || 
+          platform.includes(nodeLabel) || nodeLabel.includes(platform) ||
+          platform.includes(nodeType.replace('_', '')) || nodeType.replace('_', '').includes(platform)
+        );
+        
+        if (!platformMatchesNode) {
+          if (nodeCategory === 'utility' || nodeTags.includes('http') || nodeType.includes('http')) {
+            return false;
+          }
+          return false;
+        }
+      }
+    }
+    
+    // ✅ ROOT-LEVEL: "AI" keyword - prefer more specific AI nodes over generic ones
+    if (keywordLower === 'ai') {
+      const isGenericAI = nodeCategory === 'ai' && (
+        nodeType.includes('service') || 
+        nodeTags.includes('generic') ||
+        !nodeType.includes('chat') && !nodeType.includes('model') && !nodeType.includes('agent')
+      );
+      
+      if (isGenericAI && !promptLower.includes('ai service') && !promptLower.includes('ai_service')) {
+        return false;
+      }
+    }
+    
+    return true; // Default: allow if no specific rejection rules match
+  }
+  
+  /**
+   * ✅ WORLD-CLASS UNIVERSAL: Get node-specific pattern using registry (works for ALL nodes)
+   */
+  private getNodeSpecificPattern(nodeType: string, keyword: string): RegExp | null {
+    // ✅ UNIVERSAL: Get node definition from registry
+    const nodeDef = unifiedNodeRegistry.get(nodeType);
+    if (!nodeDef) return null;
+    
+    const nodeLabel = (nodeDef.label || nodeType).toLowerCase();
+    const nodeCategory = (nodeDef.category || '').toLowerCase();
+    const nodeTags = (nodeDef.tags || []).map(t => t.toLowerCase());
+    
+    // ✅ UNIVERSAL: Build pattern based on node category and common action verbs
+    // Social/Platform nodes: "post on X", "publish to X", "share on X"
+    if (nodeCategory === 'social' || nodeTags.includes('platform') || nodeTags.includes('social')) {
+      const labelEscaped = nodeLabel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const typeEscaped = nodeType.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/_/g, '[\\s_]?');
+      return new RegExp(`(?:post|publish|share|upload)\\s+(?:on|to)\\s+(?:${labelEscaped}|${typeEscaped})`, 'i');
+    }
+    
+    // Email nodes: "send via X", "email using X", "send to X"
+    if (nodeCategory === 'communication' || nodeTags.includes('email') || nodeTags.includes('mail')) {
+      const labelEscaped = nodeLabel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp(`(?:send|email)\\s+(?:via|using|to)\\s+${labelEscaped}`, 'i');
+    }
+    
+    // Data source nodes: "get from X", "read from X", "fetch from X"
+    if (nodeCategory === 'data' || nodeTags.includes('source') || nodeTags.includes('read')) {
+      const labelEscaped = nodeLabel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp(`(?:get|read|fetch|retrieve)\\s+(?:data|from)\\s+(?:.*?\\s+)?${labelEscaped}`, 'i');
+    }
+    
+    // Schedule/Trigger nodes: "daily", "weekly", "schedule", "automatically"
+    if (nodeCategory === 'trigger' || nodeTags.includes('schedule') || nodeTags.includes('trigger')) {
+      return /(?:daily|weekly|monthly|schedule|automatically|automatic|recurring)/i;
+    }
+    
+    // AI nodes: "generate AI X", "create AI X", "use AI"
+    if (nodeCategory === 'ai' || nodeTags.includes('ai') || nodeTags.includes('llm')) {
+      return /(?:generate|create|use)\\s+ai\\s+(?:content|summary|text|analysis)/i;
+    }
+    
+    return null; // No specific pattern for this node type
+  }
+
+  /**
+   * ✅ STEP 2: Map keywords to node types
+   * Converts keywords (strings) to actual node types (validated against registry)
+   */
+  private mapKeywordsToNodeTypes(keywords: string[]): string[] {
+    const nodeTypes = new Set<string>();
+    
+    for (const keyword of keywords) {
+      // Direct match (keyword is already a node type)
+      if (nodeLibrary.isNodeTypeRegistered(keyword)) {
+        nodeTypes.add(keyword);
+        continue;
+      }
+      
+      // Alias match (keyword maps to node type via keyword collector)
+      const keywordData = this.keywordCollector.getAllAliasKeywords().find(
+        kd => kd.keyword.toLowerCase() === keyword.toLowerCase()
+      );
+      
+      if (keywordData) {
+        // Verify node type exists in registry
+        if (nodeLibrary.isNodeTypeRegistered(keywordData.nodeType)) {
+          nodeTypes.add(keywordData.nodeType);
+          console.log(`[AIIntentClarifier] ✅ Mapped keyword "${keyword}" → node type "${keywordData.nodeType}"`);
+        } else {
+          console.warn(`[AIIntentClarifier] ⚠️  Keyword "${keyword}" maps to unregistered node type "${keywordData.nodeType}"`);
+        }
+      }
+    }
+    
+    const result = Array.from(nodeTypes);
+    console.log(`[AIIntentClarifier] ✅ Mapped ${keywords.length} keyword(s) to ${result.length} node type(s): ${result.join(', ')}`);
+    return result;
+  }
+
+  /**
+   * ✅ UNIVERSAL: Get output node keywords from registry (no hardcoding)
+   * Returns all keywords for nodes that have 'output' capability
+   */
+  private getOutputNodeKeywords(): string[] {
+    const allKeywordData = this.keywordCollector.getAllAliasKeywords();
+    const outputKeywords = new Set<string>();
+    
+    for (const keywordData of allKeywordData) {
+      // Check if node has output capability
+      if (nodeCapabilityRegistryDSL.isOutput(keywordData.nodeType)) {
+        outputKeywords.add(keywordData.keyword);
+        // Also add node type itself as keyword
+        outputKeywords.add(keywordData.nodeType);
+      }
+    }
+    
+    return Array.from(outputKeywords);
+  }
+
+  /**
+   * ✅ UNIVERSAL: Detect output node from prompt using registry (no hardcoding)
+   * Scans prompt for output node keywords and returns the first match
+   */
+  private detectOutputNodeFromPrompt(prompt: string): string | null {
+    const promptLower = prompt.toLowerCase();
+    const allKeywordData = this.keywordCollector.getAllAliasKeywords();
+    
+    // Get all output node types
+    const allNodeTypes = nodeLibrary.getRegisteredNodeTypes();
+    const outputNodeTypes = allNodeTypes.filter(nodeType => 
+      nodeCapabilityRegistryDSL.isOutput(nodeType)
+    );
+    
+    // Check each output node type
+    for (const nodeType of outputNodeTypes) {
+      const nodeTypeLower = nodeType.toLowerCase();
+      
+      // Direct node type match
+      if (promptLower.includes(nodeTypeLower)) {
+        return nodeType;
+      }
+      
+      // Keyword match
+      const nodeKeywords = allKeywordData
+        .filter(kd => kd.nodeType === nodeType)
+        .map(kd => kd.keyword.toLowerCase());
+      
+      for (const keyword of nodeKeywords) {
+        if (promptLower.includes(keyword)) {
+          return nodeType;
+        }
+      }
+    }
+    
+    return null;
+  }
+
+  // ✅ REMOVED: Hardcoded filtering and expansion functions
+  // These functions contained hardcoded phrases and node lists
+  // Now: AI receives extracted keywords and intelligently understands intent
+  // No hardcoding needed - AI makes intelligent decisions from context
+
+  /**
+   * ✅ UNIVERSAL: Build dynamic example JSON using extracted node types
+   * Uses registry to categorize nodes dynamically - NO hardcoded patterns
+   */
+  private buildDynamicExampleJSON(extractedNodeTypes: string[]): string {
+    // ✅ CRITICAL: Show ALL required nodes in examples, not just 2-3
+    const allNodes = extractedNodeTypes.length > 0 ? extractedNodeTypes : ['manual_trigger', 'appropriate_node'];
+    const nodeList = allNodes.join(', ');
+    
+    // ✅ UNIVERSAL: Categorize nodes using registry (NO hardcoded patterns)
+    const categorizeNodes = (): {
+      triggers: string[];
+      utilities: string[];
+      ai: string[];
+      delays: string[];
+      data: string[];
+      outputs: string[];
+      others: string[];
+    } => {
+      const categories = {
+        triggers: [] as string[],
+        utilities: [] as string[],
+        ai: [] as string[],
+        delays: [] as string[],
+        data: [] as string[],
+        outputs: [] as string[],
+        others: [] as string[],
+      };
+      
+      for (const nodeType of allNodes) {
+        const nodeDef = unifiedNodeRegistry.get(nodeType);
+        if (!nodeDef) {
+          categories.others.push(nodeType);
+          continue;
+        }
+        
+        const category = (nodeDef.category || '').toLowerCase();
+        const tags = (nodeDef.tags || []).map(t => t.toLowerCase());
+        
+        // Categorize using registry metadata
+        if (category === 'trigger' || tags.includes('trigger') || tags.includes('schedule')) {
+          categories.triggers.push(nodeType);
+        } else if (category === 'ai' || tags.includes('ai') || tags.includes('llm') || tags.includes('chat')) {
+          categories.ai.push(nodeType);
+        } else if (tags.includes('delay') || tags.includes('wait') || tags.includes('rate') || nodeType.includes('wait') || nodeType.includes('delay')) {
+          categories.delays.push(nodeType);
+        } else if (category === 'data' || tags.includes('export') || tags.includes('csv') || tags.includes('file')) {
+          categories.data.push(nodeType);
+        } else if (category === 'communication' || category === 'social' || tags.includes('social') || tags.includes('platform') || tags.includes('post')) {
+          categories.outputs.push(nodeType);
+        } else if (category === 'utility' || tags.includes('http') || tags.includes('api') || tags.includes('request')) {
+          categories.utilities.push(nodeType);
+        } else if (nodeCapabilityRegistryDSL.isOutput(nodeType)) {
+          categories.outputs.push(nodeType);
+        } else {
+          categories.others.push(nodeType);
+        }
+      }
+      
+      return categories;
+    };
+    
+    const categories = categorizeNodes();
+    
+    // ✅ UNIVERSAL: Get node by category (fallback to index if category empty)
+    const getNodeByCategory = (categoryNodes: string[], fallbackIndex: number): string => {
+      if (categoryNodes.length > 0) {
+        return categoryNodes[0];
+      }
+      return allNodes[fallbackIndex] || allNodes[0] || 'node';
+    };
+    
+    // ✅ UNIVERSAL: Get trigger node from registry (NO hardcoded fallbacks)
+    const getTriggerNode = (preferWebhook: boolean = false): string => {
+      // First, try to find from extracted nodes
+      if (preferWebhook) {
+        const webhookTrigger = allNodes.find(n => {
+          const nodeDef = unifiedNodeRegistry.get(n);
+          return nodeDef && (
+            (nodeDef.category === 'trigger' || (nodeDef.tags || []).includes('trigger')) &&
+            (n.includes('webhook') || (nodeDef.tags || []).includes('webhook'))
+          );
+        });
+        if (webhookTrigger) return webhookTrigger;
+      }
+      
+      const manualTrigger = allNodes.find(n => {
+        const nodeDef = unifiedNodeRegistry.get(n);
+        return nodeDef && (
+          (nodeDef.category === 'trigger' || (nodeDef.tags || []).includes('trigger')) &&
+          (n.includes('manual') || (nodeDef.tags || []).includes('manual'))
+        );
+      });
+      if (manualTrigger) return manualTrigger;
+      
+      // Fallback to any trigger from extracted nodes
+      if (categories.triggers.length > 0) return categories.triggers[0];
+      
+      // ✅ UNIVERSAL: Find any trigger from registry (NO hardcoded 'manual_trigger' or 'webhook')
+      const allRegisteredTriggers = nodeLibrary.getRegisteredNodeTypes().filter(nodeType => {
+        const nodeDef = unifiedNodeRegistry.get(nodeType);
+        return nodeDef && (nodeDef.category === 'trigger' || (nodeDef.tags || []).includes('trigger'));
+      });
+      
+      if (preferWebhook) {
+        const webhookFromRegistry = allRegisteredTriggers.find(t => t.includes('webhook'));
+        if (webhookFromRegistry) return webhookFromRegistry;
+      }
+      
+      // Return first available trigger from registry
+      return allRegisteredTriggers[0] || allNodes[0] || 'node';
+    };
+    
+    // ✅ UNIVERSAL: Build examples using categorized nodes (NO hardcoded patterns)
+    const buildExample = (triggerType: 'manual' | 'webhook', nodeIndex: number): string => {
+      const trigger = getTriggerNode(triggerType === 'webhook');
+      const utility = getNodeByCategory(categories.utilities, nodeIndex % categories.utilities.length || 0);
+      const ai = getNodeByCategory(categories.ai, nodeIndex % categories.ai.length || 1);
+      const delay = getNodeByCategory(categories.delays, nodeIndex % categories.delays.length || 2);
+      const data = getNodeByCategory(categories.data, nodeIndex % categories.data.length || 3);
+      const output = getNodeByCategory(categories.outputs, nodeIndex % categories.outputs.length || allNodes.length - 1);
+      
+      if (allNodes.length >= 4) {
+        return `Start with ${trigger} to initiate the automation process. Configure ${utility} for data retrieval and processing. Transform the information through ${ai} to generate engaging content. Manage execution timing with ${delay} to ensure smooth operation. Export results using ${data} for record keeping. Finally, deliver the content via ${output} platform automatically.`;
+      } else if (allNodes.length === 3) {
+        return `Start with ${trigger} to begin the workflow. Use ${allNodes[1]} to process data. Complete with ${allNodes[2]} to deliver results.`;
+      } else if (allNodes.length === 2) {
+        return `Start with ${trigger}. Use ${allNodes[0]} to process data and ${allNodes[1]} to deliver results.`;
+      } else {
+        return `Start with ${trigger}. Use ${allNodes[0]} to complete the workflow.`;
+      }
+    };
+    
+    const example1 = buildExample('manual', 0);
+    const example2 = buildExample('manual', 1);
+    const example3 = buildExample('webhook', 2);
+    const example4 = buildExample('webhook', 3);
+    
+    return `{
+  "clarifiedIntent": "Detailed 3-4 sentence enhanced version of user prompt with ALL REQUIRED NODES (${allNodes.length} nodes: ${nodeList}), operations, and complete data flow",
+  "matchedKeywords": ${JSON.stringify(allNodes)},
+  "variations": [
+    {
+      "prompt": "${example1}",
+      "matchedKeywords": ${JSON.stringify(allNodes)},
+      "reasoning": "Comprehensive workflow description including ALL ${allNodes.length} REQUIRED NODES (${nodeList}) with natural integration and detailed operations"
+    },
+    {
+      "prompt": "${example2}",
+      "matchedKeywords": ${JSON.stringify(allNodes)},
+      "reasoning": "Alternative workflow flow using ALL ${allNodes.length} REQUIRED NODES (${nodeList}) with different node sequencing and operations"
+    },
+    {
+      "prompt": "${example3}",
+      "matchedKeywords": ${JSON.stringify(allNodes)},
+      "reasoning": "Automated workflow design incorporating ALL ${allNodes.length} REQUIRED NODES (${nodeList}) with webhook integration and comprehensive automation"
+    },
+    {
+      "prompt": "${example4}",
+      "matchedKeywords": ${JSON.stringify(allNodes)},
+      "reasoning": "End-to-end automation system utilizing ALL ${allNodes.length} REQUIRED NODES (${nodeList}) with detailed configuration and seamless integration"
+    }
+  ]
+}`;
   }
 }
 

@@ -19,6 +19,7 @@
 import { ollamaOrchestrator } from './ai/ollama-orchestrator';
 import { nodeLibrary } from './nodes/node-library';
 import { resolveNodeType } from '../core/utils/node-type-resolver-util';
+import { unifiedNodeTypeMatcher } from '../core/utils/unified-node-type-matcher';
 
 /**
  * Get allowed node types from registry
@@ -99,7 +100,10 @@ export class WorkflowPlanner {
    * @param userPrompt - Natural language description of desired workflow
    * @returns Structured workflow plan with trigger type and ordered steps
    */
-  async planWorkflow(userPrompt: string): Promise<WorkflowPlan> {
+  async planWorkflow(
+    userPrompt: string,
+    constraints?: { mandatoryNodes?: string[]; suggestedNodes?: string[] }
+  ): Promise<WorkflowPlan> {
     // ✅ FIXED: Prevent recursion - if already planning for this prompt, return existing promise
     const promptKey = userPrompt.substring(0, 200); // Use first 200 chars as key
     const existingPromise = this.planningPromises.get(promptKey);
@@ -115,9 +119,12 @@ export class WorkflowPlanner {
     
     this.isPlanning = true;
     console.log(`[WorkflowPlanner] Planning workflow for: "${userPrompt.substring(0, 100)}"`);
+    if (constraints?.mandatoryNodes && constraints.mandatoryNodes.length > 0) {
+      console.log(`[WorkflowPlanner] ✅ Mandatory nodes: ${constraints.mandatoryNodes.join(', ')}`);
+    }
     
     // Create promise and store it
-    const planningPromise = this.executePlanning(userPrompt);
+    const planningPromise = this.executePlanning(userPrompt, constraints);
     this.planningPromises.set(promptKey, planningPromise);
     
     try {
@@ -134,7 +141,10 @@ export class WorkflowPlanner {
    * Execute planning (internal method)
    * ✅ FIXED: Separated from planWorkflow to enable recursion prevention
    */
-  private async executePlanning(userPrompt: string): Promise<WorkflowPlan> {
+  private async executePlanning(
+    userPrompt: string,
+    constraints?: { mandatoryNodes?: string[]; suggestedNodes?: string[] }
+  ): Promise<WorkflowPlan> {
 
     let lastError: Error | null = null;
     let rawResponse: string | null = null;
@@ -148,8 +158,8 @@ export class WorkflowPlanner {
 
         console.log(`[WorkflowPlanner] Attempt ${attempt}/${this.maxRetries} (temperature: ${temperature}, max_tokens: ${maxTokens})`);
 
-        // Build planning prompt
-        const planningPrompt = this.buildPlanningPrompt(userPrompt, isRetry);
+        // Build planning prompt (include mandatory nodes)
+        const planningPrompt = this.buildPlanningPrompt(userPrompt, isRetry, constraints?.mandatoryNodes);
 
         // Call Ollama orchestrator
         const response = await ollamaOrchestrator.processRequest('workflow-generation', {
@@ -180,6 +190,11 @@ export class WorkflowPlanner {
         // Step 1: Resolve all node types using resolver (replace aliases with canonical types)
         plan = this.resolvePlanNodeTypes(plan);
 
+        // Step 1.5: ✅ NEW: Enforce mandatory nodes (from keyword extraction)
+        if (constraints?.mandatoryNodes && constraints.mandatoryNodes.length > 0) {
+          plan = this.enforceMandatoryNodes(plan, constraints.mandatoryNodes);
+        }
+
         // Step 2: Validate plan structure (after resolution)
         const validation = this.validatePlan(plan);
         if (!validation.valid) {
@@ -196,7 +211,7 @@ export class WorkflowPlanner {
         // Step 3: Enforce minimal workflow - remove unnecessary nodes
         plan = this.enforceMinimalWorkflow(plan);
         
-        // Step 4: Re-validate after minimal enforcement
+        // Step 5: Re-validate after minimal enforcement
         const revalidation = this.validatePlan(plan);
         if (!revalidation.valid) {
           console.warn(`[WorkflowPlanner] Re-validation failed after minimal enforcement:`, revalidation.errors);
@@ -254,8 +269,13 @@ export class WorkflowPlanner {
   /**
    * Build planning prompt for AI
    * Uses canonical node types from registry
+   * ✅ NEW: Includes mandatory nodes from keyword extraction
    */
-  private buildPlanningPrompt(userPrompt: string, isRetry: boolean = false): string {
+  private buildPlanningPrompt(
+    userPrompt: string, 
+    isRetry: boolean = false,
+    mandatoryNodes?: string[]
+  ): string {
     const strictJsonDirective = isRetry 
       ? `🚨 CRITICAL: You MUST respond with ONLY valid JSON. NO explanations, NO prose, NO markdown, NO code blocks. Your response MUST start with { and end with }. If you include any text before or after the JSON, the system will fail.`
       : `CRITICAL: You MUST respond with ONLY valid JSON. Do NOT include any explanations, markdown formatting, code blocks, or text outside the JSON object. Your response must start with { and end with }.`;
@@ -272,12 +292,26 @@ export class WorkflowPlanner {
     // Group nodes by category for better readability
     const nodeTypesByCategory = this.groupNodesByCategory(availableNodeTypes);
 
+    // ✅ NEW: Include mandatory nodes section if provided
+    const mandatoryNodesSection = mandatoryNodes && mandatoryNodes.length > 0
+      ? `\n🚨🚨🚨 CRITICAL - MANDATORY NODES (MUST BE INCLUDED):
+The following node types were extracted from the user's prompt and MUST be included in the workflow plan:
+${mandatoryNodes.map((node, idx) => `  ${idx + 1}. ${node}`).join('\n')}
+
+ABSOLUTE REQUIREMENT: ALL mandatory nodes listed above MUST appear in the "steps" array of your response.
+DO NOT omit any mandatory node, even if you think it's not needed.
+If a mandatory node is missing, the workflow will be invalid.
+
+`
+      : '';
+
     return `You are a MINIMAL workflow planning engine.
 Your task is to break down a user's request into the MINIMUM required workflow steps using ONLY the available node types from the registry.
 
 ${strictJsonDirective}
 
 User Request: "${userPrompt}"
+${mandatoryNodesSection}
 
 🚨 CRITICAL: MINIMAL WORKFLOW RULES
 1. Generate ONLY nodes required to satisfy the user's intent
@@ -654,6 +688,58 @@ Return JSON only with node_type fields matching the exact node types from the li
    * - No unused nodes
    * - No orphan nodes
    */
+  /**
+   * ✅ NEW: Enforce mandatory nodes in workflow plan
+   * Ensures all mandatory nodes (from keyword extraction) are included in the plan
+   */
+  /**
+   * ✅ UNIVERSAL: Enforce mandatory nodes in workflow plan using semantic matching
+   * Ensures all mandatory nodes (from keyword extraction) are included in the plan
+   * Uses unifiedNodeTypeMatcher for semantic equivalence (e.g., ai_service ≡ ai_chat_model)
+   */
+  private enforceMandatoryNodes(plan: WorkflowPlan, mandatoryNodes: string[]): WorkflowPlan {
+    console.log(`[WorkflowPlanner] 🔒 Enforcing ${mandatoryNodes.length} mandatory node(s): ${mandatoryNodes.join(', ')}`);
+    
+    // Collect existing node types from plan
+    const existingNodeTypes: string[] = [];
+    plan.steps.forEach(step => {
+      const nodeType = step.node_type || step.action || '';
+      if (nodeType) {
+        existingNodeTypes.push(nodeType);
+      }
+    });
+    
+    const missingNodes: string[] = [];
+    for (const mandatoryNode of mandatoryNodes) {
+      // ✅ UNIVERSAL: Use semantic matching to check if requirement is satisfied
+      const isSatisfied = unifiedNodeTypeMatcher.isRequirementSatisfied(
+        mandatoryNode,
+        existingNodeTypes,
+        { strict: false } // Use semantic equivalence
+      );
+      
+      if (!isSatisfied.matches) {
+        missingNodes.push(mandatoryNode);
+        console.log(`[WorkflowPlanner] ✅ Adding mandatory node: ${mandatoryNode} (not found in plan)`);
+        
+        // Add mandatory node to plan
+        plan.steps.push({
+          node_type: mandatoryNode,
+          description: `Required node: ${mandatoryNode}`,
+          order: plan.steps.length + 1,
+        });
+      } else {
+        console.log(`[WorkflowPlanner] ✅ Mandatory node satisfied: ${mandatoryNode} (matched via: ${isSatisfied.reason})`);
+      }
+    }
+    
+    if (missingNodes.length > 0) {
+      console.log(`[WorkflowPlanner] ✅ Added ${missingNodes.length} mandatory node(s) to plan`);
+    }
+    
+    return plan;
+  }
+
   private enforceMinimalWorkflow(plan: WorkflowPlan): WorkflowPlan {
     console.log('[WorkflowPlanner] Enforcing minimal workflow rules...');
 

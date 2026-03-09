@@ -868,7 +868,17 @@ You are a workflow execution engine, not a diagram generator.`;
     let usePlannerOutput = false;
     
     try {
-      workflowPlan = await workflowPlanner.planWorkflow(userPrompt);
+      // ✅ NEW: Extract mandatory nodes from constraints (if provided from summarize layer)
+      const mandatoryNodes = constraints?.mandatoryNodes || constraints?.mandatoryNodeTypes || [];
+      const plannerConstraints = mandatoryNodes.length > 0 
+        ? { mandatoryNodes, suggestedNodes: constraints?.suggestedNodes || [] }
+        : undefined;
+      
+      if (mandatoryNodes.length > 0) {
+        console.log(`[WorkflowBuilder] 🔒 Passing ${mandatoryNodes.length} mandatory node(s) to planner: ${mandatoryNodes.join(', ')}`);
+      }
+      
+      workflowPlan = await workflowPlanner.planWorkflow(userPrompt, plannerConstraints);
       console.log(`✅ [WorkflowPlanner] Plan created:`, JSON.stringify(workflowPlan, null, 2));
       console.log(`[WorkflowBuilder] ✅ [STAGE: Workflow Planning] Completed - ${workflowPlan.steps?.length || 0} steps planned`);
       console.log(`✅ [WorkflowPlanner] Trigger: ${workflowPlan.trigger_type}, Steps: ${workflowPlan.steps.length}`);
@@ -2187,13 +2197,15 @@ You are a workflow execution engine, not a diagram generator.`;
       promptLower.includes('ai model');
     
     // CRITICAL: Check if AI Agent nodes are in the workflow structure
-    // AI Agent nodes use Ollama - no API keys needed
+    // ✅ WORLD-CLASS UNIVERSAL: AI nodes use Ollama - no API keys needed
+    // Uses registry-based check - works for ALL AI nodes (ai_agent, ai_chat_model, ollama, etc.)
+    const { isAIChatNode } = require('../../core/utils/universal-node-type-checker');
     if (structure && structure.steps && Array.isArray(structure.steps)) {
-      const hasAIAgentNode = structure.steps.some((step: WorkflowStepDefinition) => 
-        step.type === 'ai_agent' || step.type?.toLowerCase() === 'ai_agent'
+      const hasAINode = structure.steps.some((step: WorkflowStepDefinition) => 
+        isAIChatNode(step.type || '')
       );
-      if (hasAIAgentNode) {
-        console.log('✅ AI Agent node detected - using Ollama (no API key required)');
+      if (hasAINode) {
+        console.log('✅ AI node detected - using Ollama (no API key required)');
       }
     }
     
@@ -5144,9 +5156,17 @@ Return JSON:
         console.log(`🔍 [DIAGNOSTIC] [Node Filter] Step: type="${stepType}", keywords=[${keywords.join(', ')}]`);
       }
       
-      // CRITICAL: For platform nodes (LinkedIn, Twitter, Instagram) and CRM nodes, use more flexible matching
-      const isPlatformNode = ['linkedin', 'twitter', 'instagram', 'facebook'].includes(stepType);
-      const isCrmNode = ['hubspot', 'salesforce', 'airtable', 'clickup', 'notion', 'zoho_crm', 'pipedrive'].includes(stepType);
+      // ✅ UNIVERSAL: For platform nodes and CRM nodes, use registry (no hardcoding)
+      const nodeDef = unifiedNodeRegistry.get(stepType);
+      const nodeCategory = nodeDef?.category?.toLowerCase() || '';
+      const nodeTags = (nodeDef?.tags || []).map((t: string) => t.toLowerCase());
+      
+      const isPlatformNode = nodeCategory === 'social' || 
+                            nodeTags.includes('platform') || 
+                            nodeTags.includes('social');
+      const isCrmNode = nodeCategory === 'crm' || 
+                       nodeTags.includes('crm') || 
+                       nodeTags.includes('customer relationship');
       
       if (isDebug) {
         console.log(`🔍 [DIAGNOSTIC] [Node Filter] Step "${stepType}": isPlatform=${isPlatformNode}, isCrm=${isCrmNode}`);

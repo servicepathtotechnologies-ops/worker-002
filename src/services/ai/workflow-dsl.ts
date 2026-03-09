@@ -415,16 +415,17 @@ function validateOperationRequirements(intent: StructuredIntent, dsl: WorkflowDS
       isWriteOperation(a.operation || '')
     );
   
-  // ✅ SPECIAL CASE: Chatbot/AI workflows - ai_chat_model or ai_agent IS the output
+  // ✅ WORLD-CLASS UNIVERSAL: Chatbot/AI workflows - ANY AI node IS the output
   // For chatbot workflows, the AI response goes back through the chat interface
   // No separate output node is needed
+  // Uses registry-based check - works for ALL AI nodes (ai_chat_model, ollama, openai_gpt, etc.)
+  const { isAIChatNode, isTriggerNode } = require('../../core/utils/universal-node-type-checker');
   const hasAIChatNode = dsl.transformations.some(tf => {
-    const type = (tf.type || '').toLowerCase();
-    return type === 'ai_chat_model' || type === 'ai_agent' || type === 'chat_model';
+    return isAIChatNode(tf.type || '');
   });
   const isChatbotWorkflow = hasAIChatNode && (
-    dsl.trigger.type === 'chat_trigger' || 
-    dsl.trigger.type === 'manual_trigger'
+    isTriggerNode(dsl.trigger.type || '') && 
+    (dsl.trigger.type === 'chat_trigger' || dsl.trigger.type === 'manual_trigger')
   );
   
   // If chatbot workflow, AI node IS the output - don't require separate output node
@@ -711,7 +712,6 @@ export class DSLGenerator {
       // Step 5: Normalize the resolved type (handles semantic mappings like ai providers)
       const normalizedType = unifiedNormalizeNodeTypeString(resolvedType);
       let actionType = normalizedType || resolvedType || rawType;
-      const operation = action.operation || 'read';
 
       // ✅ UNIVERSAL FIX: Use getSchema() with pattern matching (like IntentCompletenessValidator)
       // This ensures we can resolve compound names and variations that aren't directly registered
@@ -756,10 +756,23 @@ export class DSLGenerator {
         throw new DSLGenerationError(message, [
           {
             type: rawType,
-            operation,
+            operation: action.operation || 'read',
             reason: 'Unresolvable node type: no registered NodeLibrary schema found after all resolution attempts',
           },
         ]);
+      }
+      
+      // ✅ CRITICAL FIX: Infer operation from prompt context if missing
+      // Priority: 1. Intent operation → 2. Prompt keywords → 3. Schema default
+      let operation = action.operation;
+      if (!operation) {
+        operation = this.inferOperationFromPromptContext(
+          actionType,
+          rawType,
+          originalPrompt || '',
+          finalSchema
+        );
+        console.log(`[DSLGenerator] 🔍 Inferred operation "${operation}" for "${actionType}" from prompt context`);
       }
 
       // ✅ FIX 1: Use unified categorizer for consistent categorization
@@ -1127,11 +1140,12 @@ export class DSLGenerator {
       isWriteOperation(a.operation || '')
     );
     
-    // ✅ SPECIAL CASE: Chatbot workflows - ai_chat_model produces output through chat interface
-    // Don't auto-inject if it's a chatbot workflow (ai_chat_model IS the output)
+    // ✅ WORLD-CLASS UNIVERSAL: Chatbot workflows - ANY AI node produces output through chat interface
+    // Don't auto-inject if it's a chatbot workflow (AI node IS the output)
+    // Uses registry-based check - works for ALL AI nodes (ai_chat_model, ollama, openai_gpt, etc.)
+    const { isAIChatNode } = require('../../core/utils/universal-node-type-checker');
     const hasAIChatNode = finalTransformations.some(tf => {
-      const type = (tf.type || '').toLowerCase();
-      return type === 'ai_chat_model' || type === 'ai_agent' || type === 'chat_model';
+      return isAIChatNode(tf.type || '');
     });
     const isChatbotWorkflow = hasAIChatNode && (
       trigger.type === 'chat_trigger' || 
@@ -1411,6 +1425,112 @@ export class DSLGenerator {
   }
 
   /**
+   * ✅ CRITICAL FIX: Infer operation from prompt context when missing
+   * 
+   * Priority order:
+   * 1. Check prompt keywords (send, read, write, etc.) near the node type
+   * 2. Check node type context (gmail → send, sheets → read)
+   * 3. Use schema default operation
+   * 
+   * This ensures operations are correctly inferred even when intent extraction fails.
+   * 
+   * @param nodeType - Node type (e.g., 'google_gmail')
+   * @param rawType - Original node type from intent
+   * @param prompt - Original user prompt
+   * @param schema - Node schema (optional, for fallback)
+   * @returns Inferred operation
+   */
+  private inferOperationFromPromptContext(
+    nodeType: string,
+    rawType: string,
+    prompt: string,
+    schema?: any
+  ): string {
+    const promptLower = (prompt || '').toLowerCase();
+    const nodeTypeLower = (nodeType || '').toLowerCase();
+    const rawTypeLower = (rawType || '').toLowerCase();
+    
+    // ✅ STEP 1: Check prompt keywords near node type
+    // Look for operation keywords in a window around the node type mention
+    const nodeTypePattern = new RegExp(
+      `(?:\\b${rawTypeLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b|\\b${nodeTypeLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b)`,
+      'i'
+    );
+    const nodeTypeIndex = promptLower.search(nodeTypePattern);
+    
+    if (nodeTypeIndex >= 0) {
+      // Extract context window (50 chars before and after node type)
+      const contextStart = Math.max(0, nodeTypeIndex - 50);
+      const contextEnd = Math.min(promptLower.length, nodeTypeIndex + rawTypeLower.length + 50);
+      const context = promptLower.substring(contextStart, contextEnd);
+      
+      // Check for write/output operations
+      if (/\b(send|post|write|create|update|notify|deliver|publish|share)\b/.test(context)) {
+        return 'send';
+      }
+      
+      // Check for read/data source operations
+      if (/\b(read|get|fetch|retrieve|pull|extract|grab|obtain)\b/.test(context)) {
+        return 'read';
+      }
+      
+      // Check for transform operations
+      if (/\b(transform|process|analyze|summarize|classify|translate|generate)\b/.test(context)) {
+        return 'transform';
+      }
+    }
+    
+    // ✅ STEP 2: Check node type context (heuristic-based)
+    // Gmail/email nodes typically send
+    if (nodeTypeLower.includes('gmail') || nodeTypeLower.includes('email') || nodeTypeLower.includes('mail')) {
+      // Check if prompt mentions "send" anywhere
+      if (/\b(send|post|notify|deliver)\b/.test(promptLower)) {
+        return 'send';
+      }
+      // Default for email nodes is send
+      return 'send';
+    }
+    
+    // Sheets/database nodes typically read
+    if (nodeTypeLower.includes('sheet') || nodeTypeLower.includes('database') || nodeTypeLower.includes('db')) {
+      // Check if prompt mentions "write" or "create"
+      if (/\b(write|create|insert|add)\b/.test(promptLower)) {
+        return 'write';
+      }
+      // Default for data source nodes is read
+      return 'read';
+    }
+    
+    // ✅ STEP 3: Use schema default operation (last resort)
+    if (schema?.configSchema?.optional?.operation) {
+      const opField = schema.configSchema.optional.operation;
+      // Try to get first example or default
+      if (opField.examples && opField.examples.length > 0) {
+        return String(opField.examples[0]).toLowerCase();
+      }
+      if (opField.default) {
+        return String(opField.default).toLowerCase();
+      }
+    }
+    
+    // ✅ STEP 4: Final fallback - use category-based default
+    // This should rarely be reached, but ensures we always return a valid operation
+    const { nodeCapabilityRegistryDSL } = require('./node-capability-registry-dsl');
+    if (nodeCapabilityRegistryDSL.isOutput(nodeType)) {
+      return 'send';
+    }
+    if (nodeCapabilityRegistryDSL.isTransformation(nodeType)) {
+      return 'transform';
+    }
+    if (nodeCapabilityRegistryDSL.isDataSource(nodeType)) {
+      return 'read';
+    }
+    
+    // Absolute last resort
+    return 'read';
+  }
+
+  /**
    * ✅ SOLUTION 1: Normalize compound operations to base keywords
    * 
    * Extracts base keyword from compound operations like:
@@ -1673,15 +1793,12 @@ export class DSLGenerator {
       // Still inject if explicit AI operations detected (might be from transformation detection)
     }
     
-    // ✅ CRITICAL FIX: Check for ANY existing AI processing nodes (ai_chat_model OR ai_agent)
-    // Both perform the same 'ai_processing' operation, so we should not inject if either exists
+    // ✅ WORLD-CLASS UNIVERSAL: Check for ANY existing AI processing nodes
+    // Uses registry-based check - works for ALL AI nodes (ai_chat_model, ollama, openai_gpt, anthropic_claude, etc.)
+    // All AI nodes perform the same 'ai_processing' operation, so we should not inject if any exists
+    const { isAIChatNode } = require('../../core/utils/universal-node-type-checker');
     const existingLLMNodes = transformations.filter(tf => {
-      const normalizedType = unifiedNormalizeNodeTypeString(tf.type);
-      // Check for both ai_chat_model and ai_agent (both perform ai_processing operation)
-      return normalizedType === 'ai_chat_model' || 
-             normalizedType === 'ai_agent' ||
-             tf.type.toLowerCase() === 'ai_chat_model' ||
-             tf.type.toLowerCase() === 'ai_agent';
+      return isAIChatNode(tf.type || '');
     });
     
     // If any AI processing node already exists, no injection needed (prevent duplicates)
@@ -1791,15 +1908,20 @@ export class DSLGenerator {
       const existingOperationSignature = this.getOperationSignatureFromRegistry(existingNodeDef);
       if (existingOperationSignature === newOperationSignature) {
         // Same operation signature - this is a duplicate
-        // Special handling: ai_agent + ai_chat_model (both perform ai_processing)
-        if ((normalizedType === 'ai_agent' && existingNormalizedType === 'ai_chat_model') ||
-            (normalizedType === 'ai_chat_model' && existingNormalizedType === 'ai_agent')) {
-          // Prefer ai_chat_model for simple operations
+        // ✅ WORLD-CLASS UNIVERSAL: Check if both are AI nodes using semantic matching
+        // Works for ALL AI nodes (ai_chat_model, ollama, openai_gpt, anthropic_claude, ai_agent, etc.)
+        const { isAIChatNode } = require('../../core/utils/universal-node-type-checker');
+        const { unifiedNodeTypeMatcher } = require('../../core/utils/unified-node-type-matcher');
+        if (isAIChatNode(normalizedType) && isAIChatNode(existingNormalizedType)) {
+          // Both are AI nodes performing the same operation - prefer simpler/more direct node
+          const matchResult = unifiedNodeTypeMatcher.matches(normalizedType, existingNormalizedType, { strict: false });
+          if (matchResult.matches) {
           return {
             isDuplicate: true,
             existingNode,
-            reason: `Duplicate AI processing operation - ${normalizedType === 'ai_agent' ? 'ai_chat_model' : 'ai_agent'} already exists`,
+              reason: `Duplicate AI processing operation - ${existingNormalizedType} already exists (semantically equivalent to ${normalizedType})`,
           };
+          }
         }
         
         return {

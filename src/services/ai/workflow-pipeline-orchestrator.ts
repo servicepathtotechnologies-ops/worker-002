@@ -129,9 +129,14 @@ export interface PipelineAnalysis {
  */
 export interface PipelineContext {
   /**
-   * Original user prompt
+   * Original user prompt (preserved for reference only)
    */
   original_prompt: string;
+  
+  /**
+   * ✅ NEW: Selected structured prompt (from summarize layer) - used for ALL operations
+   */
+  selectedStructuredPrompt?: string;
   
   /**
    * Structured intent from intent structurer
@@ -356,6 +361,9 @@ export class WorkflowPipelineOrchestrator {
     options?: {
       mode?: 'analyze' | 'build';
       onProgress?: (step: number, stepName: string, progress: number, details?: any) => void;
+      mandatoryNodeTypes?: string[]; // ✅ NEW: Mandatory nodes from keyword extraction
+      selectedStructuredPrompt?: string; // ✅ NEW: Selected structured prompt (from summarize layer)
+      originalPrompt?: string; // ✅ NEW: Original user prompt (preserved for reference)
     }
   ): Promise<PipelineResult> {
     // ✅ FIXED: Prevent re-entry during build phase
@@ -372,8 +380,18 @@ export class WorkflowPipelineOrchestrator {
     this.isBuilding = true;
     const promptKey = userPrompt.substring(0, 200); // Use first 200 chars as key
     
+    // ✅ NEW: Use selectedStructuredPrompt if provided, otherwise use userPrompt
+    // selectedStructuredPrompt is the prompt selected by user from summarize layer variations
+    const promptToUse = options?.selectedStructuredPrompt || userPrompt;
+    const originalPrompt = options?.originalPrompt || userPrompt;
+    
+    console.log(`[PipelineOrchestrator] Using prompt: "${promptToUse.substring(0, 100)}..."`);
+    if (options?.selectedStructuredPrompt) {
+      console.log(`[PipelineOrchestrator] ✅ Using selected structured prompt (original preserved for reference)`);
+    }
+    
     // Create promise and store it
-    this.buildPromise = this.executePipelineInternal(userPrompt, existingCredentials, providedCredentials, options);
+    this.buildPromise = this.executePipelineInternal(promptToUse, originalPrompt, existingCredentials, providedCredentials, options);
     
     try {
       const result = await this.buildPromise;
@@ -388,17 +406,23 @@ export class WorkflowPipelineOrchestrator {
   /**
    * Execute pipeline (internal method)
    * ✅ FIXED: Separated from executePipeline to enable re-entry prevention
+   * ✅ UNIVERSAL FIX: Uses selectedStructuredPrompt for ALL operations, originalPrompt preserved for reference
    */
   private async executePipelineInternal(
-    userPrompt: string,
+    selectedStructuredPrompt: string, // ✅ NEW: The selected structured prompt (used for ALL operations)
+    originalPrompt: string, // ✅ NEW: Original user prompt (preserved for reference only)
     existingCredentials?: Record<string, any>,
     providedCredentials?: Record<string, Record<string, any>>,
     options?: {
       mode?: 'analyze' | 'build';
       onProgress?: (step: number, stepName: string, progress: number, details?: any) => void;
+      mandatoryNodeTypes?: string[]; // ✅ NEW: Mandatory nodes from keyword extraction
+      selectedStructuredPrompt?: string; // For consistency
+      originalPrompt?: string; // For consistency
     }
   ): Promise<PipelineResult> {
-    console.log(`[PipelineOrchestrator] Starting pipeline for prompt: "${userPrompt}"`);
+    console.log(`[PipelineOrchestrator] Starting pipeline with selected structured prompt: "${selectedStructuredPrompt.substring(0, 100)}..."`);
+    console.log(`[PipelineOrchestrator] Original prompt (preserved for reference): "${originalPrompt.substring(0, 100)}..."`);
 
     const errors: string[] = [];
     const warnings: string[] = [];
@@ -414,7 +438,8 @@ export class WorkflowPipelineOrchestrator {
       let promptUnderstanding: any = null;
       try {
         const { understandPrompt } = await import('./prompt-understanding-service');
-        promptUnderstanding = await understandPrompt(userPrompt);
+        // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt for understanding
+        promptUnderstanding = await understandPrompt(selectedStructuredPrompt);
         
         console.log(`[PipelineOrchestrator] ✅ Prompt understanding complete:`);
         console.log(`  - Confidence: ${(promptUnderstanding.confidence * 100).toFixed(1)}%`);
@@ -446,7 +471,8 @@ export class WorkflowPipelineOrchestrator {
           // This allows workflow generation to proceed even with low confidence
           try {
             console.log(`[PipelineOrchestrator] 🔄 Attempting to expand low-confidence intent using intentAutoExpander...`);
-            const expandedIntent = await intentAutoExpander.expandIntent(userPrompt, inferredIntent, confidence);
+            // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt for expansion
+            const expandedIntent = await intentAutoExpander.expandIntent(selectedStructuredPrompt, inferredIntent, confidence);
             
             if (expandedIntent && expandedIntent.assumed_actions && expandedIntent.assumed_actions.length > 0) {
               // Apply expanded actions to structured intent
@@ -483,7 +509,8 @@ export class WorkflowPipelineOrchestrator {
           
           // Store pipeline context
           const pipelineContext: PipelineContext = {
-            original_prompt: userPrompt,
+            original_prompt: originalPrompt, // ✅ UNIVERSAL FIX: Store original for reference
+            selectedStructuredPrompt: selectedStructuredPrompt, // ✅ NEW: Store selected structured prompt
             structured_intent: inferredIntent,
             confidence_score: confidence,
             requires_confirmation: true,
@@ -524,7 +551,8 @@ export class WorkflowPipelineOrchestrator {
         
         // ✅ PHASE 2 + PHASE 4: Extract SimpleIntent with guardrails and error recovery
         const { intentExtractor } = await import('./intent-extractor');
-        const simpleIntentResult = await intentExtractor.extractIntent(userPrompt);
+        // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt for intent extraction
+        const simpleIntentResult = await intentExtractor.extractIntent(selectedStructuredPrompt);
         
         // ✅ PHASE 4: Validate SimpleIntent with Output Validator
         const { outputValidator } = await import('./output-validator');
@@ -542,7 +570,8 @@ export class WorkflowPipelineOrchestrator {
         let finalSimpleIntent = simpleIntentResult.intent;
         if (!validation.valid) {
           const { intentRepairEngine } = await import('./intent-repair-engine');
-          const repairResult = intentRepairEngine.repair(simpleIntentResult.intent, validation, userPrompt);
+          // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt for repair
+          const repairResult = intentRepairEngine.repair(simpleIntentResult.intent, validation, selectedStructuredPrompt);
           finalSimpleIntent = repairResult.repairedIntent;
           console.log(`[PipelineOrchestrator] ✅ Repaired SimpleIntent: ${repairResult.repairs.length} repairs made`);
           
@@ -564,7 +593,10 @@ export class WorkflowPipelineOrchestrator {
         } else {
           // Step 5: Use Intent-Aware Planner to build StructuredIntent
           const { intentAwarePlanner } = await import('./intent-aware-planner');
-          const planningResult = await intentAwarePlanner.planWorkflow(finalSimpleIntent, userPrompt);
+          // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt for planning
+          // ✅ NEW: Pass mandatory nodes from keyword extraction (Stage 1)
+          const mandatoryNodes = options?.mandatoryNodeTypes || [];
+          const planningResult = await intentAwarePlanner.planWorkflow(finalSimpleIntent, selectedStructuredPrompt, mandatoryNodes);
           
           if (planningResult.errors.length === 0) {
             // ✅ PHASE 4: Validate StructuredIntent with Output Validator
@@ -577,7 +609,8 @@ export class WorkflowPipelineOrchestrator {
               console.warn(`[PipelineOrchestrator] ⚠️  StructuredIntent validation failed: ${structuredValidation.errors.join(', ')}`);
               // Try error recovery
               const { errorRecovery } = await import('./error-recovery');
-              const recoveryResult = await errorRecovery.recoverStructuredIntent(finalSimpleIntent, userPrompt);
+              // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt for recovery
+              const recoveryResult = await errorRecovery.recoverStructuredIntent(finalSimpleIntent, selectedStructuredPrompt);
               if (recoveryResult.success && recoveryResult.result) {
                 structuredIntent = recoveryResult.result;
                 console.log(`[PipelineOrchestrator] ✅ Recovered StructuredIntent using ${recoveryResult.strategy}`);
@@ -588,7 +621,8 @@ export class WorkflowPipelineOrchestrator {
             // ✅ PHASE 4: Try error recovery
             try {
               const { errorRecovery } = await import('./error-recovery');
-              const recoveryResult = await errorRecovery.recoverStructuredIntent(finalSimpleIntent, userPrompt);
+              // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt for recovery
+              const recoveryResult = await errorRecovery.recoverStructuredIntent(finalSimpleIntent, selectedStructuredPrompt);
               if (recoveryResult.success && recoveryResult.result) {
                 structuredIntent = recoveryResult.result;
                 console.log(`[PipelineOrchestrator] ✅ Recovered StructuredIntent using ${recoveryResult.strategy}`);
@@ -608,7 +642,8 @@ export class WorkflowPipelineOrchestrator {
       if (!structuredIntent) {
         try {
           const { planWorkflowSpecFromPrompt } = await import('./smart-planner-adapter');
-          plannerSpec = await planWorkflowSpecFromPrompt(userPrompt);
+          // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt for spec planning
+          plannerSpec = await planWorkflowSpecFromPrompt(selectedStructuredPrompt);
           if (plannerSpec) {
             console.log(`[PipelineOrchestrator] ✅ Fallback: Using planner output - converting to StructuredIntent`);
             const { convertPlannerSpecToIntent } = await import('./planner-to-intent-converter');
@@ -631,17 +666,19 @@ export class WorkflowPipelineOrchestrator {
           // This will be removed in future versions - new architecture should handle all cases
           console.warn(`[PipelineOrchestrator] ⚠️  Using DEPRECATED intentStructurer as last resort fallback`);
           console.warn(`[PipelineOrchestrator] ⚠️  This method will be removed - new architecture should handle all cases`);
-          structuredIntent = await intentStructurer.structureIntent(userPrompt);
+          // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt for intent structuring
+        structuredIntent = await intentStructurer.structureIntent(selectedStructuredPrompt);
         }
       }
       
       // ✅ FIXED: Ensure structuredIntent is defined (fallback to minimal intent if all methods failed)
       if (!structuredIntent) {
         console.warn(`[PipelineOrchestrator] ⚠️  All intent extraction methods failed, using minimal intent`);
-        const defaultTrigger = inferDefaultTrigger(userPrompt);
+        // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt for trigger inference
+        const defaultTrigger = inferDefaultTrigger(selectedStructuredPrompt);
         structuredIntent = {
           trigger: defaultTrigger,
-          trigger_config: defaultTrigger === 'schedule' ? inferDefaultScheduleConfig(userPrompt) : undefined,
+          trigger_config: defaultTrigger === 'schedule' ? inferDefaultScheduleConfig(selectedStructuredPrompt) : undefined,
           actions: [],
           requires_credentials: [],
         };
@@ -649,9 +686,10 @@ export class WorkflowPipelineOrchestrator {
       
       // ✅ FIXED: Ensure trigger exists (default to manual_trigger automatically)
       if (!structuredIntent.trigger) {
-        const defaultTrigger = inferDefaultTrigger(userPrompt);
+        // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt for trigger inference
+        const defaultTrigger = inferDefaultTrigger(selectedStructuredPrompt);
         structuredIntent.trigger = defaultTrigger;
-        structuredIntent.trigger_config = structuredIntent.trigger_config || (defaultTrigger === 'schedule' ? inferDefaultScheduleConfig(userPrompt) : undefined);
+        structuredIntent.trigger_config = structuredIntent.trigger_config || (defaultTrigger === 'schedule' ? inferDefaultScheduleConfig(selectedStructuredPrompt) : undefined);
         console.log(`[PipelineOrchestrator] ✅ Defaulting to ${defaultTrigger} (trigger was missing)`);
         warnings.push(`Trigger not specified, defaulting to ${defaultTrigger}`);
       }
@@ -660,7 +698,8 @@ export class WorkflowPipelineOrchestrator {
       // Note: Incomplete intents will be handled by intent_auto_expander
       console.log(`[PipelineOrchestrator] STEP 1.5: Validating intent completeness`);
       onProgress?.(1.5, 'Validating Intent', 63, { message: 'Validating intent completeness...' });
-      const completenessResult = intentCompletenessValidator.validateIntentCompleteness(structuredIntent, userPrompt);
+      // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt for completeness validation
+      const completenessResult = intentCompletenessValidator.validateIntentCompleteness(structuredIntent, selectedStructuredPrompt);
       
       // Log validation result but don't block - intent_auto_expander will handle incomplete intents
       if (!completenessResult.complete) {
@@ -676,9 +715,10 @@ export class WorkflowPipelineOrchestrator {
       // STEP 1.65: Compute Intent Confidence Score
       console.log(`[PipelineOrchestrator] STEP 1.65: Computing intent confidence score`);
       onProgress?.(1.65, 'Computing Confidence', 64.5, { message: 'Computing intent confidence score...' });
+      // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt for confidence scoring
       const confidenceScore = await intentConfidenceScorer.computeConfidence(
         structuredIntent,
-        userPrompt,
+        selectedStructuredPrompt,
         similarityScore
       );
 
@@ -751,7 +791,8 @@ export class WorkflowPipelineOrchestrator {
       
       if (shouldExpand) {
         console.log(`[PipelineOrchestrator] ⚠️  Triggering expansion: ${expansionReason}`);
-        expandedIntent = await intentAutoExpander.expandIntent(userPrompt, structuredIntent, similarityScore);
+        // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt for expansion
+        expandedIntent = await intentAutoExpander.expandIntent(selectedStructuredPrompt, structuredIntent, similarityScore);
         
         // ✅ CRITICAL: Apply expanded intent assumptions to structured intent
         // This ensures the workflow builder uses the expanded assumptions
@@ -792,7 +833,8 @@ export class WorkflowPipelineOrchestrator {
         console.log(`[PipelineOrchestrator]   Expanded intent: ${expandedIntent.expanded_intent.substring(0, 100)}...`);
         // Store pipeline context before returning
         const pipelineContext: PipelineContext = {
-          original_prompt: userPrompt,
+          original_prompt: originalPrompt, // ✅ UNIVERSAL FIX: Store original for reference
+          selectedStructuredPrompt: selectedStructuredPrompt, // ✅ NEW: Store selected structured prompt
           structured_intent: structuredIntent,
           expanded_intent: expandedIntent,
           confidence_score: confidenceScore.confidence_score,
@@ -813,7 +855,8 @@ export class WorkflowPipelineOrchestrator {
 
       // ✅ Store pipeline context
       const pipelineContext: PipelineContext = {
-        original_prompt: userPrompt,
+        original_prompt: originalPrompt, // ✅ UNIVERSAL FIX: Store original for reference
+        selectedStructuredPrompt: selectedStructuredPrompt, // ✅ NEW: Store selected structured prompt
         structured_intent: structuredIntent,
         expanded_intent: expandedIntent || undefined,
         confidence_score: confidenceScore.confidence_score,
@@ -851,10 +894,13 @@ export class WorkflowPipelineOrchestrator {
       let buildResult: any;
       try {
         const { buildProductionWorkflow } = await import('./production-workflow-builder');
-        buildResult = await buildProductionWorkflow(structuredIntent, userPrompt, {
+        // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt for workflow building
+        // ✅ NEW: Pass mandatory nodes from keyword extraction (Stage 1)
+        buildResult = await buildProductionWorkflow(structuredIntent, selectedStructuredPrompt, {
           maxRetries: 3,
           strictMode: true,
           allowRegeneration: true,
+          mandatoryNodeTypes: options?.mandatoryNodeTypes, // ✅ NEW: Pass mandatory nodes
         });
         
         if (!buildResult.success || !buildResult.workflow) {
@@ -1079,7 +1125,8 @@ export class WorkflowPipelineOrchestrator {
       onProgress?.(3.2, 'Enforcing Policy', 77, { message: 'Enforcing minimal workflow policy...' });
       try {
         const { enforceMinimalWorkflowPolicy } = await import('./minimal-workflow-policy');
-        const policyResult = enforceMinimalWorkflowPolicy(workflow, structuredIntent, userPrompt);
+        // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt for policy enforcement
+        const policyResult = enforceMinimalWorkflowPolicy(workflow, structuredIntent, selectedStructuredPrompt);
         
         if (policyResult.violations.length > 0) {
           console.log(`[PipelineOrchestrator] ⚠️  Minimal workflow policy violations: ${policyResult.violations.length}`);
@@ -1106,7 +1153,8 @@ export class WorkflowPipelineOrchestrator {
       onProgress?.(3.3, 'Injecting Safety', 77, { message: 'Injecting safety nodes (limit, etc.)...' });
       try {
         const { injectSafetyNodes } = await import('./safety-node-injector');
-        const safety = injectSafetyNodes(workflow, userPrompt);
+        // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt for safety node injection
+        const safety = injectSafetyNodes(workflow, selectedStructuredPrompt);
         workflow = safety.workflow;
         if (safety.injectedNodeTypes.length > 0) {
           console.log(`[PipelineOrchestrator] ✅ Safety nodes injected: ${safety.injectedNodeTypes.join(', ')}`);

@@ -16,6 +16,7 @@
 import { StructuredIntent } from './intent-structurer';
 import { ollamaOrchestrator } from './ollama-orchestrator';
 import { nodeLibrary } from '../nodes/node-library';
+import { AliasKeywordCollector } from './summarize-layer';
 
 export interface PromptUnderstandingResult {
   inferredIntent: StructuredIntent;
@@ -45,6 +46,13 @@ export class PromptUnderstandingService {
   private readonly BUILD_ALLOWED_THRESHOLD = 0.6; // Allow build if confidence >= 60%
   private readonly BLOCK_BUILD_THRESHOLD = 0.5; // Block build if confidence < 50%
   
+  // ✅ NEW: Use existing keyword collector (no duplication)
+  private keywordCollector: AliasKeywordCollector;
+  
+  constructor() {
+    this.keywordCollector = new AliasKeywordCollector();
+  }
+  
   /**
    * Understand vague prompt and infer workflow
    * 
@@ -53,6 +61,14 @@ export class PromptUnderstandingService {
    */
   async understandPrompt(userPrompt: string): Promise<PromptUnderstandingResult> {
     console.log(`[PromptUnderstandingService] Understanding prompt: "${userPrompt}"`);
+    
+    // ✅ NEW: Check if prompt is already structured (contains node types)
+    // If it's a structured prompt from summarize layer, skip vague analysis
+    const isStructuredPrompt = this.isStructuredPrompt(userPrompt);
+    if (isStructuredPrompt) {
+      console.log(`[PromptUnderstandingService] ✅ Detected structured prompt (contains node types) - skipping vague analysis`);
+      return this.handleStructuredPrompt(userPrompt);
+    }
     
     // Step 1: Analyze prompt for vagueness
     const vaguenessAnalysis = this.analyzeVagueness(userPrompt);
@@ -561,6 +577,135 @@ CRITICAL:
       console.warn(`[PromptUnderstandingService] ⚠️  Invalid confidence: ${inference.confidence}, clamping to [0, 1]`);
       inference.confidence = Math.max(0, Math.min(1, inference.confidence));
     }
+  }
+
+  /**
+   * ✅ NEW: Check if prompt is already structured (contains node type keywords)
+   * Uses existing AliasKeywordCollector to detect node types (no hardcoded patterns)
+   */
+  private isStructuredPrompt(prompt: string): boolean {
+    const promptLower = prompt.toLowerCase();
+    
+    // ✅ USE EXISTING INFRASTRUCTURE: Check against all keywords from registry
+    const allKeywordData = this.keywordCollector.getAllAliasKeywords();
+    
+    // Check if prompt contains any node type keywords
+    for (const keywordData of allKeywordData) {
+      const keywordLower = keywordData.keyword.toLowerCase();
+      const keywordPattern = new RegExp(`\\b${keywordLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+      if (keywordPattern.test(promptLower)) {
+        console.log(`[PromptUnderstandingService] ✅ Detected structured prompt via keyword: "${keywordData.keyword}" → "${keywordData.nodeType}"`);
+        return true;
+      }
+    }
+    
+    // Also check for direct node type mentions
+    const allNodeTypes = nodeLibrary.getRegisteredNodeTypes();
+    for (const nodeType of allNodeTypes) {
+      if (promptLower.includes(nodeType.toLowerCase())) {
+        console.log(`[PromptUnderstandingService] ✅ Detected structured prompt via direct node type: "${nodeType}"`);
+        return true;
+      }
+    }
+    
+    // Check for "node" keyword which indicates structured prompt
+    const hasNodeKeyword = promptLower.includes(' node') || promptLower.includes('node ');
+    if (hasNodeKeyword) {
+      console.log(`[PromptUnderstandingService] ✅ Detected structured prompt via "node" keyword`);
+      return true;
+    }
+    
+    return false;
+  }
+
+  /**
+   * ✅ NEW: Handle structured prompts (from summarize layer)
+   * Uses existing AliasKeywordCollector to extract node types (no hardcoded mappings)
+   */
+  private handleStructuredPrompt(prompt: string): PromptUnderstandingResult {
+    console.log(`[PromptUnderstandingService] Handling structured prompt with high confidence`);
+    
+    // ✅ USE EXISTING INFRASTRUCTURE: Extract node types using AliasKeywordCollector
+    const allKeywordData = this.keywordCollector.getAllAliasKeywords();
+    const promptLower = prompt.toLowerCase();
+    const extractedNodeTypes = new Set<string>();
+    
+    // Scan all keyword data for matches in prompt (same logic as summarize-layer)
+    for (const keywordData of allKeywordData) {
+      const keywordLower = keywordData.keyword.toLowerCase();
+      
+      // Check if keyword is mentioned in prompt (exact match or word boundary)
+      const keywordPattern = new RegExp(`\\b${keywordLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+      if (keywordPattern.test(promptLower)) {
+        // Verify node type exists in registry
+        if (nodeLibrary.isNodeTypeRegistered(keywordData.nodeType)) {
+          extractedNodeTypes.add(keywordData.nodeType);
+          console.log(`[PromptUnderstandingService] ✅ Found keyword "${keywordData.keyword}" → node type "${keywordData.nodeType}"`);
+        }
+      }
+    }
+    
+    // Also check for direct node type mentions (e.g., "google_sheets node")
+    const allNodeTypes = nodeLibrary.getRegisteredNodeTypes();
+    for (const nodeType of allNodeTypes) {
+      const nodeTypeLower = nodeType.toLowerCase();
+      if (promptLower.includes(nodeTypeLower)) {
+        extractedNodeTypes.add(nodeType);
+        console.log(`[PromptUnderstandingService] ✅ Found direct node type mention: "${nodeType}"`);
+      }
+    }
+    
+    // Extract trigger
+    let trigger: StructuredIntent['trigger'] = 'manual_trigger';
+    if (promptLower.includes('webhook')) trigger = 'webhook';
+    else if (promptLower.includes('schedule') || promptLower.includes('daily') || promptLower.includes('hourly')) trigger = 'schedule';
+    else if (promptLower.includes('form')) trigger = 'form';
+    else if (promptLower.includes('chat')) trigger = 'chat_trigger';
+    
+    // Build actions from extracted node types
+    const extractedActions = Array.from(extractedNodeTypes).map(nodeType => {
+      // Determine operation based on context
+      let operation = 'read';
+      const nodeTypeLower = nodeType.toLowerCase();
+      
+      if (promptLower.includes(`use ${nodeTypeLower}`) || promptLower.includes(`${nodeTypeLower} to`)) {
+        operation = promptLower.includes('send') || promptLower.includes('post') || promptLower.includes('notify') ? 'send' : 'read';
+      } else if (promptLower.includes('send') || promptLower.includes('post') || promptLower.includes('notify')) {
+        operation = 'send';
+      }
+      
+      return {
+        type: nodeType,
+        operation,
+        description: `Action using ${nodeType}`,
+      };
+    });
+    
+    // Build structured intent
+    const inferredIntent: StructuredIntent = {
+      trigger,
+      trigger_config: trigger === 'schedule' ? this.inferDefaultScheduleConfig(prompt) : undefined,
+      actions: extractedActions.map(action => ({
+        type: action.type,
+        operation: action.operation,
+        config: { description: action.description },
+      })),
+      conditions: [],
+      requires_credentials: [],
+    };
+    
+    // Structured prompts get high confidence (0.8+) since they already contain node types
+    const confidence = extractedActions.length > 0 ? 0.85 : 0.7;
+    
+    console.log(`[PromptUnderstandingService] ✅ Extracted ${extractedActions.length} node type(s) from structured prompt: ${Array.from(extractedNodeTypes).join(', ')}`);
+    
+    return {
+      inferredIntent,
+      confidence,
+      missingFields: [],
+      requiresClarification: false,
+      reasoning: `Structured prompt detected - contains ${extractedActions.length} node type(s), high confidence`,
+    };
   }
 }
 

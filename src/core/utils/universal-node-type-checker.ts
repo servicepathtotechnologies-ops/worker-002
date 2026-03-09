@@ -214,3 +214,34 @@ export function getNodeCategory(node: WorkflowNode | string): string | null {
   
   return null;
 }
+
+/**
+ * ✅ WORLD-CLASS UNIVERSAL: Check if a node is an AI chat node using registry
+ * 
+ * This is UNIVERSAL - works for ALL AI nodes (ai_chat_model, ollama, openai_gpt, anthropic_claude, etc.)
+ * No hardcoded node type names - uses registry category 'ai' as single source of truth
+ * 
+ * @param node - Node type string or WorkflowNode object
+ * @returns true if node is in 'ai' category (any AI provider)
+ */
+export function isAIChatNode(node: WorkflowNode | string): boolean {
+  const nodeType = typeof node === 'string'
+    ? unifiedNormalizeNodeTypeString(node)
+    : unifiedNormalizeNodeTypeString(node.type || (node as WorkflowNode).data?.type || '');
+  
+  // ✅ PRIMARY: Check unified node registry category (single source of truth)
+  const nodeDef = unifiedNodeRegistry.get(nodeType);
+  if (nodeDef?.category === 'ai') {
+    return true;
+  }
+  
+  // ✅ FALLBACK: Check node data category (if node object provided)
+  if (typeof node !== 'string' && (node as WorkflowNode).data?.category) {
+    const category = ((node as WorkflowNode).data.category || '').toLowerCase();
+    if (category === 'ai') {
+      return true;
+    }
+  }
+  
+  return false;
+}

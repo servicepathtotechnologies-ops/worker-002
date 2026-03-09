@@ -295,29 +295,35 @@ export class DSLStructureValidationLayer extends ValidationLayer {
     }
     
     // Validate transformation requirements
+    // ✅ WORLD-CLASS UNIVERSAL: Use TransformationDetector + UnifiedNodeTypeMatcher
     if (context.transformationDetection?.detected && context.transformationDetection.verbs.length > 0) {
+      const detection = context.transformationDetection;
+
       if (dsl.transformations.length === 0) {
         errors.push(
-          `Transformation verbs detected (${context.transformationDetection.verbs.join(', ')}) but DSL has 0 transformations. ` +
-          `Required node types: ${context.transformationDetection.requiredNodeTypes.join(', ')}`
+          `Transformation verbs detected (${detection.verbs.join(', ')}) but DSL has 0 transformations. ` +
+          `Required node types: ${detection.requiredNodeTypes.join(', ')}`
         );
         details.missingTransformations = true;
-        details.requiredNodeTypes = context.transformationDetection.requiredNodeTypes;
+        details.requiredNodeTypes = detection.requiredNodeTypes;
       } else {
-        // Validate transformation types match required types
-        const dslTransformationTypes = dsl.transformations.map(t => t.type);
-        const missingTypes = context.transformationDetection.requiredNodeTypes.filter(
-          requiredType => !dslTransformationTypes.some(dslType => 
-            dslType === requiredType || 
-            dslType.includes(requiredType) || 
-            requiredType.includes(dslType)
-          )
+        // Validate transformation types match required types using semantic matcher
+        const dslTransformationTypes = dsl.transformations.map(t =>
+          unifiedNormalizeNodeTypeString(t.type || '')
         );
-        
-        if (missingTypes.length > 0) {
-          warnings.push(`DSL transformations may not match all required types. Missing: ${missingTypes.join(', ')}`);
+
+        const tfValidation = transformationDetector.validateTransformations(
+          detection,
+          dslTransformationTypes
+        );
+
+        if (!tfValidation.valid && tfValidation.missing.length > 0) {
+          warnings.push(
+            `DSL transformations may not match all required types. Missing: ${tfValidation.missing.join(', ')}`
+          );
           details.partialTransformationMatch = true;
-          details.missingTransformationTypes = missingTypes;
+          details.missingTransformationTypes = tfValidation.missing;
+          details.transformationValidationErrors = tfValidation.errors;
         }
       }
     }
@@ -925,20 +931,31 @@ export class FinalIntegrityValidationLayer extends ValidationLayer {
     });
     
     // Check 5: Transformation requirements
+    // ✅ WORLD-CLASS UNIVERSAL: Use TransformationDetector + UnifiedNodeTypeMatcher
+    // to semantically validate that required transformations are present.
     if (context.originalPrompt) {
-      const { detectTransformations } = require('./transformation-detector');
-      const transformationCheck = detectTransformations(context.originalPrompt);
-      if (transformationCheck.detected && transformationCheck.requiredNodeTypes.length > 0) {
-        const workflowNodeTypes = nodes.map(n => unifiedNormalizeNodeTypeString(n.data?.type || n.type || ''));
-        const missingTransformations = transformationCheck.requiredNodeTypes.filter(
-          (requiredType: string) => !workflowNodeTypes.some(workflowType => 
-            workflowType === requiredType || workflowType.includes(requiredType) || requiredType.includes(workflowType)
-          )
+      // Prefer existing detection from earlier layer, otherwise detect from original prompt
+      const detection =
+        context.transformationDetection ||
+        transformationDetector.detectTransformations(context.originalPrompt);
+
+      if (detection && detection.detected && detection.requiredNodeTypes.length > 0) {
+        const workflowNodeTypes = nodes.map(n =>
+          unifiedNormalizeNodeTypeString(n.data?.type || n.type || '')
         );
-        
-        if (missingTransformations.length > 0) {
-          errors.push(`Missing required transformation nodes: ${missingTransformations.join(', ')}`);
-          details.missingTransformations = missingTransformations;
+
+        const tfValidation = transformationDetector.validateTransformations(
+          detection,
+          workflowNodeTypes
+        );
+
+        if (!tfValidation.valid && tfValidation.missing.length > 0) {
+          // Keep error message format backward-compatible while using semantic validation
+          errors.push(
+            `Missing required transformation nodes: ${tfValidation.missing.join(', ')}`
+          );
+          details.missingTransformations = tfValidation.missing;
+          details.transformationValidationErrors = tfValidation.errors;
         }
       }
     }

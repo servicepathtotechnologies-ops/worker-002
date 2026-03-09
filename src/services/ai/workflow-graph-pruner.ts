@@ -22,6 +22,7 @@ import { nodeLibrary } from '../nodes/node-library';
 import { transformationDetector, detectTransformations } from './transformation-detector';
 import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 import { nodeReplacementTracker } from './node-replacement-tracker';
+import { unifiedNodeTypeMatcher } from '../../core/utils/unified-node-type-matcher';
 
 export interface PruningResult {
   workflow: Workflow;
@@ -58,9 +59,11 @@ export class WorkflowGraphPruner {
    * @param workflow - Workflow graph to prune
    * @param intent - Structured intent to validate against
    * @param originalPrompt - Original user prompt (for transformation detection)
+   * @param confidenceScore - Confidence score for pruning decisions
+   * @param mandatoryNodeTypes - Optional mandatory node types from keyword extraction (Stage 1)
    * @returns Pruned workflow with statistics
    */
-  prune(workflow: Workflow, intent: StructuredIntent, originalPrompt?: string, confidenceScore?: number): PruningResult {
+  prune(workflow: Workflow, intent: StructuredIntent, originalPrompt?: string, confidenceScore?: number, mandatoryNodeTypes?: string[]): PruningResult {
     console.log('[WorkflowGraphPruner] Starting workflow graph pruning...');
     console.log(`[WorkflowGraphPruner] Original: ${workflow.nodes.length} nodes, ${workflow.edges.length} edges`);
 
@@ -76,7 +79,22 @@ export class WorkflowGraphPruner {
     console.log(`[WorkflowGraphPruner] Execution chain node IDs: ${Array.from(executionChainNodeIds).join(', ')}`);
 
     // ✅ FIXED: STEP 2: Compute required nodes from multiple sources
-    const requiredNodeTypesSet = this.computeRequiredNodes(workflow, intent, originalPrompt);
+    let requiredNodeTypesSet = this.computeRequiredNodes(workflow, intent, originalPrompt);
+    
+    // ✅ NEW: Include mandatory nodes from keyword extraction (Stage 1)
+    if (mandatoryNodeTypes && mandatoryNodeTypes.length > 0) {
+      console.log(`[WorkflowGraphPruner] 🔒 Including ${mandatoryNodeTypes.length} mandatory node(s) from Stage 1: ${mandatoryNodeTypes.join(', ')}`);
+      for (const mandatoryNode of mandatoryNodeTypes) {
+        const mandatoryLower = mandatoryNode.toLowerCase();
+        if (!Array.from(requiredNodeTypesSet).some(required => required.toLowerCase() === mandatoryLower)) {
+          requiredNodeTypesSet.add(mandatoryLower);
+          console.log(`[WorkflowGraphPruner] ✅ Added mandatory node to required set: ${mandatoryNode}`);
+        } else {
+          console.log(`[WorkflowGraphPruner] ✅ Mandatory node already in required set: ${mandatoryNode}`);
+        }
+      }
+    }
+    
     console.log(`[WorkflowGraphPruner] Required node types: ${Array.from(requiredNodeTypesSet).join(', ')}`);
 
     // ✅ FIXED: STEP 3: Remove nodes not required by intent (but NEVER remove nodes in execution chain)
@@ -529,6 +547,15 @@ export class WorkflowGraphPruner {
       queue.push(...neighbors);
     }
 
+    // Precompute execution chain node types (normalized) for semantic requirement checks
+    const executionChainTypes: string[] = [];
+    for (const node of nodes) {
+      if (alreadyRemoved.has(node.id)) continue;
+      if (executionChainNodeIds.has(node.id)) {
+        executionChainTypes.push(unifiedNormalizeNodeType(node));
+      }
+    }
+
     // Find disconnected nodes (only nodes NOT in execution chain)
     const filteredNodes: WorkflowNode[] = [];
     const violations: PruningViolation[] = [];
@@ -547,11 +574,54 @@ export class WorkflowGraphPruner {
         continue;
       }
 
-      // ✅ CRITICAL FIX: Never remove required nodes, even if they appear disconnected
-      // Required nodes must ALWAYS be preserved - connectivity will be fixed by auto-repair
-      if (requiredNodeTypesSet.has(nodeType)) {
+      // ✅ CRITICAL FIX (UNIVERSAL): Handle required / variant node types semantically
+      // Required nodes must ALWAYS be preserved UNLESS their requirement is already satisfied
+      // by a node in the execution chain (semantic equivalence via UnifiedNodeTypeMatcher).
+      const isRequiredCanonical = requiredNodeTypesSet.has(nodeType);
+      const isRequiredVariant = !isRequiredCanonical && Array.from(requiredNodeTypesSet).some(requiredType => {
+        const match = unifiedNodeTypeMatcher.matches(requiredType, nodeType, { strict: false });
+        return match.matches;
+      });
+      const isRequiredLike = isRequiredCanonical || isRequiredVariant;
+
+      if (isRequiredLike) {
+        // Determine the canonical required type this node belongs to (for logging + matching)
+        const requiredCanonical =
+          Array.from(requiredNodeTypesSet).find(requiredType => {
+            const match = unifiedNodeTypeMatcher.matches(requiredType, nodeType, { strict: false });
+            return match.matches;
+          }) || nodeType;
+
+        // Check if the execution chain already satisfies this requirement semantically
+        const requirementSatisfiedInChain = unifiedNodeTypeMatcher.isRequirementSatisfied(
+          requiredCanonical,
+          executionChainTypes,
+          { strict: false }
+        );
+
+        if (!reachable.has(node.id) && requirementSatisfiedInChain.matches) {
+          // ✅ UNIVERSAL: This node is disconnected AND its requirement is already fulfilled by another node
+          // in the execution chain (semantic equivalence detected via UnifiedNodeTypeMatcher).
+          // Safe to remove as dead code - works for ANY node type variants (not just specific examples).
+          violations.push({
+            type: 'disconnected_node',
+            nodeId: node.id,
+            nodeType,
+            reason: `Node "${nodeType}" is not reachable from trigger and its requirement is already satisfied by execution chain (canonical: "${requiredCanonical}")`,
+          });
+          console.log(
+            `[WorkflowGraphPruner] ⚠️  Removed disconnected variant node: ${node.id} (${nodeType}) ` +
+            `(requirement "${requiredCanonical}" satisfied in execution chain)`
+          );
+          continue;
+        }
+
+        // Requirement not satisfied elsewhere → preserve node (will be reconnected by auto-repair)
         filteredNodes.push(node);
-        console.log(`[WorkflowGraphPruner] ✅ Protected required node from disconnected removal: ${node.id} (${nodeType})`);
+        console.log(
+          `[WorkflowGraphPruner] ✅ Protected required node from disconnected removal: ${node.id} (${nodeType})` +
+          (isRequiredVariant ? ' (variant of required type)' : '')
+        );
         continue;
       }
 

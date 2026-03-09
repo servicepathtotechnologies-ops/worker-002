@@ -74,8 +74,13 @@ export class WorkflowLifecycleManager {
    * Generate workflow using new deterministic pipeline architecture
    */
   private async generateWorkflowWithNewPipeline(
-    userPrompt: string,
-    constraints?: any,
+    userPrompt: string, // ✅ Can be original prompt or selected structured prompt
+    constraints?: {
+      mandatoryNodeTypes?: string[];
+      selectedStructuredPrompt?: string; // ✅ NEW: Selected structured prompt from summarize layer
+      originalPrompt?: string; // ✅ NEW: Original user prompt (preserved for reference)
+      providedCredentials?: Record<string, Record<string, any>>; // ✅ FIX: Added missing property
+    },
     onProgress?: (step: number, stepName: string, progress: number, details?: any) => void
   ): Promise<{
     workflow: Workflow;
@@ -103,14 +108,32 @@ export class WorkflowLifecycleManager {
       console.warn('[WorkflowLifecycle] Could not load existing credentials:', error);
     }
 
+    // ✅ NEW: Extract mandatory nodes from constraints and pass to pipeline
+    const mandatoryNodeTypes = constraints?.mandatoryNodeTypes || [];
+    if (mandatoryNodeTypes.length > 0) {
+      console.log(`[WorkflowLifecycle] 🔒 Passing ${mandatoryNodeTypes.length} mandatory node type(s) to pipeline: ${mandatoryNodeTypes.join(', ')}`);
+    }
+    
+    // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt if provided, otherwise use userPrompt
+    const selectedStructuredPrompt = constraints?.selectedStructuredPrompt || userPrompt;
+    const originalPrompt = constraints?.originalPrompt || userPrompt;
+    
+    console.log(`[WorkflowLifecycle] Using prompt: "${selectedStructuredPrompt.substring(0, 100)}..."`);
+    if (constraints?.selectedStructuredPrompt) {
+      console.log(`[WorkflowLifecycle] ✅ Using selected structured prompt (original preserved for reference)`);
+    }
+    
     // Execute pipeline with progress callback
     const pipelineResult = await workflowPipelineOrchestrator.executePipeline(
-      userPrompt,
+      userPrompt, // Keep for backward compatibility
       existingCredentials,
       constraints?.providedCredentials,
       {
         mode: 'build',
         onProgress,
+        mandatoryNodeTypes, // ✅ NEW: Pass mandatory nodes to pipeline
+        selectedStructuredPrompt, // ✅ NEW: Pass selected structured prompt
+        originalPrompt, // ✅ NEW: Pass original prompt for reference
       }
     );
 
@@ -152,7 +175,14 @@ export class WorkflowLifecycleManager {
       
       if (errors.length === 0) {
         // Generate meaningful error message from pipeline context
-        const confidence = pipelineResult.confidenceScore?.confidence_score || 0;
+        // ✅ WORLD-CLASS UNIVERSAL: Use intent confidence from pipeline context as single source of truth
+        // If confidenceScore is missing (e.g. early failure), fall back to pipelineContext.confidence_score
+        let confidence =
+          pipelineResult.confidenceScore?.confidence_score ??
+          pipelineResult.pipelineContext?.confidence_score;
+        if (confidence === undefined || isNaN(confidence)) {
+          confidence = 0;
+        }
         const warnings = pipelineResult.warnings || [];
         const missingFields = pipelineResult.pipelineContext?.missing_fields || [];
         
@@ -204,7 +234,13 @@ export class WorkflowLifecycleManager {
    */
   async generateWorkflowGraph(
     userPrompt: string,
-    constraints?: any,
+    constraints?: {
+      answers?: Record<string, any>;
+      selectedStructuredPrompt?: string; // ✅ NEW: Selected structured prompt from summarize layer
+      originalPrompt?: string; // ✅ NEW: Original user prompt (preserved for reference)
+      mandatoryNodeTypes?: string[];
+      providedCredentials?: Record<string, Record<string, any>>;
+    },
     onProgress?: (step: number, stepName: string, progress: number, details?: any) => void
   ): Promise<WorkflowGenerationResult> {
     console.log('[WorkflowLifecycle] Step 1: Generating workflow graph...');
@@ -314,8 +350,9 @@ export class WorkflowLifecycleManager {
         warnings: [],
       };
     } else {
-      // Legacy NodeResolver behavior
-      resolution = nodeResolver.resolvePrompt(userPrompt);
+      // Legacy NodeResolver behavior - ✅ UNIVERSAL FIX: Use selectedStructuredPrompt
+      const promptForResolution = constraints?.selectedStructuredPrompt || userPrompt;
+      resolution = nodeResolver.resolvePrompt(promptForResolution);
 
       if (!resolution.success && resolution.errors.length > 0) {
         console.error('[WorkflowLifecycle] Node resolution failed:', resolution.errors);
@@ -329,7 +366,23 @@ export class WorkflowLifecycleManager {
     // ✅ PRODUCTION: Always use new deterministic pipeline architecture
     // ✅ MIGRATION: Legacy builder fallback removed - single production path
     console.log('[WorkflowLifecycle] Using new deterministic pipeline architecture');
-    const generationResult = await this.generateWorkflowWithNewPipeline(userPrompt, constraints, onProgress);
+    // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt if provided, otherwise use userPrompt
+    const selectedStructuredPrompt = constraints?.selectedStructuredPrompt || userPrompt;
+    const originalPrompt = constraints?.originalPrompt || userPrompt;
+    
+    console.log(`[WorkflowLifecycle] generateWorkflowGraph - Using prompt: "${selectedStructuredPrompt.substring(0, 100)}..."`);
+    if (constraints?.selectedStructuredPrompt) {
+      console.log(`[WorkflowLifecycle] ✅ Using selected structured prompt (original preserved for reference)`);
+    }
+    
+    // Pass selectedStructuredPrompt and originalPrompt to pipeline
+    const pipelineConstraints = {
+      ...constraints,
+      selectedStructuredPrompt,
+      originalPrompt,
+    };
+    
+    const generationResult = await this.generateWorkflowWithNewPipeline(selectedStructuredPrompt, pipelineConstraints, onProgress);
 
     let workflow = generationResult.workflow;
     
