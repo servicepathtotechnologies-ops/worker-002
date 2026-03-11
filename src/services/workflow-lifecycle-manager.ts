@@ -77,6 +77,7 @@ export class WorkflowLifecycleManager {
     userPrompt: string, // ✅ Can be original prompt or selected structured prompt
     constraints?: {
       mandatoryNodeTypes?: string[];
+      mandatoryNodesWithOperations?: Array<{ nodeType: string; operationHint?: string; context?: string }>; // ✅ NEW: Nodes with operation hints
       selectedStructuredPrompt?: string; // ✅ NEW: Selected structured prompt from summarize layer
       originalPrompt?: string; // ✅ NEW: Original user prompt (preserved for reference)
       providedCredentials?: Record<string, Record<string, any>>; // ✅ FIX: Added missing property
@@ -110,8 +111,12 @@ export class WorkflowLifecycleManager {
 
     // ✅ NEW: Extract mandatory nodes from constraints and pass to pipeline
     const mandatoryNodeTypes = constraints?.mandatoryNodeTypes || [];
+    const mandatoryNodesWithOperations = constraints?.mandatoryNodesWithOperations || [];
     if (mandatoryNodeTypes.length > 0) {
       console.log(`[WorkflowLifecycle] 🔒 Passing ${mandatoryNodeTypes.length} mandatory node type(s) to pipeline: ${mandatoryNodeTypes.join(', ')}`);
+      if (mandatoryNodesWithOperations.length > 0) {
+        console.log(`[WorkflowLifecycle] ✅ Passing operation hints for ${mandatoryNodesWithOperations.length} node(s)`);
+      }
     }
     
     // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt if provided, otherwise use userPrompt
@@ -132,6 +137,7 @@ export class WorkflowLifecycleManager {
         mode: 'build',
         onProgress,
         mandatoryNodeTypes, // ✅ NEW: Pass mandatory nodes to pipeline
+        mandatoryNodesWithOperations, // ✅ NEW: Pass operation hints
         selectedStructuredPrompt, // ✅ NEW: Pass selected structured prompt
         originalPrompt, // ✅ NEW: Pass original prompt for reference
       }
@@ -239,6 +245,7 @@ export class WorkflowLifecycleManager {
       selectedStructuredPrompt?: string; // ✅ NEW: Selected structured prompt from summarize layer
       originalPrompt?: string; // ✅ NEW: Original user prompt (preserved for reference)
       mandatoryNodeTypes?: string[];
+      mandatoryNodesWithOperations?: Array<{ nodeType: string; operationHint?: string; context?: string }>; // ✅ NEW: Nodes with operation hints
       providedCredentials?: Record<string, Record<string, any>>;
     },
     onProgress?: (step: number, stepName: string, progress: number, details?: any) => void

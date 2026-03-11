@@ -23,6 +23,7 @@ import { NodeMetadataHelper, NodeMetadata, METADATA_PREFIXES } from '../../core/
 import { randomUUID } from 'crypto';
 // ✅ ERROR PREVENTION: Import universal validators
 import { edgeCreationValidator, universalHandleResolver, universalBranchingValidator } from '../../core/error-prevention';
+import { universalActionOrderBuilder } from './universal-action-order-builder';
 
 export interface DSLCompilationResult {
   success: boolean;
@@ -143,12 +144,14 @@ export class WorkflowDSLCompiler {
         const config = ds.config || {};
         const hasEmptyConfig = Object.keys(config).length === 0;
         
-        // ✅ PHASE 1 FIX: Use registry to check if node is filter/merge
+        // ✅ UNIVERSAL: Use registry to check if node is filter/merge (no hardcoded type checks)
         const nodeDef = unifiedNodeRegistry.get(nodeType);
         const isFilterOrMerge = nodeDef && (
-          nodeType === 'filter' || 
-          nodeType === 'merge' ||
-          (nodeDef.tags || []).some(tag => ['filter', 'merge'].includes(tag.toLowerCase()))
+          // ✅ UNIVERSAL: Check tags only (works for all node types, including future ones)
+          (nodeDef.tags || []).some(tag => ['filter', 'merge'].includes(tag.toLowerCase())) ||
+          // ✅ UNIVERSAL: Check if node type name contains filter/merge (case-insensitive)
+          nodeType.toLowerCase().includes('filter') ||
+          nodeType.toLowerCase().includes('merge')
         );
         
         // Keep node if it has config OR if it's not filter/merge
@@ -160,22 +163,27 @@ export class WorkflowDSLCompiler {
       });
       
       // ✅ PHASE 1 FIX: Use registry to check node types instead of hardcoded checks
+      // ✅ CRITICAL FIX: Remove filter/merge nodes that have no config (not requested by user)
+      // These nodes are often added by AI but not needed for simple linear flows
       const filteredTransformations = validatedDSL.transformations.filter(tf => {
         const nodeType = unifiedNormalizeNodeTypeString(tf.type || '');
         const config = tf.config || {};
         const hasEmptyConfig = Object.keys(config).length === 0;
         
-        // ✅ PHASE 1 FIX: Use registry to check if node is filter/merge
+        // ✅ UNIVERSAL: Use registry to check if node is filter/merge (no hardcoded type checks)
         const nodeDef = unifiedNodeRegistry.get(nodeType);
         const isFilterOrMerge = nodeDef && (
-          nodeType === 'filter' || 
-          nodeType === 'merge' ||
-          (nodeDef.tags || []).some(tag => ['filter', 'merge'].includes(tag.toLowerCase()))
+          // ✅ UNIVERSAL: Check tags only (works for all node types, including future ones)
+          (nodeDef.tags || []).some(tag => ['filter', 'merge'].includes(tag.toLowerCase())) ||
+          // ✅ UNIVERSAL: Check if node type name contains filter/merge (case-insensitive)
+          nodeType.toLowerCase().includes('filter') ||
+          nodeType.toLowerCase().includes('merge')
         );
         
-        // Keep node if it has config OR if it's not filter/merge
+        // ✅ CRITICAL FIX: Remove filter/merge nodes with empty config (not requested by user)
+        // These nodes break linear flows and are not needed for simple workflows
         if (hasEmptyConfig && isFilterOrMerge) {
-          console.log(`[WorkflowDSLCompiler] ⚠️  Filtering out ${nodeType} node with empty config (not requested by user)`);
+          console.log(`[WorkflowDSLCompiler] ⚠️  Filtering out ${nodeType} node with empty config (not requested by user, would break linear flow)`);
           return false;
         }
         return true;
@@ -811,6 +819,51 @@ export class WorkflowDSLCompiler {
     outputNodes: WorkflowNode[],
     originalPrompt?: string
   ): { edges: WorkflowEdge[]; errors: string[]; warnings: string[] } {
+    // ✅ WORLD-CLASS: Use universal action-order builder (schema-driven, no hardcoding)
+    console.log('[WorkflowDSLCompiler] Using universal action-order builder (operation-semantic based)...');
+    
+    const allNodesForActionOrder = [triggerNode, ...dataSourceNodes, ...transformationNodes, ...outputNodes];
+    
+    // Extract DSL components for operation extraction
+    const dslComponents = {
+      dataSources: dsl.dataSources.map(ds => ({
+        id: ds.id,
+        type: ds.type,
+        operation: ds.operation,
+      })),
+      transformations: dsl.transformations.map(tf => ({
+        id: tf.id,
+        type: tf.type,
+        operation: tf.operation,
+      })),
+      outputs: dsl.outputs.map(out => ({
+        id: out.id,
+        type: out.type,
+        operation: out.operation,
+      })),
+    };
+    
+    // Use universal action-order builder
+    const actionOrderResult = universalActionOrderBuilder.buildActionOrder(
+      allNodesForActionOrder,
+      triggerNode,
+      originalPrompt,
+      dslComponents
+    );
+    
+    // If action-order builder succeeded, use it
+    if (actionOrderResult.errors.length === 0 || actionOrderResult.edges.length > 0) {
+      console.log('[WorkflowDSLCompiler] ✅ Using action-order edges (operation-semantic based)');
+      return {
+        edges: actionOrderResult.edges,
+        errors: actionOrderResult.errors,
+        warnings: actionOrderResult.warnings,
+      };
+    }
+    
+    // ✅ FALLBACK: Use category-based ordering if action-order fails
+    console.log('[WorkflowDSLCompiler] ⚠️  Action-order builder had issues, falling back to category-based ordering');
+    
     // ✅ PHASE 3: Use immutable patterns - build arrays immutably
     let edges: WorkflowEdge[] = [];
     let errors: string[] = [];
@@ -959,24 +1012,27 @@ export class WorkflowDSLCompiler {
         }
       }
 
-      // ✅ FIX 3: VALIDATION - Ensure data source connects to if_else (if exists) before other nodes
+      // ✅ FIX 3: VALIDATION - Ensure data source connects to conditional/branching nodes (if exists) before other nodes
       // This validates and fixes incorrect connections at compile time
-      const ifElseNodes = sortedConditionalNodes.filter(n => {
+      // ✅ UNIVERSAL: Use registry to detect branching nodes (not hardcoded)
+      const branchingNodes = sortedConditionalNodes.filter(n => {
         const t = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
-        return t === 'if_else';
+        const nodeDef = unifiedNodeRegistry.get(t);
+        return nodeDef?.isBranching || false; // ✅ UNIVERSAL: Use registry, not hardcoded type check
       });
 
-      if (ifElseNodes.length > 0 && sortedDataSources.length > 0) {
+      if (branchingNodes.length > 0 && sortedDataSources.length > 0) {
         const lastDataSource = sortedDataSources[sortedDataSources.length - 1];
-        const firstIfElse = ifElseNodes[0];
+        const firstBranchingNode = branchingNodes[0];
+        const firstBranchingNodeType = unifiedNormalizeNodeTypeString(firstBranchingNode.type || firstBranchingNode.data?.type || '');
         
-        // Check if data source connects to if_else
-        const dataSourceToIfElse = edges.find(e => 
-          e.source === lastDataSource.id && e.target === firstIfElse.id
+        // Check if data source connects to branching node
+        const dataSourceToBranching = edges.find(e => 
+          e.source === lastDataSource.id && e.target === firstBranchingNode.id
         );
         
-        if (!dataSourceToIfElse) {
-          // Data source doesn't connect to if_else - check if it connects to wrong node
+        if (!dataSourceToBranching) {
+          // Data source doesn't connect to branching node - check if it connects to wrong node
           const wrongEdges = edges.filter(e => 
             e.source === lastDataSource.id && 
             !sortedConditionalNodes.some(n => n.id === e.target) &&
@@ -986,21 +1042,21 @@ export class WorkflowDSLCompiler {
           if (wrongEdges.length > 0) {
             // Remove wrong edges (data_source -> limit/AI directly)
             edges = edges.filter(e => !wrongEdges.some(we => we.id === e.id));
-            warnings = [...warnings, `Removed ${wrongEdges.length} incorrect edge(s) from ${lastDataSource.type} (should connect to if_else first)`]; // ✅ PHASE 3: Immutable add
+            warnings = [...warnings, `Removed ${wrongEdges.length} incorrect edge(s) from ${lastDataSource.type} (should connect to branching node first)`]; // ✅ PHASE 3: Immutable add
             
-            // Create correct edge: data_source -> if_else
+            // Create correct edge: data_source -> branching node
             const correctEdge = this.createCompatibleEdge(
               lastDataSource,
-              firstIfElse,
+              firstBranchingNode,
               edges,
               allNodesForEdges
             );
             
             if (correctEdge) {
               edges = [...edges, correctEdge]; // ✅ PHASE 3: Immutable add
-              console.log(`[WorkflowDSLCompiler] ✅ Fixed: ${lastDataSource.type} -> if_else (ensured correct connection)`);
+              console.log(`[WorkflowDSLCompiler] ✅ Fixed: ${lastDataSource.type} -> ${firstBranchingNodeType} (ensured correct connection)`);
             } else {
-              errors = [...errors, `Cannot create edge from ${lastDataSource.type} to if_else: No compatible handles`]; // ✅ PHASE 3: Immutable add
+              errors = [...errors, `Cannot create edge from ${lastDataSource.type} to ${firstBranchingNodeType}: No compatible handles`]; // ✅ PHASE 3: Immutable add
             }
           }
         }
@@ -1012,19 +1068,17 @@ export class WorkflowDSLCompiler {
       const lastTransformationType = unifiedNormalizeNodeTypeString(lastTransformation.type || lastTransformation.data?.type || '');
       const lastTransformationDef = unifiedNodeRegistry.get(lastTransformationType);
       
-      // ✅ Use registry to determine if node allows branching (category='logic' or tags include 'branch')
-      const isAllowedBranchingNode = lastTransformationDef ? (
-        lastTransformationDef.category === 'logic' ||
-        (lastTransformationDef.tags || []).some(tag => ['branch', 'conditional', 'if', 'switch'].includes(tag.toLowerCase())) ||
-        lastTransformationType.toLowerCase() === 'if_else' ||
-        lastTransformationType.toLowerCase() === 'switch'
-      ) : false;
+      // ✅ UNIVERSAL: Use registry to determine if node allows branching (no hardcoded type checks)
+      const isAllowedBranchingNode = lastTransformationDef?.isBranching || false;
       
       console.log('[WorkflowDSLCompiler] Step 3: Connecting last transformation to outputs...');
       
+      // ✅ UNIVERSAL: Use registry to detect switch/branching nodes (not hardcoded type check)
       // ✅ N8N APPROACH: Extract switch cases from prompt DURING compilation (not after)
       // This is how n8n does it - cases are known upfront, so output ports exist immediately
-      const isSwitchNode = lastTransformationType.toLowerCase() === 'switch';
+      const isSwitchNode = lastTransformationDef?.isBranching && 
+                           lastTransformationDef.outgoingPorts && 
+                           lastTransformationDef.outgoingPorts.some(port => port.startsWith('case_'));
       
       if (isSwitchNode && originalPrompt) {
         // ✅ ROOT-LEVEL SOLUTION: Analyze BOTH user prompt AND input data from previous nodes
@@ -1059,15 +1113,12 @@ export class WorkflowDSLCompiler {
             }
           }
           
-          // Common field inference based on node type
+          // ✅ UNIVERSAL: Fallback to default fields if output schema not available
+          // Use generic default fields that work for any node type
           if (availableInputFields.length === 0) {
-            if (prevNodeType.includes('sheets') || prevNodeType.includes('database')) {
-              availableInputFields = ['rows', 'data', 'items', 'records', 'status', 'type', 'category'];
-            } else if (prevNodeType.includes('http') || prevNodeType.includes('api')) {
-              availableInputFields = ['response', 'data', 'body', 'status', 'statusCode', 'type'];
-            } else {
-              availableInputFields = ['data', 'output', 'result', 'status', 'type', 'category', 'value'];
-            }
+            // ✅ UNIVERSAL: Default fields that work for any node type (no hardcoded node type checks)
+            availableInputFields = ['data', 'output', 'result', 'status', 'type', 'category', 'value', 'rows', 'items', 'records', 'response', 'body'];
+            console.log(`[WorkflowDSLCompiler] ⚠️  No output schema found for ${prevNodeType}, using universal default fields`);
           }
           
           console.log(`[WorkflowDSLCompiler] 🔍 Switch node input analysis: Previous node "${prevNodeType}" provides fields: ${availableInputFields.join(', ')}`);
@@ -1557,8 +1608,8 @@ export class WorkflowDSLCompiler {
     // Uses registry to determine which nodes allow branching (if_else, switch, merge)
     // This applies to ALL nodes, not just trigger
     // ✅ CRITICAL: This MUST run AFTER trigger fix to prevent burst flows
-    const allNodes = [triggerNode, ...dataSourceNodes, ...transformationNodes, ...outputNodes];
-    const nodeMap = new Map(allNodes.map(n => [n.id, n]));
+    const allNodesForBranching = [triggerNode, ...dataSourceNodes, ...transformationNodes, ...outputNodes];
+    const nodeMap = new Map(allNodesForBranching.map(n => [n.id, n]));
     
     // ✅ STEP 1: Remove duplicate edges (same source-target pairs)
     const edgeMap = new Map<string, WorkflowEdge>();
@@ -1579,7 +1630,7 @@ export class WorkflowDSLCompiler {
       warnings = [...warnings, `Removed ${duplicateEdges.length} duplicate edge(s)`]; // ✅ PHASE 3: Immutable add
     }
     
-    for (const node of allNodes) {
+    for (const node of allNodesForBranching) {
       const nodeType = unifiedNormalizeNodeTypeString(node.type || node.data?.type || '');
       const nodeDef = unifiedNodeRegistry.get(nodeType);
       

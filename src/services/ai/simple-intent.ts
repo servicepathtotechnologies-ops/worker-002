@@ -71,6 +71,24 @@ export interface SimpleIntent {
   providers?: string[];
   
   /**
+   * ✅ NEW: Direct node type mentions with context
+   * Extracted deterministically from prompt (not by LLM)
+   * This ensures nodes are NEVER lost between layers
+   * 
+   * ✅ OPERATIONS-FIRST: Operations enriched from node schema
+   * This ensures AI has exact operations when generating variations
+   */
+  nodeMentions?: Array<{
+    nodeType: string; // Canonical node type from registry
+    context: string; // Phrase where node was mentioned
+    verbs?: string[]; // Verbs/operations near this node in prompt
+    confidence: number; // 0-1, how confident we are this is the right node
+    // ✅ OPERATIONS-FIRST: Operations from node's schema (enriched before variation generation)
+    operations?: string[]; // All operations available for this node (from inputSchema.operation)
+    defaultOperation?: string; // Default operation from node's schema (from defaultConfig().operation)
+  }>;
+  
+  /**
    * Additional context from prompt
    */
   context?: {

@@ -16,6 +16,9 @@ import { nodeLibrary } from '../nodes/node-library';
 import { NodeMetadataHelper } from '../../core/types/node-metadata';
 import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 import { resolveCompatibleHandles } from './schema-driven-connection-resolver';
+import { StructuredIntent } from './intent-structurer';
+import { nodeCapabilityRegistryDSL } from './node-capability-registry-dsl';
+import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 
 export interface SafetyInjectionResult {
   workflow: Workflow;
@@ -78,7 +81,7 @@ function createEdge(
  */
 export function injectSafetyNodes(
   workflow: Workflow,
-  userPrompt: string
+  structuredIntent: StructuredIntent
 ): SafetyInjectionResult {
   const warnings: string[] = [];
   const injectedNodeTypes: string[] = [];
@@ -115,20 +118,65 @@ export function injectSafetyNodes(
     return { workflow, injectedNodeTypes, warnings };
   }
 
+  // ✅ INTENT-BASED AI DETECTION: Check StructuredIntent for AI nodes (not workflow nodes)
+  // This is the single source of truth - AI already analyzed the prompt and added AI nodes to intent
+  const aiTransformations = (structuredIntent.transformations || []).filter(tf => {
+    const nodeType = unifiedNormalizeNodeTypeString(tf.type || '');
+    return nodeType === 'ai_chat_model' || 
+           nodeType === 'ai_agent' || 
+           nodeType === 'text_summarizer';
+  });
+
+  // Also check workflow nodes for AI (in case intent doesn't have it yet)
   const aiNodes = nodes.filter(n => {
     const t = getType(n);
     return t === 'ai_chat_model' || t === 'ai_agent' || t === 'text_summarizer';
   });
 
-  if (aiNodes.length === 0) {
+  // ✅ INTENT-BASED: If no AI in intent AND no AI in workflow, skip safety injection
+  if (aiTransformations.length === 0 && aiNodes.length === 0) {
     return { workflow, injectedNodeTypes, warnings };
   }
 
-  // ✅ ROOT-LEVEL FIX: Only inject safety nodes if truly necessary
-  // Check if user explicitly wants safety nodes or if data source produces arrays
-  const promptLower = (userPrompt || '').toLowerCase();
-  const wantsSafetyNodes = /\b(limit|safety|prevent|protect|max|top|first|empty check|validate)\b/i.test(promptLower);
+  // ✅ INTENT-BASED: Check for safety keywords in intent (from original prompt analysis)
+  // Check if conditions exist (indicates branching/complexity)
+  const hasConditions = (structuredIntent.conditions || []).length > 0;
   
+  // ✅ INTENT-BASED: Check data sources from intent (not hardcoded)
+  const dataSources = (structuredIntent.dataSources || []).map(ds => ({
+    type: unifiedNormalizeNodeTypeString(ds.type || ''),
+    operation: ds.operation || ''
+  }));
+  
+  // ✅ INTENT-BASED: Check output nodes from intent using registry (not hardcoded)
+  const outputActions = (structuredIntent.actions || []).filter(action => {
+    const nodeType = unifiedNormalizeNodeTypeString(action.type || '');
+    return nodeCapabilityRegistryDSL.canServeAsOutput(nodeType);
+  });
+  
+  // ✅ INTENT-BASED: Determine if simple linear flow from intent structure
+  const isSimpleLinearFlow = 
+    dataSources.length === 1 &&
+    (structuredIntent.transformations || []).length === 1 &&
+    outputActions.length === 1 &&
+    !hasConditions &&
+    aiTransformations.length === 1; // Single AI transformation
+  
+  // ✅ CRITICAL FIX: Skip safety injection for simple linear flows
+  if (isSimpleLinearFlow) {
+    console.log('[SafetyNodeInjector] ✅ Simple linear flow detected from StructuredIntent - skipping safety node injection to keep workflow clean');
+    return { workflow, injectedNodeTypes, warnings };
+  }
+  
+  // ✅ INTENT-BASED: Check if data sources produce arrays (from intent, not hardcoded)
+  const arrayProducingDataSources = dataSources.filter(ds => {
+    const nodeDef = unifiedNodeRegistry.get(ds.type);
+    // Check if node is known to produce arrays (from registry or common patterns)
+    const arrayProducingTypes = ['google_sheets', 'airtable', 'notion', 'database', 'sql', 'postgres', 'mysql'];
+    return arrayProducingTypes.some(type => ds.type.includes(type)) ||
+           (nodeDef?.tags || []).some(tag => ['array', 'list', 'rows'].includes(tag.toLowerCase()));
+  });
+
   // Find any direct edge * -> ai (data source to AI)
   const candidateEdges = edges.filter(e => {
     const src = nodes.find(n => n.id === e.source);
@@ -141,13 +189,12 @@ export function injectSafetyNodes(
     const st = getType(src);
     if (['limit', 'if_else', 'aggregate', 'sort', 'wait', 'stop_and_error'].includes(st)) return false;
     
-    // ✅ CRITICAL FIX: Only inject if source produces arrays (google_sheets, database, etc.)
-    // Don't inject for simple data sources that don't produce arrays
-    const arrayProducingSources = ['google_sheets', 'airtable', 'notion', 'database', 'sql', 'postgres', 'mysql'];
-    const sourceProducesArrays = arrayProducingSources.some(type => st.includes(type));
+    // ✅ INTENT-BASED: Check if source produces arrays (from intent data sources)
+    const sourceType = unifiedNormalizeNodeTypeString(st);
+    const sourceProducesArrays = arrayProducingDataSources.some(ds => ds.type === sourceType);
     
-    // Only inject if source produces arrays OR user explicitly wants safety nodes
-    return sourceProducesArrays || wantsSafetyNodes;
+    // Only inject if source produces arrays (no explicit safety request needed - intent determines this)
+    return sourceProducesArrays;
   });
 
   let edgeToSplit = candidateEdges[0];
@@ -163,25 +210,28 @@ export function injectSafetyNodes(
     return { workflow, injectedNodeTypes, warnings };
   }
 
-  // ✅ ROOT-LEVEL FIX: Check if source produces arrays before injecting safety nodes
-  const sourceType = getType(sourceNode);
-  const arrayProducingSources = ['google_sheets', 'airtable', 'notion', 'database', 'sql', 'postgres', 'mysql'];
-  const sourceProducesArrays = arrayProducingSources.some(type => sourceType.includes(type));
+  // ✅ INTENT-BASED: Check if source produces arrays (already determined above from intent)
+  const sourceNodeType = getType(sourceNode);
+  const sourceNodeTypeNormalized = unifiedNormalizeNodeTypeString(sourceNodeType);
+  const sourceNodeProducesArrays = arrayProducingDataSources.some(ds => ds.type === sourceNodeTypeNormalized);
 
   // Remove old edge; we'll rebuild below
   let newEdges = edges.filter(e => e.id !== edgeToSplit.id);
   let upstreamNode: WorkflowNode = sourceNode;
 
-  const wantsSort = /\b(sort|order by|descending|ascending)\b/i.test(promptLower);
-  // CRITICAL FIX: prevent false positives like "summarize" containing "sum"
-  const wantsAggregate =
-    /\baggregate\b/i.test(promptLower) ||
-    /\bgroup\s+by\b/i.test(promptLower) ||
-    /\btotal\b/i.test(promptLower) ||
-    /\bsum\b/i.test(promptLower) ||
-    /\bavg\b/i.test(promptLower) ||
-    /\baverage\b/i.test(promptLower) ||
-    /\bcount\b/i.test(promptLower);
+  // ✅ INTENT-BASED: Check transformations for sort/aggregate operations (from intent, not prompt)
+  const hasSortTransformation = (structuredIntent.transformations || []).some(tf => {
+    const nodeType = unifiedNormalizeNodeTypeString(tf.type || '');
+    return nodeType === 'sort';
+  });
+  
+  const hasAggregateTransformation = (structuredIntent.transformations || []).some(tf => {
+    const nodeType = unifiedNormalizeNodeTypeString(tf.type || '');
+    return nodeType === 'aggregate';
+  });
+  
+  const wantsSort = hasSortTransformation;
+  const wantsAggregate = hasAggregateTransformation;
 
   // ✅ ROOT-LEVEL UNIVERSAL FIX: Use standardized metadata system
   const hasAutoSort = nodes.some(n => {
@@ -193,10 +243,16 @@ export function injectSafetyNodes(
     return getType(n) === 'aggregate' && metadata?.injection?.autoInjected === true;
   });
 
-  // ✅ ROOT-LEVEL FIX: Only inject empty-check if user explicitly wants it or data source produces arrays
+  // ✅ INTENT-BASED: Only inject empty-check if data source produces arrays
+  // Check from intent data sources, not hardcoded list
+  const sourceType = getType(sourceNode);
+  const sourceTypeNormalized = unifiedNormalizeNodeTypeString(sourceType);
+  const sourceProducesArrays = arrayProducingDataSources.some(ds => ds.type === sourceTypeNormalized);
+  
+  // ✅ ROOT-LEVEL FIX: Only inject empty-check if data source produces arrays
   // 1) Inject empty-check If/Else + Stop node unless already auto-injected
   // CRITICAL: must run BEFORE any transformations so condition checks raw rows/items from Google Sheets
-  if (!hasAutoEmptyCheck && (wantsSafetyNodes || sourceProducesArrays)) {
+  if (!hasAutoEmptyCheck && sourceProducesArrays) {
     // ✅ ROOT-LEVEL UNIVERSAL FIX: Use standardized metadata system
     const ifNode = createNode('if_else', 'If items exist?', {
       // Use canonical JSON conditions format expected by backend schema/executor

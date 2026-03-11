@@ -15,6 +15,7 @@ import { WorkflowDSL } from '../../services/ai/workflow-dsl';
 import { Workflow } from '../types/ai-types';
 import { unifiedNodeRegistry } from '../registry/unified-node-registry';
 import { unifiedNormalizeNodeTypeString } from '../utils/unified-node-type-normalizer';
+import { nodeCapabilityRegistryDSL } from '../../services/ai/node-capability-registry-dsl';
 
 /**
  * Contract: StructuredIntent (Input to DSL Generator)
@@ -171,8 +172,30 @@ export function validateWorkflowDSL(dsl: WorkflowDSL): {
     });
   }
 
+  // ✅ LONG-TERM FIX: Allow empty outputs if terminal-capable nodes exist
+  // This aligns contract validation with PreCompilationValidator logic
   if (!dsl.outputs || !Array.isArray(dsl.outputs) || dsl.outputs.length === 0) {
-    errors.push('WorkflowDSL missing outputs array or outputs is empty');
+    // Check if any node in DSL can serve as output (terminal-capable)
+    const allDSLNodes = [
+      ...dsl.dataSources,
+      ...dsl.transformations,
+      ...dsl.outputs
+    ];
+    
+    const hasTerminalNode = allDSLNodes.some(node => {
+      const nodeType = node.type || '';
+      return nodeCapabilityRegistryDSL.canServeAsOutput(nodeType);
+    });
+    
+    if (!hasTerminalNode) {
+      errors.push('WorkflowDSL missing outputs array or outputs is empty (and no terminal-capable nodes found)');
+    } else {
+      // Terminal-capable node found - empty outputs is allowed
+      console.log(
+        `[PipelineStageContracts] ✅ Output requirement satisfied: ` +
+        `Terminal-capable node found in DSL (no separate output node needed)`
+      );
+    }
   } else {
     dsl.outputs.forEach((out, index) => {
       if (!out.id) {

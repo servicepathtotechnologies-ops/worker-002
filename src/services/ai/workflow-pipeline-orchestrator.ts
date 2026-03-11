@@ -11,6 +11,7 @@
  */
 
 import { intentStructurer, StructuredIntent } from './intent-structurer';
+import { SimpleIntent } from './simple-intent';
 import { workflowStructureBuilder, WorkflowStructure } from './workflow-structure-builder';
 import { repairEngine } from './repair-engine';
 import { intentCompletenessValidator } from './intent-completeness-validator';
@@ -362,6 +363,7 @@ export class WorkflowPipelineOrchestrator {
       mode?: 'analyze' | 'build';
       onProgress?: (step: number, stepName: string, progress: number, details?: any) => void;
       mandatoryNodeTypes?: string[]; // ✅ NEW: Mandatory nodes from keyword extraction
+      mandatoryNodesWithOperations?: Array<{ nodeType: string; operationHint?: string; context?: string }>; // ✅ NEW: Nodes with operation hints
       selectedStructuredPrompt?: string; // ✅ NEW: Selected structured prompt (from summarize layer)
       originalPrompt?: string; // ✅ NEW: Original user prompt (preserved for reference)
     }
@@ -413,10 +415,11 @@ export class WorkflowPipelineOrchestrator {
     originalPrompt: string, // ✅ NEW: Original user prompt (preserved for reference only)
     existingCredentials?: Record<string, any>,
     providedCredentials?: Record<string, Record<string, any>>,
-    options?: {
+      options?: {
       mode?: 'analyze' | 'build';
       onProgress?: (step: number, stepName: string, progress: number, details?: any) => void;
       mandatoryNodeTypes?: string[]; // ✅ NEW: Mandatory nodes from keyword extraction
+      mandatoryNodesWithOperations?: Array<{ nodeType: string; operationHint?: string; context?: string }>; // ✅ NEW: Nodes with operation hints
       selectedStructuredPrompt?: string; // For consistency
       originalPrompt?: string; // For consistency
     }
@@ -544,6 +547,8 @@ export class WorkflowPipelineOrchestrator {
       // This is the PRIMARY path according to World-Class Architecture Upgrade Plan
       let structuredIntent: StructuredIntent | undefined = undefined;
       let plannerSpec: any = undefined;
+      // ✅ Declare finalSimpleIntent in outer scope for use in validation later
+      let finalSimpleIntent: SimpleIntent | undefined = undefined;
       
       // ✅ PRIMARY PATH: Use SimpleIntent extraction + Intent-Aware Planner
       try {
@@ -551,8 +556,9 @@ export class WorkflowPipelineOrchestrator {
         
         // ✅ PHASE 2 + PHASE 4: Extract SimpleIntent with guardrails and error recovery
         const { intentExtractor } = await import('./intent-extractor');
-        // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt for intent extraction
-        const simpleIntentResult = await intentExtractor.extractIntent(selectedStructuredPrompt);
+        // ✅ ROOT-LEVEL FIX: Use ORIGINAL PROMPT for intent extraction (pure user intent)
+        // Selected structured prompt is ONLY for framing/understanding, not for deterministic nodeMentions
+        const simpleIntentResult = await intentExtractor.extractIntent(originalPrompt);
         
         // ✅ PHASE 4: Validate SimpleIntent with Output Validator
         const { outputValidator } = await import('./output-validator');
@@ -567,7 +573,7 @@ export class WorkflowPipelineOrchestrator {
         const validation = intentValidator.validate(simpleIntentResult.intent);
         
         // Step 3: Repair SimpleIntent if needed (Phase 2)
-        let finalSimpleIntent = simpleIntentResult.intent;
+        finalSimpleIntent = simpleIntentResult.intent;
         if (!validation.valid) {
           const { intentRepairEngine } = await import('./intent-repair-engine');
           // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt for repair
@@ -596,7 +602,13 @@ export class WorkflowPipelineOrchestrator {
           // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt for planning
           // ✅ NEW: Pass mandatory nodes from keyword extraction (Stage 1)
           const mandatoryNodes = options?.mandatoryNodeTypes || [];
-          const planningResult = await intentAwarePlanner.planWorkflow(finalSimpleIntent, selectedStructuredPrompt, mandatoryNodes);
+          const mandatoryNodesWithOperations = options?.mandatoryNodesWithOperations || [];
+          const planningResult = await intentAwarePlanner.planWorkflow(
+            finalSimpleIntent, 
+            selectedStructuredPrompt, 
+            mandatoryNodes,
+            mandatoryNodesWithOperations
+          );
           
           if (planningResult.errors.length === 0) {
             // ✅ PHASE 4: Validate StructuredIntent with Output Validator
@@ -698,8 +710,12 @@ export class WorkflowPipelineOrchestrator {
       // Note: Incomplete intents will be handled by intent_auto_expander
       console.log(`[PipelineOrchestrator] STEP 1.5: Validating intent completeness`);
       onProgress?.(1.5, 'Validating Intent', 63, { message: 'Validating intent completeness...' });
-      // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt for completeness validation
-      const completenessResult = intentCompletenessValidator.validateIntentCompleteness(structuredIntent, selectedStructuredPrompt);
+      // ✅ PHASE E: Pass SimpleIntent to validator to check nodeMentions
+      const completenessResult = intentCompletenessValidator.validateIntentCompleteness(
+        structuredIntent, 
+        selectedStructuredPrompt,
+        finalSimpleIntent // ✅ NEW: Pass SimpleIntent to check nodeMentions
+      );
       
       // Log validation result but don't block - intent_auto_expander will handle incomplete intents
       if (!completenessResult.complete) {
@@ -1153,8 +1169,9 @@ export class WorkflowPipelineOrchestrator {
       onProgress?.(3.3, 'Injecting Safety', 77, { message: 'Injecting safety nodes (limit, etc.)...' });
       try {
         const { injectSafetyNodes } = await import('./safety-node-injector');
-        // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt for safety node injection
-        const safety = injectSafetyNodes(workflow, selectedStructuredPrompt);
+        // ✅ INTENT-BASED: Pass StructuredIntent instead of prompt (single source of truth)
+        // StructuredIntent already contains all nodes analyzed by AI - no need to re-analyze
+        const safety = injectSafetyNodes(workflow, structuredIntent);
         workflow = safety.workflow;
         if (safety.injectedNodeTypes.length > 0) {
           console.log(`[PipelineOrchestrator] ✅ Safety nodes injected: ${safety.injectedNodeTypes.join(', ')}`);

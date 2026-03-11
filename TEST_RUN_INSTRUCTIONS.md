@@ -10,27 +10,27 @@
 
 ### Custom Ollama Endpoint
 
-If your Ollama service is running on a different endpoint (e.g., `http://13.232.155.30:8000`), you can set it in one of two ways:
+If your Ollama service is running on a different endpoint (e.g., `http://ollama.ctrlchecks.ai:8000`), you can set it in one of two ways:
 
 #### Option 1: Environment Variable (Recommended)
 ```bash
 # Windows PowerShell
-$env:OLLAMA_BASE_URL="http://13.232.155.30:8000"
+$env:OLLAMA_BASE_URL="http://ollama.ctrlchecks.ai:8000"
 cd worker
 npx ts-node scripts/test-validation-comprehensive.ts
 
 # Linux/Mac
-export OLLAMA_BASE_URL="http://13.232.155.30:8000"
+export OLLAMA_BASE_URL="http://ollama.ctrlchecks.ai:8000"
 cd worker
 npx ts-node scripts/test-validation-comprehensive.ts
 ```
 
 #### Option 2: Modify Test Script
-The test script automatically uses `http://13.232.155.30:8000` as default if no environment variable is set. You can modify line 11-12 in `test-validation-comprehensive.ts`:
+The test script automatically uses `http://ollama.ctrlchecks.ai:8000` as default if no environment variable is set. You can modify line 11-12 in `test-validation-comprehensive.ts`:
 
 ```typescript
-process.env.OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://13.232.155.30:8000';
-process.env.VITE_OLLAMA_BASE_URL = process.env.VITE_OLLAMA_BASE_URL || 'http://13.232.155.30:8000';
+process.env.OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://ollama.ctrlchecks.ai:8000';
+process.env.VITE_OLLAMA_BASE_URL = process.env.VITE_OLLAMA_BASE_URL || 'http://ollama.ctrlchecks.ai:8000';
 ```
 
 ### Running the Test

@@ -436,8 +436,12 @@ async function handlePhasedRefine(
           
           // ✅ NEW: Store mandatory nodes in request for later use
           (req as any).mandatoryNodeTypes = summarizeResult.mandatoryNodeTypes || [];
+          (req as any).mandatoryNodesWithOperations = summarizeResult.mandatoryNodesWithOperations || [];
           if (summarizeResult.mandatoryNodeTypes && summarizeResult.mandatoryNodeTypes.length > 0) {
             console.log(`[PhasedRefine] ✅ Extracted ${summarizeResult.mandatoryNodeTypes.length} mandatory node type(s): ${summarizeResult.mandatoryNodeTypes.join(', ')}`);
+            if (summarizeResult.mandatoryNodesWithOperations && summarizeResult.mandatoryNodesWithOperations.length > 0) {
+              console.log(`[PhasedRefine] ✅ Extracted operation hints for ${summarizeResult.mandatoryNodesWithOperations.length} node(s)`);
+            }
           }
           
           // ✅ ALWAYS show summarize layer if we have variations (even if only 1)
@@ -483,8 +487,12 @@ async function handlePhasedRefine(
             keywordCollector
           );
           
-          // ✅ PHASE 4: Use nodes from selected variation as mandatoryNodeTypes
-          if (nodesFromVariation.length > 0) {
+          // ✅ PHASE 4: Prefer ORIGINAL mandatoryNodeTypes if already present (from first summarize call)
+          // Only fall back to nodesFromVariation if no mandatoryNodeTypes were set previously.
+          const existingMandatoryNodeTypes = (req as any).mandatoryNodeTypes as string[] | undefined;
+          if (existingMandatoryNodeTypes && existingMandatoryNodeTypes.length > 0) {
+            console.log('[PhasedRefine] ✅ PHASE 4: Preserving existing mandatoryNodeTypes from original prompt; ignoring variation-only nodes');
+          } else if (nodesFromVariation.length > 0) {
             (req as any).mandatoryNodeTypes = nodesFromVariation;
             console.log(`[PhasedRefine] ✅ PHASE 4: Using ${nodesFromVariation.length} node(s) from selected variation: ${nodesFromVariation.join(', ')}`);
           } else {
@@ -2489,8 +2497,12 @@ export default async function generateWorkflow(req: Request, res: Response) {
         try {
           // ✅ NEW: Extract mandatory nodes from request (stored from summarize layer)
           const mandatoryNodeTypes = (req as any).mandatoryNodeTypes || [];
+          const mandatoryNodesWithOperations = (req as any).mandatoryNodesWithOperations || [];
           if (mandatoryNodeTypes.length > 0) {
             console.log(`[GenerateWorkflow] 🔒 Passing ${mandatoryNodeTypes.length} mandatory node type(s) to lifecycle manager: ${mandatoryNodeTypes.join(', ')}`);
+            if (mandatoryNodesWithOperations.length > 0) {
+              console.log(`[GenerateWorkflow] ✅ Passing operation hints for ${mandatoryNodesWithOperations.length} node(s)`);
+            }
           }
           
           lifecycleResult = await workflowLifecycleManager.generateWorkflowGraph(
@@ -2501,6 +2513,7 @@ export default async function generateWorkflow(req: Request, res: Response) {
               answers,
               memoryContext,
               mandatoryNodeTypes, // ✅ NEW: Pass mandatory nodes
+              mandatoryNodesWithOperations, // ✅ NEW: Pass operation hints
               ...req.body.config,
             }
           );

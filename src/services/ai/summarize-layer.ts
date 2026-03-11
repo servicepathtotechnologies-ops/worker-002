@@ -26,10 +26,17 @@ export interface AliasKeyword {
 export interface PromptVariation {
   id: string;
   prompt: string;
-  matchedKeywords: string[];
+  matchedKeywords: string[]; // Filtered nodes (in user's intent)
+  allExtractedNodes?: string[]; // ✅ NEW: ALL nodes extracted from variation text (for semantic matching)
   keywords: string[]; // ✅ NEW: Extracted node type keywords (e.g., ["ai_chat_model", "linkedin", "schedule"])
   confidence: number;
   reasoning: string;
+}
+
+export interface NodeTypeWithOperation {
+  nodeType: string;
+  operationHint?: string; // Verb near the node (e.g., "monitoring", "integrated", "read", "send")
+  context?: string; // Full context phrase where node was mentioned
 }
 
 export interface SummarizeLayerResult {
@@ -40,6 +47,7 @@ export interface SummarizeLayerResult {
   allKeywords: string[];
   matchedKeywords: string[];
   mandatoryNodeTypes?: string[]; // ✅ NEW: Node types that must be included in workflow
+  mandatoryNodesWithOperations?: NodeTypeWithOperation[]; // ✅ NEW: Node types with operation hints
 }
 
 /**
@@ -253,6 +261,92 @@ export class AIIntentClarifier {
   constructor() {
     this.keywordCollector = new AliasKeywordCollector();
   }
+  
+  /**
+   * ✅ OPERATIONS-FIRST: Enrich node mentions with operations from node schema
+   * Universal, root-level - works for ALL nodes automatically
+   * No hardcoding - all from registry
+   */
+  private enrichNodeMentionsWithOperations(
+    nodeMentions: Array<{ nodeType: string; context?: string; confidence?: number }>
+  ): Array<{
+    nodeType: string;
+    operations: string[];
+    defaultOperation: string;
+  }> {
+    const { unifiedNodeRegistry } = require('../../core/registry/unified-node-registry');
+    const registry = unifiedNodeRegistry;
+    
+    return nodeMentions.map(mention => {
+      // Skip if already enriched (from IntentExtractor)
+      if ((mention as any).operations && Array.isArray((mention as any).operations)) {
+        return {
+          nodeType: mention.nodeType,
+          operations: (mention as any).operations,
+          defaultOperation: (mention as any).defaultOperation || '',
+        };
+      }
+      
+      const nodeDef = registry.get(mention.nodeType);
+      if (!nodeDef) {
+        console.warn(`[AIIntentClarifier] ⚠️  Node ${mention.nodeType} not found in registry, skipping operation enrichment`);
+        return { nodeType: mention.nodeType, operations: [], defaultOperation: '' };
+      }
+      
+      const operations = this.getOperationsFromNodeSchema(nodeDef);
+      const defaultOperation = this.getDefaultOperationFromNode(nodeDef);
+      
+      return {
+        nodeType: mention.nodeType,
+        operations,
+        defaultOperation,
+      };
+    });
+  }
+  
+  /**
+   * ✅ OPERATIONS-FIRST: Get operations directly from node's schema
+   * Universal, root-level - works for ALL nodes automatically
+   */
+  private getOperationsFromNodeSchema(nodeDef: any): string[] {
+    const operations: string[] = [];
+    
+    // Method 1: Check inputSchema.operation (enum or oneOf)
+    if (nodeDef.inputSchema?.operation) {
+      const opField = nodeDef.inputSchema.operation;
+      
+      if (opField.type === 'string' && (opField as any).enum) {
+        operations.push(...((opField as any).enum as string[]));
+      } else if ((opField as any).oneOf) {
+        for (const option of (opField as any).oneOf) {
+          if (option.const) {
+            operations.push(option.const);
+          }
+        }
+      }
+    }
+    
+    return operations;
+  }
+  
+  /**
+   * ✅ OPERATIONS-FIRST: Get default operation from node's schema
+   * Universal, root-level - works for ALL nodes automatically
+   */
+  private getDefaultOperationFromNode(nodeDef: any): string {
+    try {
+      const defaultConfig = nodeDef.defaultConfig();
+      if (defaultConfig && defaultConfig.operation && typeof defaultConfig.operation === 'string') {
+        return defaultConfig.operation;
+      }
+    } catch (error) {
+      // defaultConfig might throw, ignore
+    }
+    
+    // Fallback: first operation from schema
+    const operations = this.getOperationsFromNodeSchema(nodeDef);
+    return operations.length > 0 ? operations[0] : '';
+  }
 
   /**
    * Clarify user intent and generate prompt variations
@@ -272,6 +366,47 @@ export class AIIntentClarifier {
     const extractedKeywords = this.extractKeywordsFromPrompt(userPrompt, allKeywordData);
     const allExtractedNodeTypes = this.mapKeywordsToNodeTypes(extractedKeywords);
     
+    // ✅ OPERATIONS-FIRST: Enrich extracted node types with operations from node schema
+    // This ensures AI has exact operations when generating variations
+    let enrichedNodeMentions: Array<{
+      nodeType: string;
+      operations: string[];
+      defaultOperation: string;
+    }> = [];
+    
+    if (allExtractedNodeTypes.length > 0) {
+      // Create basic mentions from extracted node types
+      const basicMentions = allExtractedNodeTypes.map(nodeType => ({
+        nodeType,
+        context: userPrompt,
+        confidence: 0.9,
+      }));
+      
+      // ✅ Enrich with operations from node schema
+      enrichedNodeMentions = this.enrichNodeMentionsWithOperations(basicMentions);
+      
+      console.log(`[AIIntentClarifier] ✅ OPERATIONS-FIRST: Enriched ${enrichedNodeMentions.length} node(s) with operations from schema`);
+      
+      const nodesWithOps = enrichedNodeMentions.filter(n => n.operations.length > 0);
+      const nodesWithoutOps = enrichedNodeMentions.filter(n => n.operations.length === 0);
+      
+      if (nodesWithOps.length > 0) {
+        console.log(`[AIIntentClarifier]   📋 Nodes WITH operations (${nodesWithOps.length}):`);
+        nodesWithOps.forEach(node => {
+          console.log(`[AIIntentClarifier]     - ${node.nodeType}: ${node.operations.length} operation(s) [${node.operations.join(', ')}], default: ${node.defaultOperation}`);
+        });
+      }
+      
+      if (nodesWithoutOps.length > 0) {
+        console.log(`[AIIntentClarifier]   ⚡ Nodes WITHOUT operations (${nodesWithoutOps.length}) - action-based:`);
+        nodesWithoutOps.forEach(node => {
+          const nodeDef = unifiedNodeRegistry.get(node.nodeType);
+          const description = nodeDef?.description || `performs ${node.nodeType} action`;
+          console.log(`[AIIntentClarifier]     - ${node.nodeType}: ${description}`);
+        });
+      }
+    }
+    
     // ✅ UNIVERSAL: Pass ALL extracted keywords to AI - Let AI intelligently understand intent
     // NO hardcoded filtering, NO hardcoded expansion - AI should understand "all social platforms" from keywords
     const extractedNodeTypes = allExtractedNodeTypes;
@@ -279,8 +414,8 @@ export class AIIntentClarifier {
     console.log(`[AIIntentClarifier] ✅ Extracted ${extractedNodeTypes.length} node type(s) from keywords: ${extractedNodeTypes.join(', ')}`);
     console.log(`[AIIntentClarifier] ✅ Passing ALL extracted keywords to AI - AI will intelligently understand user intent`);
 
-    // Step 2: Build AI prompt with user prompt + all keywords + REQUIRED nodes
-    const aiPrompt = this.buildClarificationPrompt(userPrompt, allKeywords, extractedNodeTypes);
+    // Step 2: Build AI prompt with user prompt + all keywords + REQUIRED nodes + operations
+    const aiPrompt = this.buildClarificationPrompt(userPrompt, allKeywords, extractedNodeTypes, enrichedNodeMentions);
 
     // Step 3: Call AI with retry logic for production reliability
     const maxRetries = 3;
@@ -317,9 +452,9 @@ export class AIIntentClarifier {
         // Step 4: Parse and validate AI response
         let result = this.parseAIResponse(aiResponse, userPrompt, allKeywordData, extractedNodeTypes);
         
-        // ✅ PHASE 3: Validate variations include required keywords
+        // ✅ PHASE 3: Validate variations include required keywords and operations
         if (extractedNodeTypes.length > 0) {
-          const validationResult = this.validateVariationsIncludeNodes(result, extractedNodeTypes);
+          const validationResult = this.validateVariationsIncludeNodes(result, extractedNodeTypes, undefined, enrichedNodeMentions);
           
           // ✅ CRITICAL: If required nodes are missing, retry with stronger enforcement
           if (!validationResult.allValid && attempt < maxRetries) {
@@ -353,12 +488,12 @@ export class AIIntentClarifier {
           console.log(`[AIIntentClarifier] 🔍   - Preview: "${v.prompt.substring(0, 100)}..."`);
         });
 
-        // ✅ PRODUCTION: Validate result quality - MUST have 3-4 variations AND detailed prompts
+        // ✅ PRODUCTION: Validate result quality - MUST have EXACTLY 4 variations AND detailed prompts
         if (this.isValidResult(result)) {
-          // Check if we have enough variations (prefer 4, accept 3 minimum)
-          if (result.promptVariations.length < 3) {
-            console.warn(`[AIIntentClarifier] ⚠️ Only ${result.promptVariations.length} variations (expected 3-4), retrying...`);
-            throw new Error(`Insufficient variations: got ${result.promptVariations.length}, need at least 3`);
+          // ✅ PHASE 1 FIX: Require EXACTLY 4 variations (not 3)
+          if (result.promptVariations.length !== 4) {
+            console.warn(`[AIIntentClarifier] ⚠️ Only ${result.promptVariations.length} variations (expected EXACTLY 4), retrying...`);
+            throw new Error(`Insufficient variations: got ${result.promptVariations.length}, need EXACTLY 4`);
           }
           
           // Check if prompts are detailed enough (not just copying user's prompt)
@@ -420,6 +555,13 @@ export class AIIntentClarifier {
           }
           
           console.log(`[AIIntentClarifier] ✅ Generated ${result.promptVariations.length} detailed prompt variations (attempt ${attempt})`);
+          
+          // ✅ PHASE 1 FIX: Validate variations are unique (not duplicates)
+          const uniquenessCheck = this.validateVariationUniqueness(result.promptVariations);
+          if (!uniquenessCheck.isUnique && attempt < maxRetries) {
+            console.warn(`[AIIntentClarifier] ⚠️ Variations are too similar (similarity: ${uniquenessCheck.maxSimilarity.toFixed(2)}), retrying...`);
+            throw new Error(`Variations not unique enough: max similarity ${uniquenessCheck.maxSimilarity.toFixed(2)} (need < 0.7)`);
+          }
           
           // ✅ POST-PROCESSING: Enhance variations if not unique enough
           const enhancedResult = this.enhanceVariationsIfNeeded(result, userPrompt);
@@ -578,66 +720,142 @@ export class AIIntentClarifier {
    * Ensures all extracted node types are present in variations
    * Returns validation result to determine if retry is needed
    */
+  /**
+   * ✅ UNIVERSAL ROOT-LEVEL: Validate variations include required nodes
+   * Enhanced to check nodeMentions from SimpleIntent
+   * ✅ OPERATIONS-FIRST: Also validates that variations include operations from node schemas
+   */
   private validateVariationsIncludeNodes(
     result: SummarizeLayerResult,
-    requiredNodeTypes: string[]
+    requiredNodeTypes: string[],
+    nodeMentions?: Array<{ nodeType: string; context: string; verbs?: string[]; confidence: number }>,
+    nodeMentionsWithOperations?: Array<{ // ✅ OPERATIONS-FIRST: Node mentions with operations from schema
+      nodeType: string;
+      operations: string[];
+      defaultOperation: string;
+    }>
   ): { allValid: boolean; missingCount: number } {
     if (requiredNodeTypes.length === 0) {
       return { allValid: true, missingCount: 0 }; // No required nodes to validate
     }
 
     console.log(`[AIIntentClarifier] 🔍 PHASE 3: Validating variations include required nodes: ${requiredNodeTypes.join(', ')}`);
+    
+    // ✅ OPERATIONS-FIRST: Validate operations if nodeMentionsWithOperations provided
+    if (nodeMentionsWithOperations && nodeMentionsWithOperations.length > 0) {
+      console.log(`[AIIntentClarifier] ✅ OPERATIONS-FIRST: Validating operations from node schemas for ${nodeMentionsWithOperations.length} node(s)`);
+    }
 
     for (const variation of result.promptVariations) {
       const variationLower = variation.prompt.toLowerCase();
       const variationKeywords = variation.matchedKeywords.map(k => k.toLowerCase());
       const missingNodes: string[] = [];
+      const missingOperations: Array<{ nodeType: string; expectedOps: string[] }> = []; // ✅ OPERATIONS-FIRST: Track missing operations
 
       for (const nodeType of requiredNodeTypes) {
         const nodeTypeLower = nodeType.toLowerCase();
         const nodeLabel = nodeType.replace(/_/g, ' ').toLowerCase();
         const nodeLabelNoSpaces = nodeType.replace(/_/g, '').toLowerCase();
         
-        // ✅ ROOT-LEVEL UNIVERSAL: Check if node is mentioned using registry (works for ALL nodes)
-        const nodeDef = unifiedNodeRegistry.get(nodeType);
-        const nodeAliases = nodeDef ? 
-          this.keywordCollector.getAllAliasKeywords()
-            .filter(k => k.nodeType === nodeType)
-            .map(k => k.keyword.toLowerCase()) : [];
+        // ✅ SMART VALIDATION: Use semantic matching as PRIMARY method (more reliable than text matching)
+        // Check ALL extracted nodes from variation text, not just filtered ones
+        const allNodesForMatching = variation.allExtractedNodes && variation.allExtractedNodes.length > 0 
+          ? variation.allExtractedNodes 
+          : variation.matchedKeywords; // Fallback to matchedKeywords if allExtractedNodes not available
         
-        // ✅ ROOT-LEVEL UNIVERSAL: Check if any alias/keyword is mentioned in variation text
-        const nodeTypeNormalized = nodeTypeLower.replace(/[_\s-]/g, '[\\s_-]*');
-        const nodeTypePattern = new RegExp(`\\b${nodeTypeNormalized.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+        let mentionedInText = false;
         
-        let mentionedInText = 
-          nodeTypePattern.test(variationLower) ||
-          variationLower.includes(nodeTypeLower) || 
-          variationLower.includes(nodeLabel) ||
-          variationLower.includes(nodeLabelNoSpaces) ||
-          nodeAliases.some(alias => {
-            const aliasNormalized = alias.replace(/[_\s-]/g, '[\\s_-]*');
-            const aliasPattern = new RegExp(`\\b${aliasNormalized.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
-            return aliasPattern.test(variationLower) || variationLower.includes(alias);
-          }) ||
-          (nodeLabel.includes(' ') && variationLower.includes(nodeLabel.replace(/\s+/g, ''))) ||
-          (!nodeLabel.includes(' ') && variationLower.includes(nodeLabel.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()));
-        
-        // ✅ ROOT-LEVEL UNIVERSAL: If not mentioned directly, check for semantic equivalents
-        if (!mentionedInText && variation.matchedKeywords.length > 0) {
+        // Method 1: Semantic matching FIRST (most reliable)
+        if (allNodesForMatching.length > 0) {
           const matchResult = unifiedNodeTypeMatcher.isRequirementSatisfied(
             nodeType, // required node
-            variation.matchedKeywords, // available nodes in variation
+            allNodesForMatching, // ✅ FIX: Use ALL extracted nodes for semantic matching
             { strict: false } // Allow semantic equivalents
           );
           
           if (matchResult.matches) {
             mentionedInText = true;
-            console.log(`[AIIntentClarifier] ✅ ROOT-LEVEL: Semantic match - "${matchResult.matchingType}" satisfies requirement for "${nodeType}" (${matchResult.reason})`);
+            console.log(`[AIIntentClarifier] ✅ SMART VALIDATION: Semantic match - "${matchResult.matchingType}" satisfies requirement for "${nodeType}" (${matchResult.reason}, confidence: ${matchResult.confidence}%)`);
           }
+        }
+        
+        // Method 2: Text matching (fallback if semantic matching didn't find it)
+        if (!mentionedInText) {
+          // ✅ ROOT-LEVEL UNIVERSAL: Check if node is mentioned using registry (works for ALL nodes)
+          const nodeDef = unifiedNodeRegistry.get(nodeType);
+          const nodeAliases = nodeDef ? 
+            this.keywordCollector.getAllAliasKeywords()
+              .filter(k => k.nodeType === nodeType)
+              .map(k => k.keyword.toLowerCase()) : [];
+          
+          // ✅ ROOT-LEVEL UNIVERSAL: Check if any alias/keyword is mentioned in variation text
+          const nodeTypeNormalized = nodeTypeLower.replace(/[_\s-]/g, '[\\s_-]*');
+          const nodeTypePattern = new RegExp(`\\b${nodeTypeNormalized.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+          
+          mentionedInText = 
+            nodeTypePattern.test(variationLower) ||
+            variationLower.includes(nodeTypeLower) || 
+            variationLower.includes(nodeLabel) ||
+            variationLower.includes(nodeLabelNoSpaces) ||
+            nodeAliases.some(alias => {
+              const aliasNormalized = alias.replace(/[_\s-]/g, '[\\s_-]*');
+              const aliasPattern = new RegExp(`\\b${aliasNormalized.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+              return aliasPattern.test(variationLower) || variationLower.includes(alias);
+            }) ||
+            (nodeLabel.includes(' ') && variationLower.includes(nodeLabel.replace(/\s+/g, ''))) ||
+            (!nodeLabel.includes(' ') && variationLower.includes(nodeLabel.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()));
         }
         
         if (!mentionedInText) {
           missingNodes.push(nodeType);
+        }
+        
+        // ✅ OPERATIONS-FIRST: Validate operations ONLY for nodes that HAVE operations
+        if (nodeMentionsWithOperations && mentionedInText) {
+          const nodeWithOps = nodeMentionsWithOperations.find(n => n.nodeType === nodeType);
+          
+          // ✅ FIX: Only validate operations if node HAS operations
+          // Nodes without operations (webhook, wait, etc.) don't need operation validation
+          if (nodeWithOps && nodeWithOps.operations.length > 0) {
+            // Check if variation mentions any operation from node's schema
+            const operationMentioned = nodeWithOps.operations.some(op => {
+              const opLower = op.toLowerCase();
+              const opNormalized = opLower.replace(/[_\s-]/g, '[\\s_-]*');
+              const opPattern = new RegExp(`\\b${opNormalized.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+              return opPattern.test(variationLower) || 
+                     variationLower.includes(opLower) ||
+                     variationLower.includes(`operation='${op}'`) ||
+                     variationLower.includes(`operation="${op}"`) ||
+                     variationLower.includes(`operation: ${op}`);
+            });
+            
+            if (!operationMentioned) {
+              // ✅ OPERATIONS-FIRST: Treat missing operations as validation FAILURE (not just warning)
+              // Variations MUST mention at least one valid operation for nodes that have operations
+              console.log(`[AIIntentClarifier] ❌ Variation "${variation.id}" mentions ${nodeType} but no explicit operation from schema [${nodeWithOps.operations.join(', ')}]`);
+              console.log(`[AIIntentClarifier]   - Available operations: ${nodeWithOps.operations.join(', ')}`);
+              console.log(`[AIIntentClarifier]   - Default operation: ${nodeWithOps.defaultOperation}`);
+              // Track missing operations so caller can decide to retry/regenerate
+              missingOperations.push({
+                nodeType,
+                expectedOps: nodeWithOps.operations,
+              });
+            } else {
+              // Find which operation was mentioned
+              const mentionedOp = nodeWithOps.operations.find(op => {
+                const opLower = op.toLowerCase();
+                return variationLower.includes(opLower) ||
+                       variationLower.includes(`operation='${op}'`) ||
+                       variationLower.includes(`operation="${op}"`);
+              });
+              if (mentionedOp) {
+                console.log(`[AIIntentClarifier] ✅ Variation "${variation.id}" mentions ${nodeType} with operation "${mentionedOp}" (from schema)`);
+              }
+            }
+          } else if (nodeWithOps && nodeWithOps.operations.length === 0) {
+            // ✅ FIX: Node has no operations - just verify it's mentioned (action-based node)
+            console.log(`[AIIntentClarifier] ✅ Variation "${variation.id}" mentions ${nodeType} (action-based node, no operations required)`);
+          }
         }
       }
 
@@ -647,35 +865,148 @@ export class AIIntentClarifier {
         console.warn(`[AIIntentClarifier] ⚠️  Variation matchedKeywords: ${variation.matchedKeywords.join(', ')}`);
       } else {
         console.log(`[AIIntentClarifier] ✅ Variation "${variation.id}" includes all required nodes`);
+        
+        // ✅ OPERATIONS-FIRST: Log operations validation summary
+        if (nodeMentionsWithOperations && nodeMentionsWithOperations.length > 0) {
+          const nodesWithOps = nodeMentionsWithOperations.filter(n => requiredNodeTypes.includes(n.nodeType));
+          if (nodesWithOps.length > 0) {
+            console.log(`[AIIntentClarifier] ✅ OPERATIONS-FIRST: Variation "${variation.id}" - ${nodesWithOps.length} node(s) with operations from schema validated`);
+          }
+        }
       }
     }
 
-    // Log summary
-    const allVariationsValid = result.promptVariations.every(v => {
+    // ✅ SMART VALIDATION: Use lenient threshold (6/7 nodes = pass) and semantic matching
+    const lenientThreshold = Math.ceil(requiredNodeTypes.length * 0.85); // 85% threshold (6/7 nodes)
+    console.log(`[AIIntentClarifier] ✅ SMART VALIDATION: Using lenient threshold - ${lenientThreshold}/${requiredNodeTypes.length} nodes required (85%)`);
+    
+    const variationValidationResults = result.promptVariations.map(v => {
       const vLower = v.prompt.toLowerCase();
-      const vKeywords = v.matchedKeywords.map(k => k.toLowerCase());
-      return requiredNodeTypes.every(nodeType => {
+      const foundNodes: string[] = [];
+      
+      // Check each required node using smart matching
+      for (const nodeType of requiredNodeTypes) {
         const nodeTypeLower = nodeType.toLowerCase();
-        return vLower.includes(nodeTypeLower) || vKeywords.some(k => k === nodeTypeLower);
-      });
+        const nodeLabel = nodeType.replace(/_/g, ' ').toLowerCase();
+        const nodeLabelNoSpaces = nodeType.replace(/_/g, '').toLowerCase();
+        
+        // Method 1: Direct text matching
+        let found = vLower.includes(nodeTypeLower) || 
+                   vLower.includes(nodeLabel) ||
+                   vLower.includes(nodeLabelNoSpaces);
+        
+        // Method 2: Check aliases
+        if (!found) {
+          const nodeDef = unifiedNodeRegistry.get(nodeType);
+          const nodeAliases = nodeDef ? 
+            this.keywordCollector.getAllAliasKeywords()
+              .filter(k => k.nodeType === nodeType)
+              .map(k => k.keyword.toLowerCase()) : [];
+          
+          found = nodeAliases.some(alias => {
+            const aliasNormalized = alias.replace(/[_\s-]/g, '[\\s_-]*');
+            const aliasPattern = new RegExp(`\\b${aliasNormalized.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+            return aliasPattern.test(vLower) || vLower.includes(alias);
+          });
+        }
+        
+        // Method 3: Semantic matching with ALL extracted nodes (PRIMARY method)
+        if (!found) {
+          const allNodesForMatching = v.allExtractedNodes && v.allExtractedNodes.length > 0 
+            ? v.allExtractedNodes 
+            : v.matchedKeywords;
+          
+          if (allNodesForMatching.length > 0) {
+            const matchResult = unifiedNodeTypeMatcher.isRequirementSatisfied(
+              nodeType,
+              allNodesForMatching,
+              { strict: false }
+            );
+            
+            if (matchResult.matches) {
+              found = true;
+              console.log(`[AIIntentClarifier] ✅ SMART VALIDATION: Semantic match for "${nodeType}" → "${matchResult.matchingType}" (${matchResult.reason})`);
+            }
+          }
+        }
+        
+        if (found) {
+          foundNodes.push(nodeType);
+        }
+      }
+      
+      const foundCount = foundNodes.length;
+      const missingCount = requiredNodeTypes.length - foundCount;
+      const meetsThreshold = foundCount >= lenientThreshold;
+      
+      return {
+        variation: v,
+        foundNodes,
+        foundCount,
+        missingCount,
+        meetsThreshold,
+        missingNodes: requiredNodeTypes.filter(n => !foundNodes.includes(n))
+      };
     });
-
-    const missingCount = result.promptVariations.reduce((count, v) => {
-      const vLower = v.prompt.toLowerCase();
-      const vKeywords = v.matchedKeywords.map(k => k.toLowerCase());
-      const missing = requiredNodeTypes.filter(nodeType => {
-        const nodeTypeLower = nodeType.toLowerCase();
-        return !vLower.includes(nodeTypeLower) && !vKeywords.some(k => k === nodeTypeLower);
-      });
-      return count + missing.length;
-    }, 0);
-
-    if (allVariationsValid) {
-      console.log(`[AIIntentClarifier] ✅ All variations include required nodes`);
+    
+    // Check if all variations meet lenient threshold
+    const allVariationsValid = variationValidationResults.every(r => r.meetsThreshold);
+    const totalMissingCount = variationValidationResults.reduce((sum, r) => sum + r.missingCount, 0);
+    
+    // ✅ OPERATIONS-FIRST: Also detect if ANY variation is missing required operations
+    const hasMissingOperationsGlobally = result.promptVariations.some(v => {
+      // Recompute missing operations for this variation using same logic as above
+      const variationLower = v.prompt.toLowerCase();
+      if (!nodeMentionsWithOperations || nodeMentionsWithOperations.length === 0) {
+        return false;
+      }
+      
+      for (const nodeInfo of nodeMentionsWithOperations) {
+        if (!requiredNodeTypes.includes(nodeInfo.nodeType)) {
+          continue;
+        }
+        if (!nodeInfo.operations || nodeInfo.operations.length === 0) {
+          continue; // Action-based node, no operations required
+        }
+        
+        const opMissing = !nodeInfo.operations.some(op => {
+          const opLower = op.toLowerCase();
+          const opNormalized = opLower.replace(/[_\s-]/g, '[\\s_-]*');
+          const opPattern = new RegExp(`\\b${opNormalized.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+          return opPattern.test(variationLower) || 
+                 variationLower.includes(opLower) ||
+                 variationLower.includes(`operation='${op}'`) ||
+                 variationLower.includes(`operation="${op}"`) ||
+                 variationLower.includes(`operation: ${op}`);
+        });
+        
+        if (opMissing) {
+          return true;
+        }
+      }
+      
+      return false;
+    });
+    
+    // Log detailed results
+    variationValidationResults.forEach((r, idx) => {
+      if (r.meetsThreshold) {
+        console.log(`[AIIntentClarifier] ✅ Variation "${r.variation.id}": Found ${r.foundCount}/${requiredNodeTypes.length} nodes (${r.foundNodes.join(', ')}) - MEETS THRESHOLD`);
+      } else {
+        console.warn(`[AIIntentClarifier] ⚠️  Variation "${r.variation.id}": Found ${r.foundCount}/${requiredNodeTypes.length} nodes, missing: ${r.missingNodes.join(', ')} - BELOW THRESHOLD`);
+      }
+    });
+    
+    if (allVariationsValid && !hasMissingOperationsGlobally) {
+      console.log(`[AIIntentClarifier] ✅ SMART VALIDATION: All variations meet lenient node threshold (${lenientThreshold}/${requiredNodeTypes.length} nodes) AND all required operations are present`);
       return { allValid: true, missingCount: 0 };
     } else {
-      console.warn(`[AIIntentClarifier] ⚠️  Some variations are missing required nodes (${missingCount} missing across all variations) - this is CRITICAL`);
-      return { allValid: false, missingCount };
+      const belowThresholdCount = variationValidationResults.filter(r => !r.meetsThreshold).length;
+      const opMsg = hasMissingOperationsGlobally ? ' and missing required operations' : '';
+      console.warn(`[AIIntentClarifier] ⚠️  SMART VALIDATION: ${belowThresholdCount}/${variationValidationResults.length} variations below node threshold (${lenientThreshold}/${requiredNodeTypes.length} nodes required)${opMsg}`);
+      // Treat missing operations as part of missingCount to force retry/fallback
+      const effectiveMissingCount = totalMissingCount || (hasMissingOperationsGlobally ? 1 : 0);
+      return { allValid: false, missingCount: effectiveMissingCount };
     }
   }
 
@@ -758,8 +1089,80 @@ export class AIIntentClarifier {
   }
 
   /**
-   * ✅ ROOT FIX: Create fallback result using EXTRACTED NODES from user prompt
-   * NEVER creates dummy prompts - only uses nodes extracted from user's actual intent
+   * ✅ PHASE 1 FIX: Validate that variations are unique (not duplicates)
+   * Checks similarity between variations using word overlap and structure
+   */
+  private validateVariationUniqueness(variations: PromptVariation[]): {
+    isUnique: boolean;
+    maxSimilarity: number;
+    similarPairs: Array<{ v1: number; v2: number; similarity: number }>;
+  } {
+    if (variations.length < 2) {
+      return { isUnique: true, maxSimilarity: 0, similarPairs: [] };
+    }
+    
+    let maxSimilarity = 0;
+    const similarPairs: Array<{ v1: number; v2: number; similarity: number }> = [];
+    
+    // Compare each pair of variations
+    for (let i = 0; i < variations.length; i++) {
+      for (let j = i + 1; j < variations.length; j++) {
+        const v1 = variations[i].prompt.toLowerCase();
+        const v2 = variations[j].prompt.toLowerCase();
+        
+        // Calculate word overlap similarity
+        const words1 = new Set(v1.split(/\s+/).filter(w => w.length > 3));
+        const words2 = new Set(v2.split(/\s+/).filter(w => w.length > 3));
+        
+        const intersection = new Set([...words1].filter(w => words2.has(w)));
+        const union = new Set([...words1, ...words2]);
+        
+        const jaccardSimilarity = union.size > 0 ? intersection.size / union.size : 0;
+        
+        // Check structural similarity (same sentence structure)
+        const sentences1 = v1.split(/[.!?]+/).filter(s => s.trim().length > 10);
+        const sentences2 = v2.split(/[.!?]+/).filter(s => s.trim().length > 10);
+        const structuralSimilarity = sentences1.length > 0 && sentences2.length > 0
+          ? Math.min(sentences1.length, sentences2.length) / Math.max(sentences1.length, sentences2.length)
+          : 0;
+        
+        // Combined similarity (weighted)
+        const combinedSimilarity = (jaccardSimilarity * 0.7) + (structuralSimilarity * 0.3);
+        
+        if (combinedSimilarity > maxSimilarity) {
+          maxSimilarity = combinedSimilarity;
+        }
+        
+        if (combinedSimilarity > 0.7) {
+          similarPairs.push({ v1: i, v2: j, similarity: combinedSimilarity });
+        }
+      }
+    }
+    
+    const isUnique = maxSimilarity < 0.7; // Threshold: 70% similarity = too similar
+    
+    if (!isUnique) {
+      console.warn(`[AIIntentClarifier] ⚠️ Variations are too similar (max similarity: ${maxSimilarity.toFixed(2)})`);
+      similarPairs.forEach(pair => {
+        console.warn(`[AIIntentClarifier]   - Variation ${pair.v1 + 1} and ${pair.v2 + 1} are ${(pair.similarity * 100).toFixed(1)}% similar`);
+      });
+    } else {
+      console.log(`[AIIntentClarifier] ✅ Variations are unique (max similarity: ${maxSimilarity.toFixed(2)} < 0.7)`);
+    }
+    
+    return { isUnique, maxSimilarity, similarPairs };
+  }
+  
+  /**
+   * ✅ UNIVERSAL ROOT-LEVEL FIX: Create fallback result using EXTRACTED NODES
+   * 
+   * This method:
+   * 1. Categorizes all extracted nodes (dataSource/transformation/output) using registry
+   * 2. Identifies required nodes from user intent verbs
+   * 3. Builds complete workflow chains (trigger → source → transform → output)
+   * 4. Generates 4 distinct variations with ALL required nodes
+   * 
+   * Works for INFINITE prompts - not just specific cases.
    */
   private createFallbackResultWithExtractedNodes(
     userPrompt: string,
@@ -770,75 +1173,94 @@ export class AIIntentClarifier {
   ): SummarizeLayerResult {
     console.log(`[AIIntentClarifier] 🔧 Creating fallback using ${extractedNodeTypes.length} extracted node(s): ${extractedNodeTypes.join(', ')}`);
     
-    // ✅ ROOT FIX: Use extracted nodes to build realistic variations
-    // Get node labels/keywords for better prompt generation
+    // ✅ STEP 1: Categorize all extracted nodes using registry
+    const categorizedNodes = this.categorizeExtractedNodes(extractedNodeTypes);
+    
+    console.log(`[AIIntentClarifier] ✅ Categorized nodes:`);
+    console.log(`[AIIntentClarifier]   - Data Sources: ${categorizedNodes.dataSources.join(', ')}`);
+    console.log(`[AIIntentClarifier]   - Transformations: ${categorizedNodes.transformations.join(', ')}`);
+    console.log(`[AIIntentClarifier]   - Outputs: ${categorizedNodes.outputs.join(', ')}`);
+    console.log(`[AIIntentClarifier]   - Triggers: ${categorizedNodes.triggers.join(', ')}`);
+    
+    // ✅ STEP 2: Identify required nodes from user intent
+    const requiredNodes = this.identifyRequiredNodesFromIntent(userPrompt, categorizedNodes, extractedNodeTypes);
+    
+    console.log(`[AIIntentClarifier] ✅ Required nodes from intent:`);
+    console.log(`[AIIntentClarifier]   - Required Data Sources: ${requiredNodes.requiredDataSources.join(', ')}`);
+    console.log(`[AIIntentClarifier]   - Required Transformations: ${requiredNodes.requiredTransformations.join(', ')}`);
+    console.log(`[AIIntentClarifier]   - Required Outputs: ${requiredNodes.requiredOutputs.join(', ')}`);
+    
+    // ✅ STEP 3: Get node labels and operations
     const nodeLabels = new Map<string, string>();
+    const { unifiedNodeRegistry } = require('../../core/registry/unified-node-registry');
+    const nodeOperations = new Map<string, { operations: string[]; defaultOp: string }>();
+    
     for (const nodeType of extractedNodeTypes) {
       const schema = nodeLibrary.getSchema(nodeType);
       if (schema) {
         nodeLabels.set(nodeType, schema.label || nodeType);
       }
-    }
-    
-    // Determine trigger type from prompt
-    const promptLower = userPrompt.toLowerCase();
-    const hasWebhook = promptLower.includes('webhook') || promptLower.includes('http') || promptLower.includes('api');
-    const triggerType = hasWebhook ? 'webhook' : 'manual_trigger';
-    
-    // Create variations using extracted nodes (not hardcoded guesses)
-    const variations: PromptVariation[] = [];
-    
-    // Build variations with extracted nodes
-    for (let i = 0; i < 4; i++) {
-      const variationTrigger = i < 2 ? 'manual_trigger' : 'webhook';
-      const nodeIndex = i % extractedNodeTypes.length;
-      const primaryNode = extractedNodeTypes[nodeIndex];
-      const nodeLabel = nodeLabels.get(primaryNode) || primaryNode;
       
-      // Build prompt that includes extracted nodes
-      let variationPrompt = userPrompt;
-      
-      // Ensure trigger is mentioned
-      if (!variationPrompt.toLowerCase().includes(variationTrigger) && !variationPrompt.toLowerCase().includes('trigger')) {
-        variationPrompt = `Create a workflow with ${variationTrigger}. ${variationPrompt}`;
-      }
-      
-      // Ensure extracted node is mentioned
-      const nodeTypeLower = primaryNode.toLowerCase();
-      const nodeLabelLower = nodeLabel.toLowerCase();
-      if (!variationPrompt.toLowerCase().includes(nodeTypeLower) && !variationPrompt.toLowerCase().includes(nodeLabelLower)) {
-        // Add node mention naturally
-        variationPrompt = `${variationPrompt} Use ${nodeLabel} node to complete the workflow.`;
-      }
-      
-      // Build matchedKeywords from extracted nodes
-      const matchedKeywords = [variationTrigger, primaryNode];
-      
-      // Add other extracted nodes if they fit
-      if (extractedNodeTypes.length > 1) {
-        const secondaryNodeIndex = (nodeIndex + 1) % extractedNodeTypes.length;
-        if (secondaryNodeIndex !== nodeIndex) {
-          matchedKeywords.push(extractedNodeTypes[secondaryNodeIndex]);
+      const nodeDef = unifiedNodeRegistry.get(nodeType);
+      if (nodeDef?.inputSchema) {
+        const opField = nodeDef.inputSchema.properties?.operation;
+        if (opField && (opField.enum || opField.oneOf)) {
+          const ops = opField.enum || (opField.oneOf?.map((o: any) => o.const).filter(Boolean) || []);
+          nodeOperations.set(nodeType, {
+            operations: ops,
+            defaultOp: opField.default || ops[0] || 'read'
+          });
         }
       }
+    }
+    
+    // ✅ STEP 4: Generate 4 distinct variations with complete workflow chains
+    const variations: PromptVariation[] = [];
+    
+    // ✅ STEP 4.1: Determine appropriate trigger based on prompt
+    // Check for scheduled tasks: "daily", "schedule", "automatically", etc.
+    const promptLower = userPrompt.toLowerCase();
+    const needsSchedule = promptLower.includes('daily') || 
+                         promptLower.includes('schedule') ||
+                         promptLower.includes('automatically') ||
+                         promptLower.includes('recurring') ||
+                         promptLower.includes('periodic');
+    
+    for (let i = 0; i < 4; i++) {
+      // Use schedule trigger for scheduled tasks, otherwise alternate between manual_trigger and webhook
+      let triggerType: string;
+      if (needsSchedule && i < 2) {
+        triggerType = 'schedule';
+      } else if (needsSchedule) {
+        triggerType = 'webhook';
+      } else {
+        triggerType = i < 2 ? 'manual_trigger' : 'webhook';
+      }
       
-    variations.push({
+      // Build complete workflow chain with ALL required nodes
+      const chain = this.buildWorkflowChain(requiredNodes, categorizedNodes, triggerType, userPrompt, extractedNodeTypes);
+      
+      console.log(`[AIIntentClarifier] ✅ Variation ${i + 1} chain: ${chain.join(' → ')}`);
+      
+      // Build prompt describing complete workflow
+      const prompt = this.buildVariationPrompt(chain, nodeLabels, nodeOperations, i);
+      
+      variations.push({
         id: `fallback-${i + 1}`,
-        prompt: variationPrompt,
-        keywords: [variationTrigger, primaryNode], // ✅ NEW: Include extracted node types as keywords
-        matchedKeywords: matchedKeywords,
-      confidence: 0.6,
-        reasoning: `Fallback variation using extracted nodes: ${matchedKeywords.join(', ')}`
+        prompt,
+        keywords: chain,
+        matchedKeywords: chain,
+        confidence: 0.8, // Higher confidence - uses required nodes
+        reasoning: `Fallback variation ${i + 1} with complete workflow chain: ${chain.join(' → ')}`
       });
     }
     
-    // Map extracted nodes to keywords for matchedKeywords
+    // ✅ STEP 5: Map extracted nodes to keywords for matchedKeywords
     const matchedKeywordsSet = new Set<string>();
     for (const nodeType of extractedNodeTypes) {
       matchedKeywordsSet.add(nodeType);
-      // Add node keywords
       const keywordData = allKeywordData.filter(kd => kd.nodeType === nodeType);
-      for (const kd of keywordData.slice(0, 2)) { // Add top 2 keywords per node
+      for (const kd of keywordData.slice(0, 2)) {
         matchedKeywordsSet.add(kd.keyword);
       }
     }
@@ -849,8 +1271,731 @@ export class AIIntentClarifier {
       promptVariations: variations,
       allKeywords: allKeywords,
       matchedKeywords: Array.from(matchedKeywordsSet),
-      mandatoryNodeTypes: extractedNodeTypes, // ✅ ROOT FIX: Use extracted nodes, not dummy nodes
+      mandatoryNodeTypes: extractedNodeTypes,
     };
+  }
+  
+  /**
+   * ✅ UNIVERSAL: Categorize extracted nodes using registry
+   * Uses nodeCapabilityRegistryDSL as single source of truth
+   */
+  private categorizeExtractedNodes(extractedNodeTypes: string[]): {
+    dataSources: string[];
+    transformations: string[];
+    outputs: string[];
+    triggers: string[];
+    others: string[];
+  } {
+    const categories = {
+      dataSources: [] as string[],
+      transformations: [] as string[],
+      outputs: [] as string[],
+      triggers: [] as string[],
+      others: [] as string[],
+    };
+    
+    const { unifiedNodeRegistry } = require('../../core/registry/unified-node-registry');
+    
+    for (const nodeType of extractedNodeTypes) {
+      const nodeDef = unifiedNodeRegistry.get(nodeType);
+      
+      // Check if trigger (using registry category)
+      if (nodeDef?.category === 'trigger' || 
+          (nodeDef?.tags || []).includes('trigger')) {
+        categories.triggers.push(nodeType);
+        continue;
+      }
+      
+      // Use capability registry for categorization
+      // ✅ FIX: Smart categorization - nodes can be in multiple categories
+      // Priority: Check what the node is PRIMARILY used for based on its name/type
+      const nodeTypeLower = nodeType.toLowerCase();
+      const isEmailNode = nodeTypeLower.includes('gmail') || nodeTypeLower.includes('email') || nodeTypeLower.includes('mail');
+      const isSheetNode = nodeTypeLower.includes('sheet');
+      const isDatabaseNode = nodeTypeLower.includes('database') || nodeTypeLower.includes('postgres') || nodeTypeLower.includes('mysql');
+      const isHttpNode = nodeTypeLower.includes('http') || nodeTypeLower.includes('api') || nodeTypeLower.includes('request');
+      
+      // Email nodes are primarily outputs
+      if (isEmailNode && nodeCapabilityRegistryDSL.isOutput(nodeType)) {
+        categories.outputs.push(nodeType);
+      }
+      // Sheet nodes can be data sources (read) or outputs (write) - check context
+      else if (isSheetNode) {
+        if (nodeCapabilityRegistryDSL.isDataSource(nodeType)) {
+          categories.dataSources.push(nodeType);
+        }
+        if (nodeCapabilityRegistryDSL.isOutput(nodeType)) {
+          categories.outputs.push(nodeType);
+        }
+      }
+      // Database nodes are primarily data sources
+      else if (isDatabaseNode && nodeCapabilityRegistryDSL.isDataSource(nodeType)) {
+        categories.dataSources.push(nodeType);
+      }
+      // HTTP nodes can be both - prioritize based on capability
+      else if (isHttpNode) {
+        if (nodeCapabilityRegistryDSL.isDataSource(nodeType)) {
+          categories.dataSources.push(nodeType);
+        }
+        if (nodeCapabilityRegistryDSL.isOutput(nodeType)) {
+          categories.outputs.push(nodeType);
+        }
+      }
+      // Default: Use capability registry
+      else {
+        if (nodeCapabilityRegistryDSL.isOutput(nodeType)) {
+          categories.outputs.push(nodeType);
+        }
+        if (nodeCapabilityRegistryDSL.isDataSource(nodeType)) {
+          categories.dataSources.push(nodeType);
+        }
+        if (nodeCapabilityRegistryDSL.isTransformation(nodeType)) {
+          categories.transformations.push(nodeType);
+        }
+      }
+      
+      // If node wasn't categorized, add to others
+      if (!categories.dataSources.includes(nodeType) && 
+          !categories.transformations.includes(nodeType) && 
+          !categories.outputs.includes(nodeType)) {
+        categories.others.push(nodeType);
+      }
+    }
+    
+    return categories;
+  }
+  
+  /**
+   * ✅ UNIVERSAL: Identify required nodes from user intent
+   * Parses verbs to determine which nodes are REQUIRED (not optional)
+   * Uses ALL extracted nodes, not just categorized ones
+   */
+  private identifyRequiredNodesFromIntent(
+    userPrompt: string,
+    categorizedNodes: ReturnType<typeof this.categorizeExtractedNodes>,
+    allExtractedNodes: string[]
+  ): {
+    requiredDataSources: string[];
+    requiredTransformations: string[];
+    requiredOutputs: string[];
+  } {
+    const promptLower = userPrompt.toLowerCase();
+    const required = {
+      requiredDataSources: [] as string[],
+      requiredTransformations: [] as string[],
+      requiredOutputs: [] as string[],
+    };
+    
+    const { unifiedNodeRegistry } = require('../../core/registry/unified-node-registry');
+    
+    // ✅ STEP 0: UNIVERSAL - Include ALL directly mentioned extracted nodes
+    // This ensures nodes explicitly mentioned in prompt are ALWAYS included
+    // regardless of verb patterns (e.g., "GitHub", "Stripe", "AWS S3")
+    for (const nodeType of allExtractedNodes) {
+      const nodeDef = unifiedNodeRegistry.get(nodeType);
+      const nodeLabel = (nodeDef?.label || nodeType).toLowerCase();
+      const nodeTypeLower = nodeType.toLowerCase();
+      
+      // Check if node is directly mentioned in prompt
+      const isMentioned = promptLower.includes(nodeLabel) || 
+                          promptLower.includes(nodeTypeLower) ||
+                          (nodeDef?.tags || []).some((tag: string) => promptLower.includes(tag.toLowerCase()));
+      
+      if (isMentioned) {
+        // Categorize and add to appropriate list
+        if (nodeCapabilityRegistryDSL.isDataSource(nodeType) && 
+            !required.requiredDataSources.includes(nodeType)) {
+          required.requiredDataSources.push(nodeType);
+        }
+        if (nodeCapabilityRegistryDSL.isTransformation(nodeType) && 
+            !required.requiredTransformations.includes(nodeType)) {
+          required.requiredTransformations.push(nodeType);
+        }
+        if (nodeCapabilityRegistryDSL.isOutput(nodeType) && 
+            !nodeCapabilityRegistryDSL.isDataSource(nodeType) &&
+            !required.requiredOutputs.includes(nodeType)) {
+          required.requiredOutputs.push(nodeType);
+        }
+      }
+    }
+    
+    // ✅ STEP 0.1: UNIVERSAL - Handle implicit requirements via semantic matching
+    // Match implicit phrases to node types (e.g., "store in cloud" → aws_s3, "process payment" → stripe)
+    const implicitMappings: Array<{pattern: RegExp; nodeType: string; category: 'dataSource' | 'transformation' | 'output'}> = [
+      // Cloud storage
+      { pattern: /store\s+in\s+cloud|cloud\s+storage|save\s+to\s+cloud/i, nodeType: 'aws_s3', category: 'output' },
+      { pattern: /s3|aws\s+s3/i, nodeType: 'aws_s3', category: 'output' },
+      // Payment processing
+      { pattern: /process\s+payment|payment\s+processing|stripe|paypal/i, nodeType: 'stripe', category: 'transformation' },
+      // Memory/remembering
+      { pattern: /remember|memory|remember\s+users|chatbot.*remember/i, nodeType: 'memory', category: 'transformation' },
+      // Error handling
+      { pattern: /retry|retry\s+on\s+error/i, nodeType: 'retry', category: 'transformation' },
+      { pattern: /detect\s+error|error\s+detection|try\s+catch|catch\s+error/i, nodeType: 'try_catch', category: 'transformation' },
+      { pattern: /error\s+handler|handle\s+error/i, nodeType: 'error_handler', category: 'transformation' },
+      // Database operations
+      { pattern: /database\s+write|write\s+to\s+database|update\s+database/i, nodeType: 'database_write', category: 'output' },
+      { pattern: /database\s+read|read\s+from\s+database/i, nodeType: 'database_read', category: 'dataSource' },
+      // Calendar
+      { pattern: /calendar|schedule\s+meeting|update\s+calendar/i, nodeType: 'google_calendar', category: 'output' },
+      // Gmail
+      { pattern: /gmail|google\s+mail|email/i, nodeType: 'google_gmail', category: 'output' },
+      // Slack
+      { pattern: /slack|notify\s+via\s+slack|slack\s+message/i, nodeType: 'slack_message', category: 'output' },
+    ];
+    
+    for (const mapping of implicitMappings) {
+      if (mapping.pattern.test(userPrompt)) {
+        // Check if node exists in extracted nodes or registry
+        const nodeExists = allExtractedNodes.includes(mapping.nodeType) || 
+                          unifiedNodeRegistry.has(mapping.nodeType);
+        
+        if (nodeExists) {
+          if (mapping.category === 'dataSource' && 
+              !required.requiredDataSources.includes(mapping.nodeType)) {
+            required.requiredDataSources.push(mapping.nodeType);
+          } else if (mapping.category === 'transformation' && 
+                     !required.requiredTransformations.includes(mapping.nodeType)) {
+            required.requiredTransformations.push(mapping.nodeType);
+          } else if (mapping.category === 'output' && 
+                     !required.requiredOutputs.includes(mapping.nodeType)) {
+            required.requiredOutputs.push(mapping.nodeType);
+          }
+        }
+      }
+    }
+    
+    // ✅ STEP 1: Identify required data sources - search in ALL extracted nodes
+    const dataSourceVerbs = ['get', 'fetch', 'read', 'retrieve', 'from', 'pull', 'load', 'collect'];
+    const hasDataSourceIntent = dataSourceVerbs.some(verb => promptLower.includes(verb));
+    
+    if (hasDataSourceIntent) {
+      // ✅ UNIVERSAL FIX: Collect ALL matching data sources (not just first)
+      // Complex prompts may need multiple data sources (e.g., "Sync CRM, DB, and spreadsheets")
+      for (const nodeType of allExtractedNodes) {
+        if (nodeCapabilityRegistryDSL.isDataSource(nodeType)) {
+          const nodeDef = unifiedNodeRegistry.get(nodeType);
+          const nodeLabel = (nodeDef?.label || nodeType).toLowerCase();
+          const nodeTypeLower = nodeType.toLowerCase();
+          
+          // Check if node is mentioned in prompt
+          if (promptLower.includes(nodeLabel) || 
+              promptLower.includes(nodeTypeLower) ||
+              (nodeDef?.tags || []).some((tag: string) => promptLower.includes(tag.toLowerCase()))) {
+            if (!required.requiredDataSources.includes(nodeType)) {
+              required.requiredDataSources.push(nodeType);
+            }
+          }
+        }
+      }
+      
+      // If not found, try categorized data sources
+      if (required.requiredDataSources.length === 0) {
+        for (const nodeType of categorizedNodes.dataSources) {
+          const nodeDef = unifiedNodeRegistry.get(nodeType);
+          const nodeLabel = (nodeDef?.label || nodeType).toLowerCase();
+          const nodeTypeLower = nodeType.toLowerCase();
+          
+          if (promptLower.includes(nodeLabel) || 
+              promptLower.includes(nodeTypeLower) ||
+              (nodeDef?.tags || []).some((tag: string) => promptLower.includes(tag.toLowerCase()))) {
+            if (!required.requiredDataSources.includes(nodeType)) {
+              required.requiredDataSources.push(nodeType);
+            }
+          }
+        }
+      }
+      
+      // Fallback to first available if none found
+      if (required.requiredDataSources.length === 0 && categorizedNodes.dataSources.length > 0) {
+        required.requiredDataSources.push(categorizedNodes.dataSources[0]);
+      }
+    }
+    
+    // ✅ STEP 2: Identify required transformations - search in ALL extracted nodes
+    const transformationVerbs = [
+      'summarise', 'summarize', 'analyze', 'analyse', 'process', 
+      'transform', 'classify', 'generate', 'translate', 'extract',
+      'parse', 'format', 'convert', 'calculate', 'compute'
+    ];
+    const hasTransformationIntent = transformationVerbs.some(verb => 
+      promptLower.includes(verb)
+    );
+    
+    if (hasTransformationIntent) {
+      // ✅ FIX: First, check transformations category for AI nodes (most reliable)
+      // Also ensure 'ollama' is always considered (even if not extracted) since it runs on server
+      const aiNodesInTransformations = categorizedNodes.transformations.filter(nt => {
+        const nodeDef = unifiedNodeRegistry.get(nt);
+        const nodeTypeLower = nt.toLowerCase();
+        
+        // Check if it's an AI node
+        const isAINode = (nodeTypeLower.includes('ai') || 
+               nodeTypeLower.includes('gemini') || 
+               nodeTypeLower.includes('chat') || 
+               nodeTypeLower.includes('llm') ||
+               nodeTypeLower.includes('gpt') ||
+               nodeTypeLower.includes('claude') ||
+               nodeTypeLower.includes('summarizer') ||
+               nodeTypeLower.includes('ollama') ||
+               (nodeDef?.category === 'ai'));
+        
+        // Exclude output nodes
+        if (nodeTypeLower.includes('gmail') || nodeTypeLower.includes('email') || 
+            nodeTypeLower.includes('slack') || nodeTypeLower.includes('message')) {
+          return false;
+        }
+        
+        return isAINode;
+      });
+      
+      // ✅ CRITICAL: Always add 'ollama' to available AI nodes if it exists in the registry
+      // This ensures Ollama is prioritized even if not explicitly extracted from keywords
+      // Ollama runs on server and doesn't need API keys, making it easier for users
+      // IMPORTANT: unifiedNodeRegistry is already required above, reuse it
+      if (unifiedNodeRegistry.has('ollama') && !aiNodesInTransformations.includes('ollama')) {
+        // Always add ollama for AI tasks - it's the preferred server-based solution
+        // Add it at the beginning to ensure it's prioritized
+        aiNodesInTransformations.unshift('ollama');
+        console.log(`[AIIntentClarifier] ✅ Added 'ollama' to AI transformation nodes (server-based, no API keys)`);
+      }
+      
+      // ✅ If no AI nodes found in transformations, but we have transformation intent, add ollama directly
+      if (aiNodesInTransformations.length === 0 && unifiedNodeRegistry.has('ollama')) {
+        aiNodesInTransformations.push('ollama');
+        console.log(`[AIIntentClarifier] ✅ Added 'ollama' as default AI transformation (server-based, no API keys)`);
+      }
+      
+      if (aiNodesInTransformations.length > 0) {
+        // ✅ PRIORITY 1: ALWAYS prefer 'ollama' node first (runs on server, no API keys needed)
+        // This makes it easier for users to perform AI tasks without searching for APIs
+        // Remove any existing ollama from list, then add it first
+        const ollamaIndex = aiNodesInTransformations.findIndex(nt => nt.toLowerCase() === 'ollama');
+        if (ollamaIndex >= 0) {
+          // Remove ollama from current position
+          aiNodesInTransformations.splice(ollamaIndex, 1);
+        }
+        // Add ollama at the beginning (highest priority)
+        aiNodesInTransformations.unshift('ollama');
+        
+        // ✅ ALWAYS add 'ollama' first (most direct, runs on server, no API keys)
+        required.requiredTransformations.push('ollama');
+        
+        // Then add other AI nodes if needed (but ollama is already first)
+        const otherAiNodes = aiNodesInTransformations.filter(nt => nt.toLowerCase() !== 'ollama');
+        if (otherAiNodes.length > 0 && required.requiredTransformations.length === 1) {
+          // Only add one more if we only have ollama
+          required.requiredTransformations.push(otherAiNodes[0]);
+        }
+      } else {
+        // Fallback: Search in ALL extracted nodes for AI transformation nodes
+        const allAiNodes = allExtractedNodes.filter(nt => {
+          const nodeDef = unifiedNodeRegistry.get(nt);
+          const nodeTypeLower = nt.toLowerCase();
+          
+          const isAINode = (nodeTypeLower.includes('ai') || 
+                 nodeTypeLower.includes('gemini') || 
+                 nodeTypeLower.includes('chat') || 
+                 nodeTypeLower.includes('llm') ||
+                 nodeTypeLower.includes('gpt') ||
+                 nodeTypeLower.includes('claude') ||
+                 nodeTypeLower.includes('summarizer') ||
+                 nodeTypeLower.includes('ollama') ||
+                 (nodeDef?.category === 'ai'));
+          
+          if (!isAINode) return false;
+          
+          // Exclude output nodes
+          if (nodeTypeLower.includes('gmail') || nodeTypeLower.includes('email') || 
+              nodeTypeLower.includes('slack') || nodeTypeLower.includes('message')) {
+            return false;
+          }
+          
+          return nodeCapabilityRegistryDSL.isTransformation(nt) || 
+                 (nodeDef?.category === 'ai');
+        });
+        
+        if (allAiNodes.length > 0) {
+          // ✅ PRIORITY: Prefer Ollama-based nodes first
+          const ollamaNodes = allAiNodes.filter(nt => {
+            const nodeTypeLower = nt.toLowerCase();
+            return nodeTypeLower.includes('ollama') || 
+                   nodeTypeLower === 'ai_chat_model' || 
+                   nodeTypeLower === 'chat_model';
+          });
+          
+          if (ollamaNodes.length > 0) {
+            // Prefer 'ollama' node first
+            const ollamaNode = ollamaNodes.find(nt => nt.toLowerCase() === 'ollama');
+            if (ollamaNode) {
+              required.requiredTransformations.push(ollamaNode);
+            } else {
+              required.requiredTransformations.push(ollamaNodes[0]);
+            }
+          } else {
+            // Fallback to summarizer or first available
+            const summarizerNode = allAiNodes.find(nt => 
+              nt.toLowerCase().includes('summarizer')
+            );
+            if (summarizerNode) {
+              required.requiredTransformations.push(summarizerNode);
+            } else {
+              required.requiredTransformations.push(allAiNodes[0]);
+            }
+          }
+        } else if (categorizedNodes.transformations.length > 0) {
+          // Last resort: use first transformation (excluding outputs)
+          // But still prefer Ollama if available
+          const ollamaTransformations = categorizedNodes.transformations.filter(nt => {
+            const nodeTypeLower = nt.toLowerCase();
+            return nodeTypeLower.includes('ollama') || 
+                   nodeTypeLower === 'ai_chat_model' || 
+                   nodeTypeLower === 'chat_model';
+          });
+          
+          if (ollamaTransformations.length > 0) {
+            const ollamaNode = ollamaTransformations.find(nt => nt.toLowerCase() === 'ollama');
+            if (ollamaNode) {
+              required.requiredTransformations.push(ollamaNode);
+      } else {
+              required.requiredTransformations.push(ollamaTransformations[0]);
+        }
+        } else {
+            const realTransformations = categorizedNodes.transformations.filter(nt => {
+              const nodeTypeLower = nt.toLowerCase();
+              if (nodeTypeLower.includes('gmail') || nodeTypeLower.includes('email') || 
+                  nodeTypeLower.includes('slack') || nodeTypeLower.includes('message')) {
+                return false;
+              }
+              return true;
+            });
+            if (realTransformations.length > 0) {
+              required.requiredTransformations.push(realTransformations[0]);
+            }
+          }
+        }
+      }
+    }
+    
+    // ✅ STEP 3: Identify required outputs - search in ALL extracted nodes
+    const outputVerbs = [
+      'send', 'deliver', 'notify', 'post', 'to', 'email', 'message',
+      'write', 'save', 'store', 'publish', 'share', 'dispatch'
+    ];
+    const hasOutputIntent = outputVerbs.some(verb => promptLower.includes(verb));
+    
+    if (hasOutputIntent) {
+      // ✅ UNIVERSAL FIX: Collect ALL matching outputs (not just first)
+      // Complex prompts may need multiple outputs (e.g., "post on all social platforms")
+      for (const nodeType of allExtractedNodes) {
+        // Only check actual output nodes (not data sources)
+        if (nodeCapabilityRegistryDSL.isOutput(nodeType) && 
+            !nodeCapabilityRegistryDSL.isDataSource(nodeType)) {
+          const nodeDef = unifiedNodeRegistry.get(nodeType);
+          const nodeLabel = (nodeDef?.label || nodeType).toLowerCase();
+          const nodeTypeLower = nodeType.toLowerCase();
+          
+          // Check if node is mentioned in prompt with output context (e.g., "to gmail", "send email")
+          // Look for patterns like "to gmail", "send email", "via slack", "all platforms", etc.
+          const outputPatterns = [
+            `to ${nodeLabel}`,
+            `to ${nodeTypeLower}`,
+            `send ${nodeLabel}`,
+            `send ${nodeTypeLower}`,
+            `via ${nodeLabel}`,
+            `via ${nodeTypeLower}`,
+            `notify via ${nodeLabel}`,
+            `notify via ${nodeTypeLower}`,
+            `post on ${nodeLabel}`,
+            `post on ${nodeTypeLower}`,
+            `all ${nodeLabel}`,
+            `all ${nodeTypeLower}`,
+            `all platforms`, // Special case for "all social platforms"
+          ];
+          
+          const isMentioned = outputPatterns.some(pattern => promptLower.includes(pattern)) ||
+                              promptLower.includes(nodeLabel) || 
+                              promptLower.includes(nodeTypeLower) ||
+                              (nodeDef?.tags || []).some((tag: string) => promptLower.includes(tag.toLowerCase()));
+          
+          // Special handling for "all social platforms" - include all social nodes
+          if (promptLower.includes('all social') || promptLower.includes('all platforms')) {
+            if (nodeTypeLower.includes('twitter') || 
+                nodeTypeLower.includes('linkedin') || 
+                nodeTypeLower.includes('facebook') ||
+                nodeTypeLower.includes('instagram') ||
+                nodeTypeLower.includes('youtube')) {
+              if (!required.requiredOutputs.includes(nodeType)) {
+                required.requiredOutputs.push(nodeType);
+              }
+            }
+          } else if (isMentioned) {
+            if (!required.requiredOutputs.includes(nodeType)) {
+              required.requiredOutputs.push(nodeType);
+            }
+          }
+        }
+      }
+      
+      // If not found, try categorized outputs (filter out data sources)
+      if (required.requiredOutputs.length === 0) {
+        const realOutputs = categorizedNodes.outputs.filter(nt => 
+          nodeCapabilityRegistryDSL.isOutput(nt) && 
+          !nodeCapabilityRegistryDSL.isDataSource(nt)
+        );
+        
+        for (const nodeType of realOutputs) {
+          const nodeDef = unifiedNodeRegistry.get(nodeType);
+          const nodeLabel = (nodeDef?.label || nodeType).toLowerCase();
+          const nodeTypeLower = nodeType.toLowerCase();
+          
+          if (promptLower.includes(nodeLabel) || 
+              promptLower.includes(nodeTypeLower) ||
+              (nodeDef?.tags || []).some((tag: string) => promptLower.includes(tag.toLowerCase()))) {
+            if (!required.requiredOutputs.includes(nodeType)) {
+              required.requiredOutputs.push(nodeType);
+            }
+          }
+        }
+      }
+      
+      // Fallback to first available output (not data source)
+      if (required.requiredOutputs.length === 0) {
+        const realOutputs = categorizedNodes.outputs.filter(nt => 
+          nodeCapabilityRegistryDSL.isOutput(nt) && 
+          !nodeCapabilityRegistryDSL.isDataSource(nt)
+        );
+        if (realOutputs.length > 0) {
+          required.requiredOutputs.push(realOutputs[0]);
+        }
+      }
+    }
+    
+    return required;
+  }
+  
+  /**
+   * ✅ UNIVERSAL: Build complete workflow chain with ALL required nodes
+   * Handles complex multi-step workflows with multiple sources, transformations, and outputs
+   * Ensures all variations have complete chains that represent the full workflow
+   */
+  private buildWorkflowChain(
+    requiredNodes: ReturnType<typeof this.identifyRequiredNodesFromIntent>,
+    categorizedNodes: ReturnType<typeof this.categorizeExtractedNodes>,
+    triggerType: string,
+    userPrompt: string,
+    allExtractedNodes: string[]
+  ): string[] {
+    const chain: string[] = [triggerType];
+    const usedNodes = new Set<string>([triggerType]);
+    const promptLower = userPrompt.toLowerCase();
+    
+    // ✅ STEP 1: Add ALL required data sources (not just one)
+    // Complex prompts may need multiple data sources (e.g., "Sync CRM, DB, and spreadsheets")
+    const dataSourcesToAdd = requiredNodes.requiredDataSources.length > 0 
+      ? requiredNodes.requiredDataSources 
+      : categorizedNodes.dataSources.slice(0, 3); // Limit to 3 to avoid too long chains
+    
+    for (const dataSource of dataSourcesToAdd) {
+      if (!usedNodes.has(dataSource)) {
+        chain.push(dataSource);
+        usedNodes.add(dataSource);
+      }
+    }
+    
+    // ✅ STEP 2: Add conditional logic nodes if needed
+    // Check for conditional keywords: "if", "when", "escalate", "conditionally", "flag", etc.
+    const needsConditional = promptLower.includes('if') || 
+                            promptLower.includes('when') ||
+                            promptLower.includes('escalate') ||
+                            promptLower.includes('conditionally') ||
+                            promptLower.includes('flag') ||
+                            promptLower.includes('critical');
+    
+    if (needsConditional) {
+      // Prefer if_else for binary conditions, switch for multiple cases
+      const conditionalNode = allExtractedNodes.find(nt => 
+        nt === 'if_else' || nt === 'switch'
+      ) || (categorizedNodes.transformations.find(nt => 
+        nt === 'if_else' || nt === 'switch'
+      ));
+      
+      if (conditionalNode && !usedNodes.has(conditionalNode)) {
+        chain.push(conditionalNode);
+        usedNodes.add(conditionalNode);
+      }
+    }
+    
+    // ✅ STEP 3: Add ALL required transformations (not just one)
+    // Complex prompts may need multiple transformations (e.g., "qualify using AI, store in CRM")
+    const transformationsToAdd = requiredNodes.requiredTransformations.length > 0
+      ? requiredNodes.requiredTransformations
+      : categorizedNodes.transformations.filter(nt => {
+          // Exclude conditional nodes (already added) and output nodes
+          const ntLower = nt.toLowerCase();
+          return nt !== 'if_else' && 
+                 nt !== 'switch' &&
+                 !ntLower.includes('gmail') && 
+                 !ntLower.includes('email') &&
+                 !ntLower.includes('slack') &&
+                 !ntLower.includes('message');
+        }).slice(0, 2); // Limit to 2 transformations
+    
+    for (const transformation of transformationsToAdd) {
+      if (!usedNodes.has(transformation)) {
+        chain.push(transformation);
+        usedNodes.add(transformation);
+      }
+    }
+    
+    // ✅ STEP 4: Add ALL required outputs (not just one)
+    // Complex prompts may need multiple outputs (e.g., "post on all social platforms")
+    const outputsToAdd = requiredNodes.requiredOutputs.length > 0
+      ? requiredNodes.requiredOutputs
+      : categorizedNodes.outputs.filter(nt => {
+          // Exclude data sources that were mis-categorized
+          const ntLower = nt.toLowerCase();
+          return !ntLower.includes('sheet') || 
+                 !categorizedNodes.dataSources.includes(nt);
+        }).slice(0, 3); // Limit to 3 outputs to avoid too long chains
+    
+    for (const output of outputsToAdd) {
+      if (!usedNodes.has(output)) {
+        chain.push(output);
+        usedNodes.add(output);
+      }
+    }
+    
+    // ✅ STEP 5: Ensure chain has at least trigger + one action (minimum viable chain)
+    if (chain.length === 1) {
+      // No nodes extracted - add a generic action node
+      if (categorizedNodes.dataSources.length > 0) {
+        chain.push(categorizedNodes.dataSources[0]);
+      } else if (categorizedNodes.transformations.length > 0) {
+        chain.push(categorizedNodes.transformations[0]);
+      } else if (categorizedNodes.outputs.length > 0) {
+        chain.push(categorizedNodes.outputs[0]);
+      }
+    }
+    
+    return chain;
+  }
+  
+  /**
+   * ✅ UNIVERSAL: Build variation prompt describing complete workflow
+   */
+  /**
+   * ✅ UNIVERSAL: Build variation prompt describing complete linear workflow chain
+   * Handles chains of ANY length (not just 4 nodes)
+   * Ensures ALL nodes in chain are described in linear order
+   */
+  private buildVariationPrompt(
+    chain: string[],
+    nodeLabels: Map<string, string>,
+    nodeOperations: Map<string, { operations: string[]; defaultOp: string }>,
+    variationIndex: number
+  ): string {
+    if (chain.length < 2) {
+      return `Start the workflow with ${chain[0] || 'manual_trigger'} to initiate automation.`;
+    }
+    
+    const trigger = chain[0];
+    const triggerLabel = nodeLabels.get(trigger) || trigger;
+    
+    // ✅ UNIVERSAL: Build linear description of ALL nodes in chain
+    const nodeDescriptions: string[] = [];
+    
+    // Start with trigger
+    const triggerDescriptions = [
+      `Start the workflow with ${triggerLabel} to initiate automation`,
+      `Create a workflow using ${triggerLabel} as the entry point`,
+      `Set up the workflow to trigger via ${triggerLabel} when external events occur`,
+      `Configure an automated workflow that activates through ${triggerLabel} for real-time processing`
+    ];
+    nodeDescriptions.push(triggerDescriptions[variationIndex] || triggerDescriptions[0]);
+    
+    // ✅ Process ALL remaining nodes in linear order
+    for (let i = 1; i < chain.length; i++) {
+      const nodeType = chain[i];
+      const nodeLabel = nodeLabels.get(nodeType) || nodeType;
+      const nodeOps = nodeOperations.get(nodeType);
+      const defaultOp = nodeOps?.defaultOp || 'process';
+      
+      // Determine node category for appropriate description using registry
+      const { unifiedNodeRegistry } = require('../../core/registry/unified-node-registry');
+      const nodeDef = unifiedNodeRegistry.get(nodeType);
+      const nodeTypeLower = nodeType.toLowerCase();
+      
+      // Use capability registry to determine category
+      const isConditional = nodeType === 'if_else' || nodeType === 'switch';
+      const isDataSource = nodeCapabilityRegistryDSL.isDataSource(nodeType) && 
+                          !nodeCapabilityRegistryDSL.isOutput(nodeType);
+      const isTransformation = nodeCapabilityRegistryDSL.isTransformation(nodeType) && 
+                              !nodeCapabilityRegistryDSL.isOutput(nodeType) &&
+                              !isConditional;
+      const isOutput = nodeCapabilityRegistryDSL.isOutput(nodeType) && 
+                      !nodeCapabilityRegistryDSL.isDataSource(nodeType);
+      
+      let description = '';
+      
+      if (isConditional) {
+        // Conditional logic node
+        const conditionalDescs = [
+          `Apply conditional logic using ${nodeLabel} to route data based on conditions`,
+          `Use ${nodeLabel} to evaluate conditions and branch the workflow`,
+          `Route data through ${nodeLabel} for conditional processing`,
+          `Apply ${nodeLabel} to handle conditional routing and decision-making`
+        ];
+        description = conditionalDescs[variationIndex] || conditionalDescs[0];
+      } else if (isDataSource) {
+        // Data source node
+        const dataSourceDescs = [
+          `Use ${nodeLabel} with operation='${defaultOp}' to fetch data`,
+          `Begin by using ${nodeLabel} to gather initial data`,
+          `Use ${nodeLabel} to retrieve incoming data`,
+          `Leverage ${nodeLabel} to capture incoming information`
+        ];
+        description = dataSourceDescs[variationIndex] || dataSourceDescs[0];
+      } else if (isTransformation) {
+        // Transformation node
+        const transformDescs = [
+          `Process the data through ${nodeLabel} with operation='${defaultOp}' to analyze and transform`,
+          `Then utilize ${nodeLabel} to process and transform the information`,
+          `Route the data through ${nodeLabel} for processing`,
+          `Apply ${nodeLabel} to analyze and transform the data`
+        ];
+        description = transformDescs[variationIndex] || transformDescs[0];
+      } else if (isOutput) {
+        // Output node
+        const outputDescs = [
+          `Deliver the results using ${nodeLabel} with operation='${defaultOp}'`,
+          `Finalize the workflow by sending results via ${nodeLabel}`,
+          `Output the final results using ${nodeLabel}`,
+          `Complete the automation by delivering processed output via ${nodeLabel}`
+        ];
+        description = outputDescs[variationIndex] || outputDescs[0];
+      } else {
+        // Generic node
+        description = `Process through ${nodeLabel}`;
+      }
+      
+      nodeDescriptions.push(description);
+    }
+    
+    // ✅ Join all descriptions with proper connectors for linear flow
+    let prompt = nodeDescriptions[0] + '. ';
+    
+    for (let i = 1; i < nodeDescriptions.length; i++) {
+      if (i === nodeDescriptions.length - 1) {
+        // Last node - use period
+        prompt += nodeDescriptions[i] + '.';
+      } else {
+        // Middle nodes - use comma or period based on context
+        prompt += nodeDescriptions[i] + '. ';
+      }
+    }
+    
+    return prompt;
   }
   
   /**
@@ -1061,7 +2206,16 @@ export class AIIntentClarifier {
    * ✅ PHASE 2: Build clarification prompt with REQUIRED nodes
    * @param extractedNodeTypes - Node types that MUST be included in variations
    */
-  private buildClarificationPrompt(userPrompt: string, allKeywords: string[], extractedNodeTypes: string[] = []): string {
+  private buildClarificationPrompt(
+    userPrompt: string,
+    allKeywords: string[],
+    extractedNodeTypes: string[] = [],
+    nodeMentionsWithOperations?: Array<{ // ✅ OPERATIONS-FIRST: Node mentions with operations from schema
+      nodeType: string;
+      operations: string[];
+      defaultOperation: string;
+    }>
+  ): string {
     // ✅ Analyze prompt structure using registry
     const structure = this.analyzePromptStructure(userPrompt);
     
@@ -1123,6 +2277,73 @@ LINEAR WORKFLOW DETECTED:
 - Output nodes are determined by capabilities: 'output', 'write_data', 'send_email', 'send_message', etc.`;
     }
 
+    // ✅ OPERATIONS-FIRST: Separate nodes WITH operations from nodes WITHOUT operations
+    const { unifiedNodeRegistry } = require('../../core/registry/unified-node-registry');
+    const nodesWithOperations = nodeMentionsWithOperations?.filter(n => n.operations.length > 0) || [];
+    const nodesWithoutOperations = nodeMentionsWithOperations?.filter(n => n.operations.length === 0) || [];
+    
+    // Build operations section for nodes WITH operations
+    let operationsSection = '';
+    if (nodesWithOperations.length > 0) {
+      operationsSection = `
+🚨🚨🚨 CRITICAL - NODES WITH OPERATIONS (FROM NODE SCHEMAS):
+These nodes have specific operations available in their schema. You MUST use these EXACT operations:
+
+${nodesWithOperations.map(node => {
+  return `- ${node.nodeType}:
+  * Available operations: ${node.operations.join(', ')}
+  * Default operation: ${node.defaultOperation || node.operations[0] || 'N/A'}
+  * Example: "Use ${node.nodeType} with operation='${node.defaultOperation || node.operations[0] || 'read'}' to..."`
+}).join('\n\n')}
+
+ABSOLUTE REQUIREMENTS FOR NODES WITH OPERATIONS:
+1. Use ONLY the operations listed above for each node (from node's schema)
+2. If user mentions a verb (e.g., "export", "send", "read"), map it to the CLOSEST operation from the node's available operations
+3. Include the operation in your variation text (e.g., "Use github with operation='create_issue' to...")
+4. DO NOT invent operations - use only what's in the node's schema
+5. If unsure which operation to use, use the DEFAULT operation listed above
+
+✅ OPERATION MAPPING EXAMPLES:
+- User says "export" → Use operation='export' if available, otherwise use default
+- User says "send email" → Use operation='send' for email nodes
+- User says "read data" → Use operation='read' for data source nodes
+- User says "create issue" → Use operation='create_issue' for github nodes
+
+`;
+    }
+    
+    // Build action/description section for nodes WITHOUT operations
+    let actionsSection = '';
+    if (nodesWithoutOperations.length > 0) {
+      const nodeDescriptions = nodesWithoutOperations.map(node => {
+        const nodeDef = unifiedNodeRegistry.get(node.nodeType);
+        const description = nodeDef?.description || `perform ${node.nodeType} action`;
+        const label = nodeDef?.label || node.nodeType;
+        return `- ${node.nodeType} (${label}): ${description}`;
+      }).join('\n');
+      
+      actionsSection = `
+🚨🚨🚨 CRITICAL - NODES WITHOUT OPERATIONS (ACTION-BASED):
+These nodes perform specific actions. Describe what they DO, not operations:
+
+${nodeDescriptions}
+
+ABSOLUTE REQUIREMENTS FOR NODES WITHOUT OPERATIONS:
+1. These nodes do NOT have operations - they perform specific actions
+2. Describe what the node DOES in natural language (e.g., "Use webhook to receive incoming requests", "Use wait to delay execution")
+3. DO NOT try to find operations for these nodes - they don't have any
+4. Focus on describing the node's purpose and action in your variation text
+5. Use natural language to explain what the node accomplishes
+
+✅ ACTION DESCRIPTION EXAMPLES:
+- webhook → "Use webhook to receive incoming HTTP requests"
+- wait → "Use wait to delay workflow execution for 5 minutes"
+- if_else → "Use if_else to route data based on conditions"
+- log → "Use log to record workflow execution details"
+
+`;
+    }
+    
     // ✅ PHASE 2: Add EXTRACTED KEYWORDS section to prompt (REQUIRED, not optional)
     const extractedKeywordsSection = extractedNodeTypes.length > 0
       ? `
@@ -1138,19 +2359,27 @@ ABSOLUTE REQUIREMENTS (NON-NEGOTIABLE):
 5. The extracted keywords above are what the user EXPLICITLY mentioned - they are REQUIRED, not optional
 6. You MUST naturally integrate ALL ${extractedNodeTypes.length} node types into the variation text
 7. Each variation must mention ALL nodes: ${extractedNodeTypes.join(', ')}
+8. ✅ OPERATIONS-FIRST: 
+   - For nodes WITH operations: Use the EXACT operations listed in the OPERATIONS section above
+   - For nodes WITHOUT operations: Describe what the node DOES (its action/purpose) naturally
+9. 🚨 CRITICAL: Build COMPLETE workflow chains: trigger → dataSource → transformation → output
+10. 🚨 CRITICAL: If user says "get X, summarize Y, send Z", you MUST include: dataSource node (X) + transformation node (Y) + output node (Z)
+11. 🚨 CRITICAL: Each variation MUST describe the COMPLETE workflow flow, not just 2 random nodes
 
 ✅ CRITICAL: Naturally integrate node types into variation text:
-- Include node type names naturally in sentences (e.g., "Use ${extractedNodeTypes[0] || 'node'} to generate content")
+- For nodes WITH operations: Include operation in sentences (e.g., "Use ${nodesWithOperations.length > 0 ? nodesWithOperations[0].nodeType : extractedNodeTypes[0] || 'node'} with operation='${nodesWithOperations.length > 0 ? nodesWithOperations[0].defaultOperation : 'read'}' to fetch data")
+- For nodes WITHOUT operations: Describe the action naturally (e.g., "Use ${nodesWithoutOperations.length > 0 ? nodesWithoutOperations[0].nodeType : 'webhook'} to receive incoming requests")
 - Show data flow with node types (e.g., "Data flows from ${extractedNodeTypes[0] || 'source'} → ${extractedNodeTypes[1] || 'transformation'} → ${extractedNodeTypes[2] || 'output'}")
-- Describe operations with node types (e.g., "Use ${extractedNodeTypes[0] || 'node'} with operation='read' to fetch data")
 
-VIOLATION = FAILURE: If you omit any extracted node, the variation is INVALID.
+VIOLATION = FAILURE: If you omit any extracted node or use invalid operations, the variation is INVALID.
 
 `
       : '';
 
     return `User Prompt: "${userPrompt}"
 
+${operationsSection}
+${actionsSection}
 ${extractedKeywordsSection}
 Available Node Keywords (${keywordsToUse.length} keywords - ONLY REQUIRED NODES + relevant context):
 ${keywordsToUse.join(', ')}
@@ -1190,16 +2419,27 @@ ${structure.notificationNodes.length > 0 ? `- Notification nodes: ${structure.no
 ${structure.transformationNodes.length > 0 ? `- Transformation nodes: ${structure.transformationNodes.join(', ')} (capability: 'transformation', 'ai_processing', 'llm')` : ''}
 ${structure.triggerTypes.length > 0 ? `- Trigger types: ${structure.triggerTypes.join(', ')}` : ''}
 
-🚨 CRITICAL REQUIREMENT - READ CAREFULLY:
-You MUST generate EXACTLY 4 (FOUR) UNIQUE, SPECIFIC prompt variations. Each variation MUST:
-- Include ALL ${extractedNodeTypes.length} REQUIRED NODES: ${extractedNodeTypes.join(', ')}
-- Follow the workflow structure detected above (conditional or linear)
-${structure.isConditional ? '- For conditional workflows: Specify ONE CRM node (true branch) AND ONE notification node (false branch) in the SAME workflow' : '- For linear workflows: Specify ONE output node per variation'}
-- Use DIFFERENT node combinations across variations (but ALL must include the ${extractedNodeTypes.length} REQUIRED NODES)
-- Use DIFFERENT triggers (Variations 1-2: manual_trigger, Variations 3-4: webhook)
-- Be 3-4 lines long with specific details that naturally mention ALL ${extractedNodeTypes.length} nodes
-- Be obviously different from other variations
-- DO NOT copy the user's prompt verbatim - expand it with ALL ${extractedNodeTypes.length} nodes integrated naturally
+🚨🚨🚨 CRITICAL REQUIREMENT - EXACTLY 4 VARIATIONS - READ CAREFULLY:
+You MUST generate EXACTLY 4 (FOUR) UNIQUE, DISTINCT prompt variations. NOT 1, NOT 2, NOT 3 - EXACTLY 4.
+
+Each variation MUST be OBVIOUSLY DIFFERENT from the others:
+- Variation 1: MUST use manual_trigger + focus on primary workflow flow
+- Variation 2: MUST use manual_trigger + alternative workflow approach
+- Variation 3: MUST use webhook trigger + primary workflow flow
+- Variation 4: MUST use webhook trigger + alternative workflow approach
+
+EACH VARIATION MUST:
+✅ Include ALL ${extractedNodeTypes.length} REQUIRED NODES: ${extractedNodeTypes.join(', ')}
+✅ Follow the workflow structure detected above (conditional or linear)
+${structure.isConditional ? '✅ For conditional workflows: Specify ONE CRM node (true branch) AND ONE notification node (false branch) in the SAME workflow' : '✅ For linear workflows: Specify ONE output node per variation'}
+✅ Use DIFFERENT sentence structures and wording (not just copy-paste with different triggers)
+✅ Use DIFFERENT triggers (Variations 1-2: manual_trigger, Variations 3-4: webhook) - THIS IS MANDATORY
+✅ Be 3-4 COMPLETE SENTENCES long with specific details that naturally mention ALL ${extractedNodeTypes.length} nodes
+✅ Be OBVIOUSLY DIFFERENT from other variations (different flow, different emphasis, different wording)
+✅ DO NOT copy the user's prompt verbatim - expand it with ALL ${extractedNodeTypes.length} nodes integrated naturally
+✅ DO NOT create variations that are 80%+ similar - each must be unique
+
+VIOLATION = RETRY: If you generate fewer than 4 variations OR variations are too similar (>70% similarity), the system will REJECT and retry.
 
 YOUR ROLE:
 You are NOT the user. You are a workflow automation expert. Transform vague user prompts into detailed, structured prompts based on node capabilities and workflow architecture.
@@ -1627,8 +2867,15 @@ The "variations" array MUST contain exactly 4 items, each with a detailed prompt
       // Step 2: Map to node types - these are the MANDATORY nodes user wants
       const mandatoryNodeTypes = this.mapKeywordsToNodeTypes(Array.from(matchedKeywords));
       
+      // ✅ NEW: Extract nodes with operation hints
+      const mandatoryNodesWithOperations = this.extractNodesWithOperations(originalPrompt, allKeywordData, mandatoryNodeTypes);
+      
       console.log(`[AIIntentClarifier] ✅ ROOT FIX: Using ONLY ${mandatoryNodeTypes.length} node(s) from user's original prompt: ${mandatoryNodeTypes.join(', ')}`);
       console.log(`[AIIntentClarifier] ✅ ROOT FIX: Ignoring AI-generated matchedKeywords - only trusting user's intent`);
+      if (mandatoryNodesWithOperations.length > 0) {
+        console.log(`[AIIntentClarifier] ✅ Extracted operation hints for ${mandatoryNodesWithOperations.length} node(s):`, 
+          mandatoryNodesWithOperations.map(n => `${n.nodeType}(${n.operationHint || 'none'})`).join(', '));
+      }
       
       // ✅ CLEAN ARCHITECTURE: Process variations with clear separation of concerns
       const pureVariations = variations.map(variation => {
@@ -1652,7 +2899,8 @@ The "variations" array MUST contain exactly 4 items, each with a detailed prompt
           // ✅ FIX: UI displays ALL required nodes from user's original prompt
           // This ensures UI shows all 6 nodes even if AI variation only mentioned 2-3
           keywords: mandatoryNodeTypes, // ✅ Single source of truth: user's required nodes
-          matchedKeywords: matchedNodeTypes, // ✅ For validation: what AI actually mentioned in variation
+          matchedKeywords: matchedNodeTypes, // ✅ For validation: filtered nodes (in user's intent)
+          allExtractedNodes: variationNodeTypes, // ✅ NEW: ALL nodes extracted from variation text (for smart semantic matching)
         };
       });
 
@@ -1660,6 +2908,7 @@ The "variations" array MUST contain exactly 4 items, each with a detailed prompt
         shouldShowLayer: pureVariations.length > 1, // Show layer if we have multiple variations
         originalPrompt: originalPrompt,
         clarifiedIntent: parsed.clarifiedIntent || originalPrompt,
+        mandatoryNodesWithOperations, // ✅ NEW: Include operation hints
         promptVariations: pureVariations, // ✅ PURE INTENT: Use AI-generated variations as-is (no patching)
         allKeywords: this.keywordCollector.getAllKeywordStrings(),
         matchedKeywords: Array.from(matchedKeywords), // ✅ ROOT FIX: Only from user's original prompt
@@ -1808,6 +3057,74 @@ The "variations" array MUST contain exactly 4 items, each with a detailed prompt
     
     console.log(`[AIIntentClarifier] ✅ ROOT-LEVEL: Extracted ${extractedKeywords.size} node(s), grouped to ${finalNodes.length} by semantic category: ${finalNodes.join(', ')}`);
     return finalNodes;
+  }
+  
+  /**
+   * ✅ NEW: Extract nodes with operation hints from prompt context
+   * Finds verbs/operations near node mentions to infer operation hints
+   */
+  private extractNodesWithOperations(
+    userPrompt: string,
+    allKeywordData: AliasKeyword[],
+    nodeTypes: string[]
+  ): NodeTypeWithOperation[] {
+    const promptLower = userPrompt.toLowerCase();
+    const result: NodeTypeWithOperation[] = [];
+    
+    // Common operation verbs that appear near nodes
+    const operationVerbs = [
+      'monitoring', 'monitor', 'check', 'watch', 'track',
+      'integrated', 'integrate', 'connect', 'link',
+      'read', 'get', 'fetch', 'retrieve', 'pull',
+      'send', 'post', 'push', 'create', 'write', 'update',
+      'export', 'import', 'sync', 'transfer'
+    ];
+    
+    for (const nodeType of nodeTypes) {
+      // Find all keyword matches for this node type
+      const nodeKeywords = allKeywordData.filter(k => k.nodeType === nodeType);
+      
+      let bestContext = '';
+      let bestOperationHint: string | undefined;
+      
+      for (const keywordData of nodeKeywords) {
+        const keywordLower = keywordData.keyword.toLowerCase();
+        
+        // Find the position of the keyword in the prompt
+        const keywordIndex = promptLower.indexOf(keywordLower);
+        if (keywordIndex === -1) continue;
+        
+        // Extract context around the keyword (50 chars before and after)
+        const contextStart = Math.max(0, keywordIndex - 50);
+        const contextEnd = Math.min(promptLower.length, keywordIndex + keywordLower.length + 50);
+        const context = userPrompt.substring(contextStart, contextEnd);
+        const contextLower = context.toLowerCase();
+        
+        // Find operation verbs near the keyword
+        for (const verb of operationVerbs) {
+          const verbIndex = contextLower.indexOf(verb);
+          if (verbIndex !== -1) {
+            // Check if verb is within 30 characters of the keyword
+            const distance = Math.abs(verbIndex - (keywordIndex - contextStart));
+            if (distance <= 30) {
+              bestOperationHint = verb;
+              bestContext = context.trim();
+              break;
+            }
+          }
+        }
+        
+        if (bestOperationHint) break;
+      }
+      
+      result.push({
+        nodeType,
+        operationHint: bestOperationHint,
+        context: bestContext || undefined
+      });
+    }
+    
+    return result;
   }
   
   /**

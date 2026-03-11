@@ -13,9 +13,11 @@
  */
 
 import { StructuredIntent } from './intent-structurer';
+import { SimpleIntent } from './simple-intent';
 import { resolveNodeType } from '../../core/utils/node-type-resolver-util';
 import { nodeLibrary } from '../nodes/node-library';
 import { domainIntentHandler } from './domain-intent-handler';
+import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 
 export interface IntentCompletenessResult {
   complete: boolean;
@@ -26,16 +28,70 @@ export class IntentCompletenessValidator {
   // Note: Abstract pattern detection removed - vague prompts are handled by intent_auto_expander
 
   /**
-   * Validate intent completeness
+   * ✅ PHASE E: Validate intent completeness with nodeMentions check
+   * Ensures nodes from nodeMentions are never lost
    */
   validateIntentCompleteness(
     intent: StructuredIntent,
-    userPrompt?: string
+    userPrompt?: string,
+    simpleIntent?: SimpleIntent // ✅ NEW: Pass SimpleIntent to check nodeMentions
   ): IntentCompletenessResult {
     console.log(`[IntentCompletenessValidator] Validating intent completeness...`);
 
-    // Note: Abstract prompts will be handled by intent_auto_expander in the pipeline
-    // We only validate that the intent structure is valid, not whether it's complete
+    // ✅ PHASE E: PRIORITY CHECK - If nodeMentions exist, they MUST be represented in StructuredIntent
+    if (simpleIntent?.nodeMentions && simpleIntent.nodeMentions.length > 0) {
+      // ✅ PHASE 2 FIX: Ignore trigger-only node mentions for action completeness
+      // Triggers are handled separately in the pipeline; they don't need corresponding actions
+      const nonTriggerMentions = simpleIntent.nodeMentions.filter(m => {
+        const def = unifiedNodeRegistry.get(m.nodeType);
+        return !def || def.category !== 'trigger';
+      });
+
+      const nodeMentionTypes = nonTriggerMentions.map(m => m.nodeType);
+      
+      // ✅ OPERATION-FIRST INTENT COVERAGE: Consider ALL StructuredIntent roles
+      const actionTypes = (intent.actions || []).map(a => a.type || '');
+      const dataSourceTypes = (intent.dataSources || []).map(ds => ds.type || '');
+      const transformationTypes = (intent.transformations || []).map(tf => tf.type || '');
+      
+      // If all mentions are triggers, skip this strict check
+      if (nodeMentionTypes.length > 0) {
+        // Check if any non-trigger nodeMentions are missing from ALL roles
+        const missingMentions = nodeMentionTypes.filter(mentionType => {
+          const mentionLower = mentionType.toLowerCase();
+          
+          const presentInActions = actionTypes.some(actionType => {
+            const t = (actionType || '').toLowerCase();
+            return t.includes(mentionLower) || mentionLower.includes(t);
+          });
+          
+          const presentInDataSources = dataSourceTypes.some(dsType => {
+            const t = (dsType || '').toLowerCase();
+            return t.includes(mentionLower) || mentionLower.includes(t);
+          });
+          
+          const presentInTransformations = transformationTypes.some(tfType => {
+            const t = (tfType || '').toLowerCase();
+            return t.includes(mentionLower) || mentionLower.includes(t);
+          });
+          
+          // Missing if not present in ANY StructuredIntent role
+          return !presentInActions && !presentInDataSources && !presentInTransformations;
+        });
+      
+        if (missingMentions.length > 0) {
+          console.error(`[IntentCompletenessValidator] ❌ CRITICAL: ${missingMentions.length} non-trigger node mention(s) not represented in StructuredIntent: ${missingMentions.join(', ')}`);
+          console.error(`[IntentCompletenessValidator] ❌ This indicates a planner bug - non-trigger nodeMentions MUST appear in actions, dataSources, or transformations`);
+          // This is a critical error - planner should have created at least one role for each nodeMention
+          return {
+            complete: false,
+            reason: `CRITICAL: ${missingMentions.length} non-trigger node mention(s) from prompt not represented in StructuredIntent (actions/dataSources/transformations): ${missingMentions.join(', ')}. This is a planner bug.`,
+          };
+        } else {
+          console.log(`[IntentCompletenessValidator] ✅ All ${nodeMentionTypes.length} non-trigger node mention(s) represented in StructuredIntent roles (actions/dataSources/transformations)`);
+        }
+      }
+    }
 
     // Check 2: Intent must have at least one concrete action OR data source
     // Note: If missing, intent_auto_expander will add assumptions
@@ -43,6 +99,15 @@ export class IntentCompletenessValidator {
     const hasDataSources = this.hasDataSources(intent);
     
     if (!hasActions && !hasDataSources) {
+      // ✅ PHASE E: If nodeMentions exist but no actions, this is a critical error
+      if (simpleIntent?.nodeMentions && simpleIntent.nodeMentions.length > 0) {
+        console.error(`[IntentCompletenessValidator] ❌ CRITICAL: nodeMentions exist (${simpleIntent.nodeMentions.length}) but no actions created. Planner failed.`);
+        return {
+          complete: false,
+          reason: `CRITICAL: ${simpleIntent.nodeMentions.length} node mention(s) extracted but planner created no actions. This is a planner bug.`,
+        };
+      }
+      
       console.warn(`[IntentCompletenessValidator] ⚠️  Intent has no actions or data sources - will be expanded by intent_auto_expander`);
       // Return incomplete but don't block - intent_auto_expander will handle it
       return {

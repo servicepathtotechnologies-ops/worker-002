@@ -10,8 +10,8 @@
  */
 
 // Set Ollama endpoint before importing modules that use it
-process.env.OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://13.232.155.30:8000';
-process.env.VITE_OLLAMA_BASE_URL = process.env.VITE_OLLAMA_BASE_URL || 'http://13.232.155.30:8000';
+process.env.OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://ollama.ctrlchecks.ai:8000';
+process.env.VITE_OLLAMA_BASE_URL = process.env.VITE_OLLAMA_BASE_URL || 'http://ollama.ctrlchecks.ai:8000';
 
 import { WorkflowPipelineOrchestrator } from '../src/services/ai/workflow-pipeline-orchestrator';
 import { unifiedNodeRegistry } from '../src/core/registry/unified-node-registry';

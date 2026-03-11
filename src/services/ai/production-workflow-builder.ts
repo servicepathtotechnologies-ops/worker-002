@@ -62,6 +62,7 @@ export interface ProductionBuildResult {
 
 export interface BuildOptions {
   mandatoryNodeTypes?: string[]; // ✅ NEW: Mandatory nodes from keyword extraction (Stage 1)
+  mandatoryNodesWithOperations?: Array<{ nodeType: string; operationHint?: string; context?: string }>; // ✅ NEW: Nodes with operation hints
   maxRetries?: number;
   strictMode?: boolean;
   allowRegeneration?: boolean;
