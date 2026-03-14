@@ -1,119 +1,104 @@
-# Implementation Verification Checklist
+# Implementation Verification - 100% Complete
 
-## ✅ All Changes Verified
+## ✅ All Implementations Verified
 
-### File 1: `worker/src/services/ai/summarize-layer.ts`
-- ✅ **Line 35-39**: `NodeTypeWithOperation` interface added
-- ✅ **Line 49**: `mandatoryNodesWithOperations` added to `SummarizeLayerResult`
-- ✅ **Line 1636**: `extractNodesWithOperations()` called
-- ✅ **Line 1673**: Included in return statement
-- ✅ **Line 1827-1895**: `extractNodesWithOperations()` method implemented
+### Fix #1: Removed Hardcoded Operations ✅
 
-### File 2: `worker/src/services/ai/intent-aware-planner.ts`
-- ✅ **Line 76**: `mandatoryNodesWithOperations` parameter added to `planWorkflow()`
-- ✅ **Line 95**: Passed to `enforceMandatoryNodes()`
-- ✅ **Line 277**: Parameter added to `enforceMandatoryNodes()`
-- ✅ **Line 283-288**: Operation hints map created
-- ✅ **Line 304-307**: Schema-based operation mapping used
-- ✅ **Line 334-450**: All helper methods implemented
+**Status**: ✅ **COMPLETE**
 
-### File 3: `worker/src/services/ai/workflow-pipeline-orchestrator.ts`
-- ✅ **Line 365**: Added to options interface
-- ✅ **Line 420**: Added to internal options
-- ✅ **Line 601**: Extracted from options
-- ✅ **Line 605**: Passed to planner
+**Verification**:
+- ✅ Removed hardcoded `operation='read'`, `operation='send'` examples from main prompt instructions
+- ✅ Updated prompt to reference operations from NODES WITH OPERATIONS section (from schemas)
+- ✅ Updated variation examples to use operations from schemas, not hardcoded values
+- ✅ Updated fallback builder to conditionally use operations (only if node has them)
+- ✅ Operation mapping examples now reference schema section, not hardcoded values
 
-### File 4: `worker/src/services/workflow-lifecycle-manager.ts`
-- ✅ **Line 80**: Added to constraints interface
-- ✅ **Line 113**: Extracted from constraints
-- ✅ **Line 135**: Passed to pipeline
+**Files Modified**:
+- `worker/src/services/ai/summarize-layer.ts`
+  - Lines 2535-2542: Updated operation enforcement section
+  - Lines 2558-2570: Updated generic pattern section
+  - Lines 2602-2618: Updated variation examples
+  - Lines 1959-2005: Updated fallback builder
+  - Lines 2348-2352: Updated operation mapping examples
+  - Lines 2476-2481: Updated variation 2 instructions
 
-### File 5: `worker/src/api/generate-workflow.ts`
-- ✅ **Line 439**: Stored in request
-- ✅ **Line 2496**: Extracted from request
-- ✅ **Line 2507**: Passed to lifecycle manager
-
-### File 6: `worker/src/services/ai/production-workflow-builder.ts`
-- ✅ **Line 65**: Added to `BuildOptions` interface
+**Result**: AI will now use operations from node schemas dynamically, not hardcoded values.
 
 ---
 
-## 🔄 Data Flow Verification
+### Fix #2: Fixed Execution Order Error ✅
 
+**Status**: ✅ **COMPLETE**
+
+**Verification**:
+- ✅ Replaced hardcoded string matching with registry-based categorization
+- ✅ Uses `nodeCapabilityRegistryDSL.isTransformation()` to identify AI nodes
+- ✅ Priority: transformation > output > dataSource (ensures ai_chat_model is 'processing')
+- ✅ Falls back to registry category if capability check doesn't match
+
+**Files Modified**:
+- `worker/src/services/ai/workflow-validation-pipeline.ts`
+  - Lines 673-732: Complete rewrite of `categorizeNode()` method
+  - Now uses: `nodeCapabilityRegistryDSL.isTransformation()`, `isOutput()`, `isDataSource()`
+  - Falls back to `unifiedNodeRegistry.get().category` if capability check fails
+
+**Result**: `ai_chat_model` is now correctly categorized as 'processing' (transformation), preventing "Output node cannot be followed by processing node" errors.
+
+---
+
+## 📊 Implementation Checklist
+
+- [x] **Fix #1.1**: Remove hardcoded operation examples from prompt instructions
+- [x] **Fix #1.2**: Update prompt to use operations from schemas
+- [x] **Fix #1.3**: Update variation examples to reference schema operations
+- [x] **Fix #1.4**: Update fallback builder to conditionally use operations
+- [x] **Fix #1.5**: Update operation mapping examples to reference schemas
+- [x] **Fix #2.1**: Replace hardcoded categorization with registry-based
+- [x] **Fix #2.2**: Use nodeCapabilityRegistryDSL for categorization
+- [x] **Fix #2.3**: Ensure ai_chat_model is 'processing', not 'output'
+- [x] **Fix #2.4**: Add fallback to registry category
+- [x] **Quality**: No lint errors
+- [x] **Quality**: All references verified
+- [x] **Quality**: Type safety maintained
+
+---
+
+## 🎯 Key Changes Summary
+
+### Before:
+```typescript
+// ❌ HARDCODED
+- ✅ GOOD: Use node with operation='read' to fetch data
+- Example: "Use node with operation='read' to fetch data"
+
+// ❌ HARDCODED STRING MATCHING
+if (lower.includes('ai_') || lower.includes('chat_model')) {
+  return 'processing';
+}
 ```
-1. User Prompt
-   ↓
-2. SummarizeLayer.extractNodesWithOperations()
-   → Returns: NodeTypeWithOperation[]
-   ↓
-3. API stores in (req as any).mandatoryNodesWithOperations
-   ↓
-4. WorkflowLifecycleManager.generateWorkflowGraph()
-   → Receives: mandatoryNodesWithOperations
-   → Forwards to: generateWorkflowWithNewPipeline()
-   ↓
-5. PipelineOrchestrator.executePipeline()
-   → Receives: mandatoryNodesWithOperations in options
-   → Forwards to: planWorkflow()
-   ↓
-6. IntentAwarePlanner.planWorkflow()
-   → Receives: mandatoryNodesWithOperations
-   → Calls: enforceMandatoryNodes() with hints
-   ↓
-7. enforceMandatoryNodes()
-   → Creates operation hints map
-   → Calls: mapOperationFromHint() for each node
-   ↓
-8. mapOperationFromHint()
-   → Gets schema operations
-   → Maps verb hint to operation
-   → Returns: correct operation
-   ↓
-9. NodeRequirement created with correct operation
+
+### After:
+```typescript
+// ✅ SCHEMA-BASED
+- ✅ GOOD: Use node with operations from NODES WITH OPERATIONS section
+- Example: "Use node with its operations from schema section"
+
+// ✅ REGISTRY-BASED
+if (nodeCapabilityRegistryDSL.isTransformation(nodeType)) {
+  return 'processing';
+}
 ```
 
 ---
 
-## ✅ Backward Compatibility Check
+## ✅ Implementation Status: 100% COMPLETE
 
-### Test 1: Missing mandatoryNodesWithOperations
-- ✅ Code handles `undefined` gracefully
-- ✅ Falls back to category-based defaults
-- ✅ No errors thrown
+All fixes have been implemented and verified:
+1. ✅ Hardcoded operations removed
+2. ✅ Operations come from schemas dynamically
+3. ✅ Execution order validation uses registry
+4. ✅ ai_chat_model correctly categorized
+5. ✅ No lint errors
+6. ✅ All references verified
 
-### Test 2: Missing operation hints
-- ✅ Works when `operationHint` is undefined
-- ✅ Uses schema defaults
-- ✅ No breaking changes
-
-### Test 3: Empty array
-- ✅ Handles empty array correctly
-- ✅ No errors
-- ✅ Continues normal flow
-
----
-
-## 🎯 Key Implementation Points
-
-1. **All parameters are optional** - No breaking changes
-2. **Graceful fallbacks** - Works even without hints
-3. **Schema-based** - Uses actual node schemas
-4. **Universal** - Works for all node types
-5. **Efficient** - Reuses existing infrastructure
-
----
-
-## 📊 Code Statistics
-
-- **Files Changed**: 6
-- **New Methods**: 4
-- **New Interfaces**: 1
-- **Lines Added**: ~250
-- **Breaking Changes**: 0
-- **Backward Compatible**: ✅ Yes
-
----
-
-## ✅ Implementation Status: COMPLETE
-
-All changes have been implemented, verified, and documented. The system is ready for testing.
+**Ready for testing with all 15 prompts.**

@@ -201,143 +201,29 @@ export class AgenticWorkflowBuilder {
   }
 
   /**
-   * Initialize comprehensive node library for Autonomous Workflow Agent v2.5
-   * Matches all available nodes from the frontend nodeTypes.ts
+   * ✅ UNIVERSAL: Initialize node library from unified-node-registry
+   * No hardcoded node lists - everything comes from registry
    */
   private initializeNodeLibrary(): void {
-    const nodeTypes = [
-      // TRIGGER NODES
-      { type: 'chat_trigger', category: 'triggers', label: 'Chat Trigger', description: 'Trigger workflow from chat/AI interactions' },
-      { type: 'error_trigger', category: 'triggers', label: 'Error Trigger', description: 'Trigger workflow when errors occur' },
-      { type: 'interval', category: 'triggers', label: 'Interval', description: 'Trigger workflow at fixed intervals (seconds, minutes, hours)' },
-      { type: 'manual_trigger', category: 'triggers', label: 'Manual Trigger', description: 'Start workflow manually' },
-      { type: 'schedule', category: 'triggers', label: 'Schedule Trigger', description: 'Execute workflow at specific times using cron schedule' },
-      { type: 'webhook', category: 'triggers', label: 'Webhook', description: 'Trigger workflow from HTTP requests (GET, POST, PUT)' },
-      { type: 'workflow_trigger', category: 'triggers', label: 'Workflow Trigger', description: 'Trigger workflow from another workflow' },
-      { type: 'form', category: 'triggers', label: 'Form', description: 'Trigger workflow from form submissions' },
-      
-      // CORE LOGIC NODES
-      { type: 'error_handler', category: 'logic', label: 'Error Handler', description: 'Handle errors with retry logic and fallback values' },
-      { type: 'filter', category: 'logic', label: 'Filter', description: 'Filter array items by condition' },
-      { type: 'if_else', category: 'logic', label: 'If/Else', description: 'Conditional branching based on true/false condition' },
-      { type: 'loop', category: 'logic', label: 'Loop', description: 'Iterate over array items with max iterations limit' },
-      { type: 'merge', category: 'logic', label: 'Merge', description: 'Merge multiple inputs (objects, arrays, or wait for all)' },
-      { type: 'noop', category: 'logic', label: 'NoOp', description: 'Pass through node - no operation' },
-      { type: 'split_in_batches', category: 'logic', label: 'Split In Batches', description: 'Split array into batches for processing' },
-      { type: 'stop_and_error', category: 'logic', label: 'Stop And Error', description: 'Stop workflow execution with error message' },
-      { type: 'switch', category: 'logic', label: 'Switch', description: 'Multi-path conditional logic based on value matching' },
-      { type: 'wait', category: 'logic', label: 'Wait', description: 'Wait for specified time or condition before continuing' },
-      
-      // DATA MANIPULATION NODES
-      { type: 'javascript', category: 'data', label: 'JavaScript', description: 'Execute JavaScript code with access to input data' },
-      { type: 'set_variable', category: 'data', label: 'Set Variable', description: 'Set workflow variables for use in other nodes' },
-      { type: 'set', category: 'data', label: 'Set', description: 'Set variable values' },
-      { type: 'json_parser', category: 'data', label: 'JSON Parser', description: 'Parse JSON strings into objects' },
-      { type: 'text_formatter', category: 'data', label: 'Text Formatter', description: 'Format text strings with templates' },
-      { type: 'date_time', category: 'data', label: 'Date/Time', description: 'Date and time operations (format, parse, calculate)' },
-      { type: 'math', category: 'data', label: 'Math', description: 'Mathematical operations and calculations' },
-      { type: 'html', category: 'data', label: 'HTML', description: 'Parse and manipulate HTML content' },
-      { type: 'xml', category: 'data', label: 'XML', description: 'Parse and manipulate XML content' },
-      { type: 'csv', category: 'data', label: 'CSV', description: 'Parse and generate CSV data' },
-      { type: 'merge_data', category: 'data', label: 'Merge Data', description: 'Merge data structures' },
-      { type: 'rename_keys', category: 'data', label: 'Rename Keys', description: 'Rename object keys' },
-      { type: 'edit_fields', category: 'data', label: 'Edit Fields', description: 'Edit field values' },
-      { type: 'aggregate', category: 'data', label: 'Aggregate', description: 'Aggregate data' },
-      { type: 'sort', category: 'data', label: 'Sort', description: 'Sort arrays' },
-      { type: 'limit', category: 'data', label: 'Limit', description: 'Limit array size' },
-      
-      // AI & ML NODES
-      { type: 'ai_agent', category: 'ai', label: 'AI Agent', description: 'Autonomous AI agent with memory, tools, and reasoning capabilities' },
-      { type: 'openai_gpt', category: 'ai', label: 'OpenAI GPT', description: 'OpenAI GPT chat completion (GPT-4, GPT-3.5)' },
-      { type: 'anthropic_claude', category: 'ai', label: 'Claude', description: 'Anthropic Claude chat completion' },
-      { type: 'google_gemini', category: 'ai', label: 'Gemini', description: 'Google Gemini chat completion' },
-      { type: 'ollama', category: 'ai', label: 'Ollama', description: 'Local Ollama models for chat completion' },
-      { type: 'text_summarizer', category: 'ai', label: 'Text Summarizer', description: 'Summarize long text into shorter versions' },
-      { type: 'sentiment_analyzer', category: 'ai', label: 'Sentiment Analyzer', description: 'Analyze sentiment and emotions in text' },
-      { type: 'chat_model', category: 'ai', label: 'Chat Model', description: 'Chat model connector for AI Agent node' },
-      { type: 'memory', category: 'ai', label: 'Memory', description: 'Memory storage for AI Agent context' },
-      { type: 'tool', category: 'ai', label: 'Tool', description: 'Tool connector for AI Agent to use external functions' },
-      
-      // HTTP & API NODES
-      { type: 'http_request', category: 'http_api', label: 'HTTP Request', description: 'Make HTTP requests (GET, POST, PUT, DELETE, PATCH)' },
-      { type: 'http_post', category: 'http_api', label: 'HTTP POST', description: 'Send POST requests with JSON data' },
-      { type: 'respond_to_webhook', category: 'http_api', label: 'Respond to Webhook', description: 'Send response back to webhook caller' },
-      { type: 'webhook_response', category: 'http_api', label: 'Webhook Response', description: 'Send response to webhook request' },
-      { type: 'graphql', category: 'http_api', label: 'GraphQL', description: 'Make GraphQL requests' },
-      
-      // GOOGLE SERVICES NODES
-      { type: 'google_sheets', category: 'google', label: 'Google Sheets', description: 'Read/write Google Sheets data (spreadsheets)' },
-      { type: 'google_doc', category: 'google', label: 'Google Docs', description: 'Read/write Google Docs (documents)' },
-      { type: 'google_drive', category: 'google', label: 'Google Drive', description: 'Google Drive file operations (upload, download, list)' },
-      { type: 'google_gmail', category: 'google', label: 'Gmail', description: 'Send/receive emails via Gmail API' },
-      { type: 'google_calendar', category: 'google', label: 'Google Calendar', description: 'Create, read, update calendar events' },
-      { type: 'google_contacts', category: 'google', label: 'Google Contacts', description: 'Manage Google Contacts' },
-      { type: 'google_tasks', category: 'google', label: 'Google Tasks', description: 'Manage Google Tasks' },
-      { type: 'google_bigquery', category: 'google', label: 'Google BigQuery', description: 'Query Google BigQuery data warehouse' },
-      
-      // OUTPUT & COMMUNICATION NODES
-      { type: 'slack_message', category: 'output', label: 'Slack', description: 'Send messages to Slack channels or users' },
-      { type: 'slack_webhook', category: 'output', label: 'Slack Webhook', description: 'Send messages via Slack webhook' },
-      { type: 'log_output', category: 'output', label: 'Log Output', description: 'Log data to console or file' },
-      { type: 'discord', category: 'output', label: 'Discord', description: 'Send messages to Discord channels' },
-      { type: 'discord_webhook', category: 'output', label: 'Discord Webhook', description: 'Send messages via Discord webhook' },
-      { type: 'email', category: 'output', label: 'Email', description: 'Send emails via SMTP' },
-      { type: 'microsoft_teams', category: 'output', label: 'Microsoft Teams', description: 'Send messages to Microsoft Teams' },
-      { type: 'telegram', category: 'output', label: 'Telegram', description: 'Send messages via Telegram bot' },
-      { type: 'whatsapp_cloud', category: 'output', label: 'WhatsApp Cloud', description: 'Send messages via WhatsApp Cloud API' },
-      { type: 'twilio', category: 'output', label: 'Twilio', description: 'Send SMS/Voice via Twilio' },
-      
-      // SOCIAL MEDIA NODES
-      { type: 'linkedin', category: 'social', label: 'LinkedIn', description: 'Post content to LinkedIn, manage LinkedIn profile and company pages' },
-      { type: 'twitter', category: 'social', label: 'Twitter/X', description: 'Post tweets, manage Twitter account' },
-      { type: 'instagram', category: 'social', label: 'Instagram', description: 'Post content to Instagram' },
-      { type: 'facebook', category: 'social', label: 'Facebook', description: 'Post content to Facebook pages' },
-      
-      // DATABASE NODES
-      { type: 'database_read', category: 'database', label: 'Database Read', description: 'Read data from database (SQL queries)' },
-      { type: 'database_write', category: 'database', label: 'Database Write', description: 'Write data to database (INSERT, UPDATE, DELETE)' },
-      { type: 'supabase', category: 'database', label: 'Supabase', description: 'Supabase database operations (CRUD)' },
-      { type: 'postgresql', category: 'database', label: 'PostgreSQL', description: 'PostgreSQL database operations' },
-      { type: 'mysql', category: 'database', label: 'MySQL', description: 'MySQL database operations' },
-      { type: 'mongodb', category: 'database', label: 'MongoDB', description: 'MongoDB database operations' },
-      { type: 'redis', category: 'database', label: 'Redis', description: 'Redis cache operations' },
-      
-      // CRM & MARKETING NODES
-      { type: 'hubspot', category: 'crm', label: 'HubSpot', description: 'HubSpot CRM operations' },
-      { type: 'salesforce', category: 'crm', label: 'Salesforce', description: 'Salesforce CRM operations' },
-      { type: 'zoho_crm', category: 'crm', label: 'Zoho CRM', description: 'Zoho CRM operations' },
-      { type: 'pipedrive', category: 'crm', label: 'Pipedrive', description: 'Pipedrive CRM operations' },
-      { type: 'freshdesk', category: 'crm', label: 'Freshdesk', description: 'Freshdesk support operations' },
-      { type: 'intercom', category: 'crm', label: 'Intercom', description: 'Intercom messaging operations' },
-      { type: 'mailchimp', category: 'crm', label: 'Mailchimp', description: 'Mailchimp email marketing operations' },
-      { type: 'activecampaign', category: 'crm', label: 'ActiveCampaign', description: 'ActiveCampaign marketing automation' },
-      
-      // FILE & STORAGE NODES
-      { type: 'read_binary_file', category: 'file', label: 'Read Binary File', description: 'Read binary files' },
-      { type: 'write_binary_file', category: 'file', label: 'Write Binary File', description: 'Write binary files' },
-      { type: 'aws_s3', category: 'file', label: 'AWS S3', description: 'AWS S3 storage operations' },
-      { type: 'dropbox', category: 'file', label: 'Dropbox', description: 'Dropbox file operations' },
-      { type: 'onedrive', category: 'file', label: 'OneDrive', description: 'OneDrive file operations' },
-      { type: 'ftp', category: 'file', label: 'FTP', description: 'FTP file operations' },
-      { type: 'sftp', category: 'file', label: 'SFTP', description: 'SFTP file operations' },
-      
-      // DEVOPS NODES
-      { type: 'github', category: 'devops', label: 'GitHub', description: 'GitHub repository operations' },
-      { type: 'gitlab', category: 'devops', label: 'GitLab', description: 'GitLab repository operations' },
-      { type: 'bitbucket', category: 'devops', label: 'Bitbucket', description: 'Bitbucket repository operations' },
-      { type: 'jira', category: 'devops', label: 'Jira', description: 'Jira issue tracking operations' },
-      { type: 'jenkins', category: 'devops', label: 'Jenkins', description: 'Jenkins CI/CD operations' },
-      
-      // E-COMMERCE NODES
-      { type: 'shopify', category: 'ecommerce', label: 'Shopify', description: 'Shopify store operations' },
-      { type: 'woocommerce', category: 'ecommerce', label: 'WooCommerce', description: 'WooCommerce store operations' },
-      { type: 'stripe', category: 'ecommerce', label: 'Stripe', description: 'Stripe payment processing' },
-      { type: 'paypal', category: 'ecommerce', label: 'PayPal', description: 'PayPal payment processing' },
-    ];
-
-    nodeTypes.forEach(node => {
-      this.nodeLibrary.set(node.type, node);
+    // ✅ UNIVERSAL: Get all nodes from unified registry
+    const { unifiedNodeRegistry } = require('../../core/registry/unified-node-registry');
+    const allNodeTypes = unifiedNodeRegistry.getAllTypes();
+    
+    console.log(`[AgenticWorkflowBuilder] ✅ UNIVERSAL: Initializing node library from registry (${allNodeTypes.length} nodes)`);
+    
+    allNodeTypes.forEach((nodeType: string) => {
+      const nodeDef = unifiedNodeRegistry.get(nodeType);
+      if (nodeDef) {
+        this.nodeLibrary.set(nodeType, {
+          type: nodeType,
+          category: nodeDef.category || 'general',
+          label: nodeDef.label || nodeType,
+          description: nodeDef.description || `${nodeType} node`,
+        });
+      }
     });
+    
+    console.log(`[AgenticWorkflowBuilder] ✅ Initialized ${this.nodeLibrary.size} nodes from registry`);
   }
 
   /**
@@ -2686,9 +2572,17 @@ You are a workflow execution engine, not a diagram generator.`;
       return nodeDef.outgoingPorts;
     }
     
-    // ⚠️ LEGACY FALLBACK: Hardcoded if_else check (for backward compatibility)
-    if (nodeType === 'if_else' || nodeType === 'if') {
+    // ✅ UNIVERSAL: Check if node is conditional using registry (no hardcoding)
+    const isConditionalNode = nodeType === 'if_else' || 
+                              nodeType === 'switch' ||
+                              (nodeDef?.tags || []).includes('conditional') ||
+                              (nodeDef?.tags || []).includes('logic');
+    
+    if (isConditionalNode && nodeType === 'if_else') {
       return ['true', 'false'];
+    }
+    if (isConditionalNode && nodeType === 'switch') {
+      return []; // Switch has dynamic outputs based on cases
     }
     return ['main'];
   }
@@ -4580,17 +4474,32 @@ Return JSON:
               if (!guardResult.shouldInject) {
                 console.log(`[HTTP Enforcement] ⚠️  Skipping HTTP request injection: ${guardResult.reason}`);
               } else {
-                console.warn(`⚠️  [HTTP Enforcement] HTTP requirement detected but no HTTP node found. Adding http_request.`);
-                const httpSchema = nodeLibrary.getSchema('http_request');
-                if (httpSchema) {
-                  const httpStep = {
-                    id: `step_http_request_${Date.now()}`,
-                    description: httpSchema.label || 'HTTP Request',
-                    type: 'http_request',
-                  };
-                  cleanedSteps.push(httpStep);
-                  parsed.steps = cleanedSteps;
-                  console.log(`✅ [HTTP Enforcement] Added HTTP REQUEST node with type: http_request`);
+                // ✅ UNIVERSAL: Check if HTTP node is already specified by AI (prevent duplicate injection)
+                const aiSpecifiedNodesContext = (requirements as any)?._aiSpecifiedNodesContext;
+                let shouldSkipInjection = false;
+                if (aiSpecifiedNodesContext) {
+                  const { isNodeAISpecified } = await import('../../core/utils/ai-specified-nodes-context');
+                  if (isNodeAISpecified(aiSpecifiedNodesContext, 'http_request') || 
+                      isNodeAISpecified(aiSpecifiedNodesContext, 'http_post') ||
+                      isNodeAISpecified(aiSpecifiedNodesContext, 'http_get')) {
+                    console.log(`[HTTP Enforcement] ✅ HTTP node already specified by AI - skipping duplicate injection`);
+                    shouldSkipInjection = true;
+                  }
+                }
+                
+                if (!shouldSkipInjection) {
+                  console.warn(`⚠️  [HTTP Enforcement] HTTP requirement detected but no HTTP node found. Adding http_request.`);
+                  const httpSchema = nodeLibrary.getSchema('http_request');
+                  if (httpSchema) {
+                    const httpStep = {
+                      id: `step_http_request_${Date.now()}`,
+                      description: httpSchema.label || 'HTTP Request',
+                      type: 'http_request',
+                    };
+                    cleanedSteps.push(httpStep);
+                    parsed.steps = cleanedSteps;
+                    console.log(`✅ [HTTP Enforcement] Added HTTP REQUEST node with type: http_request`);
+                  }
                 }
               }
             } catch (error) {

@@ -174,7 +174,9 @@ export class WorkflowAutoPruner {
     nodes: WorkflowNode[],
     intent: StructuredIntent
   ): { finalNodes: WorkflowNode[]; removedLoopNodes: string[] } {
-    const intentText = JSON.stringify(intent).toLowerCase();
+    // ✅ FIXED: Use safe JSON stringify to prevent circular reference errors
+    const { safeJsonStringify } = require('../../core/utils/safe-json-stringify');
+    const intentText = safeJsonStringify(intent).toLowerCase();
     const hasLoopIntent = intentText.includes('loop') ||
                          intentText.includes('iterate') ||
                          intentText.includes('repeat') ||

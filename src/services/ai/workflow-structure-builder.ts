@@ -230,7 +230,9 @@ export class WorkflowStructureBuilder {
    * Build workflow structure from structured intent
    */
   async buildStructure(intent: StructuredIntent, userPrompt?: string): Promise<WorkflowStructure> {
-    console.log(`[WorkflowStructureBuilder] Building structure from intent:`, JSON.stringify(intent, null, 2));
+    // ✅ FIXED: Use safe JSON stringify to prevent circular reference errors
+    const { safeJsonStringify } = require('../../core/utils/safe-json-stringify');
+    console.log(`[WorkflowStructureBuilder] Building structure from intent:`, safeJsonStringify(intent, 2));
 
     // Step 0: Map intent to capabilities and get allowed nodes
     // ✅ CRITICAL: Workflow builder must only use nodes from allowed capability list

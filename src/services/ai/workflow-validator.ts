@@ -1225,16 +1225,19 @@ export class WorkflowValidator {
    * Merged from comprehensive-workflow-validator
    */
   private validateDataFlow(workflow: Workflow, result: ValidationResult): void {
-    const triggerNodeTypes = ['manual_trigger', 'schedule', 'interval', 'webhook', 'form', 'chat_trigger', 'workflow_trigger', 'error_trigger'];
-    const outputNodeTypes = ['slack_message', 'email', 'google_gmail', 'log_output', 'respond_to_webhook', 'database_write'];
+    // ✅ UNIVERSAL: Get trigger and output nodes using registry (no hardcoding)
+    const { unifiedNodeRegistry } = require('../../core/registry/unified-node-registry');
+    const { nodeCapabilityRegistryDSL } = require('./node-capability-registry-dsl');
     
     const triggerNodes = workflow.nodes.filter(n => {
       const type = this.getCanonicalNodeType(n);
-      return triggerNodeTypes.includes(type);
+      const nodeDef = unifiedNodeRegistry.get(type);
+      return nodeDef && (nodeDef.category === 'trigger' || (nodeDef.tags || []).includes('trigger'));
     });
     const outputNodes = workflow.nodes.filter(n => {
       const type = this.getCanonicalNodeType(n);
-      return outputNodeTypes.includes(type);
+      // ✅ UNIVERSAL: Check if node is output using registry (no hardcoding)
+      return nodeCapabilityRegistryDSL.isOutput(type) && !nodeCapabilityRegistryDSL.isDataSource(type);
     });
     
     if (triggerNodes.length === 0) {

@@ -742,7 +742,9 @@ export class IntentConstraintEngine {
    */
   private filterUnnecessaryNodes(nodeTypes: string[], intent: StructuredIntent, originalPromptLower?: string): string[] {
     const filtered: string[] = [];
-    const intentText = JSON.stringify(intent).toLowerCase();
+    // ✅ FIXED: Use safe JSON stringify to prevent circular reference errors
+    const { safeJsonStringify } = require('../../core/utils/safe-json-stringify');
+    const intentText = safeJsonStringify(intent).toLowerCase();
     const promptText = (originalPromptLower || '').toLowerCase();
 
     for (const nodeType of nodeTypes) {

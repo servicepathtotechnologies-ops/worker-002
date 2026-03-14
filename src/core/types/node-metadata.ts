@@ -157,6 +157,44 @@ export interface NodeMetadata {
      * DSL operation
      */
     operation?: string;
+    
+    /**
+     * Execution order from DSL (explicit order number)
+     */
+    executionOrder?: number;
+    
+    /**
+     * DSL step ID
+     */
+    stepId?: string;
+    
+    /**
+     * DSL step type
+     */
+    stepType?: string;
+    
+    /**
+     * DSL step reference
+     */
+    stepRef?: string;
+    
+    /**
+     * Dependencies from DSL (step IDs this step depends on)
+     */
+    dependsOn?: string[];
+    
+    /**
+     * ✅ UNIVERSAL: Intended capability for this node in this workflow
+     * AI determines this based on operation and user intent
+     * Used for context-aware classification (multi-capability nodes)
+     */
+    intendedCapability?: 'data_source' | 'transformation' | 'output';
+    
+    /**
+     * ✅ UNIVERSAL: Available capabilities for this node type
+     * Retrieved from node capability registry
+     */
+    availableCapabilities?: string[];
   };
   
   /**

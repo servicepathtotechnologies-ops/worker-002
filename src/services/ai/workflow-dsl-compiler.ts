@@ -51,7 +51,7 @@ export class WorkflowDSLCompiler {
    * @param dsl - Workflow DSL
    * @param originalPrompt - Original user prompt (for extracting switch cases, etc.)
    */
-  compile(dsl: WorkflowDSL, originalPrompt?: string): DSLCompilationResult {
+  async compile(dsl: WorkflowDSL, originalPrompt?: string): Promise<DSLCompilationResult> {
     console.log('[WorkflowDSLCompiler] Compiling DSL to Workflow Graph...');
     console.log(`[WorkflowDSLCompiler] DSL: ${dsl.dataSources.length} data sources, ${dsl.transformations.length} transformations, ${dsl.outputs.length} outputs`);
     
@@ -201,35 +201,86 @@ export class WorkflowDSLCompiler {
       const outputNodes = validatedDSL.outputs.map(out => this.createOutputNode(out));
       nodes = [...nodes, ...outputNodes]; // ✅ PHASE 3: Immutable add
 
-      // Step 6: Create edges using deterministic linear pipeline
-      const pipelineResult = this.buildLinearPipeline(
-        validatedDSL,
-        triggerNode,
-        dataSourceNodes,
-        transformationNodes,
-        outputNodes,
-        originalPrompt
-      );
-      edges = [...edges, ...pipelineResult.edges]; // ✅ PHASE 3: Immutable add
-      if (pipelineResult.errors.length > 0) {
-        errors = [...errors, ...pipelineResult.errors]; // ✅ PHASE 3: Immutable add
-      }
-      if (pipelineResult.warnings.length > 0) {
-        warnings = [...warnings, ...pipelineResult.warnings]; // ✅ PHASE 3: Immutable add
+      // ✅ TIER 1: Map DSL execution steps to nodes and preserve execution order in node metadata
+      // This is the PRIMARY source of truth for execution order (explicit, deterministic)
+      const executionStepMap = new Map<string, DSLExecutionStep>();
+      if (validatedDSL.executionOrder && validatedDSL.executionOrder.length > 0) {
+        // Map stepRef to execution step
+        for (const step of validatedDSL.executionOrder) {
+          executionStepMap.set(step.stepRef, step);
+        }
+        
+        // Preserve execution order in node metadata
+        for (const node of nodes) {
+          const nodeMetadata = NodeMetadataHelper.getMetadata(node);
+          const dslId = nodeMetadata?.dsl?.dslId;
+          
+          // Find matching execution step
+          let matchingStep: DSLExecutionStep | undefined;
+          if (dslId) {
+            matchingStep = executionStepMap.get(dslId);
+          } else if (nodeMetadata?.dsl?.category === 'data_source') {
+            // For trigger, use 'trigger' as stepRef
+            matchingStep = executionStepMap.get('trigger');
+          }
+          
+          if (matchingStep) {
+            // ✅ CRITICAL: Preserve DSL execution order in node metadata
+            const existingDsl = nodeMetadata?.dsl;
+            NodeMetadataHelper.setMetadata(node, {
+              ...nodeMetadata,
+              dsl: {
+                dslId: existingDsl?.dslId || matchingStep.stepRef, // Ensure dslId is always defined
+                category: existingDsl?.category || (matchingStep.stepType === 'data_source' ? 'data_source' : matchingStep.stepType === 'transformation' ? 'transformation' : 'output'),
+                operation: existingDsl?.operation,
+                executionOrder: matchingStep.order,
+                stepId: matchingStep.stepId,
+                stepType: matchingStep.stepType,
+                stepRef: matchingStep.stepRef,
+                dependsOn: matchingStep.dependsOn,
+                // ✅ UNIVERSAL: Preserve intendedCapability and availableCapabilities from node creation
+                intendedCapability: existingDsl?.intendedCapability,
+                availableCapabilities: existingDsl?.availableCapabilities,
+              },
+            });
+            
+            // Also store in node.data for easy access
+            node.data = {
+              ...node.data,
+              executionOrder: matchingStep.order,
+              stepRef: matchingStep.stepRef,
+              stepType: matchingStep.stepType,
+            };
+          }
+        }
+        
+        console.log(`[WorkflowDSLCompiler] ✅ Preserved DSL execution order in ${executionStepMap.size} node(s)`);
       }
 
-      // ✅ ERROR PREVENTION #3: Final validation - ensure no invalid branching
-      const branchingValidation = universalBranchingValidator.validateNoInvalidBranching(
-        { nodes, edges },
-        [] // No additional edges being created
-      );
+      // Step 6: Create edges using unified graph orchestrator
+      // ✅ UNIFIED ORCHESTRATION: Use orchestrator to initialize workflow with correct edges
+      // ✅ TIER 1: Pass DSL execution order to orchestrator (primary source of truth)
+      const { unifiedGraphOrchestrator } = await import('../../core/orchestration');
+      const { workflow: initializedWorkflow, executionOrder } =
+        unifiedGraphOrchestrator.initializeWorkflow(nodes, undefined, validatedDSL.executionOrder);
       
-      if (!branchingValidation.valid) {
-        errors = [...errors, ...branchingValidation.errors];
+      // Use edges from orchestrator (they're guaranteed to match execution order)
+      edges = initializedWorkflow.edges;
+      
+      // Validate workflow structure using the SAME execution order used for edge creation
+      const workflowValidation = unifiedGraphOrchestrator.validateWorkflow(
+        initializedWorkflow,
+        executionOrder
+      );
+      if (!workflowValidation.valid) {
+        errors = [...errors, ...workflowValidation.errors];
       }
-      if (branchingValidation.warnings.length > 0) {
-        warnings = [...warnings, ...branchingValidation.warnings];
+      if (workflowValidation.warnings.length > 0) {
+        warnings = [...warnings, ...workflowValidation.warnings];
       }
+      
+      // Update nodes to use initialized workflow (in case orchestrator made any adjustments)
+      nodes = initializedWorkflow.nodes;
 
       // Build workflow
       const workflow: Workflow = {
@@ -690,6 +741,8 @@ export class WorkflowDSLCompiler {
         dslId: ds.id,
         category: 'data_source',
         operation: ds.operation,
+        intendedCapability: ds.intendedCapability || 'data_source', // ✅ UNIVERSAL: AI-determined intended capability
+        availableCapabilities: ds.availableCapabilities || [], // ✅ UNIVERSAL: Available capabilities from registry
       },
       protected: ds.protected || false,
     });
@@ -737,6 +790,8 @@ export class WorkflowDSLCompiler {
         dslId: tf.id,
         category: 'transformation',
         operation: tf.operation,
+        intendedCapability: tf.intendedCapability || 'transformation', // ✅ UNIVERSAL: AI-determined intended capability
+        availableCapabilities: tf.availableCapabilities || [], // ✅ UNIVERSAL: Available capabilities from registry
       },
       protected: tf.protected || false,
     });
@@ -784,6 +839,8 @@ export class WorkflowDSLCompiler {
         dslId: out.id,
         category: 'output',
         operation: out.operation,
+        intendedCapability: out.intendedCapability || 'output', // ✅ UNIVERSAL: AI-determined intended capability
+        availableCapabilities: out.availableCapabilities || [], // ✅ UNIVERSAL: Available capabilities from registry
       },
       protected: out.protected || false,
     });

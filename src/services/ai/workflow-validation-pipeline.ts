@@ -574,7 +574,7 @@ export class LinearFlowValidationLayer extends ValidationLayer {
     const nodeCategories = new Map<string, 'data_source' | 'processing' | 'conditional' | 'output' | 'other'>();
     nodes.forEach(node => {
       const nodeType = unifiedNormalizeNodeTypeString(node.data?.type || node.type || '');
-      const category = this.categorizeNode(nodeType);
+      const category = this.categorizeNode(nodeType, node); // ✅ UNIVERSAL: Pass node to access metadata
       nodeCategories.set(node.id, category);
     });
     
@@ -670,29 +670,118 @@ export class LinearFlowValidationLayer extends ValidationLayer {
     return result;
   }
   
-  private categorizeNode(nodeType: string): 'data_source' | 'processing' | 'conditional' | 'output' | 'other' {
+  private categorizeNode(nodeType: string, node?: WorkflowNode): 'data_source' | 'processing' | 'conditional' | 'output' | 'other' {
+    // ✅ REGISTRY-BASED: Use unified node registry and capability registry for categorization
+    const { unifiedNodeRegistry } = require('../../core/registry/unified-node-registry');
+    const { nodeCapabilityRegistryDSL } = require('./node-capability-registry-dsl');
+    const { isTriggerNode } = require('../../core/utils/universal-node-type-checker');
+    const { NodeMetadataHelper } = require('../../core/types/node-metadata');
+    
+    const nodeDef = unifiedNodeRegistry.get(nodeType);
     const lower = nodeType.toLowerCase();
     
-    if (lower.includes('sheets') || lower.includes('database') || lower.includes('read') || 
-        (lower.includes('http_request') && !lower.includes('salesforce'))) {
-      return 'data_source';
+    // ✅ UNIVERSAL: Prioritize intendedCapability from metadata (AI-determined, context-aware)
+    // This is the PRIMARY source of truth for multi-capability nodes
+    let intendedCapability: 'data_source' | 'transformation' | 'output' | undefined;
+    if (node) {
+      const metadata = NodeMetadataHelper.getMetadata(node);
+      intendedCapability = metadata?.dsl?.intendedCapability;
     }
     
-    if (lower.includes('ai_') || lower.includes('chat_model') || lower.includes('agent') ||
-        lower.includes('summar') || lower.includes('transform') || lower.includes('process')) {
-      return 'processing';
+    // 🔍 DEBUG: Track categorization for problematic nodes
+    const isDebugNode = ['javascript', 'ai_chat_model', 'linkedin', 'log_output', 'postgresql'].includes(lower);
+    if (isDebugNode) {
+      const capabilities = nodeCapabilityRegistryDSL.getCapabilities(nodeType);
+      const isTransformation = nodeCapabilityRegistryDSL.isTransformation(nodeType);
+      const isDataSource = nodeCapabilityRegistryDSL.isDataSource(nodeType);
+      const isOutput = nodeCapabilityRegistryDSL.isOutput(nodeType);
+      console.log(
+        `[LinearFlowValidation] 🔍 DEBUG categorizeNode(${nodeType}): ` +
+        `intendedCapability=${intendedCapability || 'none'}, ` +
+        `capabilities=[${capabilities.join(', ')}], ` +
+        `isTransformation=${isTransformation}, ` +
+        `isDataSource=${isDataSource}, ` +
+        `isOutput=${isOutput}, ` +
+        `registryCategory=${nodeDef?.category || 'none'}`
+      );
     }
     
-    if (lower.includes('if_else') || lower.includes('switch') || lower.includes('filter')) {
+    // ✅ REGISTRY-BASED: Check conditional nodes first (if_else, switch)
+    if (lower === 'if_else' || lower === 'switch' || lower.includes('if_else') || lower.includes('switch')) {
+      if (isDebugNode) console.log(`[LinearFlowValidation] 🔍 DEBUG ${nodeType}: Returning 'conditional' (conditional node check)`);
       return 'conditional';
     }
     
-    if (lower.includes('salesforce') || lower.includes('crm') || lower.includes('gmail') ||
-        lower.includes('email') || lower.includes('slack') || lower.includes('notify') ||
-        lower.includes('write') || lower.includes('create') || lower.includes('update')) {
+    // ✅ UNIVERSAL: Use intendedCapability if available (AI-determined, context-aware)
+    // This is the PRIMARY source of truth for multi-capability nodes
+    if (intendedCapability === 'transformation') {
+      if (isDebugNode) console.log(`[LinearFlowValidation] 🔍 DEBUG ${nodeType}: Returning 'processing' (intendedCapability=transformation)`);
+      return 'processing';
+    }
+    if (intendedCapability === 'data_source') {
+      if (isDebugNode) console.log(`[LinearFlowValidation] 🔍 DEBUG ${nodeType}: Returning 'data_source' (intendedCapability=data_source)`);
+      return 'data_source';
+    }
+    if (intendedCapability === 'output') {
+      if (isDebugNode) console.log(`[LinearFlowValidation] 🔍 DEBUG ${nodeType}: Returning 'output' (intendedCapability=output)`);
       return 'output';
     }
     
+    // ✅ FALLBACK: Use capability registry if intendedCapability not available
+    // Priority: transformation > dataSource > output (to ensure postgresql is 'data_source', not 'output')
+    // This fixes the "Output node cannot be followed by data source node" error
+    if (nodeCapabilityRegistryDSL.isTransformation(nodeType)) {
+      // AI nodes, transformation nodes are processing
+      if (isDebugNode) console.log(`[LinearFlowValidation] 🔍 DEBUG ${nodeType}: Returning 'processing' (isTransformation=true, fallback)`);
+      return 'processing';
+    }
+    
+    // ✅ CRITICAL FIX: Prioritize data_source over output for nodes with both capabilities
+    // This ensures postgresql, mysql, etc. are classified as 'data_source' in linear flow validation
+    // even if they also have 'output' capability (for write operations)
+    if (nodeCapabilityRegistryDSL.isDataSource(nodeType)) {
+      // Data source nodes (even if they also have output capability)
+      if (isDebugNode) console.log(`[LinearFlowValidation] 🔍 DEBUG ${nodeType}: Returning 'data_source' (isDataSource=true, fallback)`);
+      return 'data_source';
+    }
+    
+    if (nodeCapabilityRegistryDSL.isOutput(nodeType)) {
+      // Pure output nodes (not also data sources)
+      if (isDebugNode) console.log(`[LinearFlowValidation] 🔍 DEBUG ${nodeType}: Returning 'output' (isOutput=true, not transformation/dataSource, fallback)`);
+      return 'output';
+    }
+    
+    // ✅ FALLBACK: Use registry category if available
+    if (nodeDef) {
+      const category = nodeDef.category;
+      if (category === 'ai' || category === 'transformation') {
+        if (isDebugNode) console.log(`[LinearFlowValidation] 🔍 DEBUG ${nodeType}: Returning 'processing' (registry category=${category})`);
+        return 'processing';
+      }
+      if (category === 'data') {
+        if (isDebugNode) console.log(`[LinearFlowValidation] 🔍 DEBUG ${nodeType}: Returning 'data_source' (registry category=${category})`);
+        return 'data_source';
+      }
+      if (category === 'communication' || category === 'social' || category === 'output') {
+        if (isDebugNode) console.log(`[LinearFlowValidation] 🔍 DEBUG ${nodeType}: Returning 'output' (registry category=${category})`);
+        return 'output';
+      }
+      if (isDebugNode) console.log(`[LinearFlowValidation] 🔍 DEBUG ${nodeType}: Registry category=${category} not matched, continuing to legacy fallback`);
+    }
+    
+    // ✅ LEGACY FALLBACK: String matching for edge cases (should rarely be needed)
+    if (lower.includes('if_else') || lower.includes('switch') || lower.includes('filter')) {
+      if (isDebugNode) console.log(`[LinearFlowValidation] 🔍 DEBUG ${nodeType}: Returning 'conditional' (legacy string match)`);
+      return 'conditional';
+    }
+    
+    if (lower.includes('ai_') || lower.includes('chat_model') || lower.includes('agent') ||
+        lower.includes('summar') || lower.includes('transform')) {
+      if (isDebugNode) console.log(`[LinearFlowValidation] 🔍 DEBUG ${nodeType}: Returning 'processing' (legacy string match)`);
+      return 'processing';
+    }
+    
+    if (isDebugNode) console.log(`[LinearFlowValidation] 🔍 DEBUG ${nodeType}: Returning 'other' (no matches found)`);
     return 'other';
   }
   

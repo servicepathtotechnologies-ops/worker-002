@@ -884,6 +884,65 @@ export class UnifiedNodeRegistry implements INodeRegistry {
       return this.has(alias) ? alias : undefined;
     }
   }
+  
+  /**
+   * ✅ UNIVERSAL: Get all nodes with specific workflow-level behavior
+   * Used by orchestrators, policies, builders to query registry
+   * 
+   * @param behavior - The workflow behavior to query for
+   * @returns Array of node definitions with the specified behavior
+   */
+  getNodesWithBehavior(behavior: keyof NonNullable<UnifiedNodeDefinition['workflowBehavior']>): UnifiedNodeDefinition[] {
+    const results: UnifiedNodeDefinition[] = [];
+    for (const [type, def] of this.definitions) {
+      if (def.workflowBehavior?.[behavior] === true) {
+        results.push(def);
+      }
+    }
+    return results;
+  }
+  
+  /**
+   * ✅ UNIVERSAL: Check if node has specific workflow behavior
+   * 
+   * @param nodeType - The node type to check
+   * @param behavior - The workflow behavior to check for
+   * @returns true if node has the specified behavior
+   */
+  hasWorkflowBehavior(nodeType: string, behavior: keyof NonNullable<UnifiedNodeDefinition['workflowBehavior']>): boolean {
+    const def = this.get(nodeType);
+    return def?.workflowBehavior?.[behavior] === true;
+  }
+  
+  /**
+   * ✅ UNIVERSAL: Get all always-required nodes (for auto-inclusion)
+   * These nodes are automatically included in all workflows
+   * 
+   * @returns Array of node definitions that are always required
+   */
+  getAlwaysRequiredNodes(): UnifiedNodeDefinition[] {
+    return this.getNodesWithBehavior('alwaysRequired');
+  }
+  
+  /**
+   * ✅ UNIVERSAL: Get all always-terminal nodes (must be last)
+   * These nodes must have no outgoing edges and be the last node
+   * 
+   * @returns Array of node definitions that must be terminal
+   */
+  getAlwaysTerminalNodes(): UnifiedNodeDefinition[] {
+    return this.getNodesWithBehavior('alwaysTerminal');
+  }
+  
+  /**
+   * ✅ UNIVERSAL: Get all exempt-from-removal nodes
+   * These nodes cannot be removed by minimal workflow policy
+   * 
+   * @returns Array of node definitions that are exempt from removal
+   */
+  getExemptFromRemovalNodes(): UnifiedNodeDefinition[] {
+    return this.getNodesWithBehavior('exemptFromRemoval');
+  }
 }
 
 // Export singleton instance

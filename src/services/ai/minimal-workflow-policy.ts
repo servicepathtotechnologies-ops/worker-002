@@ -28,6 +28,7 @@ import { isTriggerNodeType } from '../../core/utils/node-role';
 import { nodeLibrary } from '../nodes/node-library';
 import { resolveCompatibleHandles } from './schema-driven-connection-resolver';
 import { randomUUID } from 'crypto';
+import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 
 export interface PolicyEnforcementResult {
   workflow: Workflow;
@@ -85,6 +86,14 @@ export class MinimalWorkflowPolicy {
         if (typeof t === 'string' && t.trim()) requiredNodeTypesSet.add(t.trim());
       });
       console.log(`[MinimalWorkflowPolicy] ✅ Preserving auto-injected node types from metadata: ${autoInjectedNodes.join(', ')}`);
+    }
+
+    // ✅ UNIVERSAL: Preserve always-required nodes from registry (registry-driven)
+    // These nodes are defined in the registry as alwaysRequired, so they must be included
+    const alwaysRequiredNodes = unifiedNodeRegistry.getAlwaysRequiredNodes();
+    for (const nodeDef of alwaysRequiredNodes) {
+      requiredNodeTypesSet.add(nodeDef.type);
+      console.log(`[MinimalWorkflowPolicy] ✅ Preserving ${nodeDef.type} (always required per registry)`);
     }
 
     // STEP 2: Check for forbidden nodes
@@ -263,7 +272,9 @@ export class MinimalWorkflowPolicy {
   ): { filteredNodes: WorkflowNode[]; forbiddenViolations: PolicyViolation[] } {
     const filteredNodes: WorkflowNode[] = [];
     const violations: PolicyViolation[] = [];
-    const intentText = JSON.stringify(intent).toLowerCase();
+    // ✅ FIXED: Use safe JSON stringify to prevent circular reference errors
+    const { safeJsonStringify } = require('../../core/utils/safe-json-stringify');
+    const intentText = safeJsonStringify(intent).toLowerCase();
 
     // Check for iteration intent
     const hasIterationIntent = intentText.includes('loop') ||
@@ -394,6 +405,26 @@ export class MinimalWorkflowPolicy {
 
       // Always keep trigger nodes
       if (this.isTriggerNode(nodeType)) {
+        filteredNodes.push(node);
+        continue;
+      }
+
+      // ✅ UNIVERSAL: Check registry for exempt-from-removal behavior (registry-driven)
+      const nodeDef = unifiedNodeRegistry.get(nodeType);
+      if (nodeDef?.workflowBehavior?.exemptFromRemoval) {
+        // Registry says this node should never be removed
+        console.log(`[MinimalWorkflowPolicy] ✅ Preserving ${nodeType} (exempt from removal per registry)`);
+        filteredNodes.push(node);
+        // Also add to required set so it's preserved in future checks
+        requiredNodeTypes.add(nodeType);
+        continue;
+      }
+
+      // ✅ UNIVERSAL: Check if node is always-required (per registry)
+      if (nodeDef?.workflowBehavior?.alwaysRequired) {
+        // Registry says this node is always required
+        console.log(`[MinimalWorkflowPolicy] ✅ Preserving ${nodeType} (always required per registry)`);
+        requiredNodeTypes.add(nodeType);
         filteredNodes.push(node);
         continue;
       }

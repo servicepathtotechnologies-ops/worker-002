@@ -353,7 +353,9 @@ export class WorkflowGraphPruner {
     executionChainNodeIds: Set<string>,
     requiredNodeTypesSet: Set<string>
   ): { filteredNodes: WorkflowNode[]; loopViolations: PruningViolation[] } {
-    const intentText = JSON.stringify(intent).toLowerCase();
+    // ✅ FIXED: Use safe JSON stringify to prevent circular reference errors
+    const { safeJsonStringify } = require('../../core/utils/safe-json-stringify');
+    const intentText = safeJsonStringify(intent).toLowerCase();
     const hasIterationIntent = intentText.includes('loop') ||
                               intentText.includes('iterate') ||
                               intentText.includes('repeat') ||

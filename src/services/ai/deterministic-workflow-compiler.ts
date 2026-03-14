@@ -55,7 +55,9 @@ export class DeterministicWorkflowCompiler {
    */
   async compile(intent: StructuredIntent, originalPrompt: string): Promise<CompilationResult> {
     console.log('[DeterministicWorkflowCompiler] Starting deterministic workflow compilation...');
-    console.log(`[DeterministicWorkflowCompiler] Intent: ${JSON.stringify(intent, null, 2)}`);
+    // ✅ FIXED: Use safe JSON stringify to prevent circular reference errors
+    const { safeJsonStringify } = require('../../core/utils/safe-json-stringify');
+    console.log(`[DeterministicWorkflowCompiler] Intent: ${safeJsonStringify(intent, 2)}`);
     
     const errors: string[] = [];
     const warnings: string[] = [];

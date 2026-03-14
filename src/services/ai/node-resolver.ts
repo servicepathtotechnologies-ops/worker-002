@@ -107,10 +107,23 @@ export class NodeResolver {
 
   /**
    * Extract semantic intents from prompt
+   * 
+   * @param prompt - The prompt to extract intents from
+   * @param contextPrompt - Optional context prompt (e.g., original prompt) for disambiguation
    */
-  extractIntents(prompt: string): SemanticIntent[] {
+  extractIntents(prompt: string, contextPrompt?: string): SemanticIntent[] {
     const intents: SemanticIntent[] = [];
     const promptLower = prompt.toLowerCase();
+    const contextLower = (contextPrompt || '').toLowerCase();
+
+    // ✅ CONTEXT-AWARE: Check if original prompt mentions Gmail (for disambiguation)
+    const contextMentionsGmail = this.mentionsGmail(contextLower);
+    const contextMentionsGoogleServices = this.mentionsGoogleSheets(contextLower) || 
+                                         contextLower.includes('google') ||
+                                         contextLower.includes('gmail');
+    const contextMentionsSmtp = contextLower.includes('smtp') || 
+                               contextLower.includes('mail server') || 
+                               contextLower.includes('smtp host');
 
     // Gmail/Google Email intent
     if (this.mentionsGmail(promptLower)) {
@@ -132,13 +145,44 @@ export class NodeResolver {
       });
     }
 
-    // Generic email intent (no provider specified)
+    // ✅ CRITICAL FIX: Generic email intent with context-aware provider detection
+    // If prompt says "Email" but context mentions "Gmail" or Google services, map to google_gmail
     if (this.mentionsEmail(promptLower) && !this.mentionsGmail(promptLower)) {
-      intents.push({
-        action: 'send',
-        resource: 'email',
-        keywords: this.extractEmailKeywords(promptLower),
-      });
+      const contextLower = (contextPrompt || '').toLowerCase();
+      const contextMentionsGmail = this.mentionsGmail(contextLower);
+      const contextMentionsGoogleServices = this.mentionsGoogleSheets(contextLower);
+      const contextMentionsSmtp = this.mentionsSmtp(contextLower) || this.mentionsSmtp(promptLower);
+      
+      console.log(`[NodeResolver] 🔍 Email detection analysis:`);
+      console.log(`[NodeResolver]   - Prompt mentions Email: ✅ (but not Gmail)`);
+      console.log(`[NodeResolver]   - Context prompt: "${contextPrompt ? contextPrompt.substring(0, 100) : 'none'}..."`);
+      console.log(`[NodeResolver]   - Context mentions Gmail: ${contextMentionsGmail ? '✅' : '❌'}`);
+      console.log(`[NodeResolver]   - Context mentions Google services: ${contextMentionsGoogleServices ? '✅' : '❌'}`);
+      console.log(`[NodeResolver]   - Context mentions SMTP: ${contextMentionsSmtp ? '✅' : '❌'}`);
+      
+      // ✅ CONTEXT-AWARE MAPPING: If original prompt mentions Gmail or Google services,
+      // and no SMTP is mentioned, map generic "Email" to google_gmail
+      if (contextMentionsGmail || (contextMentionsGoogleServices && !contextMentionsSmtp)) {
+        // Map generic "Email" to Gmail intent (with provider)
+        intents.push({
+          action: 'send',
+          resource: 'email',
+          provider: 'google', // ✅ CRITICAL: Add provider based on context
+          keywords: [...this.extractEmailKeywords(promptLower), ...this.extractGmailKeywords(contextLower)],
+        });
+        console.log(`[NodeResolver] ✅ Context-aware mapping APPLIED: Generic "Email" → google_gmail`);
+        console.log(`[NodeResolver]   - Reason: Context mentions ${contextMentionsGmail ? 'Gmail' : 'Google services'} and no SMTP`);
+        console.log(`[NodeResolver]   - Intent created: { action: 'send', resource: 'email', provider: 'google' }`);
+      } else {
+        // Generic email intent (no provider specified) - will resolve to generic email or google_gmail based on capabilities
+        intents.push({
+          action: 'send',
+          resource: 'email',
+          keywords: this.extractEmailKeywords(promptLower),
+        });
+        console.log(`[NodeResolver] ⚠️  Context-aware mapping NOT APPLIED: Generic "Email" (no Gmail/Google context)`);
+        console.log(`[NodeResolver]   - Intent created: { action: 'send', resource: 'email' } (no provider)`);
+      }
     }
 
     // Google Sheets intent
@@ -460,8 +504,11 @@ export class NodeResolver {
    * over-creating Gmail nodes when Gmail is only the origin of data that
    * already lives in Google Sheets (e.g. "Gmail in sheet"). In those cases,
    * Gmail is treated as "mentioned only" and no google_gmail node is required.
+   * 
+   * @param prompt - The prompt to resolve
+   * @param contextPrompt - Optional context prompt (e.g., original prompt) for disambiguation
    */
-  resolvePrompt(prompt: string): {
+  resolvePrompt(prompt: string, contextPrompt?: string): {
     success: boolean;
     nodeIds: string[];
     errors: NodeResolutionError[];
@@ -470,26 +517,44 @@ export class NodeResolver {
     const promptLower = prompt.toLowerCase();
     const gmailMentionedOnly = this.isGmailMentionedOnly(promptLower);
 
-    const intents = this.extractIntents(prompt);
+    // ✅ CRITICAL FIX: Pass contextPrompt to extractIntents for context-aware mapping
+    console.log(`[NodeResolver] 🔍 Resolving prompt: "${prompt.substring(0, 100)}..."`);
+    if (contextPrompt) {
+      console.log(`[NodeResolver] 🔍 With context: "${contextPrompt.substring(0, 100)}..."`);
+    }
+    
+    const intents = this.extractIntents(prompt, contextPrompt);
+    console.log(`[NodeResolver] ✅ Extracted ${intents.length} intent(s) from prompt`);
+    
     const nodeIds: string[] = [];
     const errors: NodeResolutionError[] = [];
     const warnings: string[] = [];
 
     for (const intent of intents) {
+      console.log(`[NodeResolver] 🔍 Resolving intent: { action: '${intent.action}', resource: '${intent.resource}', provider: '${intent.provider || 'none'}' }`);
       const resolution = this.resolveIntent(intent);
 
       if (resolution.success && resolution.result) {
-        if (!nodeIds.includes(resolution.result.nodeId)) {
-          nodeIds.push(resolution.result.nodeId);
+        const resolvedNodeId = resolution.result.nodeId;
+        console.log(`[NodeResolver] ✅ Resolved intent → ${resolvedNodeId} (confidence: ${resolution.result.confidence})`);
+        
+        if (!nodeIds.includes(resolvedNodeId)) {
+          nodeIds.push(resolvedNodeId);
+          console.log(`[NodeResolver] ✅ Added node to result: ${resolvedNodeId}`);
+        } else {
+          console.log(`[NodeResolver] ⚠️  Node already in result: ${resolvedNodeId} (skipping duplicate)`);
         }
 
         if (resolution.result.confidence < 0.7) {
-          warnings.push(`Low confidence match for ${intent.action} ${intent.resource}: ${resolution.result.nodeId} (${resolution.result.confidence})`);
+          warnings.push(`Low confidence match for ${intent.action} ${intent.resource}: ${resolvedNodeId} (${resolution.result.confidence})`);
         }
       } else if (resolution.error) {
+        console.log(`[NodeResolver] ❌ Failed to resolve intent: ${resolution.error.message}`);
         errors.push(resolution.error);
       }
     }
+    
+    console.log(`[NodeResolver] ✅ Final resolved nodes (${nodeIds.length}): ${nodeIds.join(', ')}`);
 
     // Assert Gmail integrity
     // If Gmail is only mentioned as an origin of data that already lives in
@@ -569,6 +634,12 @@ export class NodeResolver {
     return prompt.includes('google sheet') || 
            prompt.includes('google spreadsheet') ||
            prompt.includes('sheets');
+  }
+
+  private mentionsSmtp(prompt: string): boolean {
+    return prompt.includes('smtp') || 
+           prompt.includes('mail server') || 
+           prompt.includes('smtp host');
   }
 
   private extractGmailKeywords(prompt: string): string[] {

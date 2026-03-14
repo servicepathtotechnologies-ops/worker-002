@@ -21,6 +21,7 @@ import { credentialDiscoveryPhase, CredentialDiscoveryResult } from './ai/creden
 import { workflowValidationPipeline, ValidationPipelineResult } from './ai/workflow-validation-pipeline';
 import { connectorRegistry } from './connectors/connector-registry';
 import { nodeLibrary } from './nodes/node-library';
+import { unifiedNodeRegistry } from '../core/registry/unified-node-registry';
 import { unifiedNormalizeNodeType } from '../core/utils/unified-node-type-normalizer';
 import { resolveNodeType } from '../core/utils/node-type-resolver-util';
 import { NodeResolver } from './ai/node-resolver';
@@ -30,6 +31,9 @@ import type { WorkflowSpec } from '../planner/types';
 import { workflowPipelineOrchestrator } from './ai/workflow-pipeline-orchestrator';
 import { credentialDetector } from './ai/credential-detector';
 import { credentialInjector } from './ai/credential-injector';
+// ✅ UNIFIED ORCHESTRATION: Import orchestrator for edge-safe node injection
+import { unifiedGraphOrchestrator } from '../core/orchestration';
+import { executionOrderManager } from '../core/orchestration/execution-order-manager';
 
 export interface WorkflowGenerationResult {
   workflow: Workflow;
@@ -473,6 +477,7 @@ export class WorkflowLifecycleManager {
     }
 
     // STEP 1.5b: Ensure all resolved nodes are in the workflow
+    // ✅ UNIFIED ORCHESTRATION: Use orchestrator to inject nodes (creates edges automatically)
     // This fixes cases where the workflow builder's node filter removed required nodes
     if (resolution.success && resolution.nodeIds.length > 0) {
       // Normalize existing node types to canonical forms for comparison
@@ -482,13 +487,74 @@ export class WorkflowLifecycleManager {
         return resolveNodeType(normalized);
       });
       
+      // ✅ Get current execution order to determine injection positions
+      let currentExecutionOrder = executionOrderManager.initialize(workflow);
+      const orderedNodeIds = executionOrderManager.getOrderedNodeIds(currentExecutionOrder);
+      
+      // ✅ Find reference nodes by category (registry-driven)
+      const triggerNode = workflow.nodes.find((n: any) => {
+        const nodeType = unifiedNormalizeNodeType(n);
+        const nodeDef = unifiedNodeRegistry.get(nodeType);
+        return nodeDef?.category === 'trigger';
+      });
+      
+      // ✅ Group nodes by category for smart injection positioning (using registry categories)
+      const dataSourceNodes = workflow.nodes.filter((n: any) => {
+        const nodeType = unifiedNormalizeNodeType(n);
+        const nodeDef = unifiedNodeRegistry.get(nodeType);
+        return nodeDef?.category === 'data'; // ✅ Valid category: 'data'
+      });
+      
+      const transformationNodes = workflow.nodes.filter((n: any) => {
+        const nodeType = unifiedNormalizeNodeType(n);
+        const nodeDef = unifiedNodeRegistry.get(nodeType);
+        return nodeDef?.category === 'transformation' || nodeDef?.category === 'ai'; // ✅ Valid categories: 'transformation' | 'ai'
+      });
+      
+      const outputNodes = workflow.nodes.filter((n: any) => {
+        const nodeType = unifiedNormalizeNodeType(n);
+        const nodeDef = unifiedNodeRegistry.get(nodeType);
+        return nodeDef?.category === 'communication'; // ✅ Valid category: 'communication'
+      });
+      
+      // ✅ Determine last node in each category for injection positioning
+      const lastDataSource = dataSourceNodes.length > 0 
+        ? dataSourceNodes[dataSourceNodes.length - 1] 
+        : triggerNode;
+      const lastTransformation = transformationNodes.length > 0 
+        ? transformationNodes[transformationNodes.length - 1] 
+        : lastDataSource;
+      const lastOutput = outputNodes.length > 0 
+        ? outputNodes[outputNodes.length - 1] 
+        : lastTransformation;
+      
+      // ✅ UNIVERSAL: Load AI-specified nodes context check (once, outside loop)
+      const aiSpecifiedNodesContext = (constraints as any)?._aiSpecifiedNodesContext;
+      let isNodeAISpecifiedFn: ((context: any, nodeType: string) => boolean) | null = null;
+      if (aiSpecifiedNodesContext) {
+        const { isNodeAISpecified } = await import('../core/utils/ai-specified-nodes-context');
+        isNodeAISpecifiedFn = isNodeAISpecified;
+      }
+      
+      // ✅ Collect nodes to inject (batch for efficiency)
+      const nodesToInject: Array<{ node: WorkflowNode; context: any }> = [];
+      
       for (const nodeType of resolution.nodeIds) {
         // Resolve nodeType to canonical form (handles aliases like "gmail" → "google_gmail")
         const resolvedNodeType = resolveNodeType(nodeType);
         
+        // ✅ UNIVERSAL: Check if node is already specified by AI (prevent duplicate injection)
+        // If AI already specified this node in StructuredIntent, skip keyword-based injection
+        if (aiSpecifiedNodesContext && isNodeAISpecifiedFn) {
+          if (isNodeAISpecifiedFn(aiSpecifiedNodesContext, resolvedNodeType)) {
+            console.log(`[WorkflowLifecycle] ✅ Node ${nodeType} (canonical: ${resolvedNodeType}) already specified by AI - skipping keyword-based injection`);
+            continue;
+          }
+        }
+        
         // Check if this canonical type already exists in the workflow
         if (!existingNodeTypes.includes(resolvedNodeType)) {
-          console.log(`[WorkflowLifecycle] Adding missing resolved node: ${nodeType} (canonical: ${resolvedNodeType})`);
+          console.log(`[WorkflowLifecycle] ✅ Adding missing resolved node via orchestrator: ${nodeType} (canonical: ${resolvedNodeType})`);
           // Use resolved canonical type for schema lookup
           const schema = nodeLibrary.getSchema(resolvedNodeType);
           if (schema) {
@@ -504,15 +570,98 @@ export class WorkflowLifecycleManager {
                 config: {},
               },
             };
-            workflow = {
-              ...workflow,
-              nodes: [...workflow.nodes, newNode],
-            };
-            // Add to existingNodeTypes to prevent duplicates in same loop
-            existingNodeTypes.push(resolvedNodeType);
+            
+            // ✅ REGISTRY-DRIVEN: Determine injection position based on node category
+            const nodeDef = unifiedNodeRegistry.get(resolvedNodeType);
+            const category = nodeDef?.category || ''; // ✅ Use registry category (validated type)
+            
+            let referenceNodeId: string | undefined;
+            let position: 'before' | 'after' = 'after';
+            
+            // ✅ UNIVERSAL: Use registry category to determine injection position
+            // Valid categories: 'trigger' | 'data' | 'ai' | 'communication' | 'logic' | 'transformation' | 'utility'
+            if (category === 'trigger') {
+              // Triggers should be first - inject at start
+              referenceNodeId = triggerNode?.id || orderedNodeIds[0] || '';
+              position = 'before';
+            } else if (category === 'data') {
+              // Data sources: after trigger or after last data source
+              referenceNodeId = lastDataSource?.id || triggerNode?.id || orderedNodeIds[0] || '';
+              position = 'after';
+            } else if (category === 'transformation' || category === 'ai') {
+              // Transformations/AI: after last data source or after last transformation
+              referenceNodeId = lastTransformation?.id || lastDataSource?.id || triggerNode?.id || orderedNodeIds[0] || '';
+              position = 'after';
+            } else if (category === 'communication') {
+              // Outputs/Communication: after last transformation or after last output
+              referenceNodeId = lastOutput?.id || lastTransformation?.id || lastDataSource?.id || triggerNode?.id || orderedNodeIds[0] || '';
+              position = 'after';
+            } else if (category === 'logic' || category === 'utility') {
+              // Logic/Utility: after last transformation or after last output
+              referenceNodeId = lastTransformation?.id || lastDataSource?.id || triggerNode?.id || orderedNodeIds[0] || '';
+              position = 'after';
+            } else {
+              // Default: inject after last node in execution order
+              referenceNodeId = orderedNodeIds[orderedNodeIds.length - 1] || triggerNode?.id || '';
+              position = 'after';
+            }
+            
+            if (referenceNodeId) {
+              nodesToInject.push({
+                node: newNode,
+                context: {
+                  type: 'missing' as const, // ✅ Use 'missing' type for lifecycle resolved nodes
+                  position,
+                  referenceNodeId,
+                  reason: `Lifecycle resolved node: ${resolvedNodeType} (category: ${category})`,
+                },
+              });
+              
+              // Add to existingNodeTypes to prevent duplicates in same loop
+              existingNodeTypes.push(resolvedNodeType);
+            } else {
+              console.warn(`[WorkflowLifecycle] ⚠️  Cannot inject node ${resolvedNodeType}: No valid reference node found`);
+            }
           }
         } else {
           console.log(`[WorkflowLifecycle] Skipping duplicate node: ${nodeType} (canonical: ${resolvedNodeType}) - already exists in workflow`);
+        }
+      }
+      
+      // ✅ UNIFIED ORCHESTRATION: Inject all nodes via orchestrator (creates edges automatically)
+      for (const { node, context } of nodesToInject) {
+        try {
+          const injectionResult = await unifiedGraphOrchestrator.injectNode(workflow, node, context);
+          workflow = injectionResult.workflow;
+          currentExecutionOrder = injectionResult.executionOrder;
+          
+          if (injectionResult.errors.length > 0) {
+            console.warn(`[WorkflowLifecycle] ⚠️  Node injection errors for ${node.data?.type}: ${injectionResult.errors.join(', ')}`);
+          }
+          if (injectionResult.warnings.length > 0) {
+            console.log(`[WorkflowLifecycle] ℹ️  Node injection warnings for ${node.data?.type}: ${injectionResult.warnings.join(', ')}`);
+          }
+          
+          console.log(`[WorkflowLifecycle] ✅ Injected node ${node.data?.type} via orchestrator - edges created automatically`);
+        } catch (error: any) {
+          console.error(`[WorkflowLifecycle] ❌ Failed to inject node ${node.data?.type}: ${error?.message || 'Unknown error'}`);
+          // Continue with other nodes even if one fails
+        }
+      }
+      
+      // ✅ CRITICAL: Validate workflow after all injections (fail fast if broken)
+      if (nodesToInject.length > 0) {
+        const validation = unifiedGraphOrchestrator.validateWorkflow(workflow, currentExecutionOrder);
+        if (!validation.valid) {
+          console.error(`[WorkflowLifecycle] ❌ Workflow validation failed after node injection:`);
+          validation.errors.forEach(err => console.error(`[WorkflowLifecycle]   - ${err}`));
+          // ✅ FAIL FAST: Don't continue with broken graph
+          throw new Error(
+            `Workflow structure invalid after lifecycle node injection: ${validation.errors.join('; ')}. ` +
+            `This indicates a pipeline contract violation - edges were not created correctly.`
+          );
+        } else {
+          console.log(`[WorkflowLifecycle] ✅ Workflow validation passed after injecting ${nodesToInject.length} node(s)`);
         }
       }
     }
@@ -883,8 +1032,15 @@ export class WorkflowLifecycleManager {
       for (const fieldName of requiredFields) {
         const existingValue = existingConfig[fieldName];
 
-        // ✅ CRITICAL: For array fields (like if_else conditions), check if array is empty or has empty expressions
-        if (fieldName === 'conditions' && nodeType === 'if_else') {
+        // ✅ UNIVERSAL: For array fields (like conditional node conditions), check if array is empty or has empty expressions
+        // Check if this is a conditional node using registry (not hardcoded)
+        const nodeDef = unifiedNodeRegistry.get(nodeType);
+        const isConditionalNode = nodeType === 'if_else' || 
+                                  nodeType === 'switch' ||
+                                  (nodeDef?.tags || []).includes('conditional') ||
+                                  (nodeDef?.tags || []).includes('logic');
+        
+        if (fieldName === 'conditions' && isConditionalNode) {
           if (Array.isArray(existingValue) && existingValue.length > 0) {
             // Check if all conditions have valid expressions
             const hasValidCondition = existingValue.some((cond: any) => {
@@ -905,7 +1061,7 @@ export class WorkflowLifecycleManager {
               return false;
             });
             if (hasValidCondition) {
-              console.log(`[DiscoverNodeInputs] ✅ Skipping conditions for if_else node - has valid condition(s)`);
+              console.log(`[DiscoverNodeInputs] ✅ Skipping conditions for conditional node - has valid condition(s)`);
               continue; // Has valid conditions, skip
             }
           }
@@ -919,7 +1075,7 @@ export class WorkflowLifecycleManager {
           existingValue !== null &&
           existingValue !== '' &&
           !(nodeType === 'google_sheets' && isExpressionValue(existingValue)) &&
-          !(fieldName === 'conditions' && nodeType === 'if_else') // Don't skip conditions for if_else (handled above)
+          !(fieldName === 'conditions' && isConditionalNode) // Don't skip conditions for conditional nodes (handled above)
         ) {
           continue;
         }
@@ -945,12 +1101,12 @@ export class WorkflowLifecycleManager {
 
         nodeMissingFields.push(fieldName);
 
-        // ✅ CRITICAL: For if_else conditions field, use array type and provide better description
+        // ✅ UNIVERSAL: For conditional node conditions field, use array type and provide better description
         let fieldType = fieldInfo?.type || 'string';
         let description = fieldInfo?.description || fieldName;
         let examples = fieldInfo?.examples;
         
-        if (nodeType === 'if_else' && fieldName === 'conditions') {
+        if (isConditionalNode && fieldName === 'conditions') {
           fieldType = 'array';
           description = 'Conditions to evaluate. Each condition should have: field (string), operator (equals|not_equals|greater_than|less_than|greater_than_or_equal|less_than_or_equal|contains|not_contains), value (string|number|boolean). Example: [{ field: "orderTotal", operator: "greater_than", value: 100 }]';
           examples = [

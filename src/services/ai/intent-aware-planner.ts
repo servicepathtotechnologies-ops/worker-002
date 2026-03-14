@@ -76,7 +76,8 @@ export class IntentAwarePlanner {
     intent: SimpleIntent,
     originalPrompt?: string,
     mandatoryNodes?: string[],
-    mandatoryNodesWithOperations?: Array<{ nodeType: string; operationHint?: string; context?: string }>
+    mandatoryNodesWithOperations?: Array<{ nodeType: string; operationHint?: string; context?: string }>,
+    selectedStructuredPrompt?: string // ✅ NEW: Selected prompt variation for context-aware mapping
   ): Promise<PlanningResult> {
     console.log('[IntentAwarePlanner] Planning workflow from SimpleIntent...');
     
@@ -112,7 +113,7 @@ export class IntentAwarePlanner {
       console.log(`[IntentAwarePlanner] Execution order: ${executionOrder.length} nodes`);
       
       // Step 5: Add missing implicit nodes (with duplicate check)
-      const completeNodes = await this.addImplicitNodes(nodeRequirements, intent, originalPrompt);
+      const completeNodes = await this.addImplicitNodes(nodeRequirements, intent, originalPrompt, selectedStructuredPrompt);
       console.log(`[IntentAwarePlanner] Complete nodes: ${completeNodes.length} (added ${completeNodes.length - nodeRequirements.length} implicit)`);
       
       // Step 6: Build StructuredIntent with correct order
@@ -1154,7 +1155,8 @@ export class IntentAwarePlanner {
   private async addImplicitNodes(
     nodes: NodeRequirement[],
     intent: SimpleIntent,
-    originalPrompt?: string
+    originalPrompt?: string,
+    selectedStructuredPrompt?: string // ✅ NEW: Selected prompt variation for context-aware mapping
   ): Promise<NodeRequirement[]> {
     const completeNodes = [...nodes];
     const existingTypes = new Set(nodes.map(n => n.type));
@@ -1231,10 +1233,28 @@ export class IntentAwarePlanner {
         }
       }
       
-      // Fallback: Use default output node (log for terminal workflows, gmail for communication)
+      // ✅ CRITICAL FIX: Use selectedStructuredPrompt for fallback (not originalPrompt)
+      // This ensures we check the actual selected variation, not the original prompt
       if (!outputNodeType) {
-        const promptLower = (originalPrompt || '').toLowerCase();
-        if (promptLower.includes('email') || promptLower.includes('gmail') || promptLower.includes('send')) {
+        // ✅ PRIORITY 1: Check selectedStructuredPrompt (the actual variation being used)
+        const selectedPromptLower = (selectedStructuredPrompt || '').toLowerCase();
+        // ✅ PRIORITY 2: Fallback to originalPrompt for context (if selectedStructuredPrompt doesn't have enough info)
+        const originalPromptLower = (originalPrompt || '').toLowerCase();
+        const promptLower = selectedPromptLower || originalPromptLower;
+        
+        // ✅ CONTEXT-AWARE: If selected variation says "Email" but original says "Gmail", map to google_gmail
+        const selectedMentionsEmail = selectedPromptLower.includes('email') || selectedPromptLower.includes('mail');
+        const originalMentionsGmail = originalPromptLower.includes('gmail') || 
+                                     originalPromptLower.includes('google mail') || 
+                                     originalPromptLower.includes('google email');
+        const originalMentionsGoogleServices = originalPromptLower.includes('google sheets') || 
+                                               originalPromptLower.includes('google');
+        
+        if (selectedMentionsEmail && (originalMentionsGmail || originalMentionsGoogleServices)) {
+          // ✅ Context-aware mapping: "Email" in selected variation + "Gmail" in original → google_gmail
+          outputNodeType = 'google_gmail';
+          console.log(`[IntentAwarePlanner] ✅ Context-aware mapping: "Email" in selected variation → google_gmail (original prompt mentions Gmail/Google)`);
+        } else if (promptLower.includes('email') || promptLower.includes('gmail') || promptLower.includes('send')) {
           outputNodeType = 'google_gmail';
         } else if (promptLower.includes('slack') || promptLower.includes('message')) {
           outputNodeType = 'slack_message';

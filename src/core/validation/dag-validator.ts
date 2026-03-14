@@ -12,6 +12,7 @@
 
 import { WorkflowNode, WorkflowEdge } from '../types/ai-types';
 import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../utils/unified-node-type-normalizer';
+import { unifiedNodeRegistry } from '../registry/unified-node-registry';
 
 export interface DAGValidationResult {
   valid: boolean;
@@ -128,8 +129,18 @@ export class DAGValidator {
       const inDegree = degrees.in;
       const outDegree = degrees.out;
 
-      // Normal action nodes: in-degree = 1, out-degree = 1
-      if (!['if_else', 'switch', 'merge', 'log_output'].includes(normalizedType)) {
+      // ✅ UNIVERSAL: Normal action nodes: in-degree = 1, out-degree = 1
+      // Check if node has special degree requirements using registry
+      const nodeDef = unifiedNodeRegistry.get(normalizedType);
+      const isSpecialNode = normalizedType === 'if_else' || 
+                           normalizedType === 'switch' ||
+                           normalizedType === 'merge' ||
+                           normalizedType === 'log_output' ||
+                           (nodeDef?.tags || []).includes('conditional') ||
+                           (nodeDef?.tags || []).includes('merge') ||
+                           (nodeDef?.tags || []).includes('terminal');
+      
+      if (!isSpecialNode) {
         if (inDegree !== 1) {
           errors.push(`Node ${node.id} (${normalizedType}) must have exactly 1 input, found ${inDegree}`);
         }
@@ -212,8 +223,14 @@ export class DAGValidator {
       const normalizedType = unifiedNormalizeNodeTypeString(sourceNode.type);
       const outDegree = nodeDegrees.get(conn.source)?.out || 0;
       
-      // Only IF/SWITCH can have multiple outputs
-      if (!['if_else', 'switch'].includes(normalizedType) && outDegree > 1) {
+      // ✅ UNIVERSAL: Only conditional nodes (IF/SWITCH) can have multiple outputs
+      const sourceNodeDef = unifiedNodeRegistry.get(normalizedType);
+      const isConditionalNode = normalizedType === 'if_else' || 
+                               normalizedType === 'switch' ||
+                               (sourceNodeDef?.tags || []).includes('conditional') ||
+                               (sourceNodeDef?.tags || []).includes('logic');
+      
+      if (!isConditionalNode && outDegree > 1) {
         burstNodes.push(conn.source);
       }
     });
