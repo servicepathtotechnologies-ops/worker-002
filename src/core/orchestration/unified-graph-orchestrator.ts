@@ -76,8 +76,9 @@ export interface UnifiedGraphOrchestrator {
   /**
    * Reconcile workflow (fix broken edges)
    * Uses current execution order to fix edges
+   * ✅ PHASE 4: Accept tagsFromVariation to preserve nodes in tags
    */
-  reconcileWorkflow(workflow: Workflow): {
+  reconcileWorkflow(workflow: Workflow, tagsFromVariation?: string[]): {
     workflow: Workflow;
     executionOrder: ExecutionOrder;
     errors: string[];
@@ -236,7 +237,7 @@ class UnifiedGraphOrchestratorImpl implements UnifiedGraphOrchestrator {
   /**
    * Reconcile workflow (fix broken edges)
    */
-  reconcileWorkflow(workflow: Workflow): {
+  reconcileWorkflow(workflow: Workflow, tagsFromVariation?: string[]): {
     workflow: Workflow;
     executionOrder: ExecutionOrder;
     errors: string[];
@@ -247,9 +248,11 @@ class UnifiedGraphOrchestratorImpl implements UnifiedGraphOrchestrator {
     const executionOrder = executionOrderManager.initialize(workflow);
     
     // Reconcile edges
+    // ✅ PHASE 4: Pass tagsFromVariation to preserve nodes in tags
     const reconciliationResult = edgeReconciliationEngine.reconcileEdges(
       workflow,
-      executionOrder
+      executionOrder,
+      tagsFromVariation
     );
     
     return {

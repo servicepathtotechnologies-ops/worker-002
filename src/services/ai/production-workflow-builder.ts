@@ -70,6 +70,7 @@ export interface BuildOptions {
   strictMode?: boolean;
   allowRegeneration?: boolean;
   aiSpecifiedNodesContext?: import('../../core/utils/ai-specified-nodes-context').AISpecifiedNodesContext; // ✅ UNIVERSAL: AI-specified nodes context
+  tagsFromVariation?: string[]; // ✅ PHASE 4: Tags from selected variation (format: ["nodeType"] or ["nodeType:capability"])
 }
 
 /**
@@ -237,10 +238,18 @@ export class ProductionWorkflowBuilder {
     const { createAISpecifiedNodesContext } = await import('../../core/utils/ai-specified-nodes-context');
     const aiSpecifiedNodesContext = createAISpecifiedNodesContext(intent, originalPrompt);
     
+    // ✅ PHASE 4: Extract tags from selected variation (if available)
+    // Tags are the source of truth - nodes in tags must be preserved
+    const tagsFromVariation = options.tagsFromVariation || (intent as any)?._selectedVariation?.keywords || [];
+    if (tagsFromVariation.length > 0) {
+      console.log(`[ProductionWorkflowBuilder] ✅ PHASE 4: Extracted ${tagsFromVariation.length} tag(s) from selected variation: ${tagsFromVariation.join(', ')}`);
+    }
+    
     // Store context in options for downstream use
     const enhancedOptions = {
       ...options,
       aiSpecifiedNodesContext,
+      tagsFromVariation, // ✅ PHASE 4: Pass tags through pipeline
     };
     
     let buildAttempts = 0;
@@ -263,7 +272,14 @@ export class ProductionWorkflowBuilder {
       // ✅ UNIVERSAL: Pass AI-specified nodes context to DSL generator
       // Store context in intent metadata for DSL generator to access
       (intent as any)._aiSpecifiedNodesContext = aiSpecifiedNodesContext;
-      dsl = await dslGenerator.generateDSL(intent, originalPrompt, transformationDetection);
+      
+      // ✅ PHASE 8: Extract capabilities from tags (format: ["nodeType:capability"] or ["nodeType"])
+      const nodeCapabilities = this.extractCapabilitiesFromTags(tagsFromVariation);
+      if (Object.keys(nodeCapabilities).length > 0) {
+        console.log(`[ProductionWorkflowBuilder] ✅ PHASE 8: Extracted capabilities from tags: ${JSON.stringify(nodeCapabilities)}`);
+      }
+      
+      dsl = await dslGenerator.generateDSL(intent, originalPrompt, transformationDetection, undefined, nodeCapabilities);
     } catch (error: unknown) {
       // ✅ STRICT VALIDATION: Handle DSLGenerationError (uncategorized actions or count mismatch)
       if (error instanceof DSLGenerationError) {
@@ -786,7 +802,8 @@ export class ProductionWorkflowBuilder {
         console.log('[ProductionWorkflowBuilder] STEP 6: Enforcing minimal workflow (protected nodes: trigger, data_source, transformation, output)...');
         const confidenceScore = (workflow.metadata as any)?.confidenceScore;
         // ✅ NEW: Pass mandatory nodes to pruner
-        const pruningResult = workflowGraphPruner.prune(workflow, intent, originalPrompt, confidenceScore, options.mandatoryNodeTypes);
+        // ✅ PHASE 4: Pass tagsFromVariation to preserve nodes in tags
+        const pruningResult = workflowGraphPruner.prune(workflow, intent, originalPrompt, confidenceScore, options.mandatoryNodeTypes, tagsFromVariation);
         
         if (pruningResult.removedNodes.length > 0 || pruningResult.removedEdges.length > 0) {
           workflow = pruningResult.workflow;
@@ -848,8 +865,9 @@ export class ProductionWorkflowBuilder {
         const { workflowGraphSanitizer } = await import('./workflow-graph-sanitizer');
         // ✅ CRITICAL FIX: Pass required node types to sanitizer to protect them from removal
         // ✅ PHASE 4: Pass DSL execution order to sanitizer for order-aware duplicate removal
+        // ✅ PHASE 4: Pass tagsFromVariation to preserve nodes in tags
         const requiredNodeTypesSet = new Set(requiredNodes.map(n => n.toLowerCase()));
-        const sanitizationResult = workflowGraphSanitizer.sanitize(workflow, requiredNodeTypesSet, confidenceScore, dsl?.executionOrder);
+        const sanitizationResult = workflowGraphSanitizer.sanitize(workflow, requiredNodeTypesSet, confidenceScore, dsl?.executionOrder, tagsFromVariation);
         workflow = sanitizationResult.workflow;
         
         if (sanitizationResult.fixes.duplicateNodesRemoved > 0 ||
@@ -865,7 +883,8 @@ export class ProductionWorkflowBuilder {
         }
 
         // ✅ PHASE 2: Reconcile after sanitization
-        const reconciliationAfterSanitization = await this.reconcileAndValidateWorkflow(workflow, dsl);
+        // ✅ PHASE 4: Pass tagsFromVariation to preserve nodes in tags
+        const reconciliationAfterSanitization = await this.reconcileAndValidateWorkflow(workflow, dsl, tagsFromVariation);
         workflow = reconciliationAfterSanitization.workflow;
         if (!reconciliationAfterSanitization.valid) {
           console.warn(`[ProductionWorkflowBuilder] ⚠️  Workflow invalid after sanitization: ${reconciliationAfterSanitization.errors.join(', ')}`);
@@ -903,7 +922,8 @@ export class ProductionWorkflowBuilder {
           }
           
           // ✅ PHASE 2: Reconcile after optimization
-          const reconciliationAfterOptimization = await this.reconcileAndValidateWorkflow(workflow, dsl);
+          // ✅ PHASE 4: Pass tagsFromVariation to preserve nodes in tags
+          const reconciliationAfterOptimization = await this.reconcileAndValidateWorkflow(workflow, dsl, tagsFromVariation);
           
           // ✅ UPDATE requiredNodes: Remove nodes that were auto-removed as orphaned
           if (reconciliationAfterOptimization.removedNodeTypes && reconciliationAfterOptimization.removedNodeTypes.length > 0) {
@@ -950,7 +970,8 @@ export class ProductionWorkflowBuilder {
             ...workflow,
             edges: connectionFix.edges, // Temporary assignment before reconciliation
           };
-          const reconciliationResult = unifiedGraphOrchestrator.reconcileWorkflow(workflow);
+          // ✅ PHASE 4: Pass tagsFromVariation to preserve nodes in tags
+          const reconciliationResult = unifiedGraphOrchestrator.reconcileWorkflow(workflow, tagsFromVariation);
           workflow = reconciliationResult.workflow;
           
           // ✅ UPDATE requiredNodes: Remove nodes that were auto-removed as orphaned
@@ -1109,7 +1130,8 @@ export class ProductionWorkflowBuilder {
             nodes: autoFilledNodes,
           };
           // ✅ CRITICAL: Reconcile after node data updates to ensure edges are still valid
-          const reconciliationResult = unifiedGraphOrchestrator.reconcileWorkflow(workflow);
+          // ✅ PHASE 4: Pass tagsFromVariation to preserve nodes in tags
+          const reconciliationResult = unifiedGraphOrchestrator.reconcileWorkflow(workflow, tagsFromVariation);
           workflow = reconciliationResult.workflow;
           
           // ✅ UPDATE requiredNodes: Remove nodes that were auto-removed as orphaned
@@ -3547,7 +3569,8 @@ export class ProductionWorkflowBuilder {
    */
   private async reconcileAndValidateWorkflow(
     workflow: Workflow,
-    dsl?: WorkflowDSL
+    dsl?: WorkflowDSL,
+    tagsFromVariation?: string[]
   ): Promise<{
     workflow: Workflow;
     executionOrder: any;
@@ -3559,13 +3582,10 @@ export class ProductionWorkflowBuilder {
     // Get DSL execution order if available
     const dslExecutionOrder = dsl?.executionOrder;
     
-    // Rebuild workflow using orchestrator (now returns removedNodeTypes)
+    // ✅ PHASE 4: Use reconcileWorkflow instead of initializeWorkflow to pass tagsFromVariation
+    // Reconcile workflow using orchestrator (now returns removedNodeTypes)
     const { workflow: reconciled, executionOrder, removedNodeTypes } = 
-      unifiedGraphOrchestrator.initializeWorkflow(
-        workflow.nodes,
-        undefined,
-        dslExecutionOrder
-      );
+      unifiedGraphOrchestrator.reconcileWorkflow(workflow, tagsFromVariation);
     
     // Validate
     const validation = unifiedGraphOrchestrator.validateWorkflow(reconciled, executionOrder);
@@ -4018,6 +4038,40 @@ export class ProductionWorkflowBuilder {
     
     // ✅ Return workflow and all removed node types
     return { workflow, removedNodeTypes: allRemovedNodeTypes };
+  }
+
+  /**
+   * ✅ PHASE 8: Extract capabilities from tags
+   * Parses tags in format ["nodeType:capability"] or ["nodeType"] and returns a map
+   * 
+   * @param tags - Tags from selected variation (format: ["nodeType:capability"] or ["nodeType"])
+   * @returns Map of nodeType -> capability (e.g., { "google_sheets": "data_source", "gmail": "output" })
+   */
+  private extractCapabilitiesFromTags(tags?: string[]): Record<string, 'data_source' | 'transformation' | 'output'> {
+    const capabilities: Record<string, 'data_source' | 'transformation' | 'output'> = {};
+    
+    if (!tags || tags.length === 0) {
+      return capabilities;
+    }
+    
+    for (const tag of tags) {
+      // Parse tag format: "nodeType:capability" or "nodeType"
+      const parts = tag.split(':');
+      if (parts.length === 2) {
+        const nodeType = parts[0].trim();
+        const capability = parts[1].trim() as 'data_source' | 'transformation' | 'output';
+        
+        // Validate capability
+        if (capability === 'data_source' || capability === 'transformation' || capability === 'output') {
+          capabilities[nodeType] = capability;
+        } else {
+          console.warn(`[ProductionWorkflowBuilder] ⚠️  Invalid capability "${capability}" in tag "${tag}", skipping`);
+        }
+      }
+      // If no capability specified, skip (capability will be inferred during DSL generation)
+    }
+    
+    return capabilities;
   }
 }
 

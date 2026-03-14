@@ -61,9 +61,11 @@ export class MinimalWorkflowPolicy {
    * 
    * @param workflow - Workflow to enforce policy on
    * @param intent - Structured intent to validate against
+   * @param originalPrompt - Original user prompt
+   * @param tagsFromVariation - Optional tags from selected variation (Phase 4: tags are source of truth)
    * @returns Policy enforcement result with minimal workflow
    */
-  enforce(workflow: Workflow, intent: StructuredIntent, originalPrompt?: string): PolicyEnforcementResult {
+  enforce(workflow: Workflow, intent: StructuredIntent, originalPrompt?: string, tagsFromVariation?: string[]): PolicyEnforcementResult {
     console.log('[MinimalWorkflowPolicy] Enforcing minimal workflow policy...');
     console.log(`[MinimalWorkflowPolicy] Original: ${workflow.nodes.length} nodes, ${workflow.edges.length} edges`);
 
@@ -115,9 +117,11 @@ export class MinimalWorkflowPolicy {
     });
 
     // STEP 4: Remove nodes not required by intent
+    // ✅ PHASE 4: Pass tagsFromVariation to preserve nodes in tags
     const { filteredNodes: minimalNodes, extraViolations } = this.removeUnrequiredNodes(
       nodesAfterDedup,
-      requiredNodeTypesSet
+      requiredNodeTypesSet,
+      tagsFromVariation
     );
     violations.push(...extraViolations);
     extraViolations.forEach(v => {
@@ -392,10 +396,12 @@ export class MinimalWorkflowPolicy {
 
   /**
    * Remove nodes not required by intent
+   * ✅ PHASE 4: Never remove nodes in tags (tags are source of truth)
    */
   private removeUnrequiredNodes(
     nodes: WorkflowNode[],
-    requiredNodeTypes: Set<string>
+    requiredNodeTypes: Set<string>,
+    tagsFromVariation?: string[]
   ): { filteredNodes: WorkflowNode[]; extraViolations: PolicyViolation[] } {
     const filteredNodes: WorkflowNode[] = [];
     const violations: PolicyViolation[] = [];
@@ -406,6 +412,13 @@ export class MinimalWorkflowPolicy {
       // Always keep trigger nodes
       if (this.isTriggerNode(nodeType)) {
         filteredNodes.push(node);
+        continue;
+      }
+
+      // ✅ PHASE 4: CRITICAL RULE - Never remove nodes in tags (tags are source of truth)
+      if (this.shouldPreserveNode(node, tagsFromVariation)) {
+        filteredNodes.push(node);
+        console.log(`[MinimalWorkflowPolicy] ✅ Protected node from tags: ${node.id} (${nodeType})`);
         continue;
       }
 
@@ -669,6 +682,93 @@ export class MinimalWorkflowPolicy {
       }
     }
 
+    return false;
+  }
+
+  /**
+   * ✅ PHASE 4: Check if node should be preserved based on tags from variation
+   * Tags are the source of truth - if a node is in tags, it must be preserved
+   * ✅ FIX 2: Alias-aware preservation - checks aliases and semantic equivalence
+   * 
+   * @param node - Node to check
+   * @param tagsFromVariation - Tags from selected variation (format: ["nodeType"] or ["nodeType:capability"])
+   * @returns true if node should be preserved
+   */
+  private shouldPreserveNode(
+    node: WorkflowNode,
+    tagsFromVariation?: string[]
+  ): boolean {
+    if (!tagsFromVariation || tagsFromVariation.length === 0) {
+      return false; // No tags = no protection
+    }
+    
+    const nodeType = unifiedNormalizeNodeType(node);
+    const nodeTypeLower = nodeType.toLowerCase();
+    
+    // ✅ PHASE 4: Parse tag format: "nodeType" or "nodeType:capability"
+    // Check if node is in tags (handle both formats)
+    for (const tag of tagsFromVariation) {
+      const [tagNodeType] = tag.split(':'); // Extract nodeType from "nodeType:capability"
+      const tagNodeTypeLower = tagNodeType.toLowerCase();
+      
+      // ✅ FIX 2: Step 1: Exact match (case-insensitive)
+      if (tagNodeTypeLower === nodeTypeLower || tag === nodeType || tag === nodeTypeLower) {
+        console.log(`[MinimalWorkflowPolicy] ✅ Preserving ${nodeType} (exact match in tags: ${tag})`);
+        return true;
+      }
+      
+      // ✅ FIX 2: Step 2: Check aliases using nodeTypeResolver
+      try {
+        const { nodeTypeResolver } = require('../nodes/node-type-resolver');
+        const tagAliases = nodeTypeResolver.getAliases(tagNodeType) || [];
+        const nodeAliases = nodeTypeResolver.getAliases(nodeType) || [];
+        
+        // Check if tag nodeType is an alias of node type, or vice versa
+        if (tagAliases.includes(nodeType) || tagAliases.some((alias: string) => alias.toLowerCase() === nodeTypeLower)) {
+          console.log(`[MinimalWorkflowPolicy] ✅ Preserving ${nodeType} (alias match: "${tagNodeType}" is alias of "${nodeType}")`);
+          return true;
+        }
+        if (nodeAliases.includes(tagNodeType) || nodeAliases.some((alias: string) => alias.toLowerCase() === tagNodeTypeLower)) {
+          console.log(`[MinimalWorkflowPolicy] ✅ Preserving ${nodeType} (alias match: "${nodeType}" has alias "${tagNodeType}")`);
+          return true;
+        }
+        
+        // Check if both resolve to the same canonical type
+        const tagCanonical = nodeTypeResolver.getCanonicalType(tagNodeType);
+        const nodeCanonical = nodeTypeResolver.getCanonicalType(nodeType);
+        if (tagCanonical.toLowerCase() === nodeCanonical.toLowerCase() && tagCanonical !== tagNodeType) {
+          console.log(`[MinimalWorkflowPolicy] ✅ Preserving ${nodeType} (canonical match: "${tagNodeType}" → "${tagCanonical}", "${nodeType}" → "${nodeCanonical}")`);
+          return true;
+        }
+      } catch (error) {
+        // nodeTypeResolver not available, continue
+      }
+      
+      // ✅ FIX 2: Step 3: Check semantic equivalence
+      try {
+        const { semanticNodeEquivalenceRegistry } = require('../../core/registry/semantic-node-equivalence-registry');
+        if (semanticNodeEquivalenceRegistry.areEquivalent(tagNodeType, nodeType)) {
+          console.log(`[MinimalWorkflowPolicy] ✅ Preserving ${nodeType} (semantic equivalence: "${tagNodeType}" ≡ "${nodeType}")`);
+          return true;
+        }
+      } catch (error) {
+        // Semantic equivalence registry not available, continue
+      }
+      
+      // ✅ FIX 2: Step 4: Check UnifiedNodeTypeMatcher (if available)
+      try {
+        const { UnifiedNodeTypeMatcher } = require('../../core/utils/unified-node-type-matcher');
+        const matcher = UnifiedNodeTypeMatcher.getInstance();
+        const matchResult = matcher.matches(tagNodeType, nodeType, { strict: false });
+        if (matchResult.matches) {
+          console.log(`[MinimalWorkflowPolicy] ✅ Preserving ${nodeType} (type matcher: "${tagNodeType}" matches "${nodeType}", confidence: ${matchResult.confidence}%)`);
+          return true;
+        }
+      } catch (error) {
+        // UnifiedNodeTypeMatcher not available, continue
+      }
+    }
+    
     return false;
   }
 }

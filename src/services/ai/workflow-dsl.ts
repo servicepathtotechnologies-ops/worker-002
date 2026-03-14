@@ -514,9 +514,16 @@ export class DSLGenerator {
     intent: StructuredIntent,
     originalPrompt?: string,
     transformationDetection?: { detected: boolean; verbs: string[]; requiredNodeTypes: string[] },
-    confidenceScore?: number
+    confidenceScore?: number,
+    nodeCapabilities?: Record<string, 'data_source' | 'transformation' | 'output'>
   ): Promise<WorkflowDSL> {
     console.log('[DSLGenerator] Generating DSL from StructuredIntent...');
+    
+    // ✅ PHASE 8: Store nodeCapabilities for use in determineIntendedCapability
+    (this as any)._nodeCapabilitiesFromTags = nodeCapabilities || {};
+    if (Object.keys((this as any)._nodeCapabilitiesFromTags).length > 0) {
+      console.log(`[DSLGenerator] ✅ PHASE 8: Using capabilities from tags: ${JSON.stringify((this as any)._nodeCapabilitiesFromTags)}`);
+    }
     
     // ✅ PHASE 2: Validate input contract at stage boundary
     const { validateStructuredIntent } = require('../../core/contracts/pipeline-stage-contracts');
@@ -1461,6 +1468,18 @@ export class DSLGenerator {
 
     // Build execution order
     const executionOrder = this.buildExecutionOrder(trigger, finalDataSources, finalTransformations, finalOutputs);
+    
+    // ✅ PHASE 10: Validate execution order matches capability order from tags
+    const nodeCapabilitiesFromTags = (this as any)._nodeCapabilitiesFromTags || {};
+    if (Object.keys(nodeCapabilitiesFromTags).length > 0) {
+      const validationResult = this.validateExecutionOrderAgainstTags(executionOrder, finalDataSources, finalTransformations, finalOutputs, nodeCapabilitiesFromTags);
+      if (!validationResult.valid) {
+        console.warn(`[DSLGenerator] ⚠️  PHASE 10: Execution order validation failed: ${validationResult.errors.join('; ')}`);
+        // Don't fail - just log warning (capability order is a hint, not a strict requirement)
+      } else {
+        console.log(`[DSLGenerator] ✅ PHASE 10: Execution order matches capability order from tags`);
+      }
+    }
 
     // Extract conditions
     const conditions = this.extractConditions(intent.conditions || []);
@@ -2155,6 +2174,28 @@ export class DSLGenerator {
     const normalizedType = unifiedNormalizeNodeTypeString(nodeType);
     const availableCapabilities = nodeCapabilityRegistryDSL.getCapabilities(normalizedType);
     
+    // ✅ PHASE 8: Priority 0: Capability from tags (highest priority - AI-specified)
+    const nodeCapabilitiesFromTags = (this as any)._nodeCapabilitiesFromTags || {};
+    if (nodeCapabilitiesFromTags[normalizedType]) {
+      const capabilityFromTag = nodeCapabilitiesFromTags[normalizedType];
+      // Validate that the capability from tag is available for this node
+      const capabilityMap: Record<string, string[]> = {
+        'data_source': ['data_source', 'read_data', 'fetch_data'],
+        'transformation': ['transformation', 'process_data', 'transform_data'],
+        'output': ['output', 'write_data', 'send_data', 'send'],
+      };
+      const mappedCapabilities = capabilityMap[capabilityFromTag] || [];
+      if (mappedCapabilities.some(cap => availableCapabilities.includes(cap))) {
+        console.log(`[DSLGenerator] ✅ PHASE 8: Using capability from tag for ${normalizedType}: ${capabilityFromTag}`);
+        return {
+          intendedCapability: capabilityFromTag,
+          availableCapabilities,
+        };
+      } else {
+        console.warn(`[DSLGenerator] ⚠️  PHASE 8: Capability "${capabilityFromTag}" from tag not available for ${normalizedType}, falling back to operation semantics`);
+      }
+    }
+    
     // Determine intended capability based on operation semantics
     const normalizedOperation = this.normalizeOperation(operation);
     
@@ -2220,6 +2261,95 @@ export class DSLGenerator {
     return {
       intendedCapability: 'transformation',
       availableCapabilities,
+    };
+  }
+
+  /**
+   * ✅ PHASE 10: Validate execution order matches capability order from tags
+   * Ensures that nodes are ordered according to their capabilities from tags: data_source → transformation → output
+   * 
+   * @param executionOrder - DSL execution order
+   * @param dataSources - DSL data sources
+   * @param transformations - DSL transformations
+   * @param outputs - DSL outputs
+   * @param nodeCapabilitiesFromTags - Capabilities from tags (format: { "nodeType": "capability" })
+   * @returns Validation result
+   */
+  private validateExecutionOrderAgainstTags(
+    executionOrder: DSLExecutionStep[],
+    dataSources: DSLDataSource[],
+    transformations: DSLTransformation[],
+    outputs: DSLOutput[],
+    nodeCapabilitiesFromTags: Record<string, 'data_source' | 'transformation' | 'output'>
+  ): { valid: boolean; errors: string[] } {
+    const errors: string[] = [];
+    
+    // Build a map of stepRef -> capability from tags
+    const stepRefToCapability = new Map<string, 'data_source' | 'transformation' | 'output'>();
+    
+    // Map data sources
+    for (const ds of dataSources) {
+      const capability = nodeCapabilitiesFromTags[ds.type];
+      if (capability) {
+        stepRefToCapability.set(ds.id, capability);
+      }
+    }
+    
+    // Map transformations
+    for (const tf of transformations) {
+      const capability = nodeCapabilitiesFromTags[tf.type];
+      if (capability) {
+        stepRefToCapability.set(tf.id, capability);
+      }
+    }
+    
+    // Map outputs
+    for (const out of outputs) {
+      const capability = nodeCapabilitiesFromTags[out.type];
+      if (capability) {
+        stepRefToCapability.set(out.id, capability);
+      }
+    }
+    
+    // Validate order: data_source → transformation → output
+    const capabilityOrder: Record<string, number> = {
+      'data_source': 1,
+      'transformation': 2,
+      'output': 3,
+    };
+    
+    for (let i = 0; i < executionOrder.length; i++) {
+      const step = executionOrder[i];
+      const currentCapability = stepRefToCapability.get(step.stepRef);
+      
+      if (!currentCapability) {
+        continue; // Skip steps without capability from tags
+      }
+      
+      // Check all previous steps
+      for (let j = 0; j < i; j++) {
+        const previousStep = executionOrder[j];
+        const previousCapability = stepRefToCapability.get(previousStep.stepRef);
+        
+        if (!previousCapability) {
+          continue; // Skip steps without capability from tags
+        }
+        
+        // Validate order: previous capability should come before current capability
+        const previousOrder = capabilityOrder[previousCapability] || 999;
+        const currentOrder = capabilityOrder[currentCapability] || 999;
+        
+        if (previousOrder > currentOrder) {
+          errors.push(
+            `Step "${step.stepRef}" (${currentCapability}) appears before step "${previousStep.stepRef}" (${previousCapability}) in execution order, but capability order requires ${previousCapability} → ${currentCapability}`
+          );
+        }
+      }
+    }
+    
+    return {
+      valid: errors.length === 0,
+      errors,
     };
   }
 

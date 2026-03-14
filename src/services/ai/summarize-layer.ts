@@ -374,7 +374,8 @@ export class AIIntentClarifier {
     // ✅ PHASE 1: Extract keywords FIRST (before generating variations)
     console.log(`[AIIntentClarifier] 🔍 PHASE 1: Extracting keywords from user prompt FIRST...`);
     const extractedKeywords = this.extractKeywordsFromPrompt(userPrompt, allKeywordData);
-    const allExtractedNodeTypes = this.mapKeywordsToNodeTypes(extractedKeywords);
+    // ✅ FIX 1: Pass original prompt for context-aware mapping
+    const allExtractedNodeTypes = this.mapKeywordsToNodeTypes(extractedKeywords, userPrompt);
     
     // ✅ OPERATIONS-FIRST: Enrich extracted node types with operations from node schema
     // This ensures AI has exact operations when generating variations
@@ -2034,121 +2035,100 @@ export class AIIntentClarifier {
     triggerType: string,
     userPrompt: string,
     allExtractedNodes: string[],
-    variationIndex: number = 3 // Default to full complexity
+    variationIndex: number = 0 // ✅ PHASE 1: 0 = Variation 1, 3 = Variation 4
   ): string[] {
     const chain: string[] = [triggerType];
     const usedNodes = new Set<string>([triggerType]);
     const promptLower = userPrompt.toLowerCase();
     
-    // ✅ FIX: Define complexity levels for variation diversity
-    // Variation 0: Minimal (trigger + 1 core node only)
-    // Variation 1: Simple (trigger + 1-2 nodes)
-    // Variation 2: Medium (trigger + 2-3 nodes)
-    // Variation 3: Full (trigger + all nodes)
+    // ✅ PHASE 1 FIX: Variation 1 (index 0) = COMPLETE (ALL required nodes)
+    if (variationIndex === 0) {
+      // Variation 1: Include ALL required nodes (complete workflow)
+      // Add ALL data sources
+      for (const ds of requiredNodes.requiredDataSources) {
+        if (!usedNodes.has(ds)) {
+          chain.push(ds);
+          usedNodes.add(ds);
+        }
+      }
+      // Add ALL transformations
+      for (const tf of requiredNodes.requiredTransformations) {
+        if (!usedNodes.has(tf)) {
+          chain.push(tf);
+          usedNodes.add(tf);
+        }
+      }
+      // Add ALL outputs
+      for (const out of requiredNodes.requiredOutputs) {
+        if (!usedNodes.has(out)) {
+          chain.push(out);
+          usedNodes.add(out);
+        }
+      }
+      console.log(`[AIIntentClarifier] ✅ PHASE 1: Variation 1 (COMPLETE) - Added ${chain.length - 1} required node(s): ${chain.slice(1).join(', ')}`);
+      return chain; // ✅ Variation 1 = COMPLETE
+    }
     
-    // ✅ STEP 1: Add data sources based on complexity level
-    const dataSourcesToAdd = requiredNodes.requiredDataSources.length > 0 
-      ? requiredNodes.requiredDataSources 
-      : categorizedNodes.dataSources;
-    
-    // Limit data sources based on variation index
-    const maxDataSources = variationIndex === 0 ? 0 : 
-                          variationIndex === 1 ? 1 : 
-                          variationIndex === 2 ? 2 : 
-                          dataSourcesToAdd.length; // Full for variation 3
-    
-    for (let i = 0; i < Math.min(maxDataSources, dataSourcesToAdd.length); i++) {
-      const dataSource = dataSourcesToAdd[i];
-      if (!usedNodes.has(dataSource)) {
-        chain.push(dataSource);
-        usedNodes.add(dataSource);
+    // ✅ PHASE 1 FIX: Variations 2-4 = EXTENSIONS (add extra nodes)
+    // First, include ALL required nodes (base)
+    for (const ds of requiredNodes.requiredDataSources) {
+      if (!usedNodes.has(ds)) {
+        chain.push(ds);
+        usedNodes.add(ds);
+      }
+    }
+    for (const tf of requiredNodes.requiredTransformations) {
+      if (!usedNodes.has(tf)) {
+        chain.push(tf);
+        usedNodes.add(tf);
+      }
+    }
+    for (const out of requiredNodes.requiredOutputs) {
+      if (!usedNodes.has(out)) {
+        chain.push(out);
+        usedNodes.add(out);
       }
     }
     
-    // ✅ STEP 2: Add conditional logic nodes if needed (only for medium/full)
-    const needsConditional = promptLower.includes('if') || 
-                            promptLower.includes('when') ||
-                            promptLower.includes('escalate') ||
-                            promptLower.includes('conditionally') ||
-                            promptLower.includes('flag') ||
-                            promptLower.includes('critical');
+    // Then add EXTENSION nodes based on variation index
+    // ✅ FIX: Use already imported UniversalVariationNodeCategorizer (imported at top of file)
+    const categorizer = UniversalVariationNodeCategorizer.getInstance();
+    const allRequiredNodeTypes = [
+      ...requiredNodes.requiredDataSources,
+      ...requiredNodes.requiredTransformations,
+      ...requiredNodes.requiredOutputs,
+    ];
     
-    if (needsConditional && variationIndex >= 2) { // Only for medium/full
-      // ✅ UNIVERSAL: Find conditional nodes from registry (no hardcoding)
-      const conditionalNode = allExtractedNodes.find(nt => {
-        const nodeDef = unifiedNodeRegistry.get(nt);
-        return nodeDef && (
-          nt === 'if_else' || nt === 'switch' ||
-          (nodeDef.tags || []).includes('conditional') ||
-          (nodeDef.tags || []).includes('logic')
-        );
-      }) || (categorizedNodes.transformations.find(nt => {
-        const nodeDef = unifiedNodeRegistry.get(nt);
-        return nodeDef && (
-          nt === 'if_else' || nt === 'switch' ||
-          (nodeDef.tags || []).includes('conditional') ||
-          (nodeDef.tags || []).includes('logic')
-        );
-      }));
-      
-      if (conditionalNode && !usedNodes.has(conditionalNode)) {
-        chain.push(conditionalNode);
-        usedNodes.add(conditionalNode);
+    if (variationIndex === 1) {
+      // Variation 2: Add helper nodes (delay, cache, validation)
+      const helperNodes = categorizer.getHelperNodes(allRequiredNodeTypes).slice(0, 2);
+      for (const helper of helperNodes) {
+        if (!usedNodes.has(helper)) {
+          chain.push(helper);
+          usedNodes.add(helper);
+        }
       }
-    }
-    
-    // ✅ STEP 3: Add transformations based on complexity level
-    const transformationsToAdd = requiredNodes.requiredTransformations.length > 0
-      ? requiredNodes.requiredTransformations
-      : categorizedNodes.transformations.filter(nt => {
-          // Exclude conditional nodes (already added) and output nodes
-          const ntLower = nt.toLowerCase();
-          // ✅ UNIVERSAL: Exclude conditional and output nodes using registry (no hardcoding)
-          const nodeDef = unifiedNodeRegistry.get(nt);
-          const isConditional = nt === 'if_else' || nt === 'switch' ||
-                               (nodeDef?.tags || []).includes('conditional') ||
-                               (nodeDef?.tags || []).includes('logic');
-          const isOutput = nodeCapabilityRegistryDSL.isOutput(nt) && 
-                          !nodeCapabilityRegistryDSL.isDataSource(nt);
-          return !isConditional && !isOutput;
-        });
-    
-    // Limit transformations based on variation index
-    const maxTransformations = variationIndex === 0 ? 0 : 
-                              variationIndex === 1 ? 1 : 
-                              variationIndex === 2 ? 1 : 
-                              transformationsToAdd.length; // Full for variation 3
-    
-    for (let i = 0; i < Math.min(maxTransformations, transformationsToAdd.length); i++) {
-      const transformation = transformationsToAdd[i];
-      if (!usedNodes.has(transformation)) {
-        chain.push(transformation);
-        usedNodes.add(transformation);
+      console.log(`[AIIntentClarifier] ✅ PHASE 1: Variation 2 (EXTENSION - Helper) - Added ${helperNodes.length} helper node(s)`);
+    } else if (variationIndex === 2) {
+      // Variation 3: Add processing nodes (merge, aggregate, filter)
+      const processingNodes = categorizer.getProcessingNodes(allRequiredNodeTypes).slice(0, 3);
+      for (const proc of processingNodes) {
+        if (!usedNodes.has(proc)) {
+          chain.push(proc);
+          usedNodes.add(proc);
+        }
       }
-    }
-    
-    // ✅ STEP 4: Add outputs based on complexity level
-    const outputsToAdd = requiredNodes.requiredOutputs.length > 0
-      ? requiredNodes.requiredOutputs
-      : categorizedNodes.outputs.filter(nt => {
-          // Exclude data sources that were mis-categorized
-          const ntLower = nt.toLowerCase();
-          return !ntLower.includes('sheet') || 
-                 !categorizedNodes.dataSources.includes(nt);
-        });
-    
-    // Limit outputs based on variation index
-    const maxOutputs = variationIndex === 0 ? 1 : // Minimal: at least 1 output
-                      variationIndex === 1 ? 1 : 
-                      variationIndex === 2 ? 2 : 
-                      outputsToAdd.length; // Full for variation 3
-    
-    for (let i = 0; i < Math.min(maxOutputs, outputsToAdd.length); i++) {
-      const output = outputsToAdd[i];
-      if (!usedNodes.has(output)) {
-        chain.push(output);
-        usedNodes.add(output);
+      console.log(`[AIIntentClarifier] ✅ PHASE 1: Variation 3 (EXTENSION - Processing) - Added ${processingNodes.length} processing node(s)`);
+    } else if (variationIndex === 3) {
+      // Variation 4: Add style nodes (Slack, database, notifications)
+      const styleNodes = categorizer.getStyleNodes(allRequiredNodeTypes).slice(0, 2);
+      for (const style of styleNodes) {
+        if (!usedNodes.has(style)) {
+          chain.push(style);
+          usedNodes.add(style);
+        }
       }
+      console.log(`[AIIntentClarifier] ✅ PHASE 1: Variation 4 (EXTENSION - Style) - Added ${styleNodes.length} style node(s)`);
     }
     
     // ✅ STEP 5: Ensure chain has at least trigger + one action (minimum viable chain)
@@ -2336,6 +2316,28 @@ export class AIIntentClarifier {
     for (const pattern of repetitivePatterns) {
       cleaned = cleaned.replace(pattern, '');
     }
+    
+    // ✅ FIX: Remove duplicate "Finalize the workflow" sentences
+    const finalizePattern = /Finalize the workflow by sending results via [^.]+\.[\s]*Finalize the workflow by sending results via [^.]+\./gi;
+    cleaned = cleaned.replace(finalizePattern, (match) => {
+      // Keep only the first occurrence
+      const sentences = match.split(/\.\s*Finalize the workflow by sending results via/);
+      return sentences[0] + (sentences.length > 1 ? '. Finalize the workflow by sending results via' + sentences[1] : '');
+    });
+    
+    // ✅ FIX: Remove duplicate "Output the final results" sentences
+    const outputPattern = /Output the final results using [^.]+\.[\s]*Output the final results using [^.]+\./gi;
+    cleaned = cleaned.replace(outputPattern, (match) => {
+      const sentences = match.split(/\.\s*Output the final results using/);
+      return sentences[0] + (sentences.length > 1 ? '. Output the final results using' + sentences[1] : '');
+    });
+    
+    // ✅ FIX: Remove duplicate "Deliver" sentences
+    const deliverPattern = /Deliver (?:the )?results using [^.]+\.[\s]*Deliver (?:the )?results using [^.]+\./gi;
+    cleaned = cleaned.replace(deliverPattern, (match) => {
+      const sentences = match.split(/\.\s*Deliver (?:the )?results using/);
+      return sentences[0] + (sentences.length > 1 ? '. Deliver results using' + sentences[1] : '');
+    });
     
     // Remove multiple consecutive periods/spaces
     cleaned = cleaned.replace(/\.{2,}/g, '.');
@@ -2787,48 +2789,39 @@ You MUST generate EXACTLY 4 (FOUR) UNIQUE, DISTINCT prompt variations. NOT 1, NO
 
 Each variation MUST be OBVIOUSLY DIFFERENT from the others in COMPLEXITY, NODES, and STYLE:
 
-- Variation 1: SIMPLE & MINIMAL
-  * Use a manual trigger node (from available trigger nodes in registry)
-  * Include ONLY the ${extractedNodeTypes.length} REQUIRED NODES: ${extractedNodeTypes.join(', ')}
-  * NO extra nodes, NO additional operations, NO helper nodes
+- Variation 1: COMPLETE & FULFILLED
+  * Include ALL ${extractedNodeTypes.length} REQUIRED NODES: ${extractedNodeTypes.join(', ')}
+  * This is the MAIN, COMPLETE workflow that fulfills user intent
+  * NO extra nodes, just the essential complete workflow
   * Total node count: EXACTLY ${extractedNodeTypes.length} nodes (required only)
-  * Keep it simple: trigger → required nodes → done
-  * For nodes WITH operations: Use ONLY the default operation from NODES WITH OPERATIONS section
-  * For nodes WITHOUT operations: Just describe what they do naturally
-  * Example style: "Start with a manual trigger node. Use [REQUIRED_NODE_1] with its default operation from schema. Process with [REQUIRED_NODE_2] using its default operation. Send via [REQUIRED_NODE_3] using its default operation."
+  * Keep it complete and clear: trigger → required nodes → done
+  * For nodes WITH operations: Use the EXACT operations listed in the OPERATIONS section above
+  * For nodes WITHOUT operations: Describe what the node DOES (its action/purpose) naturally
+  * Example: "Start with manual_trigger. Use ${extractedNodeTypes[0] || 'node'} to fetch data. Process with ${extractedNodeTypes[1] || 'node'} to transform. Deliver via ${extractedNodeTypes[2] || 'node'}."
 
-- Variation 2: SIMPLE WITH EXTRA OPERATIONS & HELPER NODES
-  * Use a manual trigger node (from available trigger nodes in registry)
+- Variation 2: EXTENSION - Add Helper Features
   * Include ALL ${extractedNodeTypes.length} REQUIRED NODES: ${extractedNodeTypes.join(', ')}
-  * ADD EXACTLY 1-2 helper nodes from available helper nodes: ${helperNodes.length > 0 ? helperNodes.slice(0, 10).join(', ') : 'delay, wait, cache_get, data_validation, split_in_batches'}
+  * ADD helper nodes: delay, cache, validation (for timing, caching, data quality)
+  * Available helper nodes: ${helperNodes.length > 0 ? helperNodes.slice(0, 10).join(', ') : 'delay, wait, cache_get, data_validation, split_in_batches'}
   * ⚠️ CRITICAL: These helper nodes are automatically selected from registry based on their capabilities (utility/logic nodes for timing, caching, splitting)
-  * ⚠️ CRITICAL: Choose DIFFERENT helper nodes than Variations 3 and 4 (select different nodes from the available helper nodes list)
   * Total node count: ${extractedNodeTypes.length + 1} to ${extractedNodeTypes.length + 2} nodes (required + 1-2 helpers)
-  * For nodes WITH operations: Check NODES WITH OPERATIONS section - use MULTIPLE operations if available (e.g., if node has 'read' and 'validate', mention both)
-  * For helper nodes: Use their operations from schema (check each node's available operations in registry)
-  * Example style: "Start with manual_trigger. Use [REQUIRED_NODE_1] with operation='read' and operation='validate' from schema. Add delay node with operation='wait' for timing control. Process with [REQUIRED_NODE_2] using its transformation operations from schema. Send via [REQUIRED_NODE_3] using its output operations from schema."
+  * Example: "Start with manual_trigger. Use ${extractedNodeTypes[0] || 'node'} to fetch. Add delay for timing control. Process with ${extractedNodeTypes[1] || 'node'}. Validate data. Deliver via ${extractedNodeTypes[2] || 'node'}."
 
-- Variation 3: COMPLEX WITH MULTIPLE PROCESSING NODES
-  * Use a webhook trigger node (from available trigger nodes in registry)
+- Variation 3: EXTENSION - Add Processing Features
   * Include ALL ${extractedNodeTypes.length} REQUIRED NODES: ${extractedNodeTypes.join(', ')}
-  * ADD EXACTLY 2-3 processing nodes from available processing nodes: ${processingNodes.length > 0 ? processingNodes.slice(0, 10).join(', ') : 'merge_data, aggregate, filter, data_mapper, transform, json_parser, csv_parser'}
+  * ADD processing nodes: merge, aggregate, filter (for data processing)
+  * Available processing nodes: ${processingNodes.length > 0 ? processingNodes.slice(0, 10).join(', ') : 'merge_data, aggregate, filter, data_mapper, transform, json_parser, csv_parser'}
   * ⚠️ CRITICAL: These processing nodes are automatically selected from registry based on their capabilities (transformation/ai nodes for data processing, merging, aggregating)
-  * ⚠️ CRITICAL: Choose DIFFERENT processing nodes than Variations 2 and 4 (select different nodes from the available processing nodes list)
   * Total node count: ${extractedNodeTypes.length + 2} to ${extractedNodeTypes.length + 3} nodes (required + 2-3 processing)
-  * Show complex data flow: "Fetch from multiple sources, merge data, transform through multiple steps, then deliver"
-  * For processing nodes: Use their operations from schema (check each node's available operations in registry)
-  * Example style: "Configure webhook to trigger workflow. Fetch data from [REQUIRED_NODE_1] with operation='read'. Use merge_data with operation='merge' to combine data. Process through aggregate with operation='sum' for calculations. Transform with [REQUIRED_NODE_2] using its advanced operations from schema. Deliver via [REQUIRED_NODE_3] with operation='send'."
+  * Example: "Start with webhook. Fetch from ${extractedNodeTypes[0] || 'node'}. Merge multiple sources. Aggregate data. Process with ${extractedNodeTypes[1] || 'node'}. Deliver via ${extractedNodeTypes[2] || 'node'}."
 
-- Variation 4: DIFFERENT STYLE/APPROACH WITH ALTERNATIVE NODES
-  * Use a webhook trigger node (from available trigger nodes in registry)
+- Variation 4: EXTENSION - Add Output Features
   * Include ALL ${extractedNodeTypes.length} REQUIRED NODES: ${extractedNodeTypes.join(', ')}
-  * ADD EXACTLY 1-2 style nodes from available style nodes: ${styleNodes.length > 0 ? styleNodes.slice(0, 10).join(', ') : 'schedule, interval, queue_push, queue_consume, batch_process, event_trigger'}
-  * ⚠️ CRITICAL: These style nodes are automatically selected from registry based on their capabilities (scheduling/queuing nodes for alternative workflow approaches)
-  * ⚠️ CRITICAL: Choose DIFFERENT style nodes than Variations 2 and 3 (select different nodes from the available style nodes list)
+  * ADD output nodes: Slack, database, notifications (for additional outputs)
+  * Available style nodes: ${styleNodes.length > 0 ? styleNodes.slice(0, 10).join(', ') : 'slack_message, postgresql, notification, discord, telegram'}
+  * ⚠️ CRITICAL: These style nodes are automatically selected from registry based on their capabilities (output/communication nodes for additional delivery channels)
   * Total node count: ${extractedNodeTypes.length + 1} to ${extractedNodeTypes.length + 2} nodes (required + 1-2 style)
-  * Use DIFFERENT approach: batch processing, scheduled execution, event-driven, or parallel processing
-  * For style nodes: Use their operations from schema (check each node's available operations in registry)
-  * Example style: "Set up webhook for event-driven automation. Configure schedule with operation='schedule' for periodic execution. Use [REQUIRED_NODE_1] with operation='read' to collect data. Queue data using queue_push with operation='push'. Process queued items with [REQUIRED_NODE_2] using its operations from schema. Deliver results via [REQUIRED_NODE_3] with operation='send'."
+  * Example: "Start with webhook. Use ${extractedNodeTypes[0] || 'node'} to fetch. Process with ${extractedNodeTypes[1] || 'node'}. Deliver via ${extractedNodeTypes[2] || 'node'}. Also notify via Slack. Save to database."
 
 EACH VARIATION MUST:
 ✅ Include ALL ${extractedNodeTypes.length} REQUIRED NODES: ${extractedNodeTypes.join(', ')}
@@ -2854,10 +2847,10 @@ CRITICAL RULES - NO EXCEPTIONS:
 1. ❌ NEVER use "or" or "either" in prompts (e.g., "use zoho_crm or salesforce" is FORBIDDEN)
 2. ✅ Use the detected node types and capabilities from the architecture analysis above
 3. ✅ Each variation MUST use DIFFERENT complexity levels and DIFFERENT node combinations:
-   - Variation 1: MINIMAL - ONLY ${extractedNodeTypes.length} required nodes, NO extra nodes, use default operations only
-   - Variation 2: SIMPLE+ - ${extractedNodeTypes.length} required nodes + 1-2 DIFFERENT helper nodes from available helper nodes (${helperNodes.length > 0 ? helperNodes.slice(0, 5).join(', ') : 'helper nodes from registry'}), use multiple operations per node
-   - Variation 3: COMPLEX - ${extractedNodeTypes.length} required nodes + 2-3 DIFFERENT processing nodes from available processing nodes (${processingNodes.length > 0 ? processingNodes.slice(0, 5).join(', ') : 'processing nodes from registry'}), use advanced operations
-   - Variation 4: DIFFERENT STYLE - ${extractedNodeTypes.length} required nodes + 1-2 DIFFERENT style nodes from available style nodes (${styleNodes.length > 0 ? styleNodes.slice(0, 5).join(', ') : 'style nodes from registry'}), use alternative approach
+   - Variation 1: COMPLETE - ALL ${extractedNodeTypes.length} required nodes, NO extra nodes, complete workflow that fulfills user intent
+   - Variation 2: EXTENSION - ALL ${extractedNodeTypes.length} required nodes + 1-2 DIFFERENT helper nodes from available helper nodes (${helperNodes.length > 0 ? helperNodes.slice(0, 5).join(', ') : 'helper nodes from registry'}), adds timing/caching/validation
+   - Variation 3: EXTENSION - ALL ${extractedNodeTypes.length} required nodes + 2-3 DIFFERENT processing nodes from available processing nodes (${processingNodes.length > 0 ? processingNodes.slice(0, 5).join(', ') : 'processing nodes from registry'}), adds data processing/merging
+   - Variation 4: EXTENSION - ALL ${extractedNodeTypes.length} required nodes + 1-2 DIFFERENT style nodes from available style nodes (${styleNodes.length > 0 ? styleNodes.slice(0, 5).join(', ') : 'style nodes from registry'}), adds additional outputs/notifications
 4. ✅ Variations 1-2: MUST use manual trigger nodes (from registry)
 5. ✅ Variations 3-4: MUST use webhook trigger nodes (from registry)
 6. ✅ Each variation must be obviously unique (different complexity, DIFFERENT extra nodes, different operations, different trigger, different style)
@@ -3236,7 +3229,8 @@ The "variations" array MUST contain exactly 4 items, each with a detailed prompt
   ): SummarizeLayerResult {
     // ✅ PHASE 1: Extract keywords from original prompt as fallback
     const fallbackExtractedKeywords = this.extractKeywordsFromPrompt(originalPrompt, allKeywordData);
-    const fallbackExtractedNodeTypes = this.mapKeywordsToNodeTypes(fallbackExtractedKeywords);
+    // ✅ FIX 1: Pass original prompt for context-aware mapping
+    const fallbackExtractedNodeTypes = this.mapKeywordsToNodeTypes(fallbackExtractedKeywords, originalPrompt);
     
     try {
       // ✅ PRODUCTION: Multiple JSON extraction strategies
@@ -3317,7 +3311,8 @@ The "variations" array MUST contain exactly 4 items, each with a detailed prompt
       postProcessedKeywords.forEach(k => matchedKeywords.add(k.toLowerCase()));
 
       // Step 2: Map to node types - these are the MANDATORY nodes user wants
-      const mandatoryNodeTypes = this.mapKeywordsToNodeTypes(Array.from(matchedKeywords));
+      // ✅ FIX 1: Pass original prompt for context-aware mapping
+      const mandatoryNodeTypes = this.mapKeywordsToNodeTypes(Array.from(matchedKeywords), originalPrompt);
       
       // ✅ NEW: Extract nodes with operation hints
       const mandatoryNodesWithOperations = this.extractNodesWithOperations(originalPrompt, allKeywordData, mandatoryNodeTypes);
@@ -3336,7 +3331,8 @@ The "variations" array MUST contain exactly 4 items, each with a detailed prompt
         
         // Extract nodes from variation text for validation (to check if AI followed instructions)
         const variationKeywords = this.extractKeywordsFromPrompt(cleanedPrompt, allKeywordData);
-        const variationNodeTypes = this.mapKeywordsToNodeTypes(variationKeywords);
+        // ✅ FIX 1: Pass original prompt for context-aware mapping (email → google_gmail when original mentions Gmail)
+        const variationNodeTypes = this.mapKeywordsToNodeTypes(variationKeywords, originalPrompt);
         
         // Filter to nodes that are BOTH: (1) in user's intent AND (2) mentioned in variation
         const matchedNodeTypes = variationNodeTypes.filter(nodeType => 
@@ -3345,13 +3341,24 @@ The "variations" array MUST contain exactly 4 items, each with a detailed prompt
         
         console.log(`[AIIntentClarifier] ✅ PURE INTENT: Variation "${variation.id}" - Found ${variationNodeTypes.length} node(s) in text, filtered to ${matchedNodeTypes.length} from user's intent: ${matchedNodeTypes.join(', ')}`);
 
+        // ✅ PHASE 6: Build chain with capabilities
+        // This creates tags in format: ["nodeType:capability"] or ["nodeType"] if capability cannot be determined
+        const chainWithCapabilities = this.buildChainWithCapabilities(
+          variationNodeTypes,
+          cleanedPrompt,
+          mandatoryNodeTypes
+        );
+
       return {
           ...variation,
           prompt: cleanedPrompt,
-          // ✅ FIX: UI displays ALL required nodes from user's original prompt
-          // This ensures UI shows all 6 nodes even if AI variation only mentioned 2-3
-          keywords: mandatoryNodeTypes, // ✅ Single source of truth: user's required nodes
-          matchedKeywords: matchedNodeTypes, // ✅ For validation: filtered nodes (in user's intent)
+          // ✅ PHASE 6: Tags include capability: ["webhook", "google_sheets:data_source", "ollama:transformation", "gmail:output"]
+          keywords: chainWithCapabilities.map((node: { type: string; capability?: 'data_source' | 'transformation' | 'output' }) => 
+            node.capability ? `${node.type}:${node.capability}` : node.type
+          ),
+          matchedKeywords: chainWithCapabilities
+            .filter((node: { type: string; capability?: 'data_source' | 'transformation' | 'output' }) => mandatoryNodeTypes.includes(node.type))
+            .map((node: { type: string; capability?: 'data_source' | 'transformation' | 'output' }) => node.capability ? `${node.type}:${node.capability}` : node.type),
           allExtractedNodes: variationNodeTypes, // ✅ NEW: ALL nodes extracted from variation text (for smart semantic matching)
         };
       });
@@ -4523,9 +4530,19 @@ The "variations" array MUST contain exactly 4 items, each with a detailed prompt
   /**
    * ✅ STEP 2: Map keywords to node types
    * Converts keywords (strings) to actual node types (validated against registry)
+   * ✅ FIX 1: Context-aware mapping - uses original prompt for disambiguation
+   * 
+   * @param keywords - Keywords to map
+   * @param originalPrompt - Original user prompt (for context-aware mapping)
    */
-  private mapKeywordsToNodeTypes(keywords: string[]): string[] {
+  private mapKeywordsToNodeTypes(keywords: string[], originalPrompt?: string): string[] {
     const nodeTypes = new Set<string>();
+    const originalLower = (originalPrompt || '').toLowerCase();
+    
+    // ✅ FIX 1: Check if original prompt mentions Gmail/Google services (for email disambiguation)
+    const mentionsGmail = originalLower.includes('gmail') || originalLower.includes('google mail') || originalLower.includes('google email');
+    const mentionsGoogleServices = originalLower.includes('google sheets') || originalLower.includes('google drive') || originalLower.includes('google');
+    const mentionsSmtp = originalLower.includes('smtp') || originalLower.includes('mail server');
     
     for (const keyword of keywords) {
       // Direct match (keyword is already a node type)
@@ -4534,18 +4551,42 @@ The "variations" array MUST contain exactly 4 items, each with a detailed prompt
         continue;
       }
       
+      // ✅ FIX 1: Context-aware mapping for "email" keyword
+      // If original prompt mentions "Gmail" or Google services, map "email" → "google_gmail"
+      if (keyword.toLowerCase() === 'email' && mentionsGmail && !mentionsSmtp) {
+        if (nodeLibrary.isNodeTypeRegistered('google_gmail')) {
+          nodeTypes.add('google_gmail');
+          console.log(`[AIIntentClarifier] ✅ Context-aware mapping: "email" keyword → "google_gmail" (original prompt mentions Gmail)`);
+          continue;
+        }
+      }
+      
       // Alias match (keyword maps to node type via keyword collector)
-      const keywordData = this.keywordCollector.getAllAliasKeywords().find(
+      const allAliasKeywords = this.keywordCollector.getAllAliasKeywords();
+      const keywordData = allAliasKeywords.find(
         kd => kd.keyword.toLowerCase() === keyword.toLowerCase()
       );
       
       if (keywordData) {
+        let mappedNodeType = keywordData.nodeType;
+        
+        // ✅ FIX 1: Apply context-aware mapping if keyword is "email"
+        if (keyword.toLowerCase() === 'email' && mappedNodeType === 'email') {
+          // If original prompt mentions Gmail/Google services, prefer google_gmail
+          if (mentionsGmail || (mentionsGoogleServices && !mentionsSmtp)) {
+            if (nodeLibrary.isNodeTypeRegistered('google_gmail')) {
+              mappedNodeType = 'google_gmail';
+              console.log(`[AIIntentClarifier] ✅ Context-aware mapping: "email" alias → "google_gmail" (original prompt mentions Gmail/Google)`);
+            }
+          }
+        }
+        
         // Verify node type exists in registry
-        if (nodeLibrary.isNodeTypeRegistered(keywordData.nodeType)) {
-          nodeTypes.add(keywordData.nodeType);
-          console.log(`[AIIntentClarifier] ✅ Mapped keyword "${keyword}" → node type "${keywordData.nodeType}"`);
+        if (nodeLibrary.isNodeTypeRegistered(mappedNodeType)) {
+          nodeTypes.add(mappedNodeType);
+          console.log(`[AIIntentClarifier] ✅ Mapped keyword "${keyword}" → node type "${mappedNodeType}"`);
         } else {
-          console.warn(`[AIIntentClarifier] ⚠️  Keyword "${keyword}" maps to unregistered node type "${keywordData.nodeType}"`);
+          console.warn(`[AIIntentClarifier] ⚠️  Keyword "${keyword}" maps to unregistered node type "${mappedNodeType}"`);
         }
       }
     }
@@ -4783,6 +4824,271 @@ The "variations" array MUST contain exactly 4 items, each with a detailed prompt
   ]
 }`;
   }
+
+  /**
+   * ✅ PHASE 5: Infer capability from variation context
+   * Uses text patterns, position in chain, and node's available capabilities
+   * 
+   * @param nodeType - Node type to infer capability for
+   * @param variationText - Full variation text
+   * @param positionInChain - Position in chain (0 = trigger, 1 = first action, etc.)
+   * @param chainLength - Total length of chain
+   * @returns Inferred capability or null if cannot determine
+   */
+  private inferCapabilityFromVariationContext(
+    nodeType: string,
+    variationText: string,
+    positionInChain: number,
+    chainLength: number
+  ): 'data_source' | 'transformation' | 'output' | null {
+    const textLower = variationText.toLowerCase();
+    const nodeTypeLower = nodeType.toLowerCase();
+    
+    // ✅ PHASE 5: Step 1: Check text patterns (verbs) near node type
+    // Find the sentence or phrase that mentions this node
+    const nodeMentionPattern = new RegExp(
+      `(?:fetch|read|get|retrieve|pull|load|collect|process|transform|summarize|analyze|classify|generate|translate|send|deliver|output|write|save|post|notify).*?${nodeTypeLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}|${nodeTypeLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*?(?:fetch|read|get|retrieve|pull|load|collect|process|transform|summarize|analyze|classify|generate|translate|send|deliver|output|write|save|post|notify)`,
+      'i'
+    );
+    
+    const nodeMention = textLower.match(nodeMentionPattern);
+    if (nodeMention) {
+      const mentionText = nodeMention[0];
+      
+      // Data source patterns
+      if (mentionText.match(/(fetch|read|get|retrieve|pull|load|collect)\s+(from|data|using)/) ||
+          mentionText.match(/(from|using)\s+(the\s+)?(nodeType|it)/)) {
+        return 'data_source';
+      }
+      
+      // Transformation patterns
+      if (mentionText.match(/(process|transform|summarize|analyze|classify|generate|translate)\s+(with|using|through)/) ||
+          mentionText.match(/(with|using|through)\s+(the\s+)?(nodeType|it)\s+to\s+(process|transform|summarize|analyze)/)) {
+        return 'transformation';
+      }
+      
+      // Output patterns
+      if (mentionText.match(/(send|deliver|output|write|save|post|notify)\s+(via|to|using|through)/) ||
+          mentionText.match(/(via|to|using|through)\s+(the\s+)?(nodeType|it)/)) {
+        return 'output';
+      }
+    }
+    
+    // ✅ PHASE 5: Step 2: Check position in chain (fallback)
+    // Early in chain (after trigger) = data_source
+    // Middle = transformation
+    // End = output
+    if (positionInChain === 1 && chainLength > 2) {
+      return 'data_source';
+    }
+    if (positionInChain === chainLength - 1) {
+      return 'output';
+    }
+    if (positionInChain > 1 && positionInChain < chainLength - 1) {
+      return 'transformation';
+    }
+    
+    // ✅ PHASE 5: Step 3: Check node's available capabilities (registry)
+    const availableCapabilities = nodeCapabilityRegistryDSL.getCapabilities(nodeType);
+    if (availableCapabilities.includes('data_source') && !availableCapabilities.includes('output')) {
+      return 'data_source';
+    }
+    if (availableCapabilities.includes('transformation')) {
+      return 'transformation';
+    }
+    if (availableCapabilities.includes('output')) {
+      return 'output';
+    }
+    
+    return null; // Cannot determine
+  }
+
+  /**
+   * ✅ PHASE 5: Validate capability assignment against node's available capabilities
+   * 
+   * @param nodeType - Node type
+   * @param inferredCapability - Inferred capability
+   * @returns true if capability is valid for this node
+   */
+  private validateCapability(
+    nodeType: string,
+    inferredCapability: 'data_source' | 'transformation' | 'output'
+  ): boolean {
+    const availableCapabilities = nodeCapabilityRegistryDSL.getCapabilities(nodeType);
+    
+    // Map inferred capability to registry capability names
+    const capabilityMap: Record<string, string[]> = {
+      'data_source': ['data_source', 'read_data', 'fetch_data'],
+      'transformation': ['transformation', 'process_data', 'transform_data'],
+      'output': ['output', 'write_data', 'send_data', 'send'],
+    };
+    
+    const mappedCapabilities = capabilityMap[inferredCapability] || [];
+    
+    // Check if any mapped capability exists in available capabilities
+    return mappedCapabilities.some(cap => availableCapabilities.includes(cap));
+  }
+
+  /**
+   * ✅ PHASE 6: Build chain with capabilities from variation text
+   * Infers capabilities for each node and validates against registry
+   * 
+   * @param extractedNodes - Nodes extracted from variation text
+   * @param variationText - Full variation text
+   * @param mandatoryNodes - Mandatory nodes from user's original prompt
+   * @returns Chain with inferred capabilities
+   */
+  private buildChainWithCapabilities(
+    extractedNodes: string[],
+    variationText: string,
+    mandatoryNodes: string[]
+  ): Array<{ type: string; capability?: 'data_source' | 'transformation' | 'output' }> {
+    const chain: Array<{ type: string; capability?: 'data_source' | 'transformation' | 'output' }> = [];
+    const usedNodes = new Set<string>();
+    
+    // Step 1: Find trigger (first node mentioned or default)
+    // ✅ PHASE 6: Check if node is a trigger using registry
+    const { isTriggerNode } = require('../../core/utils/universal-node-type-checker');
+    const trigger = extractedNodes.find(node => isTriggerNode(node)) || 'manual_trigger';
+    chain.push({ type: trigger }); // Triggers don't need capability
+    usedNodes.add(trigger);
+    
+    // Step 2: Add data sources (in order mentioned)
+    const dataSources = extractedNodes.filter(node => 
+      nodeCapabilityRegistryDSL.isDataSource(node) && 
+      !nodeCapabilityRegistryDSL.isOutput(node) &&
+      !usedNodes.has(node));
+    
+    for (const ds of dataSources) {
+      const inferredCapability = this.inferCapabilityFromVariationContext(
+        ds,
+        variationText,
+        chain.length,
+        extractedNodes.length
+      );
+      
+      // Validate capability
+      const capability = inferredCapability && this.validateCapability(ds, inferredCapability)
+        ? inferredCapability
+        : 'data_source'; // Default to data_source if inference fails
+      
+      chain.push({ type: ds, capability });
+      usedNodes.add(ds);
+    }
+    
+    // Step 3: Add transformations (in order mentioned)
+    const transformations = extractedNodes.filter(node => 
+      nodeCapabilityRegistryDSL.isTransformation(node) &&
+      !usedNodes.has(node));
+    
+    for (const tf of transformations) {
+      const inferredCapability = this.inferCapabilityFromVariationContext(
+        tf,
+        variationText,
+        chain.length,
+        extractedNodes.length
+      );
+      
+      // Validate capability
+      const capability = inferredCapability && this.validateCapability(tf, inferredCapability)
+        ? inferredCapability
+        : 'transformation'; // Default to transformation if inference fails
+      
+      chain.push({ type: tf, capability });
+      usedNodes.add(tf);
+    }
+    
+    // Step 4: Add outputs (in order mentioned)
+    const outputs = extractedNodes.filter(node => 
+      nodeCapabilityRegistryDSL.isOutput(node) &&
+      !nodeCapabilityRegistryDSL.isDataSource(node) &&
+      !usedNodes.has(node));
+    
+    for (const out of outputs) {
+      const inferredCapability = this.inferCapabilityFromVariationContext(
+        out,
+        variationText,
+        chain.length,
+        extractedNodes.length
+      );
+      
+      // Validate capability
+      const capability = inferredCapability && this.validateCapability(out, inferredCapability)
+        ? inferredCapability
+        : 'output'; // Default to output if inference fails
+      
+      chain.push({ type: out, capability });
+      usedNodes.add(out);
+    }
+    
+    // ✅ Ensure all mandatory nodes are included (even if not extracted)
+    for (const mandatory of mandatoryNodes) {
+      if (!usedNodes.has(mandatory)) {
+        // Infer capability for mandatory node
+        const inferredCapability = this.inferCapabilityFromVariationContext(
+          mandatory,
+          variationText,
+          chain.length,
+          extractedNodes.length
+        );
+        
+        // Validate capability
+        const capability = inferredCapability && this.validateCapability(mandatory, inferredCapability)
+          ? inferredCapability
+          : undefined; // No capability if cannot determine
+        
+        // Insert in correct position based on capability
+        if (nodeCapabilityRegistryDSL.isDataSource(mandatory)) {
+          chain.splice(1, 0, { type: mandatory, capability: capability || 'data_source' }); // After trigger
+        } else if (nodeCapabilityRegistryDSL.isTransformation(mandatory)) {
+          // ✅ PHASE 6: Find last data source index (backward search)
+          let lastDataSourceIdx = -1;
+          for (let i = chain.length - 1; i >= 0; i--) {
+            if (nodeCapabilityRegistryDSL.isDataSource(chain[i].type)) {
+              lastDataSourceIdx = i;
+              break;
+            }
+          }
+          chain.splice(lastDataSourceIdx + 1, 0, { type: mandatory, capability: capability || 'transformation' });
+        } else if (nodeCapabilityRegistryDSL.isOutput(mandatory)) {
+          chain.push({ type: mandatory, capability: capability || 'output' }); // At end
+        } else {
+          chain.push({ type: mandatory, capability }); // Unknown - add at end
+        }
+        usedNodes.add(mandatory);
+      }
+    }
+    
+    // ✅ PHASE 3: Explicitly sort by capability order to ensure tags represent execution order
+    // Order: trigger (no capability) → data_source → transformation → output
+    const capabilityOrder: Record<string, number> = {
+      'data_source': 1,
+      'transformation': 2,
+      'output': 3,
+    };
+    
+    chain.sort((a, b) => {
+      // Trigger (no capability) always first
+      if (!a.capability && b.capability) return -1;
+      if (a.capability && !b.capability) return 1;
+      if (!a.capability && !b.capability) return 0; // Both triggers - preserve order
+      
+      // Compare by capability order
+      const orderA = capabilityOrder[a.capability || ''] || 999;
+      const orderB = capabilityOrder[b.capability || ''] || 999;
+      
+      if (orderA !== orderB) {
+        return orderA - orderB;
+      }
+      
+      // Same capability - preserve relative order (stable sort)
+      return 0;
+    });
+    
+    console.log(`[AIIntentClarifier] ✅ PHASE 3: Tags sorted by capability order: ${chain.map(n => n.capability ? `${n.type}:${n.capability}` : n.type).join(' → ')}`);
+    
+    return chain;
+  }
 }
 
 /**
@@ -4805,6 +5111,374 @@ export class SummarizeLayerService {
     const result = await this.intentClarifier.clarifyIntentAndGenerateVariations(userPrompt);
     
     return result;
+  }
+
+  /**
+   * ✅ UPGRADE: Infer capability from variation context
+   * Priority: Text Patterns → Node Capabilities → Position (last resort)
+   * 
+   * @param nodeType - Node type to infer capability for
+   * @param variationText - Full variation text
+   * @param positionInChain - Position in chain (0 = trigger, 1 = first action, etc.)
+   * @param chainLength - Total length of chain
+   * @returns Inferred capability or null if cannot determine
+   */
+  private inferCapabilityFromVariationContext(
+    nodeType: string,
+    variationText: string,
+    positionInChain: number,
+    chainLength: number
+  ): 'data_source' | 'transformation' | 'output' | null {
+    const textLower = variationText.toLowerCase();
+    const nodeTypeLower = nodeType.toLowerCase();
+    
+    // ✅ PHASE 6: Logging
+    console.log(`[CapabilityInference] Inferring capability for ${nodeType} at position ${positionInChain}/${chainLength}`);
+    
+    // ✅ PHASE 2: Step 1: Text patterns (PRIMARY - most reliable)
+    const textInference = this.inferFromTextPatterns(nodeType, variationText, textLower, nodeTypeLower);
+    const availableCapabilities = nodeCapabilityRegistryDSL.getCapabilities(nodeType);
+    
+    if (textInference) {
+      // ✅ PHASE 2: Validate text inference against node's capabilities
+      if (this.nodeCanDo(nodeType, textInference)) {
+        console.log(`[CapabilityInference] ✅ Text inference for ${nodeType}: ${textInference} (validated against capabilities: ${availableCapabilities.join(', ')})`);
+        return textInference;
+      } else {
+        console.log(`[CapabilityInference] ⚠️  Text inference "${textInference}" for ${nodeType} invalid (node capabilities: ${availableCapabilities.join(', ')})`);
+      }
+    }
+    
+    // ✅ PHASE 2: Step 2: Node's available capabilities (SECONDARY)
+    // If node can ONLY be one capability, use that
+    const singleCapability = this.getSingleCapability(nodeType);
+    if (singleCapability) {
+      console.log(`[CapabilityInference] ✅ Single capability for ${nodeType}: ${singleCapability} (node can only be this)`);
+      return singleCapability;
+    }
+    
+    // If text inference failed but node can do it, use text inference
+    if (textInference && availableCapabilities.some(cap => this.mapCapabilityName(cap) === textInference)) {
+      console.log(`[CapabilityInference] ✅ Using text inference "${textInference}" for ${nodeType} (node can do it)`);
+      return textInference;
+    }
+    
+    // ✅ PHASE 2: Step 3: Position (LAST RESORT - only if text + capabilities fail)
+    const positionInference = this.inferFromPosition(nodeType, positionInChain, chainLength, availableCapabilities);
+    if (positionInference) {
+      console.log(`[CapabilityInference] ✅ Position inference for ${nodeType} at position ${positionInChain}/${chainLength}: ${positionInference}`);
+      return positionInference;
+    }
+    
+    console.log(`[CapabilityInference] ❌ Cannot determine capability for ${nodeType}`);
+    return null; // Cannot determine
+  }
+
+  /**
+   * ✅ PHASE 1: Infer capability from text patterns (strengthened)
+   * Uses expanded verb patterns, improved context detection, and enhanced pattern matching
+   * 
+   * @param nodeType - Node type
+   * @param variationText - Full variation text
+   * @param textLower - Lowercase variation text
+   * @param nodeTypeLower - Lowercase node type
+   * @returns Inferred capability or null
+   */
+  private inferFromTextPatterns(
+    nodeType: string,
+    variationText: string,
+    textLower: string,
+    nodeTypeLower: string
+  ): 'data_source' | 'transformation' | 'output' | null {
+    // ✅ PHASE 1: Expanded verb patterns
+    const DATA_SOURCE_VERBS = [
+      'read', 'fetch', 'get', 'retrieve', 'pull', 'load', 'collect',
+      'query', 'extract', 'obtain', 'acquire', 'download', 'import'
+    ];
+    
+    const OUTPUT_VERBS = [
+      'send', 'deliver', 'output', 'write', 'save', 'post', 'notify',
+      'publish', 'share', 'upload', 'submit', 'export', 'push', 'create',
+      'update', 'append', 'store', 'insert', 'add'
+    ];
+    
+    const TRANSFORMATION_VERBS = [
+      'process', 'transform', 'summarize', 'summarise', 'analyze', 'analyse', 'classify', 'generate',
+      'translate', 'format', 'parse', 'filter', 'map', 'reduce', 'aggregate',
+      'merge', 'split', 'convert', 'compute', 'calculate', 'refine', 'enhance'
+    ];
+    
+    // ✅ PHASE 1: Enhanced pattern matching - Pattern 1: "VERB + PREPOSITION + NODE"
+    // Example: "read from google_sheets", "send via gmail"
+    const verbPrepositionPattern = new RegExp(
+      `(${DATA_SOURCE_VERBS.join('|')}|${OUTPUT_VERBS.join('|')}|${TRANSFORMATION_VERBS.join('|')})\\s+(from|to|via|using|through|with)\\s+${nodeTypeLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+      'i'
+    );
+    const verbPrepositionMatch = textLower.match(verbPrepositionPattern);
+    if (verbPrepositionMatch) {
+      const verb = verbPrepositionMatch[1].toLowerCase();
+      const preposition = verbPrepositionMatch[2].toLowerCase();
+      
+      // ✅ FIX: "Process through X" where X is a data source node → data_source (not transformation)
+      // Context: "Process through Google Sheets" means "read/process data from Google Sheets"
+      if (verb === 'process' && preposition === 'through') {
+        // Check if node can be a data source (like google_sheets, postgresql, etc.)
+        const availableCapabilities = nodeCapabilityRegistryDSL.getCapabilities(nodeType);
+        if (availableCapabilities.includes('data_source') || availableCapabilities.includes('read_data')) {
+          return 'data_source'; // "Process through" = read/process from
+        }
+      }
+      
+      // Data source: "read from", "fetch from", "get from"
+      if (DATA_SOURCE_VERBS.includes(verb) && ['from', 'using', 'through'].includes(preposition)) {
+        return 'data_source';
+      }
+      
+      // Output: "send to", "send via", "write to", "post to"
+      if (OUTPUT_VERBS.includes(verb) && ['to', 'via', 'using', 'through'].includes(preposition)) {
+        return 'output';
+      }
+      
+      // Transformation: "process with", "transform using", "analyze through" (but NOT "process through" for data sources)
+      if (TRANSFORMATION_VERBS.includes(verb) && ['with', 'using'].includes(preposition)) {
+        return 'transformation';
+      }
+      // "analyze through" can be transformation if node is AI/transformation node
+      if (verb === 'analyze' && preposition === 'through') {
+        const availableCapabilities = nodeCapabilityRegistryDSL.getCapabilities(nodeType);
+        if (availableCapabilities.includes('transformation') || availableCapabilities.includes('ai_processing')) {
+          return 'transformation';
+        }
+      }
+    }
+    
+    // ✅ PHASE 1: Enhanced pattern matching - Pattern 2: "NODE + PREPOSITION + VERB"
+    // Example: "google_sheets to fetch", "gmail to send"
+    const nodePrepositionVerbPattern = new RegExp(
+      `${nodeTypeLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s+(to|for)\\s+(${DATA_SOURCE_VERBS.join('|')}|${OUTPUT_VERBS.join('|')}|${TRANSFORMATION_VERBS.join('|')})`,
+      'i'
+    );
+    const nodePrepositionVerbMatch = textLower.match(nodePrepositionVerbPattern);
+    if (nodePrepositionVerbMatch) {
+      const verb = nodePrepositionVerbMatch[2].toLowerCase();
+      
+      if (DATA_SOURCE_VERBS.includes(verb)) {
+        return 'data_source';
+      }
+      if (OUTPUT_VERBS.includes(verb)) {
+        return 'output';
+      }
+      if (TRANSFORMATION_VERBS.includes(verb)) {
+        return 'transformation';
+      }
+    }
+    
+    // ✅ PHASE 1: Enhanced pattern matching - Pattern 3: "VERB + NODE" (direct)
+    // Example: "fetch google_sheets", "send gmail", "process ai"
+    const verbNodePattern = new RegExp(
+      `(${DATA_SOURCE_VERBS.join('|')}|${OUTPUT_VERBS.join('|')}|${TRANSFORMATION_VERBS.join('|')})\\s+${nodeTypeLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+      'i'
+    );
+    const verbNodeMatch = textLower.match(verbNodePattern);
+    if (verbNodeMatch) {
+      const verb = verbNodeMatch[1].toLowerCase();
+      
+      if (DATA_SOURCE_VERBS.includes(verb)) {
+        return 'data_source';
+      }
+      if (OUTPUT_VERBS.includes(verb)) {
+        return 'output';
+      }
+      if (TRANSFORMATION_VERBS.includes(verb)) {
+        return 'transformation';
+      }
+    }
+    
+    // ✅ PHASE 1: Enhanced pattern matching - Pattern 4: "NODE + VERB" (reverse)
+    // Example: "google_sheets read", "gmail send"
+    const nodeVerbPattern = new RegExp(
+      `${nodeTypeLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s+(${DATA_SOURCE_VERBS.join('|')}|${OUTPUT_VERBS.join('|')}|${TRANSFORMATION_VERBS.join('|')})`,
+      'i'
+    );
+    const nodeVerbMatch = textLower.match(nodeVerbPattern);
+    if (nodeVerbMatch) {
+      const verb = nodeVerbMatch[1].toLowerCase();
+      
+      if (DATA_SOURCE_VERBS.includes(verb)) {
+        return 'data_source';
+      }
+      if (OUTPUT_VERBS.includes(verb)) {
+        return 'output';
+      }
+      if (TRANSFORMATION_VERBS.includes(verb)) {
+        return 'transformation';
+      }
+    }
+    
+    // ✅ PHASE 1: Sentence-level analysis - Extract full sentence containing node
+    const sentences = variationText.split(/[.!?]\s+/);
+    for (const sentence of sentences) {
+      const sentenceLower = sentence.toLowerCase();
+      if (sentenceLower.includes(nodeTypeLower)) {
+        // Check for operation keywords in the same sentence
+        if (sentenceLower.match(/\b(read|fetch|get|retrieve|pull|load|collect|query|extract)\b/)) {
+          return 'data_source';
+        }
+        if (sentenceLower.match(/\b(send|deliver|output|write|save|post|notify|publish|share|upload|submit|export|push|create|update|append|store|insert|add)\b/)) {
+          return 'output';
+        }
+        if (sentenceLower.match(/\b(process|transform|summarize|summarise|analyze|analyse|classify|generate|translate|format|parse|filter|map|reduce|aggregate|merge|split|convert|compute|calculate|refine|enhance)\b/)) {
+          return 'transformation';
+        }
+      }
+    }
+    
+    return null; // No text pattern matched
+  }
+
+  /**
+   * ✅ PHASE 3: Infer capability from position (structure-aware)
+   * Does NOT assume rigid structure - validates against capabilities
+   * 
+   * @param nodeType - Node type
+   * @param positionInChain - Position in chain
+   * @param chainLength - Total chain length
+   * @param availableCapabilities - Node's available capabilities
+   * @returns Inferred capability or null
+   */
+  private inferFromPosition(
+    nodeType: string,
+    positionInChain: number,
+    chainLength: number,
+    availableCapabilities: string[]
+  ): 'data_source' | 'transformation' | 'output' | null {
+    // ✅ PHASE 3: If node can only be one capability, use that
+    const singleCapability = this.getSingleCapability(nodeType);
+    if (singleCapability) {
+      return singleCapability;
+    }
+    
+    // ✅ PHASE 3: Last position = output (universal rule, but validate)
+    if (positionInChain === chainLength - 1) {
+      if (this.nodeCanDo(nodeType, 'output')) {
+        return 'output';
+      }
+    }
+    
+    // ✅ PHASE 3: First position (after trigger) = likely data_source
+    if (positionInChain === 1) {
+      if (this.nodeCanDo(nodeType, 'data_source')) {
+        return 'data_source';
+      }
+    }
+    
+    // ✅ PHASE 3: Middle positions = flexible (check capabilities)
+    if (positionInChain > 1 && positionInChain < chainLength - 1) {
+      // If node can be transformation, prefer transformation
+      if (this.nodeCanDo(nodeType, 'transformation')) {
+        return 'transformation';
+      }
+      // If node can be output, it might be output (but less likely in middle)
+      if (this.nodeCanDo(nodeType, 'output')) {
+        return 'output';
+      }
+      // If node can be data_source, it might be data_source (but less likely in middle)
+      if (this.nodeCanDo(nodeType, 'data_source')) {
+        return 'data_source';
+      }
+    }
+    
+    return null; // Cannot determine from position
+  }
+
+  /**
+   * ✅ PHASE 5: Check if node can do a specific capability
+   * 
+   * @param nodeType - Node type
+   * @param capability - Capability to check
+   * @returns true if node can do this capability
+   */
+  private nodeCanDo(
+    nodeType: string,
+    capability: 'data_source' | 'transformation' | 'output'
+  ): boolean {
+    const availableCapabilities = nodeCapabilityRegistryDSL.getCapabilities(nodeType);
+    
+    // Map capability names
+    const capabilityMap: Record<string, string[]> = {
+      'data_source': ['data_source', 'read_data', 'fetch_data'],
+      'transformation': ['transformation', 'process_data', 'transform_data'],
+      'output': ['output', 'write_data', 'send_data', 'send'],
+    };
+    
+    const mappedCapabilities = capabilityMap[capability] || [];
+    return mappedCapabilities.some(cap => availableCapabilities.includes(cap));
+  }
+
+  /**
+   * ✅ PHASE 5: Get single capability if node can only be one thing
+   * 
+   * @param nodeType - Node type
+   * @returns Single capability or null if node has multiple capabilities
+   */
+  private getSingleCapability(nodeType: string): 'data_source' | 'transformation' | 'output' | null {
+    const availableCapabilities = nodeCapabilityRegistryDSL.getCapabilities(nodeType);
+    
+    // Check if node can only be one of the three main capabilities
+    const mainCapabilities = availableCapabilities.filter(cap => 
+      cap === 'data_source' || cap === 'transformation' || cap === 'output'
+    );
+    
+    if (mainCapabilities.length === 1) {
+      return mainCapabilities[0] as 'data_source' | 'transformation' | 'output';
+    }
+    
+    // Check mapped capabilities
+    const hasDataSource = this.nodeCanDo(nodeType, 'data_source');
+    const hasTransformation = this.nodeCanDo(nodeType, 'transformation');
+    const hasOutput = this.nodeCanDo(nodeType, 'output');
+    
+    const capabilityCount = [hasDataSource, hasTransformation, hasOutput].filter(Boolean).length;
+    if (capabilityCount === 1) {
+      if (hasDataSource) return 'data_source';
+      if (hasTransformation) return 'transformation';
+      if (hasOutput) return 'output';
+    }
+    
+    return null; // Node has multiple capabilities
+  }
+
+  /**
+   * ✅ PHASE 5: Map capability name from registry to standard name
+   * 
+   * @param capability - Capability name from registry
+   * @returns Standard capability name or null
+   */
+  private mapCapabilityName(capability: string): 'data_source' | 'transformation' | 'output' | null {
+    if (capability === 'data_source' || capability === 'read_data' || capability === 'fetch_data') {
+      return 'data_source';
+    }
+    if (capability === 'transformation' || capability === 'process_data' || capability === 'transform_data') {
+      return 'transformation';
+    }
+    if (capability === 'output' || capability === 'write_data' || capability === 'send_data' || capability === 'send') {
+      return 'output';
+    }
+    return null;
+  }
+
+  /**
+   * ✅ PHASE 5: Validate capability assignment against node's available capabilities
+   * 
+   * @param nodeType - Node type
+   * @param inferredCapability - Inferred capability
+   * @returns true if capability is valid for this node
+   */
+  private validateCapability(
+    nodeType: string,
+    inferredCapability: 'data_source' | 'transformation' | 'output'
+  ): boolean {
+    return this.nodeCanDo(nodeType, inferredCapability);
   }
 }
 

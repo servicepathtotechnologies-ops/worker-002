@@ -61,9 +61,10 @@ export class WorkflowGraphPruner {
    * @param originalPrompt - Original user prompt (for transformation detection)
    * @param confidenceScore - Confidence score for pruning decisions
    * @param mandatoryNodeTypes - Optional mandatory node types from keyword extraction (Stage 1)
+   * @param tagsFromVariation - Optional tags from selected variation (Phase 4: tags are source of truth)
    * @returns Pruned workflow with statistics
    */
-  prune(workflow: Workflow, intent: StructuredIntent, originalPrompt?: string, confidenceScore?: number, mandatoryNodeTypes?: string[]): PruningResult {
+  prune(workflow: Workflow, intent: StructuredIntent, originalPrompt?: string, confidenceScore?: number, mandatoryNodeTypes?: string[], tagsFromVariation?: string[]): PruningResult {
     console.log('[WorkflowGraphPruner] Starting workflow graph pruning...');
     console.log(`[WorkflowGraphPruner] Original: ${workflow.nodes.length} nodes, ${workflow.edges.length} edges`);
 
@@ -98,11 +99,13 @@ export class WorkflowGraphPruner {
     console.log(`[WorkflowGraphPruner] Required node types: ${Array.from(requiredNodeTypesSet).join(', ')}`);
 
     // ✅ FIXED: STEP 3: Remove nodes not required by intent (but NEVER remove nodes in execution chain)
+    // ✅ PHASE 4: Pass tagsFromVariation to preserve nodes in tags
     const { filteredNodes: nodesAfterUnrequired, unrequiredViolations } = this.removeUnrequiredNodes(
       workflow.nodes,
       requiredNodeTypesSet,
       executionChainNodeIds,
-      confidenceScore
+      confidenceScore,
+      tagsFromVariation
     );
     violations.push(...unrequiredViolations);
     unrequiredViolations.forEach(v => {
@@ -220,7 +223,8 @@ export class WorkflowGraphPruner {
     nodes: WorkflowNode[],
     requiredNodeTypes: Set<string>,
     executionChainNodeIds: Set<string>,
-    confidenceScore?: number
+    confidenceScore?: number,
+    tagsFromVariation?: string[]
   ): { filteredNodes: WorkflowNode[]; unrequiredViolations: PruningViolation[] } {
     const filteredNodes: WorkflowNode[] = [];
     const violations: PruningViolation[] = [];
@@ -232,6 +236,20 @@ export class WorkflowGraphPruner {
       if (executionChainNodeIds.has(node.id)) {
         filteredNodes.push(node);
         console.log(`[WorkflowGraphPruner] ✅ Protected execution chain node: ${node.id} (${nodeType})`);
+        continue;
+      }
+
+      // ✅ PHASE 4: CRITICAL RULE - Never remove nodes in tags (tags are source of truth)
+      if (this.shouldPreserveNode(node, tagsFromVariation)) {
+        filteredNodes.push(node);
+        console.log(`[WorkflowGraphPruner] ✅ Protected node from tags: ${node.id} (${nodeType})`);
+        continue;
+      }
+
+      // ✅ PHASE 4: CRITICAL RULE - Never remove nodes in tags (tags are source of truth)
+      if (this.shouldPreserveNode(node, tagsFromVariation)) {
+        filteredNodes.push(node);
+        console.log(`[WorkflowGraphPruner] ✅ Protected node from tags: ${node.id} (${nodeType})`);
         continue;
       }
 
@@ -1139,12 +1157,99 @@ export class WorkflowGraphPruner {
 
     return outputTypes.some(type => nodeType.includes(type) || nodeType === type);
   }
+
+  /**
+   * ✅ PHASE 4: Check if node should be preserved based on tags from variation
+   * Tags are the source of truth - if a node is in tags, it must be preserved
+   * ✅ FIX 2: Alias-aware preservation - checks aliases and semantic equivalence
+   * 
+   * @param node - Node to check
+   * @param tagsFromVariation - Tags from selected variation (format: ["nodeType"] or ["nodeType:capability"])
+   * @returns true if node should be preserved
+   */
+  private shouldPreserveNode(
+    node: WorkflowNode,
+    tagsFromVariation?: string[]
+  ): boolean {
+    if (!tagsFromVariation || tagsFromVariation.length === 0) {
+      return false; // No tags = no protection
+    }
+    
+    const nodeType = unifiedNormalizeNodeType(node);
+    const nodeTypeLower = nodeType.toLowerCase();
+    
+    // ✅ PHASE 4: Parse tag format: "nodeType" or "nodeType:capability"
+    // Check if node is in tags (handle both formats)
+    for (const tag of tagsFromVariation) {
+      const [tagNodeType] = tag.split(':'); // Extract nodeType from "nodeType:capability"
+      const tagNodeTypeLower = tagNodeType.toLowerCase();
+      
+      // ✅ FIX 2: Step 1: Exact match (case-insensitive)
+      if (tagNodeTypeLower === nodeTypeLower || tag === nodeType || tag === nodeTypeLower) {
+        console.log(`[WorkflowGraphPruner] ✅ Preserving ${nodeType} (exact match in tags: ${tag})`);
+        return true;
+      }
+      
+      // ✅ FIX 2: Step 2: Check aliases using nodeTypeResolver
+      try {
+        const { nodeTypeResolver } = require('../nodes/node-type-resolver');
+        const tagAliases = nodeTypeResolver.getAliases(tagNodeType) || [];
+        const nodeAliases = nodeTypeResolver.getAliases(nodeType) || [];
+        
+        // Check if tag nodeType is an alias of node type, or vice versa
+        if (tagAliases.includes(nodeType) || tagAliases.some((alias: string) => alias.toLowerCase() === nodeTypeLower)) {
+          console.log(`[WorkflowGraphPruner] ✅ Preserving ${nodeType} (alias match: "${tagNodeType}" is alias of "${nodeType}")`);
+          return true;
+        }
+        if (nodeAliases.includes(tagNodeType) || nodeAliases.some((alias: string) => alias.toLowerCase() === tagNodeTypeLower)) {
+          console.log(`[WorkflowGraphPruner] ✅ Preserving ${nodeType} (alias match: "${nodeType}" has alias "${tagNodeType}")`);
+          return true;
+        }
+        
+        // Check if both resolve to the same canonical type
+        const tagCanonical = nodeTypeResolver.getCanonicalType(tagNodeType);
+        const nodeCanonical = nodeTypeResolver.getCanonicalType(nodeType);
+        if (tagCanonical.toLowerCase() === nodeCanonical.toLowerCase() && tagCanonical !== tagNodeType) {
+          console.log(`[WorkflowGraphPruner] ✅ Preserving ${nodeType} (canonical match: "${tagNodeType}" → "${tagCanonical}", "${nodeType}" → "${nodeCanonical}")`);
+          return true;
+        }
+      } catch (error) {
+        // nodeTypeResolver not available, continue
+      }
+      
+      // ✅ FIX 2: Step 3: Check semantic equivalence
+      try {
+        const { semanticNodeEquivalenceRegistry } = require('../../core/registry/semantic-node-equivalence-registry');
+        if (semanticNodeEquivalenceRegistry.areEquivalent(tagNodeType, nodeType)) {
+          console.log(`[WorkflowGraphPruner] ✅ Preserving ${nodeType} (semantic equivalence: "${tagNodeType}" ≡ "${nodeType}")`);
+          return true;
+        }
+      } catch (error) {
+        // Semantic equivalence registry not available, continue
+      }
+      
+      // ✅ FIX 2: Step 4: Check UnifiedNodeTypeMatcher (if available)
+      try {
+        const { UnifiedNodeTypeMatcher } = require('../../core/utils/unified-node-type-matcher');
+        const matcher = UnifiedNodeTypeMatcher.getInstance();
+        const matchResult = matcher.matches(tagNodeType, nodeType, { strict: false });
+        if (matchResult.matches) {
+          console.log(`[WorkflowGraphPruner] ✅ Preserving ${nodeType} (type matcher: "${tagNodeType}" matches "${nodeType}", confidence: ${matchResult.confidence}%)`);
+          return true;
+        }
+      } catch (error) {
+        // UnifiedNodeTypeMatcher not available, continue
+      }
+    }
+    
+    return false;
+  }
 }
 
 // Export singleton instance
 export const workflowGraphPruner = new WorkflowGraphPruner();
 
 // Export convenience function
-export function pruneWorkflowGraph(workflow: Workflow, intent: StructuredIntent, originalPrompt?: string): PruningResult {
-  return workflowGraphPruner.prune(workflow, intent, originalPrompt);
+export function pruneWorkflowGraph(workflow: Workflow, intent: StructuredIntent, originalPrompt?: string, tagsFromVariation?: string[]): PruningResult {
+  return workflowGraphPruner.prune(workflow, intent, originalPrompt, undefined, undefined, tagsFromVariation);
 }

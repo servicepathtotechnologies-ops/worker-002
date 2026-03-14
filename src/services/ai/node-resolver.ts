@@ -106,7 +106,10 @@ export class NodeResolver {
   }
 
   /**
-   * Extract semantic intents from prompt
+   * ✅ UNIVERSAL ROOT FIX: Extract semantic intents from prompt using universal keyword index
+   * 
+   * Replaces hardcoded patterns (Gmail, Slack, Email, Google Sheets) with universal
+   * keyword-based detection that works for ALL nodes in the registry.
    * 
    * @param prompt - The prompt to extract intents from
    * @param contextPrompt - Optional context prompt (e.g., original prompt) for disambiguation
@@ -115,89 +118,307 @@ export class NodeResolver {
     const intents: SemanticIntent[] = [];
     const promptLower = prompt.toLowerCase();
     const contextLower = (contextPrompt || '').toLowerCase();
-
-    // ✅ CONTEXT-AWARE: Check if original prompt mentions Gmail (for disambiguation)
-    const contextMentionsGmail = this.mentionsGmail(contextLower);
-    const contextMentionsGoogleServices = this.mentionsGoogleSheets(contextLower) || 
-                                         contextLower.includes('google') ||
-                                         contextLower.includes('gmail');
-    const contextMentionsSmtp = contextLower.includes('smtp') || 
-                               contextLower.includes('mail server') || 
-                               contextLower.includes('smtp host');
-
-    // Gmail/Google Email intent
-    if (this.mentionsGmail(promptLower)) {
-      intents.push({
-        action: 'send',
-        resource: 'email',
-        provider: 'google',
-        keywords: this.extractGmailKeywords(promptLower),
-      });
-    }
-
-    // Slack intent
-    if (this.mentionsSlack(promptLower)) {
-      intents.push({
-        action: 'send',
-        resource: 'message',
-        provider: 'slack',
-        keywords: this.extractSlackKeywords(promptLower),
-      });
-    }
-
-    // ✅ CRITICAL FIX: Generic email intent with context-aware provider detection
-    // If prompt says "Email" but context mentions "Gmail" or Google services, map to google_gmail
-    if (this.mentionsEmail(promptLower) && !this.mentionsGmail(promptLower)) {
-      const contextLower = (contextPrompt || '').toLowerCase();
-      const contextMentionsGmail = this.mentionsGmail(contextLower);
-      const contextMentionsGoogleServices = this.mentionsGoogleSheets(contextLower);
-      const contextMentionsSmtp = this.mentionsSmtp(contextLower) || this.mentionsSmtp(promptLower);
+    
+    console.log(`[NodeResolver] 🔍 UNIVERSAL: Extracting intents from prompt using keyword index (${this.keywordIndex.size} keywords)`);
+    
+    // ✅ UNIVERSAL: Use keyword index to detect ALL node types mentioned in prompt
+    const detectedNodes = new Map<string, {
+      nodeType: string;
+      keyword: string;
+      position: number;
+    }>();
+    
+    // Scan prompt for all keywords in the index
+    for (const [keyword, nodeTypes] of this.keywordIndex) {
+      // Use word boundary matching for better accuracy
+      const keywordPattern = new RegExp(`\\b${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+      const match = keywordPattern.exec(promptLower);
       
-      console.log(`[NodeResolver] 🔍 Email detection analysis:`);
-      console.log(`[NodeResolver]   - Prompt mentions Email: ✅ (but not Gmail)`);
-      console.log(`[NodeResolver]   - Context prompt: "${contextPrompt ? contextPrompt.substring(0, 100) : 'none'}..."`);
-      console.log(`[NodeResolver]   - Context mentions Gmail: ${contextMentionsGmail ? '✅' : '❌'}`);
-      console.log(`[NodeResolver]   - Context mentions Google services: ${contextMentionsGoogleServices ? '✅' : '❌'}`);
-      console.log(`[NodeResolver]   - Context mentions SMTP: ${contextMentionsSmtp ? '✅' : '❌'}`);
-      
-      // ✅ CONTEXT-AWARE MAPPING: If original prompt mentions Gmail or Google services,
-      // and no SMTP is mentioned, map generic "Email" to google_gmail
-      if (contextMentionsGmail || (contextMentionsGoogleServices && !contextMentionsSmtp)) {
-        // Map generic "Email" to Gmail intent (with provider)
-        intents.push({
-          action: 'send',
-          resource: 'email',
-          provider: 'google', // ✅ CRITICAL: Add provider based on context
-          keywords: [...this.extractEmailKeywords(promptLower), ...this.extractGmailKeywords(contextLower)],
-        });
-        console.log(`[NodeResolver] ✅ Context-aware mapping APPLIED: Generic "Email" → google_gmail`);
-        console.log(`[NodeResolver]   - Reason: Context mentions ${contextMentionsGmail ? 'Gmail' : 'Google services'} and no SMTP`);
-        console.log(`[NodeResolver]   - Intent created: { action: 'send', resource: 'email', provider: 'google' }`);
-      } else {
-        // Generic email intent (no provider specified) - will resolve to generic email or google_gmail based on capabilities
-        intents.push({
-          action: 'send',
-          resource: 'email',
-          keywords: this.extractEmailKeywords(promptLower),
-        });
-        console.log(`[NodeResolver] ⚠️  Context-aware mapping NOT APPLIED: Generic "Email" (no Gmail/Google context)`);
-        console.log(`[NodeResolver]   - Intent created: { action: 'send', resource: 'email' } (no provider)`);
+      if (match) {
+        const position = match.index;
+        for (const nodeType of nodeTypes) {
+          // Only add if node type is registered
+          if (this.nodeLibrary.isNodeTypeRegistered(nodeType)) {
+            const existing = detectedNodes.get(nodeType);
+            // Keep the earliest match (most likely the primary mention)
+            if (!existing || position < existing.position) {
+              detectedNodes.set(nodeType, {
+                nodeType,
+                keyword,
+                position,
+              });
+            }
+          }
+        }
       }
     }
-
-    // Google Sheets intent
-    if (this.mentionsGoogleSheets(promptLower)) {
+    
+    console.log(`[NodeResolver] ✅ UNIVERSAL: Detected ${detectedNodes.size} node type(s) from prompt: ${Array.from(detectedNodes.keys()).join(', ')}`);
+    
+    // ✅ UNIVERSAL: For each detected node, create intent with operation, resource, and provider
+    for (const [nodeType, detection] of detectedNodes) {
+      const schema = this.nodeLibrary.getSchema(nodeType);
+      if (!schema) continue;
+      
+      // ✅ UNIVERSAL: Detect operation from verbs in prompt context around the keyword
+      const operation = this.detectOperationFromPrompt(prompt, detection.keyword, detection.position, schema);
+      
+      // ✅ UNIVERSAL: Infer resource from node type and schema
+      const resource = this.inferResourceFromNodeType(nodeType, schema);
+      
+      // ✅ UNIVERSAL: Infer provider from node type and schema
+      const provider = this.inferProviderFromNodeType(nodeType, schema, promptLower, contextLower);
+      
+      // Extract keywords related to this node
+      const keywords = this.extractKeywordsForNode(promptLower, detection.keyword, nodeType, schema);
+      
+      // ✅ CONTEXT-AWARE: Special handling for generic "email" → "google_gmail" mapping
+      // If keyword is "email" but context mentions Gmail or Google services, prefer google_gmail
+      if (detection.keyword === 'email' && nodeType !== 'google_gmail') {
+        const contextMentionsGmail = contextLower.includes('gmail') || 
+                                     contextLower.includes('google mail') || 
+                                     contextLower.includes('google email');
+        const contextMentionsGoogleServices = contextLower.includes('google sheet') || 
+                                             contextLower.includes('google spreadsheet') ||
+                                             contextLower.includes('google');
+        const contextMentionsSmtp = contextLower.includes('smtp') || 
+                                   contextLower.includes('mail server') || 
+                                   contextLower.includes('smtp host');
+        
+        // If context suggests Gmail, check if google_gmail is also detected
+        if ((contextMentionsGmail || (contextMentionsGoogleServices && !contextMentionsSmtp)) && 
+            this.nodeLibrary.isNodeTypeRegistered('google_gmail')) {
+          // Prefer google_gmail over generic email
+          const gmailDetected = Array.from(detectedNodes.keys()).includes('google_gmail');
+          if (!gmailDetected) {
+            // Add google_gmail intent instead
+            intents.push({
+              action: operation || 'send',
+              resource: 'email',
+              provider: 'google',
+              keywords: [...keywords, 'gmail', 'google mail'],
+            });
+            console.log(`[NodeResolver] ✅ Context-aware mapping: Generic "email" → google_gmail (context suggests Gmail)`);
+            continue; // Skip generic email intent
+          }
+        }
+      }
+      
       intents.push({
-        action: 'read',
-        resource: 'spreadsheet',
-        provider: 'google',
-        keywords: this.extractGoogleSheetsKeywords(promptLower),
+        action: operation,
+        resource,
+        provider,
+        keywords,
       });
+      
+      console.log(`[NodeResolver] ✅ Created intent: { action: '${operation}', resource: '${resource}', provider: '${provider || 'none'}', nodeType: '${nodeType}' }`);
     }
-
-    // Add more intent extractors as needed
-
+    
+    console.log(`[NodeResolver] ✅ UNIVERSAL: Extracted ${intents.length} intent(s) from prompt`);
     return intents;
+  }
+  
+  /**
+   * ✅ UNIVERSAL: Detect operation from verbs in prompt context
+   * 
+   * Analyzes the sentence containing the keyword to detect operation verbs.
+   * Works for ALL nodes, not just hardcoded ones.
+   */
+  private detectOperationFromPrompt(
+    prompt: string,
+    keyword: string,
+    keywordPosition: number,
+    schema: NodeSchema
+  ): string {
+    const promptLower = prompt.toLowerCase();
+    
+    // Extract sentence containing the keyword
+    const sentences = prompt.split(/[.!?]\s+/);
+    let relevantSentence = '';
+    let sentenceStart = 0;
+    
+    for (const sentence of sentences) {
+      const sentenceEnd = sentenceStart + sentence.length;
+      if (keywordPosition >= sentenceStart && keywordPosition <= sentenceEnd) {
+        relevantSentence = sentence.toLowerCase();
+        break;
+      }
+      sentenceStart = sentenceEnd + 2; // +2 for ". " or "? " or "! "
+    }
+    
+    // If no sentence found, use full prompt
+    if (!relevantSentence) {
+      relevantSentence = promptLower;
+    }
+    
+    // ✅ UNIVERSAL: Operation verb patterns (works for all nodes)
+    const operationPatterns: Array<{ pattern: RegExp; operation: string }> = [
+      // Read operations
+      { pattern: /\b(read|fetch|get|retrieve|pull|load|collect|query|extract|obtain|grab|pick)\b/i, operation: 'read' },
+      // Create operations
+      { pattern: /\b(create|add|insert|make|generate|build|establish|set up|initialize)\b/i, operation: 'create' },
+      // Update operations
+      { pattern: /\b(update|modify|edit|change|alter|adjust|revise|amend)\b/i, operation: 'update' },
+      // Delete operations
+      { pattern: /\b(delete|remove|erase|clear|drop|destroy|eliminate)\b/i, operation: 'delete' },
+      // Send/Write operations
+      { pattern: /\b(send|deliver|output|write|save|post|notify|publish|share|upload|submit|export|push|append|store)\b/i, operation: 'send' },
+      // Process/Transform operations
+      { pattern: /\b(process|transform|summarize|summarise|analyze|analyse|classify|generate|translate|format|parse|filter|map|reduce|aggregate|merge|split|convert|compute|calculate|refine|enhance)\b/i, operation: 'process' },
+    ];
+    
+    // Check for operation verbs in the sentence
+    for (const { pattern, operation } of operationPatterns) {
+      if (pattern.test(relevantSentence)) {
+        // Verify operation exists in schema (if schema has operations)
+        const schemaOperations = this.getOperationsFromSchema(schema);
+        if (schemaOperations.length === 0 || schemaOperations.includes(operation)) {
+          console.log(`[NodeResolver] ✅ Detected operation '${operation}' from verb in sentence: "${relevantSentence.substring(0, 100)}"`);
+          return operation;
+        }
+      }
+    }
+    
+    // ✅ FALLBACK: Infer operation from node category if no verb detected
+    const category = (schema.category || '').toLowerCase();
+    if (category === 'data' || category === 'database') {
+      return 'read'; // Data sources typically read
+    } else if (category === 'communication' || category === 'output') {
+      return 'send'; // Output nodes typically send
+    } else if (category === 'transformation' || category === 'ai') {
+      return 'process'; // Transformations typically process
+    }
+    
+    // Default: no specific operation
+    return 'execute';
+  }
+  
+  /**
+   * ✅ UNIVERSAL: Get operations from schema (if available)
+   */
+  private getOperationsFromSchema(schema: NodeSchema): string[] {
+    try {
+      const configSchema = (schema as any).configSchema;
+      if (configSchema?.optional?.operation) {
+        const operationField = configSchema.optional.operation;
+        if (operationField.type === 'string' && operationField.enum) {
+          return operationField.enum;
+        }
+      }
+    } catch {
+      // Schema doesn't have operations
+    }
+    return [];
+  }
+  
+  /**
+   * ✅ UNIVERSAL: Infer resource from node type and schema
+   */
+  private inferResourceFromNodeType(nodeType: string, schema: NodeSchema): string {
+    const nodeTypeLower = nodeType.toLowerCase();
+    const label = (schema.label || '').toLowerCase();
+    const category = (schema.category || '').toLowerCase();
+    
+    // Common resource mappings (universal patterns)
+    if (nodeTypeLower.includes('email') || nodeTypeLower.includes('gmail') || label.includes('email')) {
+      return 'email';
+    }
+    if (nodeTypeLower.includes('message') || nodeTypeLower.includes('slack') || label.includes('message')) {
+      return 'message';
+    }
+    if (nodeTypeLower.includes('sheet') || nodeTypeLower.includes('spreadsheet') || label.includes('sheet')) {
+      return 'spreadsheet';
+    }
+    if (nodeTypeLower.includes('crm') || nodeTypeLower.includes('contact') || nodeTypeLower.includes('lead')) {
+      return 'record';
+    }
+    if (nodeTypeLower.includes('database') || nodeTypeLower.includes('db') || category === 'database') {
+      return 'data';
+    }
+    if (category === 'data') {
+      return 'data';
+    }
+    if (category === 'communication' || category === 'output') {
+      return 'output';
+    }
+    
+    // Default: use node type as resource
+    return nodeTypeLower.replace(/[_\s]+/g, '_');
+  }
+  
+  /**
+   * ✅ UNIVERSAL: Infer provider from node type, schema, and context
+   */
+  private inferProviderFromNodeType(
+    nodeType: string,
+    schema: NodeSchema,
+    promptLower: string,
+    contextLower: string
+  ): string | undefined {
+    const nodeTypeLower = nodeType.toLowerCase();
+    const label = (schema.label || '').toLowerCase();
+    
+    // Extract provider from node type (e.g., "google_gmail" → "google")
+    if (nodeTypeLower.includes('google')) return 'google';
+    if (nodeTypeLower.includes('microsoft') || nodeTypeLower.includes('ms_')) return 'microsoft';
+    if (nodeTypeLower.includes('salesforce') || nodeTypeLower.includes('sf_')) return 'salesforce';
+    if (nodeTypeLower.includes('slack')) return 'slack';
+    if (nodeTypeLower.includes('hubspot')) return 'hubspot';
+    if (nodeTypeLower.includes('zoho')) return 'zoho';
+    if (nodeTypeLower.includes('airtable')) return 'airtable';
+    
+    // Extract provider from label (e.g., "Google Sheets" → "google")
+    if (label.includes('google')) return 'google';
+    if (label.includes('microsoft')) return 'microsoft';
+    if (label.includes('salesforce')) return 'salesforce';
+    if (label.includes('slack')) return 'slack';
+    if (label.includes('hubspot')) return 'hubspot';
+    if (label.includes('zoho')) return 'zoho';
+    if (label.includes('airtable')) return 'airtable';
+    
+    // Check schema providers if available
+    const providers = (schema as any).providers || [];
+    if (providers.length > 0) {
+      return providers[0];
+    }
+    
+    // No provider detected
+    return undefined;
+  }
+  
+  /**
+   * ✅ UNIVERSAL: Extract keywords related to a node from prompt
+   */
+  private extractKeywordsForNode(
+    promptLower: string,
+    matchedKeyword: string,
+    nodeType: string,
+    schema: NodeSchema
+  ): string[] {
+    const keywords: string[] = [matchedKeyword];
+    
+    // Add node type variations
+    const nodeTypeLower = nodeType.toLowerCase();
+    if (promptLower.includes(nodeTypeLower)) {
+      keywords.push(nodeTypeLower);
+    }
+    
+    // Add label if mentioned
+    const label = (schema.label || '').toLowerCase();
+    if (label && promptLower.includes(label)) {
+      keywords.push(label);
+    }
+    
+    // Add schema keywords if mentioned
+    const schemaKeywords = schema.keywords || [];
+    for (const keyword of schemaKeywords) {
+      const keywordLower = keyword.toLowerCase();
+      if (promptLower.includes(keywordLower)) {
+        keywords.push(keywordLower);
+      }
+    }
+    
+    return [...new Set(keywords)]; // Remove duplicates
   }
 
   /**

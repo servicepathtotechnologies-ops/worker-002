@@ -43,10 +43,12 @@ export interface EdgeReconciliationEngine {
    * - Removes edges that don't match execution order
    * - Creates edges that match execution order
    * - Uses registry for handle resolution
+   * ✅ PHASE 4: Accept tagsFromVariation to preserve nodes in tags
    */
   reconcileEdges(
     workflow: Workflow,
-    executionOrder: ExecutionOrder
+    executionOrder: ExecutionOrder,
+    tagsFromVariation?: string[]
   ): EdgeReconciliationResult;
   
   /**
@@ -62,10 +64,12 @@ export interface EdgeReconciliationEngine {
 class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
   /**
    * Reconcile edges based on execution order
+   * ✅ PHASE 4: Accept tagsFromVariation to preserve nodes in tags
    */
   reconcileEdges(
     workflow: Workflow,
-    executionOrder: ExecutionOrder
+    executionOrder: ExecutionOrder,
+    tagsFromVariation?: string[]
   ): EdgeReconciliationResult {
     const errors: string[] = [];
     const warnings: string[] = [];
@@ -242,8 +246,10 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
       }
       
       // Find the last non-terminal node before log_output in execution order
-      // This should be the actual last output node (linkedin, gmail, etc.)
+      // ✅ FIX: Prefer output nodes (linkedin, gmail, etc.) over transformation nodes
+      // This ensures log_output connects from the actual last output, not from a transformation
       let lastNonTerminalNodeId: string | null = null;
+      let lastOutputNodeId: string | null = null; // Track the last output node specifically
       
       // Walk backwards from log_output to find the last non-terminal node
       console.log(`[EdgeReconciliationEngine] 🔍 DEBUG Walking backwards from log_output (index ${logOutputIndex})...`);
@@ -271,13 +277,40 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
           continue;
         }
         
-        // This is the last non-terminal node - connect it to log_output
-        lastNonTerminalNodeId = candidateId;
-        console.log(
-          `[EdgeReconciliationEngine] 🔍 DEBUG   Index ${i}: ${candidateType}(${candidateId.substring(0, 8)}) - ` +
-          `FOUND as last non-terminal node`
-        );
-        break;
+        // ✅ FIX: Check if this is an output node (prefer output nodes over transformations)
+        const isOutput = candidateDef?.category === 'communication' || 
+                        (candidateDef?.tags || []).includes('output') ||
+                        nodeCapabilityRegistryDSL.isOutput(candidateType);
+        
+        if (isOutput && !lastOutputNodeId) {
+          // Found an output node - prefer this over transformation nodes
+          lastOutputNodeId = candidateId;
+          console.log(
+            `[EdgeReconciliationEngine] 🔍 DEBUG   Index ${i}: ${candidateType}(${candidateId.substring(0, 8)}) - ` +
+            `FOUND as last output node (preferred)`
+          );
+        }
+        
+        // Track the last non-terminal node (fallback if no output node found)
+        if (!lastNonTerminalNodeId) {
+          lastNonTerminalNodeId = candidateId;
+          console.log(
+            `[EdgeReconciliationEngine] 🔍 DEBUG   Index ${i}: ${candidateType}(${candidateId.substring(0, 8)}) - ` +
+            `FOUND as last non-terminal node (fallback)`
+          );
+        }
+        
+        // ✅ FIX: If we found an output node, use it and stop searching
+        if (lastOutputNodeId) {
+          lastNonTerminalNodeId = lastOutputNodeId;
+          break;
+        }
+      }
+      
+      // ✅ FIX: Use output node if found, otherwise use last non-terminal node
+      if (lastOutputNodeId) {
+        lastNonTerminalNodeId = lastOutputNodeId;
+        console.log(`[EdgeReconciliationEngine] ✅ Using last output node: ${lastOutputNodeId.substring(0, 8)}`);
       }
       
       // If no non-terminal node found, use the node immediately before log_output
@@ -358,10 +391,12 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
     
     // ✅ STEP 6: Auto-remove orphaned nodes that are not required
     // This implements the user's insight: orphaned nodes = unnecessary nodes = should be removed
+    // ✅ PHASE 4: Pass tagsFromVariation to preserve nodes in tags
     const { nodes: finalNodes, nodesRemoved, removedNodeTypes } = this.removeUnrequiredOrphanedNodes(
       workflow,
       finalEdges,
-      orderedNodeIds
+      orderedNodeIds,
+      tagsFromVariation
     );
     
     // Remove edges connected to removed nodes
@@ -405,7 +440,8 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
   private removeUnrequiredOrphanedNodes(
     workflow: Workflow,
     edges: WorkflowEdge[],
-    orderedNodeIds: string[]
+    orderedNodeIds: string[],
+    tagsFromVariation?: string[]
   ): { nodes: WorkflowNode[]; nodesRemoved: number; removedNodeTypes: string[] } {
     // Find trigger nodes
     const triggerNodes = workflow.nodes.filter(n => {
@@ -472,6 +508,15 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
       const nodeType = unifiedNormalizeNodeTypeString(node.type || node.data?.type || '');
       const nodeDef = unifiedNodeRegistry.get(nodeType);
       
+      // ✅ PHASE 4: CRITICAL RULE - Never remove nodes in tags (tags are source of truth)
+      if (this.shouldPreserveNode(node, tagsFromVariation)) {
+        nodesToKeep.push(node);
+        console.log(
+          `[EdgeReconciliationEngine] ✅ Preserving orphaned node from tags: ${nodeType} (${node.id})`
+        );
+        continue;
+      }
+      
       // ✅ RULE: Keep if required by registry
       const isRequired = 
         nodeDef?.workflowBehavior?.alwaysRequired === true ||
@@ -499,6 +544,93 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
       nodesRemoved: nodesToRemove.length,
       removedNodeTypes, // ✅ Return removed node types
     };
+  }
+
+  /**
+   * ✅ PHASE 4: Check if node should be preserved based on tags from variation
+   * Tags are the source of truth - if a node is in tags, it must be preserved
+   * ✅ FIX 2: Alias-aware preservation - checks aliases and semantic equivalence
+   * 
+   * @param node - Node to check
+   * @param tagsFromVariation - Tags from selected variation (format: ["nodeType"] or ["nodeType:capability"])
+   * @returns true if node should be preserved
+   */
+  private shouldPreserveNode(
+    node: WorkflowNode,
+    tagsFromVariation?: string[]
+  ): boolean {
+    if (!tagsFromVariation || tagsFromVariation.length === 0) {
+      return false; // No tags = no protection
+    }
+    
+    const nodeType = unifiedNormalizeNodeTypeString(node.type || node.data?.type || '');
+    const nodeTypeLower = nodeType.toLowerCase();
+    
+    // ✅ PHASE 4: Parse tag format: "nodeType" or "nodeType:capability"
+    // Check if node is in tags (handle both formats)
+    for (const tag of tagsFromVariation) {
+      const [tagNodeType] = tag.split(':'); // Extract nodeType from "nodeType:capability"
+      const tagNodeTypeLower = tagNodeType.toLowerCase();
+      
+      // ✅ FIX 2: Step 1: Exact match (case-insensitive)
+      if (tagNodeTypeLower === nodeTypeLower || tag === nodeType || tag === nodeTypeLower) {
+        console.log(`[EdgeReconciliationEngine] ✅ Preserving ${nodeType} (exact match in tags: ${tag})`);
+        return true;
+      }
+      
+      // ✅ FIX 2: Step 2: Check aliases using nodeTypeResolver
+      try {
+        const { nodeTypeResolver } = require('../../services/nodes/node-type-resolver');
+        const tagAliases = nodeTypeResolver.getAliases(tagNodeType) || [];
+        const nodeAliases = nodeTypeResolver.getAliases(nodeType) || [];
+        
+        // Check if tag nodeType is an alias of node type, or vice versa
+        if (tagAliases.includes(nodeType) || tagAliases.some((alias: string) => alias.toLowerCase() === nodeTypeLower)) {
+          console.log(`[EdgeReconciliationEngine] ✅ Preserving ${nodeType} (alias match: "${tagNodeType}" is alias of "${nodeType}")`);
+          return true;
+        }
+        if (nodeAliases.includes(tagNodeType) || nodeAliases.some((alias: string) => alias.toLowerCase() === tagNodeTypeLower)) {
+          console.log(`[EdgeReconciliationEngine] ✅ Preserving ${nodeType} (alias match: "${nodeType}" has alias "${tagNodeType}")`);
+          return true;
+        }
+        
+        // Check if both resolve to the same canonical type
+        const tagCanonical = nodeTypeResolver.getCanonicalType(tagNodeType);
+        const nodeCanonical = nodeTypeResolver.getCanonicalType(nodeType);
+        if (tagCanonical.toLowerCase() === nodeCanonical.toLowerCase() && tagCanonical !== tagNodeType) {
+          console.log(`[EdgeReconciliationEngine] ✅ Preserving ${nodeType} (canonical match: "${tagNodeType}" → "${tagCanonical}", "${nodeType}" → "${nodeCanonical}")`);
+          return true;
+        }
+      } catch (error) {
+        // nodeTypeResolver not available, continue
+      }
+      
+      // ✅ FIX 2: Step 3: Check semantic equivalence
+      try {
+        const { semanticNodeEquivalenceRegistry } = require('../../core/registry/semantic-node-equivalence-registry');
+        if (semanticNodeEquivalenceRegistry.areEquivalent(tagNodeType, nodeType)) {
+          console.log(`[EdgeReconciliationEngine] ✅ Preserving ${nodeType} (semantic equivalence: "${tagNodeType}" ≡ "${nodeType}")`);
+          return true;
+        }
+      } catch (error) {
+        // Semantic equivalence registry not available, continue
+      }
+      
+      // ✅ FIX 2: Step 4: Check UnifiedNodeTypeMatcher (if available)
+      try {
+        const { UnifiedNodeTypeMatcher } = require('../../core/utils/unified-node-type-matcher');
+        const matcher = UnifiedNodeTypeMatcher.getInstance();
+        const matchResult = matcher.matches(tagNodeType, nodeType, { strict: false });
+        if (matchResult.matches) {
+          console.log(`[EdgeReconciliationEngine] ✅ Preserving ${nodeType} (type matcher: "${tagNodeType}" matches "${nodeType}", confidence: ${matchResult.confidence}%)`);
+          return true;
+        }
+      } catch (error) {
+        // UnifiedNodeTypeMatcher not available, continue
+      }
+    }
+    
+    return false;
   }
   
   /**

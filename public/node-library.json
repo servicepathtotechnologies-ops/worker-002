@@ -622,6 +622,266 @@
     ]
   },
   {
+    "type": "delay",
+    "category": "utility",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "duration"
+    ],
+    "optionalConfig": [
+      "duration",
+      "unit"
+    ]
+  },
+  {
+    "type": "timeout",
+    "category": "flow",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "limit"
+    ],
+    "optionalConfig": [
+      "limit"
+    ]
+  },
+  {
+    "type": "return",
+    "category": "flow",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [],
+    "optionalConfig": [
+      "value",
+      "includeInput"
+    ]
+  },
+  {
+    "type": "execute_workflow",
+    "category": "workflow",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "workflowId"
+    ],
+    "optionalConfig": [
+      "workflowId",
+      "input",
+      "waitForCompletion"
+    ]
+  },
+  {
+    "type": "try_catch",
+    "category": "flow",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [],
+    "optionalConfig": []
+  },
+  {
+    "type": "retry",
+    "category": "flow",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "maxAttempts"
+    ],
+    "optionalConfig": [
+      "maxAttempts",
+      "delayBetween",
+      "backoff"
+    ]
+  },
+  {
+    "type": "parallel",
+    "category": "flow",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [],
+    "optionalConfig": [
+      "mode"
+    ]
+  },
+  {
+    "type": "queue_push",
+    "category": "queue",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "queueName",
+      "message"
+    ],
+    "optionalConfig": [
+      "queueName",
+      "message",
+      "options"
+    ]
+  },
+  {
+    "type": "queue_consume",
+    "category": "queue",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "queueName"
+    ],
+    "optionalConfig": [
+      "queueName",
+      "timeout",
+      "autoAck"
+    ]
+  },
+  {
+    "type": "cache_get",
+    "category": "cache",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "key"
+    ],
+    "optionalConfig": [
+      "key",
+      "defaultValue"
+    ]
+  },
+  {
+    "type": "cache_set",
+    "category": "cache",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "key",
+      "value"
+    ],
+    "optionalConfig": [
+      "key",
+      "value",
+      "ttl"
+    ]
+  },
+  {
+    "type": "oauth2_auth",
+    "category": "auth",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "provider"
+    ],
+    "optionalConfig": [
+      "provider",
+      "authUrl",
+      "tokenUrl",
+      "clientId",
+      "clientSecret",
+      "scope",
+      "action"
+    ]
+  },
+  {
+    "type": "api_key_auth",
+    "category": "auth",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "apiKeyName"
+    ],
+    "optionalConfig": [
+      "apiKeyName"
+    ]
+  },
+  {
     "type": "ai_agent",
     "category": "ai",
     "inputs": [
@@ -2474,85 +2734,6 @@
       "description",
       "paymentId",
       "autoCapture"
-    ]
-  },
-  {
-    "type": "gmail",
-    "category": "google",
-    "inputs": [
-      "input",
-      "inputData"
-    ],
-    "outputs": [
-      "output",
-      "data",
-      "result"
-    ],
-    "requiredConfig": [],
-    "optionalConfig": [
-      "credentialId",
-      "operation",
-      "recipientSource",
-      "recipientEmails",
-      "to",
-      "subject",
-      "body",
-      "from",
-      "messageId",
-      "query",
-      "maxResults"
-    ]
-  },
-  {
-    "type": "mail",
-    "category": "output",
-    "inputs": [
-      "text",
-      "input",
-      "inputData"
-    ],
-    "outputs": [
-      "output",
-      "data",
-      "result"
-    ],
-    "requiredConfig": [
-      "to",
-      "subject",
-      "text"
-    ],
-    "optionalConfig": [
-      "to",
-      "subject",
-      "text",
-      "html"
-    ]
-  },
-  {
-    "type": "ai",
-    "category": "ai",
-    "inputs": [
-      "input",
-      "inputData"
-    ],
-    "outputs": [
-      "output",
-      "data",
-      "result"
-    ],
-    "requiredConfig": [
-      "prompt",
-      "maxTokens"
-    ],
-    "optionalConfig": [
-      "prompt",
-      "inputData",
-      "serviceType",
-      "provider",
-      "model",
-      "temperature",
-      "maxTokens",
-      "outputFormat"
     ]
   }
 ]

@@ -1159,12 +1159,23 @@ export class WorkflowPipelineOrchestrator {
         const { createAISpecifiedNodesContext } = await import('../../core/utils/ai-specified-nodes-context');
         const aiSpecifiedNodesContext = createAISpecifiedNodesContext(structuredIntent, originalPrompt);
         
+        // ✅ PHASE 4: Extract tags from selected variation (if available)
+        // Tags are the source of truth - nodes in tags must be preserved
+        // For now, use nodesFromSelectedVariation as tags (Phase 3 will update to use chain order)
+        const tagsFromVariation = nodesFromSelectedVariation.length > 0 
+          ? nodesFromSelectedVariation 
+          : options?.mandatoryNodeTypes || [];
+        if (tagsFromVariation.length > 0) {
+          console.log(`[PipelineOrchestrator] ✅ PHASE 4: Extracted ${tagsFromVariation.length} tag(s) from selected variation: ${tagsFromVariation.join(', ')}`);
+        }
+        
         buildResult = await buildProductionWorkflow(structuredIntent, selectedStructuredPrompt, {
           maxRetries: 3,
           strictMode: true,
           allowRegeneration: true,
           mandatoryNodeTypes: options?.mandatoryNodeTypes, // ✅ NEW: Pass mandatory nodes
           aiSpecifiedNodesContext, // ✅ UNIVERSAL: Pass AI-specified nodes context
+          tagsFromVariation, // ✅ PHASE 4: Pass tags to preserve nodes in tags
         });
         
         if (!buildResult.success || !buildResult.workflow) {

@@ -584,9 +584,23 @@ class ExecutionOrderManagerImpl implements ExecutionOrderManager {
     }
     
     // Sort nodes by DSL execution order
-    const orderedNodeIds = dslExecutionOrder
+    let orderedNodeIds = dslExecutionOrder
       .map(step => stepRefToNodeId.get(step.stepRef))
       .filter((nodeId): nodeId is string => nodeId !== undefined);
+    
+    // ✅ FIX: Ensure log_output is always last (safety check even if DSL order is wrong)
+    const logOutputNodeIds = orderedNodeIds.filter(id => {
+      const node = nodes.find(n => n.id === id);
+      const nodeType = unifiedNormalizeNodeTypeString(node?.type || node?.data?.type || '');
+      return nodeType === 'log_output';
+    });
+    const nonLogOutputNodeIds = orderedNodeIds.filter(id => {
+      const node = nodes.find(n => n.id === id);
+      const nodeType = unifiedNormalizeNodeTypeString(node?.type || node?.data?.type || '');
+      return nodeType !== 'log_output';
+    });
+    // Reorder: non-log_output nodes first, then log_output nodes
+    orderedNodeIds = [...nonLogOutputNodeIds, ...logOutputNodeIds];
     
     // Build dependencies from DSL dependsOn
     for (const step of dslExecutionOrder) {
@@ -640,13 +654,14 @@ class ExecutionOrderManagerImpl implements ExecutionOrderManager {
   
   /**
    * ✅ TIER 2: Build execution order from registry-driven category ordering (SECONDARY FALLBACK)
-   * Sorts by category: trigger → data → transformation → output
+   * Sorts by category: trigger → data → transformation → output → log_output (ALWAYS LAST)
    */
   private buildOrderFromCategories(workflow: Workflow): ExecutionOrder {
     const nodes = workflow.nodes || [];
     const dependencies = new Map<string, string[]>();
     
     // Category priority: trigger (0) → data (1) → transformation (2) → output (3) → utility (4)
+    // ✅ FIX: log_output gets special priority (999) to ensure it's always last
     const categoryPriority: Record<string, number> = {
       trigger: 0,
       data: 1,
@@ -655,10 +670,21 @@ class ExecutionOrderManagerImpl implements ExecutionOrderManager {
       utility: 4,
     };
     
-    // Sort nodes by category priority
+    // Sort nodes by category priority, with log_output always last
     const sortedNodes = [...nodes].sort((a, b) => {
       const nodeTypeA = unifiedNormalizeNodeTypeString(a.type || a.data?.type || '');
       const nodeTypeB = unifiedNormalizeNodeTypeString(b.type || b.data?.type || '');
+      
+      // ✅ FIX: log_output always goes to the end
+      if (nodeTypeA === 'log_output' && nodeTypeB !== 'log_output') {
+        return 1; // log_output goes after
+      }
+      if (nodeTypeA !== 'log_output' && nodeTypeB === 'log_output') {
+        return -1; // log_output goes after
+      }
+      if (nodeTypeA === 'log_output' && nodeTypeB === 'log_output') {
+        return 0; // Both are log_output, preserve order
+      }
       
       const nodeDefA = unifiedNodeRegistry.get(nodeTypeA);
       const nodeDefB = unifiedNodeRegistry.get(nodeTypeB);
@@ -730,13 +756,28 @@ class ExecutionOrderManagerImpl implements ExecutionOrderManager {
   /**
    * ✅ TIER 3: Build execution order from node array order (LAST RESORT)
    * DSL compiler already creates nodes in correct order: trigger → data → transformation → output
+   * ✅ FIX: Ensure log_output is always moved to the end
    */
   private buildOrderFromNodeArray(workflow: Workflow): ExecutionOrder {
     const nodes = workflow.nodes || [];
     const dependencies = new Map<string, string[]>();
     
-    // Use node array order directly (DSL structure is already correct)
-    const orderedNodeIds = nodes.map(n => n.id);
+    // ✅ FIX: Separate log_output nodes from other nodes
+    const logOutputNodes: WorkflowNode[] = [];
+    const otherNodes: WorkflowNode[] = [];
+    
+    for (const node of nodes) {
+      const nodeType = unifiedNormalizeNodeTypeString(node.type || node.data?.type || '');
+      if (nodeType === 'log_output') {
+        logOutputNodes.push(node);
+      } else {
+        otherNodes.push(node);
+      }
+    }
+    
+    // ✅ FIX: Place log_output nodes at the end
+    const sortedNodes = [...otherNodes, ...logOutputNodes];
+    const orderedNodeIds = sortedNodes.map(n => n.id);
     
     // Build dependencies: each node depends on previous node
     for (let i = 1; i < nodes.length; i++) {
