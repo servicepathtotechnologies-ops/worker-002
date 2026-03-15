@@ -543,6 +543,83 @@ export class WorkflowPipelineOrchestrator {
       console.log(`[PipelineOrchestrator] STEP 1: Converting prompt to structured intent`);
       onProgress?.(1, 'Analyzing Intent', 62, { message: 'Converting prompt to structured intent...' });
       
+      // ✅ CRITICAL FIX: Extract nodes from selectedStructuredPrompt FIRST (before generating StructuredIntent)
+      // This ensures we only use nodes from the selected variation, not from original prompt or other sources
+      let nodesFromSelectedVariation: string[] = [];
+      if (selectedStructuredPrompt && selectedStructuredPrompt !== originalPrompt) {
+        console.log(`[PipelineOrchestrator] ✅ STEP 0.5: Extracting nodes from selected prompt variation...`);
+        try {
+          const { NodeResolver } = await import('./node-resolver');
+          const { nodeLibrary } = await import('../nodes/node-library');
+          const nodeResolver = new NodeResolver(nodeLibrary);
+          // ✅ CRITICAL FIX: Pass originalPrompt as context for context-aware Email → Gmail mapping
+          console.log(`[PipelineOrchestrator] 🔍 Extracting nodes from selected variation...`);
+          console.log(`[PipelineOrchestrator]   - Selected variation: "${selectedStructuredPrompt.substring(0, 150)}..."`);
+          console.log(`[PipelineOrchestrator]   - Original prompt (context): "${originalPrompt.substring(0, 150)}..."`);
+          
+          const resolution = nodeResolver.resolvePrompt(selectedStructuredPrompt, originalPrompt);
+          
+          if (resolution.success && resolution.nodeIds.length > 0) {
+            nodesFromSelectedVariation = resolution.nodeIds;
+            console.log(`[PipelineOrchestrator] ✅ Extracted ${nodesFromSelectedVariation.length} node(s) from selected variation: ${nodesFromSelectedVariation.join(', ')}`);
+            
+            // ✅ VERIFICATION: Check if Gmail is detected when Email is mentioned
+            const selectedLower = selectedStructuredPrompt.toLowerCase();
+            const originalLower = originalPrompt.toLowerCase();
+            const mentionsEmailInSelected = selectedLower.includes('email') && !selectedLower.includes('gmail');
+            const mentionsGmailInOriginal = originalLower.includes('gmail') || originalLower.includes('google mail') || originalLower.includes('google email');
+            const hasGmailInNodes = nodesFromSelectedVariation.some(node => 
+              node.toLowerCase().includes('gmail') || node.toLowerCase() === 'google_gmail'
+            );
+            
+            if (mentionsEmailInSelected && mentionsGmailInOriginal) {
+              if (hasGmailInNodes) {
+                console.log(`[PipelineOrchestrator] ✅ Gmail detection VERIFIED: "Email" in selected variation correctly mapped to google_gmail`);
+              } else {
+                console.log(`[PipelineOrchestrator] ⚠️  Gmail detection FAILED: "Email" in selected variation NOT mapped to google_gmail`);
+                console.log(`[PipelineOrchestrator]   - Selected mentions Email: ✅`);
+                console.log(`[PipelineOrchestrator]   - Original mentions Gmail: ✅`);
+                console.log(`[PipelineOrchestrator]   - But extracted nodes don't include google_gmail: ${nodesFromSelectedVariation.join(', ')}`);
+              }
+            }
+            
+            // ✅ CRITICAL: Override mandatoryNodeTypes with nodes from selected variation
+            // This ensures ONLY nodes from selected variation are used, not from keyword extraction
+            if (!options?.mandatoryNodeTypes || options.mandatoryNodeTypes.length === 0) {
+              options = {
+                ...options,
+                mandatoryNodeTypes: nodesFromSelectedVariation,
+              };
+              console.log(`[PipelineOrchestrator] ✅ Using nodes from selected variation as mandatory nodes`);
+            } else {
+              // Merge: Use intersection of keyword extraction and selected variation
+              const keywordNodes = new Set(options.mandatoryNodeTypes);
+              const variationNodes = new Set(nodesFromSelectedVariation);
+              const intersection = Array.from(variationNodes).filter(node => keywordNodes.has(node));
+              
+              if (intersection.length > 0) {
+                options = {
+                  ...options,
+                  mandatoryNodeTypes: intersection,
+                };
+                console.log(`[PipelineOrchestrator] ✅ Using intersection of keyword extraction and selected variation: ${intersection.join(', ')}`);
+              } else {
+                // If no intersection, prioritize selected variation (user's explicit choice)
+                options = {
+                  ...options,
+                  mandatoryNodeTypes: nodesFromSelectedVariation,
+                };
+                console.log(`[PipelineOrchestrator] ✅ No intersection found - using selected variation nodes only: ${nodesFromSelectedVariation.join(', ')}`);
+              }
+            }
+          } else {
+            console.warn(`[PipelineOrchestrator] ⚠️  Node resolution from selected variation failed or returned no nodes`);
+          }
+        } catch (error) {
+          console.warn(`[PipelineOrchestrator] ⚠️  Failed to extract nodes from selected variation: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+      }
+      
       // ✅ NEW ARCHITECTURE (PRIMARY): SimpleIntent → Intent-Aware Planner → StructuredIntent
       // This is the PRIMARY path according to World-Class Architecture Upgrade Plan
       let structuredIntent: StructuredIntent | undefined = undefined;
@@ -603,19 +680,45 @@ export class WorkflowPipelineOrchestrator {
           // ✅ NEW: Pass mandatory nodes from keyword extraction (Stage 1)
           const mandatoryNodes = options?.mandatoryNodeTypes || [];
           const mandatoryNodesWithOperations = options?.mandatoryNodesWithOperations || [];
+          // ✅ CRITICAL FIX: Pass selectedStructuredPrompt to IntentAwarePlanner for context-aware mapping
           const planningResult = await intentAwarePlanner.planWorkflow(
             finalSimpleIntent, 
-            selectedStructuredPrompt, 
+            originalPrompt, // originalPrompt for fallback context
             mandatoryNodes,
-            mandatoryNodesWithOperations
+            mandatoryNodesWithOperations,
+            selectedStructuredPrompt // ✅ NEW: Selected variation for context-aware Email → Gmail mapping
           );
           
           if (planningResult.errors.length === 0) {
             // ✅ PHASE 4: Validate StructuredIntent with Output Validator
             const structuredValidation = outputValidator.validateStructuredIntent(planningResult.structuredIntent);
             
+            // ✅ CRITICAL FIX: Validate StructuredIntent includes all nodes from selected variation
+            let validatedIntent = planningResult.structuredIntent;
+            if (nodesFromSelectedVariation.length > 0) {
+              const { validateStructuredIntentIncludesNodes, addMissingNodesToStructuredIntent } = await import('./structured-intent-validator');
+              // ✅ CRITICAL FIX: Pass originalPrompt as context for context-aware Email → Gmail validation
+              const variationValidation = validateStructuredIntentIncludesNodes(
+                validatedIntent,
+                nodesFromSelectedVariation,
+                originalPrompt // ✅ Context for disambiguation
+              );
+              
+              if (!variationValidation.valid) {
+                console.warn(`[PipelineOrchestrator] ⚠️  StructuredIntent missing ${variationValidation.missingNodes.length} node(s) from selected variation: ${variationValidation.missingNodes.join(', ')}`);
+                // ✅ CRITICAL: Add missing nodes to StructuredIntent
+                validatedIntent = addMissingNodesToStructuredIntent(
+                  validatedIntent,
+                  variationValidation.missingNodes
+                );
+                console.log(`[PipelineOrchestrator] ✅ Added ${variationValidation.missingNodes.length} missing node(s) to StructuredIntent`);
+              } else {
+                console.log(`[PipelineOrchestrator] ✅ StructuredIntent includes all nodes from selected variation`);
+              }
+            }
+            
             if (structuredValidation.valid) {
-              structuredIntent = planningResult.structuredIntent;
+              structuredIntent = validatedIntent;
               console.log(`[PipelineOrchestrator] ✅ Intent-Aware Planner generated StructuredIntent: ${planningResult.nodeRequirements.length} nodes, execution order: ${planningResult.executionOrder.length} steps`);
             } else {
               console.warn(`[PipelineOrchestrator] ⚠️  StructuredIntent validation failed: ${structuredValidation.errors.join(', ')}`);
@@ -624,7 +727,27 @@ export class WorkflowPipelineOrchestrator {
               // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt for recovery
               const recoveryResult = await errorRecovery.recoverStructuredIntent(finalSimpleIntent, selectedStructuredPrompt);
               if (recoveryResult.success && recoveryResult.result) {
-                structuredIntent = recoveryResult.result;
+                // ✅ CRITICAL FIX: Also validate recovered intent includes nodes from selected variation
+                let recoveredIntent = recoveryResult.result;
+                if (nodesFromSelectedVariation.length > 0) {
+                  const { validateStructuredIntentIncludesNodes, addMissingNodesToStructuredIntent } = await import('./structured-intent-validator');
+                  // ✅ CRITICAL FIX: Pass originalPrompt as context
+                  const variationValidation = validateStructuredIntentIncludesNodes(
+                    recoveredIntent,
+                    nodesFromSelectedVariation,
+                    originalPrompt // ✅ Context for disambiguation
+                  );
+                  
+                  if (!variationValidation.valid) {
+                    console.warn(`[PipelineOrchestrator] ⚠️  Recovered StructuredIntent missing ${variationValidation.missingNodes.length} node(s) from selected variation`);
+                    recoveredIntent = addMissingNodesToStructuredIntent(
+                      recoveredIntent,
+                      variationValidation.missingNodes
+                    );
+                    console.log(`[PipelineOrchestrator] ✅ Added ${variationValidation.missingNodes.length} missing node(s) to recovered StructuredIntent`);
+                  }
+                }
+                structuredIntent = recoveredIntent;
                 console.log(`[PipelineOrchestrator] ✅ Recovered StructuredIntent using ${recoveryResult.strategy}`);
               }
             }
@@ -636,7 +759,25 @@ export class WorkflowPipelineOrchestrator {
               // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt for recovery
               const recoveryResult = await errorRecovery.recoverStructuredIntent(finalSimpleIntent, selectedStructuredPrompt);
               if (recoveryResult.success && recoveryResult.result) {
-                structuredIntent = recoveryResult.result;
+                // ✅ CRITICAL FIX: Validate recovered intent includes nodes from selected variation
+                let recoveredIntent = recoveryResult.result;
+                if (nodesFromSelectedVariation.length > 0) {
+                  const { validateStructuredIntentIncludesNodes, addMissingNodesToStructuredIntent } = await import('./structured-intent-validator');
+                  const variationValidation = validateStructuredIntentIncludesNodes(
+                    recoveredIntent,
+                    nodesFromSelectedVariation
+                  );
+                  
+                  if (!variationValidation.valid) {
+                    console.warn(`[PipelineOrchestrator] ⚠️  Recovered StructuredIntent missing ${variationValidation.missingNodes.length} node(s) from selected variation`);
+                    recoveredIntent = addMissingNodesToStructuredIntent(
+                      recoveredIntent,
+                      variationValidation.missingNodes
+                    );
+                    console.log(`[PipelineOrchestrator] ✅ Added ${variationValidation.missingNodes.length} missing node(s) to recovered StructuredIntent`);
+                  }
+                }
+                structuredIntent = recoveredIntent;
                 console.log(`[PipelineOrchestrator] ✅ Recovered StructuredIntent using ${recoveryResult.strategy}`);
               }
             } catch (error) {
@@ -659,7 +800,29 @@ export class WorkflowPipelineOrchestrator {
           if (plannerSpec) {
             console.log(`[PipelineOrchestrator] ✅ Fallback: Using planner output - converting to StructuredIntent`);
             const { convertPlannerSpecToIntent } = await import('./planner-to-intent-converter');
-            structuredIntent = convertPlannerSpecToIntent(plannerSpec);
+            let convertedIntent = convertPlannerSpecToIntent(plannerSpec);
+            
+            // ✅ CRITICAL FIX: Validate converted intent includes nodes from selected variation
+            if (nodesFromSelectedVariation.length > 0) {
+              const { validateStructuredIntentIncludesNodes, addMissingNodesToStructuredIntent } = await import('./structured-intent-validator');
+              // ✅ CRITICAL FIX: Pass originalPrompt as context
+              const variationValidation = validateStructuredIntentIncludesNodes(
+                convertedIntent,
+                nodesFromSelectedVariation,
+                originalPrompt // ✅ Context for disambiguation
+              );
+              
+              if (!variationValidation.valid) {
+                console.warn(`[PipelineOrchestrator] ⚠️  Converted StructuredIntent missing ${variationValidation.missingNodes.length} node(s) from selected variation`);
+                convertedIntent = addMissingNodesToStructuredIntent(
+                  convertedIntent,
+                  variationValidation.missingNodes
+                );
+                console.log(`[PipelineOrchestrator] ✅ Added ${variationValidation.missingNodes.length} missing node(s) to converted StructuredIntent`);
+              }
+            }
+            
+            structuredIntent = convertedIntent;
             console.log(`[PipelineOrchestrator] ✅ Converted planner spec: ${structuredIntent.dataSources?.length || 0} dataSources, ${structuredIntent.actions.length} actions, ${structuredIntent.transformations?.length || 0} transformations`);
           }
         } catch (error) {
@@ -671,7 +834,29 @@ export class WorkflowPipelineOrchestrator {
       // Only if new architecture didn't provide intent
       if (!structuredIntent) {
         if (promptUnderstanding && promptUnderstanding.confidence >= 0.5) {
-          structuredIntent = promptUnderstanding.inferredIntent;
+          let inferredIntent = promptUnderstanding.inferredIntent;
+          
+          // ✅ CRITICAL FIX: Validate inferred intent includes nodes from selected variation
+          if (nodesFromSelectedVariation.length > 0) {
+            const { validateStructuredIntentIncludesNodes, addMissingNodesToStructuredIntent } = await import('./structured-intent-validator');
+            // ✅ CRITICAL FIX: Pass originalPrompt as context
+            const variationValidation = validateStructuredIntentIncludesNodes(
+              inferredIntent,
+              nodesFromSelectedVariation,
+              originalPrompt // ✅ Context for disambiguation
+            );
+            
+            if (!variationValidation.valid) {
+              console.warn(`[PipelineOrchestrator] ⚠️  Inferred StructuredIntent missing ${variationValidation.missingNodes.length} node(s) from selected variation`);
+              inferredIntent = addMissingNodesToStructuredIntent(
+                inferredIntent,
+                variationValidation.missingNodes
+              );
+              console.log(`[PipelineOrchestrator] ✅ Added ${variationValidation.missingNodes.length} missing node(s) to inferred StructuredIntent`);
+            }
+          }
+          
+          structuredIntent = inferredIntent;
           console.log(`[PipelineOrchestrator] ✅ Using inferred intent from prompt understanding (confidence: ${(promptUnderstanding.confidence * 100).toFixed(1)}%)`);
         } else {
           // ✅ DEPRECATED: Old intentStructurer (LAST RESORT fallback only)
@@ -679,7 +864,29 @@ export class WorkflowPipelineOrchestrator {
           console.warn(`[PipelineOrchestrator] ⚠️  Using DEPRECATED intentStructurer as last resort fallback`);
           console.warn(`[PipelineOrchestrator] ⚠️  This method will be removed - new architecture should handle all cases`);
           // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt for intent structuring
-        structuredIntent = await intentStructurer.structureIntent(selectedStructuredPrompt);
+          let fallbackIntent = await intentStructurer.structureIntent(selectedStructuredPrompt);
+          
+          // ✅ CRITICAL FIX: Validate fallback intent includes nodes from selected variation
+          if (nodesFromSelectedVariation.length > 0) {
+            const { validateStructuredIntentIncludesNodes, addMissingNodesToStructuredIntent } = await import('./structured-intent-validator');
+            // ✅ CRITICAL FIX: Pass originalPrompt as context
+            const variationValidation = validateStructuredIntentIncludesNodes(
+              fallbackIntent,
+              nodesFromSelectedVariation,
+              originalPrompt // ✅ Context for disambiguation
+            );
+            
+            if (!variationValidation.valid) {
+              console.warn(`[PipelineOrchestrator] ⚠️  Fallback StructuredIntent missing ${variationValidation.missingNodes.length} node(s) from selected variation`);
+              fallbackIntent = addMissingNodesToStructuredIntent(
+                fallbackIntent,
+                variationValidation.missingNodes
+              );
+              console.log(`[PipelineOrchestrator] ✅ Added ${variationValidation.missingNodes.length} missing node(s) to fallback StructuredIntent`);
+            }
+          }
+          
+          structuredIntent = fallbackIntent;
         }
       }
       
@@ -688,12 +895,47 @@ export class WorkflowPipelineOrchestrator {
         console.warn(`[PipelineOrchestrator] ⚠️  All intent extraction methods failed, using minimal intent`);
         // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt for trigger inference
         const defaultTrigger = inferDefaultTrigger(selectedStructuredPrompt);
-        structuredIntent = {
+        let minimalIntent: StructuredIntent = {
           trigger: defaultTrigger,
           trigger_config: defaultTrigger === 'schedule' ? inferDefaultScheduleConfig(selectedStructuredPrompt) : undefined,
           actions: [],
           requires_credentials: [],
         };
+        
+        // ✅ CRITICAL FIX: Add nodes from selected variation to minimal intent
+        if (nodesFromSelectedVariation.length > 0) {
+          const { addMissingNodesToStructuredIntent } = await import('./structured-intent-validator');
+          minimalIntent = addMissingNodesToStructuredIntent(
+            minimalIntent,
+            nodesFromSelectedVariation
+          );
+          console.log(`[PipelineOrchestrator] ✅ Added ${nodesFromSelectedVariation.length} node(s) from selected variation to minimal intent`);
+        }
+        
+        structuredIntent = minimalIntent;
+      }
+      
+      // ✅ FINAL VALIDATION: Ensure StructuredIntent includes all nodes from selected variation
+      // This is a final safety check after all intent generation paths
+      if (structuredIntent && nodesFromSelectedVariation.length > 0) {
+        const { validateStructuredIntentIncludesNodes, addMissingNodesToStructuredIntent } = await import('./structured-intent-validator');
+        // ✅ CRITICAL FIX: Pass originalPrompt as context for final validation
+        const finalValidation = validateStructuredIntentIncludesNodes(
+          structuredIntent,
+          nodesFromSelectedVariation,
+          originalPrompt // ✅ Context for disambiguation
+        );
+        
+        if (!finalValidation.valid) {
+          console.warn(`[PipelineOrchestrator] ⚠️  FINAL CHECK: StructuredIntent missing ${finalValidation.missingNodes.length} node(s) from selected variation: ${finalValidation.missingNodes.join(', ')}`);
+          structuredIntent = addMissingNodesToStructuredIntent(
+            structuredIntent,
+            finalValidation.missingNodes
+          );
+          console.log(`[PipelineOrchestrator] ✅ FINAL FIX: Added ${finalValidation.missingNodes.length} missing node(s) to StructuredIntent`);
+        } else {
+          console.log(`[PipelineOrchestrator] ✅ FINAL CHECK: StructuredIntent includes all nodes from selected variation`);
+        }
       }
       
       // ✅ FIXED: Ensure trigger exists (default to manual_trigger automatically)
@@ -912,11 +1154,17 @@ export class WorkflowPipelineOrchestrator {
         const { buildProductionWorkflow } = await import('./production-workflow-builder');
         // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt for workflow building
         // ✅ NEW: Pass mandatory nodes from keyword extraction (Stage 1)
+        // ✅ UNIVERSAL: Create AI-Specified Nodes Context and pass to builder
+        // This ensures all injection layers respect AI's intent
+        const { createAISpecifiedNodesContext } = await import('../../core/utils/ai-specified-nodes-context');
+        const aiSpecifiedNodesContext = createAISpecifiedNodesContext(structuredIntent, originalPrompt);
+        
         buildResult = await buildProductionWorkflow(structuredIntent, selectedStructuredPrompt, {
           maxRetries: 3,
           strictMode: true,
           allowRegeneration: true,
           mandatoryNodeTypes: options?.mandatoryNodeTypes, // ✅ NEW: Pass mandatory nodes
+          aiSpecifiedNodesContext, // ✅ UNIVERSAL: Pass AI-specified nodes context
         });
         
         if (!buildResult.success || !buildResult.workflow) {
@@ -1171,7 +1419,9 @@ export class WorkflowPipelineOrchestrator {
         const { injectSafetyNodes } = await import('./safety-node-injector');
         // ✅ INTENT-BASED: Pass StructuredIntent instead of prompt (single source of truth)
         // StructuredIntent already contains all nodes analyzed by AI - no need to re-analyze
-        const safety = injectSafetyNodes(workflow, structuredIntent);
+        // ✅ UNIFIED ORCHESTRATION: injectSafetyNodes now uses unifiedGraphOrchestrator
+        // ✅ CONSERVATIVE: Pass originalPrompt to check if user explicitly requested safety features
+        const safety = await injectSafetyNodes(workflow, structuredIntent, originalPrompt);
         workflow = safety.workflow;
         if (safety.injectedNodeTypes.length > 0) {
           console.log(`[PipelineOrchestrator] ✅ Safety nodes injected: ${safety.injectedNodeTypes.join(', ')}`);

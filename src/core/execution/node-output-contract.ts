@@ -1,9 +1,12 @@
 /**
- * Node Output Contract
+ * ✅ UNIVERSAL: Node Output Contract
  * 
- * Defines the contract for node outputs.
+ * Defines the contract for node outputs using registry as single source of truth.
  * Each node type returns a specific output type, not generic JSON.
  */
+
+import { unifiedNodeRegistry } from '../registry/unified-node-registry';
+import { nodeCapabilityRegistryDSL } from '../../services/ai/node-capability-registry-dsl';
 
 export interface NodeRunResult {
   output: unknown;
@@ -23,32 +26,64 @@ export type NodeOutputType =
   | 'void';       // No output (triggers)
 
 /**
- * Get expected output type for a node
+ * ✅ UNIVERSAL: Get expected output type for a node using registry
  */
 export function getNodeOutputType(nodeType: string): NodeOutputType {
-  // String outputs
-  if (['log', 'slack_message', 'email', 'discord', 'telegram'].includes(nodeType)) {
+  const nodeDef = unifiedNodeRegistry.get(nodeType);
+  
+  if (!nodeDef) {
+    // Fallback to object for unknown nodes
+    return 'object';
+  }
+  
+  // ✅ UNIVERSAL: Check if node is trigger (void output)
+  if (nodeDef.category === 'trigger') {
+    return 'void';
+  }
+  
+  // ✅ UNIVERSAL: Check if node is conditional (boolean output)
+  if (nodeType === 'if_else' || 
+      nodeType === 'switch' ||
+      (nodeDef.tags || []).includes('conditional') ||
+      (nodeDef.tags || []).includes('logic')) {
+    // Only if_else returns boolean, switch returns object
+    if (nodeType === 'if_else') {
+      return 'boolean';
+    }
+  }
+  
+  // ✅ UNIVERSAL: Check output schema from registry for type hints
+  const outputSchema = nodeDef.outputSchema;
+  if (outputSchema && Object.keys(outputSchema).length > 0) {
+    // Get first output port schema (most nodes have one default port)
+    const firstPortName = Object.keys(outputSchema)[0];
+    const firstPort = outputSchema[firstPortName];
+    if (firstPort && firstPort.schema) {
+      const schemaType = firstPort.schema.type;
+      if (schemaType === 'string') return 'string';
+      if (schemaType === 'number') return 'number';
+      if (schemaType === 'boolean') return 'boolean';
+      if (schemaType === 'array') return 'array';
+    }
+  }
+  
+  // ✅ UNIVERSAL: Check node category and capabilities for type inference
+  const category = nodeDef.category || '';
+  const tags = nodeDef.tags || [];
+  
+  // Communication nodes typically return string
+  if (category === 'communication' || tags.includes('message') || tags.includes('notification')) {
     return 'string';
   }
   
-  // Number outputs
-  if (['math', 'count'].includes(nodeType)) {
+  // Math/calculation nodes return number
+  if (category === 'data' && (tags.includes('math') || tags.includes('calculation') || nodeType.includes('math'))) {
     return 'number';
   }
   
-  // Boolean outputs
-  if (['if_else'].includes(nodeType)) {
-    return 'boolean';
-  }
-  
-  // Array outputs
-  if (['split', 'filter'].includes(nodeType)) {
+  // Array operations return array
+  if (tags.includes('array') || tags.includes('list') || nodeType.includes('split') || nodeType.includes('filter')) {
     return 'array';
-  }
-  
-  // Void outputs (triggers)
-  if (['manual_trigger', 'webhook', 'chat_trigger', 'schedule_trigger'].includes(nodeType)) {
-    return 'void';
   }
   
   // Default: object

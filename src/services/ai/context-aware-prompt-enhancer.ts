@@ -117,8 +117,10 @@ export class ContextAwarePromptEnhancer {
       formattedResolved
     );
 
+    // ✅ FIXED: Use safe JSON stringify to prevent circular reference errors
+    const { safeJsonStringify } = require('../../core/utils/safe-json-stringify');
     return {
-      originalPrompt: JSON.stringify(intent),
+      originalPrompt: safeJsonStringify(intent),
       semanticContext: semanticIntent,
       availableNodes: nodeMetadata,
       resolvedNodes,
@@ -310,8 +312,10 @@ When categorizing nodes:
       systemPrompt += `${context}\n\n`;
     }
 
+    // ✅ FIXED: Use safe JSON stringify to prevent circular reference errors
+    const { safeJsonStringify } = require('../../core/utils/safe-json-stringify');
     systemPrompt += `Structured Intent:
-${JSON.stringify(intent, null, 2)}
+${safeJsonStringify(intent, 2)}
 
 Your Task:
 1. Use resolved node types when available

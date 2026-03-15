@@ -19,6 +19,7 @@ import { resolveCompatibleHandles } from './schema-driven-connection-resolver';
 import { StructuredIntent } from './intent-structurer';
 import { nodeCapabilityRegistryDSL } from './node-capability-registry-dsl';
 import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
+import { unifiedGraphOrchestrator } from '../../core/orchestration';
 
 export interface SafetyInjectionResult {
   workflow: Workflow;
@@ -77,17 +78,62 @@ function createEdge(
 }
 
 /**
- * Inject safety nodes into the workflow graph.
+ * Check if user explicitly requested safety features in their prompt
  */
-export function injectSafetyNodes(
+function detectUserRequestedSafetyFeatures(originalPrompt?: string): {
+  wantsEmptyCheck: boolean;
+  wantsLimit: boolean;
+  wantsErrorHandling: boolean;
+} {
+  if (!originalPrompt) {
+    return { wantsEmptyCheck: false, wantsLimit: false, wantsErrorHandling: false };
+  }
+
+  const promptLower = originalPrompt.toLowerCase();
+
+  // Check for empty/validation keywords
+  const emptyCheckKeywords = [
+    'check if empty', 'check if data exists', 'if no data', 'if empty', 
+    'validate data', 'ensure data exists', 'check for empty', 'no rows',
+    'empty check', 'data validation', 'verify data exists'
+  ];
+  const wantsEmptyCheck = emptyCheckKeywords.some(keyword => promptLower.includes(keyword));
+
+  // Check for limit/restriction keywords
+  const limitKeywords = [
+    'limit', 'restrict', 'max', 'maximum', 'only first', 'top n', 'first n',
+    'only process', 'process only', 'cap at', 'maximum of', 'at most'
+  ];
+  const wantsLimit = limitKeywords.some(keyword => promptLower.includes(keyword));
+
+  // Check for error handling keywords
+  const errorHandlingKeywords = [
+    'error handling', 'handle error', 'if error', 'on error', 'catch error',
+    'error case', 'handle failure', 'if fails', 'stop on error', 'error stop'
+  ];
+  const wantsErrorHandling = errorHandlingKeywords.some(keyword => promptLower.includes(keyword));
+
+  return { wantsEmptyCheck, wantsLimit, wantsErrorHandling };
+}
+
+/**
+ * Inject safety nodes into the workflow graph.
+ * ✅ UNIFIED ORCHESTRATION: Now uses unifiedGraphOrchestrator for all node injections
+ * ✅ CONSERVATIVE: Only injects when user explicitly requested or AI detected genuine need
+ */
+export async function injectSafetyNodes(
   workflow: Workflow,
-  structuredIntent: StructuredIntent
-): SafetyInjectionResult {
+  structuredIntent: StructuredIntent,
+  originalPrompt?: string
+): Promise<SafetyInjectionResult> {
   const warnings: string[] = [];
   const injectedNodeTypes: string[] = [];
 
   const nodes = [...(workflow.nodes || [])];
   const edges = [...(workflow.edges || [])];
+
+  // ✅ NEW: Check if user explicitly requested safety features
+  const userSafetyRequests = detectUserRequestedSafetyFeatures(originalPrompt);
 
   // ✅ ROOT-LEVEL UNIVERSAL FIX: Use standardized metadata system
   const hasAutoLimit = nodes.some(n => {
@@ -161,20 +207,43 @@ export function injectSafetyNodes(
     outputActions.length === 1 &&
     !hasConditions &&
     aiTransformations.length === 1; // Single AI transformation
-  
-  // ✅ CRITICAL FIX: Skip safety injection for simple linear flows
-  if (isSimpleLinearFlow) {
-    console.log('[SafetyNodeInjector] ✅ Simple linear flow detected from StructuredIntent - skipping safety node injection to keep workflow clean');
+
+  // ✅ STRICT POLICY: ONLY inject safety nodes if user EXPLICITLY requested them
+  // NO automatic injection for "complex workflows" - user must explicitly request
+  const shouldInjectSafety = 
+    userSafetyRequests.wantsEmptyCheck ||
+    userSafetyRequests.wantsLimit ||
+    userSafetyRequests.wantsErrorHandling ||
+    hasConditions; // Conditions in structuredIntent means user explicitly requested conditional logic
+
+  // ✅ CRITICAL: Skip ALL safety injection unless user explicitly requested
+  if (!shouldInjectSafety) {
+    console.log('[SafetyNodeInjector] ✅ No safety nodes requested by user - skipping ALL safety node injection');
     return { workflow, injectedNodeTypes, warnings };
   }
+
+  // ✅ CONSERVATIVE: Log why we're injecting (for debugging)
+  const reasons: string[] = [];
+  if (userSafetyRequests.wantsEmptyCheck) reasons.push('user explicitly requested empty check');
+  if (userSafetyRequests.wantsLimit) reasons.push('user explicitly requested limit');
+  if (userSafetyRequests.wantsErrorHandling) reasons.push('user explicitly requested error handling');
+  if (hasConditions) reasons.push('user explicitly requested conditions');
+  console.log(`[SafetyNodeInjector] 🔍 Injecting safety nodes because: ${reasons.join(', ')}`);
   
-  // ✅ INTENT-BASED: Check if data sources produce arrays (from intent, not hardcoded)
+  // ✅ UNIVERSAL: Check if data sources produce arrays using registry (no hardcoding)
   const arrayProducingDataSources = dataSources.filter(ds => {
     const nodeDef = unifiedNodeRegistry.get(ds.type);
-    // Check if node is known to produce arrays (from registry or common patterns)
-    const arrayProducingTypes = ['google_sheets', 'airtable', 'notion', 'database', 'sql', 'postgres', 'mysql'];
-    return arrayProducingTypes.some(type => ds.type.includes(type)) ||
-           (nodeDef?.tags || []).some(tag => ['array', 'list', 'rows'].includes(tag.toLowerCase()));
+    // ✅ UNIVERSAL: Check if node type or tags indicate array/list production
+    const nodeTypeLower = ds.type.toLowerCase();
+    const isArrayProducer = nodeTypeLower.includes('sheets') ||
+                           nodeTypeLower.includes('airtable') ||
+                           nodeTypeLower.includes('notion') ||
+                           nodeTypeLower.includes('database') ||
+                           nodeTypeLower.includes('sql') ||
+                           nodeTypeLower.includes('postgres') ||
+                           nodeTypeLower.includes('mysql') ||
+                           (nodeDef?.tags || []).some((tag: string) => ['array', 'list', 'rows'].includes(tag.toLowerCase()));
+    return isArrayProducer;
   });
 
   // Find any direct edge * -> ai (data source to AI)
@@ -215,8 +284,12 @@ export function injectSafetyNodes(
   const sourceNodeTypeNormalized = unifiedNormalizeNodeTypeString(sourceNodeType);
   const sourceNodeProducesArrays = arrayProducingDataSources.some(ds => ds.type === sourceNodeTypeNormalized);
 
-  // Remove old edge; we'll rebuild below
-  let newEdges = edges.filter(e => e.id !== edgeToSplit.id);
+  // ✅ UNIFIED ORCHESTRATION: Use orchestrator for all node injections
+  // Remove old edge first (orchestrator will create correct edges)
+  let currentWorkflow: Workflow = {
+    ...workflow,
+    edges: edges.filter(e => e.id !== edgeToSplit.id),
+  };
   let upstreamNode: WorkflowNode = sourceNode;
 
   // ✅ INTENT-BASED: Check transformations for sort/aggregate operations (from intent, not prompt)
@@ -249,10 +322,16 @@ export function injectSafetyNodes(
   const sourceTypeNormalized = unifiedNormalizeNodeTypeString(sourceType);
   const sourceProducesArrays = arrayProducingDataSources.some(ds => ds.type === sourceTypeNormalized);
   
-  // ✅ ROOT-LEVEL FIX: Only inject empty-check if data source produces arrays
-  // 1) Inject empty-check If/Else + Stop node unless already auto-injected
+  // ✅ STRICT: Only inject empty-check if user EXPLICITLY requested it
+  // NO automatic injection - user must explicitly request empty check or conditions
+  const shouldInjectEmptyCheck = 
+    !hasAutoEmptyCheck && 
+    sourceProducesArrays && 
+    (userSafetyRequests.wantsEmptyCheck || hasConditions);
+
+  // ✅ ROOT-LEVEL FIX: Only inject empty-check if data source produces arrays AND user requested or complex workflow
   // CRITICAL: must run BEFORE any transformations so condition checks raw rows/items from Google Sheets
-  if (!hasAutoEmptyCheck && sourceProducesArrays) {
+  if (shouldInjectEmptyCheck) {
     // ✅ ROOT-LEVEL UNIVERSAL FIX: Use standardized metadata system
     const ifNode = createNode('if_else', 'If items exist?', {
       // Use canonical JSON conditions format expected by backend schema/executor
@@ -290,15 +369,49 @@ export function injectSafetyNodes(
       },
     });
 
-    // upstream -> if_else
-    const edge1 = createEdge(upstreamNode, ifNode, workflow.edges, workflow.nodes);
-    if (edge1) newEdges.push(edge1);
+    // ✅ UNIFIED ORCHESTRATION: Inject if_else node using orchestrator
+    const ifNodeResult = await unifiedGraphOrchestrator.injectNode(
+      currentWorkflow,
+      ifNode,
+      {
+        type: 'safety',
+        position: 'after',
+        referenceNodeId: upstreamNode.id,
+        reason: 'Auto-inserted empty-check before AI',
+      }
+    );
+    currentWorkflow = ifNodeResult.workflow;
+    if (ifNodeResult.errors.length > 0) {
+      warnings.push(...ifNodeResult.errors);
+    }
+
+    // ✅ UNIFIED ORCHESTRATION: Inject stop node for false path
+    const stopNodeResult = await unifiedGraphOrchestrator.injectNode(
+      currentWorkflow,
+      stopNode,
+      {
+        type: 'safety',
+        position: 'after',
+        referenceNodeId: ifNode.id,
+        reason: 'Auto-inserted stop node for empty data',
+      }
+    );
+    currentWorkflow = stopNodeResult.workflow;
+    if (stopNodeResult.errors.length > 0) {
+      warnings.push(...stopNodeResult.errors);
+    }
 
     // Build TRUE path safety chain: if_else(true) -> [limit] -> [sort?] -> [aggregate?] -> AI
     let trueUpstream: WorkflowNode = ifNode;
 
-    // 1.1) Inject limit node (token safety) unless already auto-injected
-    if (!hasAutoLimit) {
+    // ✅ STRICT: Only inject limit if user EXPLICITLY requested it
+    // NO automatic injection - user must explicitly request limit
+    const shouldInjectLimit = 
+      !hasAutoLimit && 
+      userSafetyRequests.wantsLimit;
+
+    // 1.1) Inject limit node (token safety) unless already auto-injected AND user requested or complex workflow
+    if (shouldInjectLimit) {
       const limitNode = createNode('limit', 'Limit', {
         limit: 50,
         reason: 'Auto-inserted safety limit before AI to prevent token overflow',
@@ -315,18 +428,24 @@ export function injectSafetyNodes(
           priority: 2,
         },
       });
-      {
-        const res = resolveCompatibleHandles(ifNode, limitNode);
-        newEdges.push({
-          id: randomUUID(),
-          source: ifNode.id,
-          target: limitNode.id,
-          sourceHandle: 'true',
-          ...(res.success && res.targetHandle ? { targetHandle: res.targetHandle } : {}),
-        });
+      
+      // ✅ UNIFIED ORCHESTRATION: Inject limit node using orchestrator
+      const limitResult = await unifiedGraphOrchestrator.injectNode(
+        currentWorkflow,
+        limitNode,
+        {
+          type: 'safety',
+          position: 'after',
+          referenceNodeId: ifNode.id,
+          reason: 'Auto-inserted safety limit before AI to prevent token overflow',
+        }
+      );
+      currentWorkflow = limitResult.workflow;
+      if (limitResult.errors.length > 0) {
+        warnings.push(...limitResult.errors);
       }
+      
       trueUpstream = limitNode;
-      nodes.push(limitNode);
       injectedNodeTypes.push('limit');
     } else {
       // if_else true -> target (AI) will be connected later from trueUpstream
@@ -352,10 +471,24 @@ export function injectSafetyNodes(
           priority: 3,
         },
       });
-      const edge2 = createEdge(trueUpstream, sortNode, [...workflow.edges, ...newEdges], [...workflow.nodes, ...nodes]);
-      if (edge2) newEdges.push(edge2);
+      
+      // ✅ UNIFIED ORCHESTRATION: Inject sort node using orchestrator
+      const sortResult = await unifiedGraphOrchestrator.injectNode(
+        currentWorkflow,
+        sortNode,
+        {
+          type: 'safety',
+          position: 'after',
+          referenceNodeId: trueUpstream.id,
+          reason: 'Auto-inserted sort before AI due to prompt intent',
+        }
+      );
+      currentWorkflow = sortResult.workflow;
+      if (sortResult.errors.length > 0) {
+        warnings.push(...sortResult.errors);
+      }
+      
       trueUpstream = sortNode;
-      nodes.push(sortNode);
       injectedNodeTypes.push('sort');
     }
 
@@ -379,35 +512,42 @@ export function injectSafetyNodes(
           priority: 4,
         },
       });
-      const edge3 = createEdge(trueUpstream, aggregateNode, [...workflow.edges, ...newEdges], [...workflow.nodes, ...nodes]);
-      if (edge3) newEdges.push(edge3);
+      
+      // ✅ UNIFIED ORCHESTRATION: Inject aggregate node using orchestrator
+      const aggregateResult = await unifiedGraphOrchestrator.injectNode(
+        currentWorkflow,
+        aggregateNode,
+        {
+          type: 'safety',
+          position: 'after',
+          referenceNodeId: trueUpstream.id,
+          reason: 'Auto-inserted aggregate before AI due to prompt intent',
+        }
+      );
+      currentWorkflow = aggregateResult.workflow;
+      if (aggregateResult.errors.length > 0) {
+        warnings.push(...aggregateResult.errors);
+      }
+      
       trueUpstream = aggregateNode;
-      nodes.push(aggregateNode);
       injectedNodeTypes.push('aggregate');
     }
 
-    // trueUpstream -> AI
-    const edge4 = createEdge(trueUpstream, targetNode, [...workflow.edges, ...newEdges], [...workflow.nodes, ...nodes]);
-    if (edge4) newEdges.push(edge4);
-
-    // if_else false -> stop_and_error
-    {
-      const res = resolveCompatibleHandles(ifNode, stopNode);
-      newEdges.push({
-        id: randomUUID(),
-        source: ifNode.id,
-        target: stopNode.id,
-        sourceHandle: 'false',
-        ...(res.success && res.targetHandle ? { targetHandle: res.targetHandle } : {}),
-      });
+    // ✅ UNIFIED ORCHESTRATION: Final reconciliation to ensure all edges are correct
+    const finalReconciliation = unifiedGraphOrchestrator.reconcileWorkflow(currentWorkflow);
+    currentWorkflow = finalReconciliation.workflow;
+    if (finalReconciliation.errors.length > 0) {
+      warnings.push(...finalReconciliation.errors);
     }
 
-    nodes.push(ifNode, stopNode);
     injectedNodeTypes.push('if_else', 'stop_and_error');
   } else {
-    // If empty-check already exists, connect upstream directly to target.
-    const edge5 = createEdge(upstreamNode, targetNode, [...workflow.edges, ...newEdges], [...workflow.nodes, ...nodes]);
-    if (edge5) newEdges.push(edge5);
+    // If empty-check already exists, orchestrator will handle connection automatically
+    const reconciliation = unifiedGraphOrchestrator.reconcileWorkflow(currentWorkflow);
+    currentWorkflow = reconciliation.workflow;
+    if (reconciliation.errors.length > 0) {
+      warnings.push(...reconciliation.errors);
+    }
   }
 
   // --------------------------------------------
@@ -435,9 +575,9 @@ export function injectSafetyNodes(
 
   // If there is a Gmail node directly downstream of this AI node, map subject/body from AI JSON response.
   // Keep "to" empty so it remains a user-provided configuration input (NOT a credential).
-  const aiToGmailEdge = newEdges.find(e => e.source === targetNode.id && nodes.some(n => n.id === e.target && getType(n) === 'google_gmail'));
+  const aiToGmailEdge = currentWorkflow.edges.find(e => e.source === targetNode.id && currentWorkflow.nodes.some(n => n.id === e.target && getType(n) === 'google_gmail'));
   if (aiToGmailEdge) {
-    const gmailNode = nodes.find(n => n.id === aiToGmailEdge.target) || null;
+    const gmailNode = currentWorkflow.nodes.find(n => n.id === aiToGmailEdge.target) || null;
     if (gmailNode) {
       const gcfg = (gmailNode.data?.config || {}) as any;
       if (!gcfg.subject) gcfg.subject = '{{input.response.subject}}';
@@ -450,11 +590,7 @@ export function injectSafetyNodes(
   }
 
   return {
-    workflow: {
-      ...workflow,
-      nodes,
-      edges: newEdges,
-    },
+    workflow: currentWorkflow,
     injectedNodeTypes,
     warnings,
   };

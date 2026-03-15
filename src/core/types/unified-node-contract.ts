@@ -162,6 +162,48 @@ export interface UnifiedNodeDefinition {
   tags?: string[]; // For search/filtering
   deprecated?: boolean; // Mark as deprecated
   replacement?: string; // Suggested replacement node type
+  
+  // ============================================
+  // WORKFLOW-LEVEL BEHAVIORS (Registry-Driven)
+  // ============================================
+  /**
+   * Workflow-level behaviors that apply to ALL workflows
+   * These are defined in the registry, not hardcoded in builders
+   * 
+   * Example: log_output has alwaysRequired: true, alwaysTerminal: true
+   * This means it's automatically included in all workflows and must be the last node
+   */
+  workflowBehavior?: {
+    /**
+     * Always required in workflows (auto-included even if not in intent)
+     * Example: log_output (universal final output)
+     */
+    alwaysRequired?: boolean;
+    
+    /**
+     * Must be terminal node (no outgoing edges, always last)
+     * Example: log_output (must be final node)
+     */
+    alwaysTerminal?: boolean;
+    
+    /**
+     * Exempt from removal by minimal workflow policy
+     * Example: log_output (should never be removed)
+     */
+    exemptFromRemoval?: boolean;
+    
+    /**
+     * Auto-inject if missing (after workflow building)
+     * Example: log_output (inject if not present)
+     */
+    autoInject?: boolean;
+    
+    /**
+     * Injection priority (lower = higher priority)
+     * Example: log_output = 0 (highest priority, inject first)
+     */
+    injectionPriority?: number;
+  };
 }
 
 /**
@@ -232,4 +274,30 @@ export interface INodeRegistry {
    * Get input schema for node type
    */
   getInputSchema(nodeType: string): NodeInputSchema | undefined;
+  
+  /**
+   * ✅ UNIVERSAL: Get all nodes with specific workflow-level behavior
+   * Used by orchestrators, policies, builders to query registry
+   */
+  getNodesWithBehavior(behavior: keyof NonNullable<UnifiedNodeDefinition['workflowBehavior']>): UnifiedNodeDefinition[];
+  
+  /**
+   * ✅ UNIVERSAL: Check if node has specific workflow behavior
+   */
+  hasWorkflowBehavior(nodeType: string, behavior: keyof NonNullable<UnifiedNodeDefinition['workflowBehavior']>): boolean;
+  
+  /**
+   * ✅ UNIVERSAL: Get all always-required nodes (for auto-inclusion)
+   */
+  getAlwaysRequiredNodes(): UnifiedNodeDefinition[];
+  
+  /**
+   * ✅ UNIVERSAL: Get all always-terminal nodes (must be last)
+   */
+  getAlwaysTerminalNodes(): UnifiedNodeDefinition[];
+  
+  /**
+   * ✅ UNIVERSAL: Get all exempt-from-removal nodes
+   */
+  getExemptFromRemovalNodes(): UnifiedNodeDefinition[];
 }

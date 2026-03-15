@@ -133,6 +133,10 @@ export class NodeCapabilityRegistryDSL {
       ) {
         // These nodes can act as outputs / write targets for HTTP-style actions
         capabilities.push('send_request', 'output', 'write_data', 'http');
+      } else if (nodeType.includes('post')) {
+        // ✅ CRITICAL FIX: http_post can be both data_source (retrieve data) and output (send data)
+        // Support both use cases based on context - default to data_source for "retrieve" use cases
+        capabilities.push('read_data', 'data_source', 'send_request', 'output', 'write_data', 'http');
       } else {
         capabilities.push('read_data', 'data_source', 'http');
       }
@@ -191,6 +195,9 @@ export class NodeCapabilityRegistryDSL {
     this.setCapabilities('telegram', ['send_message', 'output', 'communication', 'notification', 'terminal']);
     this.setCapabilities('notification', ['notify', 'output', 'communication', 'terminal']);
     this.setCapabilities('webhook_response', ['send_webhook', 'output', 'http', 'terminal']);
+    // ✅ CRITICAL FIX: http_post can be both data_source (retrieve data) and output (send data)
+    // Support both use cases - has both capabilities so it can be used in either role
+    this.setCapabilities('http_post', ['read_data', 'data_source', 'send_request', 'output', 'write_data', 'http']);
     this.setCapabilities('http_request', ['send_request', 'output', 'http']);
     
     // CRM/Write operations (outputs)
@@ -279,6 +286,20 @@ export class NodeCapabilityRegistryDSL {
     if (!this.initialized) {
       this.initializeCapabilities();
     }
+    
+    // 🔍 DEBUG: Track capability retrieval for problematic nodes
+    const lower = nodeType.toLowerCase();
+    const isDebugNode = ['javascript', 'ai_chat_model', 'linkedin', 'log_output', 'postgresql'].includes(lower);
+    if (isDebugNode) {
+      const normalized = lower;
+      const capabilities = this.capabilities.get(normalized) || [];
+      console.log(
+        `[NodeCapabilityRegistryDSL] 🔍 DEBUG getCapabilities(${nodeType}): ` +
+        `normalized=${normalized}, ` +
+        `capabilities=[${capabilities.join(', ')}], ` +
+        `found=${capabilities.length > 0}`
+      );
+    }
 
     const normalized = nodeType.toLowerCase();
     const capabilities = this.capabilities.get(normalized);
@@ -324,7 +345,21 @@ export class NodeCapabilityRegistryDSL {
    * Check if node is a transformation (has "transformation" capability)
    */
   isTransformation(nodeType: string): boolean {
-    return this.hasCapability(nodeType, 'transformation');
+    const lower = nodeType.toLowerCase();
+    const isDebugNode = ['javascript', 'ai_chat_model', 'linkedin', 'log_output', 'postgresql'].includes(lower);
+    
+    const capabilities = this.getCapabilities(nodeType);
+    const hasTransformation = capabilities.includes('transformation');
+    
+    if (isDebugNode) {
+      console.log(
+        `[NodeCapabilityRegistryDSL] 🔍 DEBUG isTransformation(${nodeType}): ` +
+        `capabilities=[${capabilities.join(', ')}], ` +
+        `hasTransformation=${hasTransformation}`
+      );
+    }
+    
+    return hasTransformation;
   }
 
   /**

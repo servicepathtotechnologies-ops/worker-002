@@ -15,25 +15,69 @@ import { WorkflowStep, WorkflowPlan } from './workflow-planner';
 import type { AllowedAction } from './workflow-planner';
 import { WorkflowNode, WorkflowEdge, WorkflowGenerationStructure, WorkflowStepDefinition, OutputDefinition, InputOutputType } from '../core/types/ai-types';
 import { nodeLibrary } from './nodes/node-library';
+import { unifiedNodeRegistry } from '../core/registry/unified-node-registry';
+import { nodeCapabilityRegistryDSL } from '../services/ai/node-capability-registry-dsl';
 import { randomUUID } from 'crypto';
 
 /**
- * Mapping from planner actions to node types
- * Deterministic - no AI guessing
+ * ✅ UNIVERSAL: Map planner actions to node types using registry
+ * Deterministic - no AI guessing, but uses registry as single source of truth
  */
-const ACTION_TO_NODE_MAP: Record<AllowedAction, string> = {
-  'fetch_google_sheets_data': 'google_sheets',
-  'fetch_api_data': 'http_request',
-  'transform_data': 'javascript',
-  'summarize_data': 'text_summarizer',
-  'send_email': 'google_gmail', // Default to Gmail, can be overridden
-  'send_slack': 'slack_message',
-  'store_database': 'database_write',
-  'condition_check': 'if_else',
-  'schedule_trigger': 'schedule',
-  'manual_trigger': 'manual_trigger',
-  'webhook_trigger': 'webhook',
-};
+function mapActionToNodeTypeFromRegistry(action: AllowedAction): string {
+  const allNodeTypes = unifiedNodeRegistry.getAllTypes();
+  
+  // ✅ UNIVERSAL: Map actions to node types using registry capabilities
+  switch (action) {
+    case 'fetch_google_sheets_data':
+      // Find Google Sheets node from registry
+      return allNodeTypes.find(nt => nt === 'google_sheets' || nt.includes('sheets')) || 'google_sheets';
+    
+    case 'fetch_api_data':
+      // Find HTTP request node from registry
+      return allNodeTypes.find(nt => nt === 'http_request' || nt.includes('http')) || 'http_request';
+    
+    case 'transform_data':
+      // Find JavaScript/transformation node from registry
+      return allNodeTypes.find(nt => nt === 'javascript' || (unifiedNodeRegistry.get(nt)?.category === 'transformation')) || 'javascript';
+    
+    case 'summarize_data':
+      // Find summarizer node from registry
+      return allNodeTypes.find(nt => nt === 'text_summarizer' || nt.includes('summarizer')) || 'text_summarizer';
+    
+    case 'send_email':
+      // Find email node from registry (prefer Gmail)
+      return allNodeTypes.find(nt => nt === 'google_gmail' || nt.includes('gmail')) || 
+             allNodeTypes.find(nt => nt === 'email' || (nodeCapabilityRegistryDSL.isOutput(nt) && (unifiedNodeRegistry.get(nt)?.tags || []).includes('email'))) || 
+             'google_gmail';
+    
+    case 'send_slack':
+      // Find Slack node from registry
+      return allNodeTypes.find(nt => nt === 'slack_message' || nt.includes('slack')) || 'slack_message';
+    
+    case 'store_database':
+      // Find database write node from registry
+      return allNodeTypes.find(nt => nt === 'database_write' || (nodeCapabilityRegistryDSL.isOutput(nt) && (unifiedNodeRegistry.get(nt)?.category === 'data'))) || 'database_write';
+    
+    case 'condition_check':
+      // Find conditional node from registry
+      return allNodeTypes.find(nt => nt === 'if_else' || (unifiedNodeRegistry.get(nt)?.tags || []).includes('conditional')) || 'if_else';
+    
+    case 'schedule_trigger':
+      // Find schedule trigger from registry
+      return allNodeTypes.find(nt => nt === 'schedule' || (unifiedNodeRegistry.get(nt)?.category === 'trigger' && nt.includes('schedule'))) || 'schedule';
+    
+    case 'manual_trigger':
+      // Find manual trigger from registry
+      return allNodeTypes.find(nt => nt === 'manual_trigger' || (unifiedNodeRegistry.get(nt)?.category === 'trigger' && nt.includes('manual'))) || 'manual_trigger';
+    
+    case 'webhook_trigger':
+      // Find webhook trigger from registry
+      return allNodeTypes.find(nt => nt === 'webhook' || (unifiedNodeRegistry.get(nt)?.category === 'trigger' && nt.includes('webhook'))) || 'webhook';
+    
+    default:
+      return 'noop';
+  }
+}
 
 /**
  * Integration-specific mappings
@@ -93,13 +137,26 @@ const INTEGRATION_KEYWORDS: Record<string, string[]> = {
 };
 
 /**
- * Trigger type to node type mapping
+ * ✅ UNIVERSAL: Map trigger type to node type using registry
  */
-const TRIGGER_TYPE_MAP: Record<'manual' | 'schedule' | 'event', string> = {
-  'manual': 'manual_trigger',
-  'schedule': 'schedule',
-  'event': 'webhook',
-};
+function mapTriggerTypeFromRegistry(triggerType: 'manual' | 'schedule' | 'event'): string {
+  const allNodeTypes = unifiedNodeRegistry.getAllTypes();
+  const triggerNodes = allNodeTypes.filter(nt => {
+    const nodeDef = unifiedNodeRegistry.get(nt);
+    return nodeDef && (nodeDef.category === 'trigger' || (nodeDef.tags || []).includes('trigger'));
+  });
+  
+  switch (triggerType) {
+    case 'manual':
+      return triggerNodes.find(nt => nt.includes('manual')) || 'manual_trigger';
+    case 'schedule':
+      return triggerNodes.find(nt => nt === 'schedule' || nt.includes('schedule')) || 'schedule';
+    case 'event':
+      return triggerNodes.find(nt => nt === 'webhook' || nt.includes('webhook')) || 'webhook';
+    default:
+      return triggerNodes[0] || 'manual_trigger';
+  }
+}
 
 /**
  * Node creation result
@@ -128,8 +185,8 @@ export class StepNodeMapper {
     const connections: WorkflowEdge[] = [];
     const promptLower = (userPrompt || '').toLowerCase();
     
-    // 1. Create trigger node
-    const triggerNodeType = TRIGGER_TYPE_MAP[plan.trigger_type];
+    // 1. Create trigger node - ✅ UNIVERSAL: Use registry-based mapping
+    const triggerNodeType = mapTriggerTypeFromRegistry(plan.trigger_type);
     const triggerNode = this.createNode(triggerNodeType, 'trigger', 'Workflow Trigger');
     nodes.push(triggerNode);
     
@@ -148,17 +205,18 @@ export class StepNodeMapper {
         nodeType = step.node_type;
         stepIdentifier = step.node_type;
       } else if ('action' in step && step.action) {
-        // Old format: map action to node type (backward compatibility)
+        // Old format: map action to node type (backward compatibility) - ✅ UNIVERSAL: Use registry
         console.warn(`[StepNodeMapper] Step ${index + 1} uses deprecated "action" format. Migrating to "node_type"...`);
-        nodeType = this.mapActionToNodeType(step.action as any, promptLower, step.description);
+        nodeType = mapActionToNodeTypeFromRegistry(step.action as any);
         stepIdentifier = step.action;
       } else {
         console.error(`[StepNodeMapper] Step ${index + 1} has neither "node_type" nor "action" field`);
         return;
       }
       
-      // Skip trigger nodes (already handled)
-      if (nodeType.includes('trigger') || nodeType === 'schedule' || nodeType === 'webhook' || nodeType === 'form') {
+      // ✅ UNIVERSAL: Skip trigger nodes using registry (already handled)
+      const nodeDef = unifiedNodeRegistry.get(nodeType);
+      if (nodeDef && (nodeDef.category === 'trigger' || (nodeDef.tags || []).includes('trigger'))) {
         console.log(`[StepNodeMapper] Skipping trigger node: ${nodeType}`);
         return;
       }
@@ -187,15 +245,15 @@ export class StepNodeMapper {
   }
   
   /**
-   * Map action to node type with context awareness
+   * ✅ UNIVERSAL: Map action to node type with context awareness using registry
    */
   private mapActionToNodeType(
     action: AllowedAction,
     promptContext: string,
     stepDescription?: string
   ): string {
-    // Get base mapping
-    let nodeType = ACTION_TO_NODE_MAP[action];
+    // ✅ UNIVERSAL: Get base mapping from registry
+    let nodeType = mapActionToNodeTypeFromRegistry(action);
     
     // Context-aware overrides
     const context = (stepDescription || '').toLowerCase() + ' ' + promptContext;
@@ -462,13 +520,8 @@ export function convertPlanToStructure(
       }]
     : [];
   
-  // Map trigger type
-  const triggerTypeMap: Record<'manual' | 'schedule' | 'event', string> = {
-    'manual': 'manual_trigger',
-    'schedule': 'schedule',
-    'event': 'webhook',
-  };
-  const trigger = triggerTypeMap[plan.trigger_type] || 'manual_trigger';
+  // ✅ UNIVERSAL: Map trigger type using registry
+  const trigger = mapTriggerTypeFromRegistry(plan.trigger_type);
   
   return {
     trigger,

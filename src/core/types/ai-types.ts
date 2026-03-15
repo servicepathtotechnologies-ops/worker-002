@@ -126,6 +126,11 @@ export interface WorkflowNode {
     type: string;
     category: string;
     config: Record<string, unknown>;
+    // Additional properties for execution order tracking
+    executionOrder?: number;
+    stepRef?: string;
+    stepType?: string;
+    [key: string]: unknown; // Allow additional properties
   };
 }
 

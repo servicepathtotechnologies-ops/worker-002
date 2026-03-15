@@ -140,6 +140,17 @@ export interface DSLDataSource {
     stage: string;
   };
   protected?: boolean; // If true, never remove this node
+  /**
+   * ✅ UNIVERSAL: Intended capability for this node in this workflow
+   * AI determines this based on operation and user intent
+   * Used for context-aware classification (multi-capability nodes)
+   */
+  intendedCapability?: 'data_source' | 'transformation' | 'output';
+  /**
+   * ✅ UNIVERSAL: Available capabilities for this node type
+   * Retrieved from node capability registry
+   */
+  availableCapabilities?: string[];
 }
 
 /**
@@ -160,6 +171,17 @@ export interface DSLTransformation {
     stage: string;
   };
   protected?: boolean; // If true, never remove this node
+  /**
+   * ✅ UNIVERSAL: Intended capability for this node in this workflow
+   * AI determines this based on operation and user intent
+   * Used for context-aware classification (multi-capability nodes)
+   */
+  intendedCapability?: 'data_source' | 'transformation' | 'output';
+  /**
+   * ✅ UNIVERSAL: Available capabilities for this node type
+   * Retrieved from node capability registry
+   */
+  availableCapabilities?: string[];
 }
 
 /**
@@ -178,8 +200,20 @@ export interface DSLOutput {
   origin?: {
     source: 'user' | 'auto' | 'system';
     stage: string;
+    approach?: string; // Detection approach (e.g., 'registry_always_required')
   };
   protected?: boolean; // If true, never remove this node
+  /**
+   * ✅ UNIVERSAL: Intended capability for this node in this workflow
+   * AI determines this based on operation and user intent
+   * Used for context-aware classification (multi-capability nodes)
+   */
+  intendedCapability?: 'data_source' | 'transformation' | 'output';
+  /**
+   * ✅ UNIVERSAL: Available capabilities for this node type
+   * Retrieved from node capability registry
+   */
+  availableCapabilities?: string[];
 }
 
 /**
@@ -583,6 +617,14 @@ export class DSLGenerator {
         // ✅ PHASE 2: Use schema operations directly instead of categorizer
         const dsCategory = this.determineCategoryFromSchema(schema, dsOperation);
         if (dsCategory === 'dataSource') {
+          // ✅ UNIVERSAL: Determine intended capability and available capabilities
+          const { intendedCapability, availableCapabilities } = this.determineIntendedCapability(
+            dsType,
+            dsOperation,
+            'data_source',
+            originalPrompt
+          );
+          
           const dslIndex = dataSources.length;
           dataSources = [...dataSources, { // ✅ PHASE 3: Immutable add
             id: `ds_${stepCounter++}`,
@@ -590,6 +632,8 @@ export class DSLGenerator {
             operation: dsOperation as any,
             config: ds.config || {},
             description: (ds.config?.description as string | undefined) || undefined,
+            intendedCapability, // ✅ UNIVERSAL: AI-determined intended capability
+            availableCapabilities, // ✅ UNIVERSAL: Available capabilities from registry
           }];
           mappedActionsToDataSources = [...mappedActionsToDataSources, { actionType: dsType, operation: dsOperation, dslIndex }]; // ✅ PHASE 3: Immutable add
         } else {
@@ -656,12 +700,22 @@ export class DSLGenerator {
             continue; // Skip adding duplicate
           }
           
+          // ✅ UNIVERSAL: Determine intended capability and available capabilities
+          const { intendedCapability, availableCapabilities } = this.determineIntendedCapability(
+            tfType,
+            tfOperation,
+            'transformation',
+            originalPrompt
+          );
+          
           transformations = [...transformations, { // ✅ PHASE 3: Immutable add
             id: `tf_${stepCounter++}`,
             type: tfType,
             operation: this.mapTransformationOperation(tfOperation),
             config: tf.config || {},
             description: (tf.config?.description as string | undefined) || undefined,
+            intendedCapability, // ✅ UNIVERSAL: AI-determined intended capability
+            availableCapabilities, // ✅ UNIVERSAL: Available capabilities from registry
           }];
         } else if (tfCategory === 'output') {
           // ✅ MISPLACED NODE: Node in transformations array but is actually an output
@@ -676,12 +730,22 @@ export class DSLGenerator {
           );
           
           if (!duplicateCheck.isDuplicate) {
+            // ✅ UNIVERSAL: Determine intended capability and available capabilities
+            const { intendedCapability, availableCapabilities } = this.determineIntendedCapability(
+              tfType,
+              tfOperation,
+              'output',
+              originalPrompt
+            );
+            
             outputs = [...outputs, { // ✅ PHASE 3: Immutable add
               id: `out_${stepCounter++}`,
               type: tfType,
               operation: tfOperation as any,
               config: tf.config || {},
               description: (tf.config?.description as string | undefined) || undefined,
+              intendedCapability, // ✅ UNIVERSAL: AI-determined intended capability
+              availableCapabilities, // ✅ UNIVERSAL: Available capabilities from registry
             }];
           } else {
             console.warn(`[DSLGenerator] ⚠️  Skipping duplicate output: ${tfType} (${duplicateCheck.reason})`);
@@ -699,12 +763,22 @@ export class DSLGenerator {
           );
           
           if (!duplicateCheck.isDuplicate) {
+            // ✅ UNIVERSAL: Determine intended capability and available capabilities
+            const { intendedCapability, availableCapabilities } = this.determineIntendedCapability(
+              tfType,
+              tfOperation,
+              'data_source',
+              originalPrompt
+            );
+            
             dataSources = [...dataSources, { // ✅ PHASE 3: Immutable add
               id: `ds_${stepCounter++}`,
               type: tfType,
               operation: tfOperation as any,
               config: tf.config || {},
               description: (tf.config?.description as string | undefined) || undefined,
+              intendedCapability, // ✅ UNIVERSAL: AI-determined intended capability
+              availableCapabilities, // ✅ UNIVERSAL: Available capabilities from registry
             }];
           } else {
             console.warn(`[DSLGenerator] ⚠️  Skipping duplicate dataSource: ${tfType} (${duplicateCheck.reason})`);
@@ -877,12 +951,23 @@ export class DSLGenerator {
         if (category === 'output') {
         const dslIndex = outputs.length;
         const normalizedOutputType = this.normalizeOutputNodeType(actionType, operation, originalPrompt || '');
+        
+        // ✅ UNIVERSAL: Determine intended capability and available capabilities
+        const { intendedCapability, availableCapabilities } = this.determineIntendedCapability(
+          normalizedOutputType,
+          operation,
+          'output',
+          originalPrompt
+        );
+        
         outputs = [...outputs, { // ✅ PHASE 3: Immutable add
           id: `out_${stepCounter++}`,
           type: normalizedOutputType,
           operation: operation as any,
           config: action.config || {},
           description: (action.config?.description as string | undefined) || undefined,
+          intendedCapability, // ✅ UNIVERSAL: AI-determined intended capability
+          availableCapabilities, // ✅ UNIVERSAL: Available capabilities from registry
           origin: originMetadata,
           protected: originSource === 'user', // User-explicit nodes are protected
         }];
@@ -905,23 +990,43 @@ export class DSLGenerator {
           continue; // Skip adding duplicate
         }
         
+        // ✅ UNIVERSAL: Determine intended capability and available capabilities
+        const { intendedCapability, availableCapabilities } = this.determineIntendedCapability(
+          actionType,
+          operation,
+          'transformation',
+          originalPrompt
+        );
+        
         transformations = [...transformations, { // ✅ PHASE 3: Immutable add
           id: `tf_${stepCounter++}`,
           type: actionType,
           operation: this.mapTransformationOperation(operation),
           config: action.config || {},
           description: (action.config?.description as string | undefined) || undefined,
+          intendedCapability, // ✅ UNIVERSAL: AI-determined intended capability
+          availableCapabilities, // ✅ UNIVERSAL: Available capabilities from registry
           origin: originMetadata,
           protected: originSource === 'user', // User-explicit nodes are protected
         }];
         categorized = true;
-        console.log(`[DSLGenerator] ✅ Categorized "${actionType}" as TRANSFORMATION (using schema operation: "${operation}")`);
+        console.log(`[DSLGenerator] ✅ Categorized "${actionType}" as TRANSFORMATION (using schema operation: "${operation}", intendedCapability: ${intendedCapability})`);
       } else if (category === 'dataSource') {
+        // ✅ UNIVERSAL: Determine intended capability and available capabilities
+        const { intendedCapability, availableCapabilities } = this.determineIntendedCapability(
+          actionType,
+          operation,
+          'data_source',
+          originalPrompt
+        );
+        
         const dslIndex = dataSources.length;
         dataSources = [...dataSources, { // ✅ PHASE 3: Immutable add
           id: `ds_${stepCounter++}`,
           type: actionType,
           operation: operation as any,
+          intendedCapability, // ✅ UNIVERSAL: AI-determined intended capability
+          availableCapabilities, // ✅ UNIVERSAL: Available capabilities from registry
           config: action.config || {},
           description: (action.config?.description as string | undefined) || undefined,
           origin: originMetadata,
@@ -1246,6 +1351,39 @@ export class DSLGenerator {
       }
     } else if (isChatbotWorkflow && finalOutputs.length === 0) {
       console.log(`[DSLGenerator] ℹ️  Chatbot workflow detected - ai_chat_model serves as output (no separate output node needed)`);
+    }
+
+    // ✅ UNIVERSAL: Auto-include always-required nodes from registry (registry-driven)
+    // These nodes are defined in the registry as alwaysRequired, so they must be included in all workflows
+    // This is universal - works for infinite workflows without hardcoding
+    if (!isChatbotWorkflow) {
+      const alwaysRequiredNodes = unifiedNodeRegistry.getAlwaysRequiredNodes();
+      for (const nodeDef of alwaysRequiredNodes) {
+        // Check if node type already in outputs
+        const alreadyInOutputs = finalOutputs.some(o => o.type === nodeDef.type);
+        if (!alreadyInOutputs) {
+          // Registry says this node is always required - auto-include
+          const outputId = `out_${stepCounter++}`;
+          finalOutputs = [...finalOutputs, { // ✅ PHASE 3: Immutable add
+            id: outputId,
+            type: nodeDef.type,
+            operation: 'write', // Terminal nodes typically write/log data
+            config: nodeDef.defaultConfig(),
+            description: `Auto-included: ${nodeDef.label} (always required per registry)`,
+            origin: {
+              source: 'system',
+              stage: 'dsl_generation',
+              approach: 'registry_always_required',
+            },
+          }];
+          
+          // Track as auto-injected
+          autoInjectedNodesSet.add(nodeDef.type);
+          autoInjectedNodes = [...autoInjectedNodes, nodeDef.type]; // ✅ PHASE 3: Immutable add
+          
+          console.log(`[DSLGenerator] ✅ Auto-included ${nodeDef.type} (always required per registry)`);
+        }
+      }
     }
 
     // ✅ SEMANTIC EQUIVALENCE: Normalize DSL components to canonical types (remove semantic duplicates)
@@ -1991,6 +2129,100 @@ export class DSLGenerator {
     return isReadOperation(normalized);
   }
 
+  /**
+   * ✅ UNIVERSAL: Determine intended capability for a node based on operation and user intent
+   * 
+   * This method determines the PRIMARY role a node should play in this specific workflow,
+   * even if the node has multiple capabilities. This enables context-aware classification
+   * for multi-capability nodes (e.g., postgresql can be data_source OR output).
+   * 
+   * @param nodeType - Node type (e.g., 'postgresql', 'http_post')
+   * @param operation - Operation being performed (e.g., 'read', 'write', 'send')
+   * @param defaultCategory - Default category from DSL categorization ('data_source' | 'transformation' | 'output')
+   * @param originalPrompt - Original user prompt (for context-aware determination)
+   * @returns Object with intendedCapability and availableCapabilities
+   */
+  private determineIntendedCapability(
+    nodeType: string,
+    operation: string,
+    defaultCategory: 'data_source' | 'transformation' | 'output',
+    originalPrompt?: string
+  ): {
+    intendedCapability: 'data_source' | 'transformation' | 'output';
+    availableCapabilities: string[];
+  } {
+    // Get available capabilities from registry
+    const normalizedType = unifiedNormalizeNodeTypeString(nodeType);
+    const availableCapabilities = nodeCapabilityRegistryDSL.getCapabilities(normalizedType);
+    
+    // Determine intended capability based on operation semantics
+    const normalizedOperation = this.normalizeOperation(operation);
+    
+    // Priority 1: Operation semantics (most reliable)
+    if (isReadOperation(normalizedOperation)) {
+      return {
+        intendedCapability: 'data_source',
+        availableCapabilities,
+      };
+    }
+    
+    if (isWriteOperation(normalizedOperation) || normalizedOperation.includes('send') || normalizedOperation.includes('post')) {
+      return {
+        intendedCapability: 'output',
+        availableCapabilities,
+      };
+    }
+    
+    if (isTransformOperation(normalizedOperation)) {
+      return {
+        intendedCapability: 'transformation',
+        availableCapabilities,
+      };
+    }
+    
+    // Priority 2: Default category (from DSL categorization)
+    // This is the category the node was placed in during DSL generation
+    if (defaultCategory === 'data_source' || defaultCategory === 'transformation' || defaultCategory === 'output') {
+      return {
+        intendedCapability: defaultCategory,
+        availableCapabilities,
+      };
+    }
+    
+    // Priority 3: Available capabilities (fallback)
+    // If node has only one capability, use that
+    const hasDataSource = availableCapabilities.includes('data_source') || availableCapabilities.includes('read_data');
+    const hasTransformation = availableCapabilities.includes('transformation');
+    const hasOutput = availableCapabilities.includes('output') || availableCapabilities.includes('write_data') || availableCapabilities.includes('send');
+    
+    if (hasTransformation && !hasDataSource && !hasOutput) {
+      return {
+        intendedCapability: 'transformation',
+        availableCapabilities,
+      };
+    }
+    
+    if (hasOutput && !hasDataSource && !hasTransformation) {
+      return {
+        intendedCapability: 'output',
+        availableCapabilities,
+      };
+    }
+    
+    if (hasDataSource && !hasOutput && !hasTransformation) {
+      return {
+        intendedCapability: 'data_source',
+        availableCapabilities,
+      };
+    }
+    
+    // Priority 4: Default to transformation (safest fallback)
+    return {
+      intendedCapability: 'transformation',
+      availableCapabilities,
+    };
+  }
+
   // ✅ PHASE 1 FIX: Removed duplicate categorization methods
   // All categorization now uses unifiedNodeCategorizer as single source of truth
   // Old methods (isDataSource, isTransformation, isOutput) removed - use unifiedNodeCategorizer.categorizeWithOperation() instead
@@ -2614,12 +2846,38 @@ export class DSLGenerator {
     // Step 3: Outputs (depend on transformations or data sources)
     const lastStepId = lastDataSourceId || (dataSources.length > 0 ? `step_${dataSources[dataSources.length - 1].id}` : 'step_trigger');
     
-    for (const out of outputs) {
+    // ✅ CRITICAL FIX: log_output must ALWAYS be last (universal terminal node)
+    // Separate log_output from other outputs to ensure correct execution order
+    const regularOutputs = outputs.filter(out => {
+      const nodeType = unifiedNormalizeNodeTypeString(out.type || '');
+      return nodeType !== 'log_output';
+    });
+    const logOutputs = outputs.filter(out => {
+      const nodeType = unifiedNormalizeNodeTypeString(out.type || '');
+      return nodeType === 'log_output';
+    });
+    
+    // Add regular outputs first (linkedin, gmail, etc.)
+    let lastRegularOutputId: string | undefined;
+    for (const out of regularOutputs) {
       steps = [...steps, { // ✅ PHASE 3: Immutable add
         stepId: `step_${out.id}`,
         stepType: 'output',
         stepRef: out.id,
         dependsOn: [lastStepId],
+        order: order++,
+      }];
+      lastRegularOutputId = `step_${out.id}`;
+    }
+    
+    // Then add log_output at the very end (depends on last regular output, or last transformation/data source)
+    const logOutputDependsOn = lastRegularOutputId || lastStepId;
+    for (const out of logOutputs) {
+      steps = [...steps, { // ✅ PHASE 3: Immutable add
+        stepId: `step_${out.id}`,
+        stepType: 'output',
+        stepRef: out.id,
+        dependsOn: [logOutputDependsOn],
         order: order++,
       }];
     }
@@ -2945,6 +3203,18 @@ export class DSLGenerator {
       }
 
       const normalizedType = unifiedNormalizeNodeTypeString(nodeType);
+      
+      // ✅ UNIVERSAL: Check if node is already specified by AI (prevent duplicate injection)
+      // If AI already specified this node, skip adding it again
+      const aiSpecifiedNodesContext = (intent as any)?._aiSpecifiedNodesContext;
+      if (aiSpecifiedNodesContext) {
+        const { isNodeAISpecified } = require('../../core/utils/ai-specified-nodes-context');
+        if (isNodeAISpecified(aiSpecifiedNodesContext, normalizedType)) {
+          console.log(`[DSLGenerator] ✅ Node ${normalizedType} already specified by AI - skipping duplicate injection`);
+          continue;
+        }
+      }
+      
       const schema = nodeLibrary.getSchema(normalizedType);
       
       if (!schema) {
@@ -2980,33 +3250,47 @@ export class DSLGenerator {
       // Get config from intent action if available (may not have config property)
       const actionConfig = (intentAction as any).config || {};
 
+      // ✅ UNIVERSAL: Determine intended capability and available capabilities for missing nodes
+      const { intendedCapability, availableCapabilities } = this.determineIntendedCapability(
+        normalizedType,
+        operation,
+        isDataSource ? 'data_source' : (isTransformation ? 'transformation' : 'output'),
+        originalPrompt
+      );
+
       if (isDataSource) {
         updatedDataSources = [...updatedDataSources, { // ✅ PHASE 3: Immutable add
           id: `ds_${currentStepCounter++}`,
           type: normalizedType,
           operation: operation as any,
           config: actionConfig,
+          intendedCapability, // ✅ UNIVERSAL: AI-determined intended capability
+          availableCapabilities, // ✅ UNIVERSAL: Available capabilities from registry
         }];
         nodesAdded = [...nodesAdded, normalizedType]; // ✅ PHASE 3: Immutable add
-        console.log(`[DSLGenerator] ✅ Added missing data source to DSL: ${normalizedType} (capabilities: ${requiredCapabilities.join(', ')})`);
+        console.log(`[DSLGenerator] ✅ Added missing data source to DSL: ${normalizedType} (capabilities: ${requiredCapabilities.join(', ')}, intendedCapability: ${intendedCapability})`);
       } else if (isTransformation) {
         updatedTransformations = [...updatedTransformations, { // ✅ PHASE 3: Immutable add
           id: `tf_${currentStepCounter++}`,
           type: normalizedType,
           operation: operation as any,
           config: actionConfig,
+          intendedCapability, // ✅ UNIVERSAL: AI-determined intended capability
+          availableCapabilities, // ✅ UNIVERSAL: Available capabilities from registry
         }];
         nodesAdded = [...nodesAdded, normalizedType]; // ✅ PHASE 3: Immutable add
-        console.log(`[DSLGenerator] ✅ Added missing transformation to DSL: ${normalizedType} (capabilities: ${requiredCapabilities.join(', ')})`);
+        console.log(`[DSLGenerator] ✅ Added missing transformation to DSL: ${normalizedType} (capabilities: ${requiredCapabilities.join(', ')}, intendedCapability: ${intendedCapability})`);
       } else if (isOutput) {
         updatedOutputs = [...updatedOutputs, { // ✅ PHASE 3: Immutable add
           id: `out_${currentStepCounter++}`,
           type: normalizedType,
           operation: operation as any,
           config: actionConfig,
+          intendedCapability, // ✅ UNIVERSAL: AI-determined intended capability
+          availableCapabilities, // ✅ UNIVERSAL: Available capabilities from registry
         }];
         nodesAdded = [...nodesAdded, normalizedType]; // ✅ PHASE 3: Immutable add
-        console.log(`[DSLGenerator] ✅ Added missing output to DSL: ${normalizedType} (capabilities: ${requiredCapabilities.join(', ')})`);
+        console.log(`[DSLGenerator] ✅ Added missing output to DSL: ${normalizedType} (capabilities: ${requiredCapabilities.join(', ')}, intendedCapability: ${intendedCapability})`);
       } else {
         console.warn(`[DSLGenerator] ⚠️  Cannot categorize missing node "${nodeType}" - skipping`);
       }

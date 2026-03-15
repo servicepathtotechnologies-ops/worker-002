@@ -66,11 +66,18 @@ export class WorkflowOperationOptimizer {
    * @param options - Optimization options (required nodes, etc.)
    * @returns Optimized workflow with duplicate operations removed
    */
-  optimize(workflow: Workflow, originalPrompt?: string, options?: OptimizationOptions, confidenceScore?: number): OperationOptimizationResult {
+  optimize(workflow: Workflow, originalPrompt?: string, options?: OptimizationOptions, confidenceScore?: number, dslExecutionOrder?: Array<{ stepId: string; stepType: string; stepRef: string; order: number; dependsOn?: string[] }>): OperationOptimizationResult {
     console.log('[WorkflowOperationOptimizer] 🔍 Analyzing workflow for duplicate operations...');
     
     const originalNodeCount = workflow.nodes.length;
     const originalEdgeCount = workflow.edges.length;
+    
+    // ✅ PHASE 1: Get current execution order (source of truth)
+    const { executionOrderManager } = require('../../core/orchestration/execution-order-manager');
+    const { unifiedGraphOrchestrator } = require('../../core/orchestration/unified-graph-orchestrator');
+    
+    const currentExecutionOrder = executionOrderManager.initialize(workflow, dslExecutionOrder);
+    const orderedNodeIds = executionOrderManager.getOrderedNodeIds(currentExecutionOrder);
     
     // ✅ ROOT-LEVEL FIX: Group nodes by operation signature from REGISTRY (not just operation name)
     // This ensures we detect duplicates even if operation names differ
@@ -79,7 +86,7 @@ export class WorkflowOperationOptimizer {
     // Find duplicate operations
     const duplicateOperations = this.findDuplicateOperations(nodesByOperation);
     
-    // Remove duplicate nodes (respecting required nodes)
+    // Remove duplicate nodes (respecting required nodes and execution order)
     // Use provided confidenceScore or fallback to metadata
     const effectiveConfidenceScore = confidenceScore ?? ((workflow.metadata as any)?.confidenceScore);
     const { optimizedNodes, removedNodeIds, optimizations } = this.removeDuplicateOperations(
@@ -87,28 +94,45 @@ export class WorkflowOperationOptimizer {
       duplicateOperations,
       workflow.edges,
       options,
-      effectiveConfidenceScore
+      effectiveConfidenceScore,
+      orderedNodeIds // ✅ NEW: Pass execution order
     );
     
-    // Update edges to remove connections to removed nodes
-    const removedNodeIdsSet = new Set(removedNodeIds);
-    const { optimizedEdges, removedEdgeIds } = this.updateEdgesForRemovedNodes(
-      workflow.edges,
-      removedNodeIdsSet,
-      optimizedNodes
-    );
-    
+    // ✅ PHASE 1: Rebuild workflow using orchestrator (NOT manual edge rewiring)
     const optimizedWorkflow: Workflow = {
       ...workflow,
       nodes: optimizedNodes,
-      edges: optimizedEdges,
+      edges: [], // Clear edges - orchestrator will rebuild
     };
+    
+    // ✅ CRITICAL: Use orchestrator to rebuild edges from execution order
+    const { workflow: reconciledWorkflow, executionOrder: newExecutionOrder } = 
+      unifiedGraphOrchestrator.initializeWorkflow(optimizedNodes, undefined, dslExecutionOrder);
+    
+    // ✅ PHASE 1: Validate the result
+    const validation = unifiedGraphOrchestrator.validateWorkflow(reconciledWorkflow, newExecutionOrder);
+    if (!validation.valid) {
+      // Optimization broke the workflow - skip it
+      console.warn(`[WorkflowOperationOptimizer] ⚠️  Optimization would break workflow, skipping: ${validation.errors.join(', ')}`);
+      return {
+        workflow, // Return original
+        removedNodes: [],
+        removedEdges: [],
+        optimizations: [],
+        statistics: {
+          originalNodeCount,
+          optimizedNodeCount: originalNodeCount,
+          originalEdgeCount,
+          optimizedEdgeCount: originalEdgeCount,
+        },
+      };
+    }
     
     const statistics = {
       originalNodeCount,
       optimizedNodeCount: optimizedNodes.length,
       originalEdgeCount,
-      optimizedEdgeCount: optimizedEdges.length,
+      optimizedEdgeCount: reconciledWorkflow.edges.length, // Use orchestrator's edge count
     };
     
     if (removedNodeIds.length > 0) {
@@ -121,9 +145,9 @@ export class WorkflowOperationOptimizer {
     }
     
     return {
-      workflow: optimizedWorkflow,
+      workflow: reconciledWorkflow, // Use orchestrator-reconciled workflow
       removedNodes: removedNodeIds,
-      removedEdges: removedEdgeIds,
+      removedEdges: [], // Orchestrator handles edge changes
       optimizations,
       statistics,
     };
@@ -423,13 +447,15 @@ export class WorkflowOperationOptimizer {
    * Remove duplicate operations, keeping the most appropriate node
    * 
    * ✅ FIXED: Respects required nodes and prevents invalid branching
+   * ✅ PHASE 1: Respects execution order - only removes non-adjacent duplicates
    */
   private removeDuplicateOperations(
     nodes: WorkflowNode[],
     duplicateOperations: Map<string, WorkflowNode[]>,
     edges: WorkflowEdge[],
     options?: OptimizationOptions,
-    confidenceScore?: number
+    confidenceScore?: number,
+    executionOrder?: string[] // ✅ NEW: Execution order from orchestrator
   ): {
     optimizedNodes: WorkflowNode[];
     removedNodeIds: string[];
@@ -468,15 +494,53 @@ export class WorkflowOperationOptimizer {
     
     // Process each duplicate operation
     for (const [operation, duplicateNodes] of duplicateOperations.entries()) {
-      // Determine which node to keep
-      const keptNode = this.selectBestNode(duplicateNodes, edgeMap);
-      const removedNodes = duplicateNodes.filter(n => n.id !== keptNode.id);
+      // ✅ PHASE 1: Sort duplicates by execution order position (if available)
+      let sortedDuplicates = duplicateNodes;
+      if (executionOrder && executionOrder.length > 0) {
+        sortedDuplicates = [...duplicateNodes].sort((a, b) => {
+          const posA = executionOrder.indexOf(a.id);
+          const posB = executionOrder.indexOf(b.id);
+          // If not in execution order, put at end
+          if (posA === -1 && posB === -1) return 0;
+          if (posA === -1) return 1;
+          if (posB === -1) return -1;
+          return posA - posB; // Earlier in order = higher priority
+        });
+      }
+      
+      // Determine which node to keep (prefer earlier in execution order)
+      const keptNode = executionOrder && executionOrder.length > 0
+        ? sortedDuplicates[0] // Keep first in execution order
+        : this.selectBestNode(duplicateNodes, edgeMap); // Fallback to existing logic
+      const removedNodes = sortedDuplicates.filter(n => n.id !== keptNode.id);
       
       // ✅ FIXED: Check if any removed node is required
       const requiredRemovedNodes = removedNodes.filter(n => {
         const nodeType = (n.type || n.data?.type || '').toLowerCase();
         return requiredNodeTypes.has(nodeType);
       });
+      
+      // ✅ PHASE 1: Check if removing would break execution order chain
+      // If nodes are adjacent in execution order, removing one breaks the chain
+      let wouldBreakChain = false;
+      if (executionOrder && executionOrder.length > 0) {
+        const keptPos = executionOrder.indexOf(keptNode.id);
+        wouldBreakChain = removedNodes.some(removed => {
+          const removedPos = executionOrder.indexOf(removed.id);
+          if (removedPos === -1 || keptPos === -1) return false; // Not in order, skip check
+          return Math.abs(removedPos - keptPos) <= 1; // Adjacent nodes
+        });
+        
+        if (wouldBreakChain) {
+          console.log(
+            `[WorkflowOperationOptimizer] ⚠️  Skipping removal of duplicate operation "${operation}": ` +
+            `Would break execution order chain (adjacent nodes)`
+          );
+          // Keep all nodes to avoid breaking chain
+          duplicateNodes.forEach(n => nodesToKeep.add(n.id));
+          continue;
+        }
+      }
       
       // ✅ FIXED: Check if removing nodes would create invalid branching
       // If keptNode has multiple outputs and we remove a node that connects to it,
@@ -859,7 +923,9 @@ export const workflowOperationOptimizer = new WorkflowOperationOptimizer();
 export function optimizeWorkflowOperations(
   workflow: Workflow,
   originalPrompt?: string,
-  options?: OptimizationOptions
+  options?: OptimizationOptions,
+  confidenceScore?: number,
+  dslExecutionOrder?: Array<{ stepId: string; stepType: string; stepRef: string; order: number; dependsOn?: string[] }>
 ): OperationOptimizationResult {
-  return workflowOperationOptimizer.optimize(workflow, originalPrompt, options);
+  return workflowOperationOptimizer.optimize(workflow, originalPrompt, options, confidenceScore, dslExecutionOrder);
 }

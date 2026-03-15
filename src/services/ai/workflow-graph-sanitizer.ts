@@ -56,8 +56,10 @@ export class WorkflowGraphSanitizer {
    * Sanitize workflow graph
    * @param workflow - Workflow to sanitize
    * @param requiredNodeTypes - Optional set of required node types that should NOT be removed
+   * @param confidenceScore - Confidence score for tracking
+   * @param dslExecutionOrder - Optional DSL execution order (for order-aware duplicate removal)
    */
-  sanitize(workflow: Workflow, requiredNodeTypes?: Set<string>, confidenceScore?: number): SanitizationResult {
+  sanitize(workflow: Workflow, requiredNodeTypes?: Set<string>, confidenceScore?: number, dslExecutionOrder?: Array<{ stepId: string; stepType: string; stepRef: string; order: number; dependsOn?: string[] }>): SanitizationResult {
     const fixes = {
       duplicateNodesRemoved: 0,
       invalidEdgesRemoved: 0,
@@ -81,7 +83,7 @@ export class WorkflowGraphSanitizer {
     };
 
     // STEP 1: Remove duplicate nodes (especially AI provider nodes)
-    const duplicateResult = this.removeDuplicateNodes(sanitizedWorkflow, confidenceScore, requiredNodeTypes);
+    const duplicateResult = this.removeDuplicateNodes(sanitizedWorkflow, confidenceScore, requiredNodeTypes, dslExecutionOrder);
     sanitizedWorkflow = duplicateResult.workflow;
     fixes.duplicateNodesRemoved = duplicateResult.removedCount;
     warnings.push(...duplicateResult.warnings);
@@ -153,8 +155,9 @@ export class WorkflowGraphSanitizer {
    * 2. Semantic duplicates (semantically equivalent node types)
    * 
    * Rule: Only ONE canonical node type allowed per workflow (removes semantic equivalents)
+   * ✅ PHASE 4: Respects execution order - prefers keeping nodes earlier in execution order
    */
-  private removeDuplicateNodes(workflow: Workflow, confidenceScore?: number, requiredNodeTypes?: Set<string>): {
+  private removeDuplicateNodes(workflow: Workflow, confidenceScore?: number, requiredNodeTypes?: Set<string>, dslExecutionOrder?: Array<{ stepId: string; stepType: string; stepRef: string; order: number; dependsOn?: string[] }>): {
     workflow: Workflow;
     removedCount: number;
     warnings: string[];
@@ -162,6 +165,37 @@ export class WorkflowGraphSanitizer {
     const warnings: string[] = [];
     const nodesToRemove = new Set<string>();
     const seenCanonicals = new Map<string, string>(); // canonicalType -> first nodeId
+
+    // ✅ PHASE 4: Get execution order if available
+    let orderedNodeIds: string[] = [];
+    if (dslExecutionOrder && dslExecutionOrder.length > 0) {
+      // Build map from stepRef to nodeId
+      const stepRefToNodeId = new Map<string, string>();
+      for (const step of dslExecutionOrder) {
+        const matchingNode = workflow.nodes.find(n => {
+          const dslId = (n.data?.config?._meta_dsl as any)?.dslId;
+          return dslId === step.stepRef || n.id === step.stepRef;
+        });
+        if (matchingNode) {
+          stepRefToNodeId.set(step.stepRef, matchingNode.id);
+        }
+      }
+      // Sort by order and get nodeIds
+      orderedNodeIds = dslExecutionOrder
+        .sort((a, b) => a.order - b.order)
+        .map(step => stepRefToNodeId.get(step.stepRef))
+        .filter((id): id is string => id !== undefined);
+    } else {
+      // Fallback: use execution order manager
+      try {
+        const { executionOrderManager } = require('../../core/orchestration/execution-order-manager');
+        const executionOrder = executionOrderManager.initialize(workflow);
+        orderedNodeIds = executionOrderManager.getOrderedNodeIds(executionOrder);
+      } catch (error) {
+        // If execution order manager fails, use node array order
+        orderedNodeIds = workflow.nodes.map(n => n.id);
+      }
+    }
 
     for (const node of workflow.nodes) {
       const nodeType = unifiedNormalizeNodeType(node);
@@ -196,46 +230,62 @@ export class WorkflowGraphSanitizer {
 
       // Check if canonical already exists
       if (seenCanonicals.has(canonicalLower)) {
-        // This is a semantic duplicate - mark for removal
+        // ✅ PHASE 4: This is a semantic duplicate - decide which to keep based on execution order
         const firstNodeId = seenCanonicals.get(canonicalLower)!;
-        nodesToRemove.add(node.id);
+        const currentNodePos = orderedNodeIds.indexOf(node.id);
+        const firstNodePos = orderedNodeIds.indexOf(firstNodeId);
         
-        const reason = `Semantic duplicate ${nodeType} node (canonical: ${canonical}) - keeping first occurrence`;
-        warnings.push(
-          `Removed semantic duplicate ${nodeType} node: ${node.id} ` +
-          `(canonical: ${canonical}, keeping: ${firstNodeId})`
-        );
-        
-        // ✅ TRACK REPLACEMENT
-        const nodeDef = unifiedNodeRegistry.get(unifiedNormalizeNodeTypeString(node.type || node.data?.type || ''));
-        let category: 'dataSource' | 'transformation' | 'output' = 'transformation';
-        if (nodeDef?.category === 'data') {
-          category = 'dataSource';
-        } else if (nodeDef?.category === 'communication') {
-          category = 'output';
+        // Keep the node that appears EARLIER in execution order
+        if (currentNodePos !== -1 && firstNodePos !== -1 && currentNodePos < firstNodePos) {
+          // Current node is earlier - keep it, remove the first one
+          nodesToRemove.add(firstNodeId);
+          seenCanonicals.set(canonicalLower, node.id);
+          // Update warnings to reflect the change
+          warnings.push(
+            `Removed semantic duplicate ${workflow.nodes.find(n => n.id === firstNodeId)?.type || 'unknown'} node: ${firstNodeId} ` +
+            `(canonical: ${canonical}, keeping earlier node: ${node.id})`
+          );
+        } else {
+          // First node is earlier (or positions unknown) - keep it, remove current
+          nodesToRemove.add(node.id);
+          
+          const reason = `Semantic duplicate ${nodeType} node (canonical: ${canonical}) - keeping first occurrence`;
+          warnings.push(
+            `Removed semantic duplicate ${nodeType} node: ${node.id} ` +
+            `(canonical: ${canonical}, keeping: ${firstNodeId})`
+          );
+          
+          // ✅ TRACK REPLACEMENT
+          const nodeDef = unifiedNodeRegistry.get(unifiedNormalizeNodeTypeString(node.type || node.data?.type || ''));
+          let category: 'dataSource' | 'transformation' | 'output' = 'transformation';
+          if (nodeDef?.category === 'data') {
+            category = 'dataSource';
+          } else if (nodeDef?.category === 'communication') {
+            category = 'output';
+          }
+          
+          nodeReplacementTracker.trackReplacement({
+            nodeId: node.id,
+            nodeType,
+            operation: typeof node.data?.config?.operation === 'string' ? node.data.config.operation : '',
+            category,
+            reason,
+            stage: 'workflow_graph_sanitizer.removeDuplicateNodes',
+            replacedBy: unifiedNormalizeNodeTypeString(workflow.nodes.find(n => n.id === firstNodeId)?.type || workflow.nodes.find(n => n.id === firstNodeId)?.data?.type || '') || '',
+            wasRemoved: true,
+            isProtected: false,
+            confidence: confidenceScore,
+            metadata: {
+              canonical,
+              firstNodeId: firstNodeId || '',
+            },
+          });
+          
+          console.log(
+            `[WorkflowGraphSanitizer] 🗑️  Marking semantic duplicate ${nodeType} → ${canonical} ` +
+            `for removal: ${node.id} (keeping: ${firstNodeId})`
+          );
         }
-        
-        nodeReplacementTracker.trackReplacement({
-          nodeId: node.id,
-          nodeType,
-          operation: typeof node.data?.config?.operation === 'string' ? node.data.config.operation : '',
-          category,
-          reason,
-          stage: 'workflow_graph_sanitizer.removeDuplicateNodes',
-          replacedBy: unifiedNormalizeNodeTypeString(workflow.nodes.find(n => n.id === firstNodeId)?.type || workflow.nodes.find(n => n.id === firstNodeId)?.data?.type || '') || '',
-          wasRemoved: true,
-          isProtected: false,
-          confidence: confidenceScore,
-          metadata: {
-            canonical,
-            firstNodeId: firstNodeId || '',
-          },
-        });
-        
-        console.log(
-          `[WorkflowGraphSanitizer] 🗑️  Marking semantic duplicate ${nodeType} → ${canonical} ` +
-          `for removal: ${node.id} (keeping: ${firstNodeId})`
-        );
       } else {
         // First occurrence of canonical type - keep it
         seenCanonicals.set(canonicalLower, node.id);

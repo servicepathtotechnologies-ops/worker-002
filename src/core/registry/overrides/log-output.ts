@@ -31,6 +31,15 @@ export function overrideLogOutput(def: UnifiedNodeDefinition, schema: NodeSchema
     ...def,
     tags: Array.from(new Set([...(def.tags || []), 'output', 'sink', 'terminal', 'logging'])),
     defaultConfig: enhancedDefaultConfig,
+    // ✅ UNIVERSAL: Define workflow-level behavior in registry (single source of truth)
+    // This ensures log_output is always included and always terminal for ALL workflows
+    workflowBehavior: {
+      alwaysRequired: true,        // Always include in workflows (auto-included even if not in intent)
+      alwaysTerminal: true,         // Must be last node (no outgoing edges)
+      exemptFromRemoval: true,      // Minimal policy can't remove it
+      autoInject: true,             // Auto-inject if missing
+      injectionPriority: 0,        // Highest priority (inject first)
+    },
     // ✅ CRITICAL: Use legacy executor for log_output (simple logging logic)
     execute: async (context) => {
       return await executeViaLegacyExecutor({ context, schema });

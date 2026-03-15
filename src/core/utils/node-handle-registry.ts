@@ -19,146 +19,116 @@ export interface NodeHandleContract {
 }
 
 /**
- * Registry of valid handle IDs per node type
+ * ✅ UNIVERSAL: Generate handle registry from unified-node-registry
+ * 
+ * This registry is dynamically generated from the unified node registry,
+ * ensuring all nodes automatically have correct handle definitions.
  * 
  * These MUST match the Handle components in WorkflowNode.tsx
  */
-export const NODE_HANDLE_REGISTRY: Record<string, NodeHandleContract> = {
-  // Standard nodes (most common)
-  default: {
-    inputs: ['input'],
-    outputs: ['output'],
-  },
+import { unifiedNodeRegistry } from '../registry/unified-node-registry';
 
-  // Triggers
-  manual_trigger: {
-    inputs: [],
-    outputs: ['output', 'inputData'], // ✅ CRITICAL: manual_trigger outputs 'inputData' (data field) via 'output' handle
-  },
-  webhook: {
-    inputs: [],
-    outputs: ['output'],
-  },
-  schedule: {
-    inputs: [],
-    outputs: ['output'],
-  },
-  interval: {
-    inputs: [],
-    outputs: ['output'],
-  },
-  form: {
-    inputs: [],
-    outputs: ['output'],
-  },
-  chat_trigger: {
-    inputs: [],
-    outputs: ['output', 'message'], // ✅ CRITICAL: chat_trigger outputs 'message' (data field) via 'output' handle
-  },
+/**
+ * ✅ UNIVERSAL: Generate handle contract from registry
+ */
+function generateHandleContractFromRegistry(nodeType: string): NodeHandleContract {
+  const nodeDef = unifiedNodeRegistry.get(nodeType);
+  
+  if (!nodeDef) {
+    // Fallback to default for unknown nodes
+    return {
+      inputs: ['input'],
+      outputs: ['output'],
+    };
+  }
+  
+  // ✅ UNIVERSAL: Use registry ports as single source of truth
+  const inputs = nodeDef.incomingPorts && nodeDef.incomingPorts.length > 0 
+    ? nodeDef.incomingPorts 
+    : (nodeDef.category === 'trigger' ? [] : ['input']);
+  
+  const outputs = nodeDef.outgoingPorts && nodeDef.outgoingPorts.length > 0
+    ? nodeDef.outgoingPorts
+    : ['output'];
+  
+  // ✅ SPECIAL CASES: Handle nodes with additional output ports
+  // manual_trigger outputs 'inputData' (data field) via 'output' handle
+  if (nodeType === 'manual_trigger' && !outputs.includes('inputData')) {
+    outputs.push('inputData');
+  }
+  
+  // chat_trigger outputs 'message' (data field) via 'output' handle
+  if (nodeType === 'chat_trigger' && !outputs.includes('message')) {
+    outputs.push('message');
+  }
+  
+  // if_else has fixed outputs ['true', 'false']
+  if (nodeType === 'if_else') {
+    return {
+      inputs: ['input'],
+      outputs: ['true', 'false'],
+    };
+  }
+  
+  // switch has dynamic outputs (based on cases config)
+  if (nodeType === 'switch') {
+    return {
+      inputs: ['input'],
+      outputs: [], // Dynamic - based on cases config
+    };
+  }
+  
+  return {
+    inputs,
+    outputs,
+  };
+}
 
-  // Logic nodes
-  if_else: {
-    inputs: ['input'],
-    outputs: ['true', 'false'],
-  },
-  switch: {
-    inputs: ['input'],
-    outputs: [], // Dynamic - based on cases config
-  },
+/**
+ * ✅ UNIVERSAL: Lazy-loaded handle registry (generated from registry)
+ */
+let _handleRegistryCache: Record<string, NodeHandleContract> | null = null;
 
-  // AI Agent (special multi-input node)
-  ai_agent: {
-    inputs: ['userInput', 'chat_model', 'memory', 'tool'],
-    outputs: ['output'],
-  },
-  // AI Service node
-  ai_service: {
-    inputs: ['input'],
-    outputs: ['output', 'text', 'response'],
-  },
+function buildHandleRegistry(): Record<string, NodeHandleContract> {
+  if (_handleRegistryCache) {
+    return _handleRegistryCache;
+  }
+  
+  const registry: Record<string, NodeHandleContract> = {
+    // Default fallback
+    default: {
+      inputs: ['input'],
+      outputs: ['output'],
+    },
+  };
+  
+  // ✅ UNIVERSAL: Generate handles for all nodes in registry
+  const allNodeTypes = unifiedNodeRegistry.getAllTypes();
+  for (const nodeType of allNodeTypes) {
+    registry[nodeType] = generateHandleContractFromRegistry(nodeType);
+  }
+  
+  _handleRegistryCache = registry;
+  return registry;
+}
 
-  // Output nodes
-  slack_message: {
-    inputs: ['input'],
-    outputs: ['output'],
+/**
+ * ✅ UNIVERSAL: Get handle registry (generated from unified registry)
+ */
+export const NODE_HANDLE_REGISTRY: Record<string, NodeHandleContract> = new Proxy({} as Record<string, NodeHandleContract>, {
+  get(target, prop: string) {
+    const registry = buildHandleRegistry();
+    return registry[prop] || registry.default;
   },
-  log_output: {
-    inputs: ['input'],
-    outputs: ['output'],
+  ownKeys() {
+    const registry = buildHandleRegistry();
+    return Object.keys(registry);
   },
-  email: {
-    inputs: ['input'],
-    outputs: ['output'],
+  has(target, prop: string) {
+    const registry = buildHandleRegistry();
+    return prop in registry;
   },
-  google_gmail: {
-    inputs: ['input'],
-    outputs: ['output'],
-  },
-  discord: {
-    inputs: ['input'],
-    outputs: ['output'],
-  },
-  telegram: {
-    inputs: ['input'],
-    outputs: ['output'],
-  },
-  microsoft_teams: {
-    inputs: ['input'],
-    outputs: ['output'],
-  },
-  twitter: {
-    inputs: ['input'],
-    outputs: ['output'],
-  },
-  instagram: {
-    inputs: ['input'],
-    outputs: ['output'],
-  },
-  facebook: {
-    inputs: ['input'],
-    outputs: ['output'],
-  },
-  linkedin: {
-    inputs: ['input'],
-    outputs: ['output'],
-  },
-
-  // Database/CRM
-  airtable: {
-    inputs: ['input'],
-    outputs: ['output'],
-  },
-  pipedrive: {
-    inputs: ['input'],
-    outputs: ['output'],
-  },
-
-  // Data processing
-  google_sheets: {
-    inputs: ['input'],
-    outputs: ['output'],
-  },
-  javascript: {
-    inputs: ['input'],
-    outputs: ['output'],
-  },
-  json_parser: {
-    inputs: ['input'],
-    outputs: ['output'],
-  },
-  text_formatter: {
-    inputs: ['input'],
-    outputs: ['output'],
-  },
-  http_request: {
-    inputs: ['input'],
-    outputs: ['output'],
-  },
-  http_post: {
-    inputs: ['input'],
-    outputs: ['output'],
-  },
-};
+});
 
 /**
  * Get valid handle contract for a node type
