@@ -56,9 +56,10 @@ export class IntentConstraintEngine {
    * 
    * @param intent - Structured intent from user prompt
    * @param originalPrompt - Original user prompt (for transformation detection)
+   * @param explicitNodeTypes - ✅ NEW: Explicit nodes from selected variation (preserved during normalization)
    * @returns Array of required node types (trigger + data sources + transformations + outputs)
    */
-  getRequiredNodes(intent: StructuredIntent, originalPrompt?: string): string[] {
+  getRequiredNodes(intent: StructuredIntent, originalPrompt?: string, explicitNodeTypes?: Set<string>): string[] {
     console.log('[IntentConstraintEngine] Extracting required nodes from intent...');
     
     const requiredNodes = new Set<string>();
@@ -386,7 +387,8 @@ export class IntentConstraintEngine {
     const filteredNodes = this.filterUnnecessaryNodes(Array.from(requiredNodes), intent, originalPromptLower);
 
     // STEP 4.5: ✅ Apply semantic equivalence normalization (remove semantic duplicates, keep canonical types)
-    const normalizedNodes = this.normalizeSemanticEquivalences(filteredNodes, intent);
+    // ✅ PRESERVE EXPLICIT NODES: Pass explicitNodeTypes to preserve user's explicit choices (e.g., Slack vs Discord)
+    const normalizedNodes = this.normalizeSemanticEquivalences(filteredNodes, intent, explicitNodeTypes);
 
     // STEP 5: Validate and normalize node types
     const validatedNodes = this.validateNodeTypes(normalizedNodes);
@@ -815,14 +817,52 @@ export class IntentConstraintEngine {
    * 
    * This ensures requiredNodes contains only canonical types, not semantic equivalents.
    * Example: ["instagram", "instagram_post"] → ["instagram"] (keep canonical, remove duplicate)
+   * 
+   * ✅ PRESERVE EXPLICIT NODES: If a node is explicitly mentioned by the user (in explicitNodeTypes),
+   * it is preserved as-is, even if semantically equivalent to another node.
+   * This prevents replacing user's explicit choices (e.g., Slack → Discord).
    */
-  private normalizeSemanticEquivalences(nodeTypes: string[], intent: StructuredIntent): string[] {
+  private normalizeSemanticEquivalences(nodeTypes: string[], intent: StructuredIntent, explicitNodeTypes?: Set<string>): string[] {
     console.log('[IntentConstraintEngine] 🔍 Normalizing semantic equivalences...');
     
     const normalized = new Set<string>();
     const seenCanonicals = new Set<string>();
     
     for (const nodeType of nodeTypes) {
+      // ✅ PRESERVE EXPLICIT NODES: If this node is explicitly mentioned by the user, preserve it as-is
+      // This prevents replacing user's explicit choices (e.g., Slack → Discord) during normalization
+      if (explicitNodeTypes && explicitNodeTypes.has(nodeType)) {
+        // Check if this explicit node would conflict with an already normalized canonical
+        const schema = nodeLibrary.getSchema(nodeType);
+        const category = schema?.category?.toLowerCase();
+        const action = intent.actions?.find(a => {
+          const actionNodes = this.mapActionToNodeTypes(a);
+          return actionNodes.includes(nodeType);
+        });
+        const operation = action?.operation?.toLowerCase();
+        const canonical = semanticNodeEquivalenceRegistry.getCanonicalType(nodeType, operation, category);
+        
+        // If the explicit node's canonical is already in normalized set, skip to prevent duplicate
+        if (seenCanonicals.has(canonical.toLowerCase()) && canonical !== nodeType) {
+          console.log(
+            `[IntentConstraintEngine] ⚠️  Skipping explicit node ${nodeType} ` +
+            `(canonical ${canonical} already in requiredNodes, but preserving explicit choice)`
+          );
+          // Still add the explicit node itself (user's choice takes precedence)
+          normalized.add(nodeType);
+          continue;
+        }
+        
+        // Preserve explicit node as-is (user's explicit choice)
+        normalized.add(nodeType);
+        seenCanonicals.add(nodeType.toLowerCase());
+        console.log(
+          `[IntentConstraintEngine] ✅ Preserved explicit node: ${nodeType} ` +
+          `(user's explicit choice, not normalized to canonical ${canonical})`
+        );
+        continue;
+      }
+      
       // Get operation and category from intent context
       const action = intent.actions?.find(a => {
         const actionNodes = this.mapActionToNodeTypes(a);
@@ -1167,11 +1207,12 @@ export class IntentConstraintEngine {
    * 
    * @param intent - Structured intent
    * @param originalPrompt - Original user prompt (for transformation detection)
+   * @param explicitNodeTypes - ✅ NEW: Explicit nodes from selected variation (preserved during normalization)
    * @returns Array of required node types (trigger + data sources + transformations + outputs)
    */
-  static getRequiredNodes(intent: StructuredIntent, originalPrompt?: string): string[] {
+  static getRequiredNodes(intent: StructuredIntent, originalPrompt?: string, explicitNodeTypes?: Set<string>): string[] {
     const engine = new IntentConstraintEngine();
-    return engine.getRequiredNodes(intent, originalPrompt);
+    return engine.getRequiredNodes(intent, originalPrompt, explicitNodeTypes);
   }
 }
 

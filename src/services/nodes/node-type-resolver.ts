@@ -35,7 +35,7 @@ const NODE_TYPE_ALIASES: Record<string, string[]> = {
   // AI Nodes
   'ai_service': ['ai', 'openai', 'llm', 'ai_node', 'ai_processor', 'ai_model', 'ai_chat', 'ai service', 'ai processing', 'summarize', 'analyze', 'extract', 'classify', 'ai text', 'ai model'],
   'ai_chat_model': ['chat_model', 'ai_chat', 'llm_chat', 'conversation', 'chat_model'],
-  'ai_agent': ['agent', 'ai_assistant', 'assistant', 'bot', 'ai agent', 'chatbot', 'chat bot', 'conversational ai', 'ai reasoning', 'natural language'],
+  'ai_agent': ['agent', 'ai_assistant', 'assistant', 'bot', 'ai agent', 'chatbot', 'chat bot', 'conversational ai', 'ai reasoning', 'natural language', 'ai_agent.process_data', 'ai_agent.process', 'process_data'],
   'openai_gpt': ['gpt', 'gpt4', 'gpt3', 'openai', 'chatgpt'],
   'anthropic_claude': ['claude', 'anthropic', 'claude3'],
   'google_gemini': ['gemini', 'google_ai', 'bard'],
@@ -81,11 +81,11 @@ const NODE_TYPE_ALIASES: Record<string, string[]> = {
   'twilio': ['sms', 'twilio_sms', 'send_sms'],
   
   // Social Media
-  'linkedin': ['linked_in', 'li'],
-  'twitter': ['tweet', 'twitter_post', 'x'],
-  'instagram': ['ig', 'insta'],
-  'youtube': ['yt', 'youtube_video'],
-  'facebook': ['fb', 'facebook_post'],
+  'linkedin': ['linked_in', 'li', 'linkedin_post', 'post_linkedin', 'linkedin_post_node', 'post_to_linkedin', 'publish_to_linkedin'],
+  'twitter': ['tweet', 'twitter_post', 'x', 'twitter_post_node', 'post_to_twitter', 'publish_to_twitter'],
+  'instagram': ['ig', 'insta', 'instagram_post', 'post_to_instagram', 'publish_to_instagram'],
+  'youtube': ['yt', 'youtube_video', 'youtube_post', 'post_to_youtube', 'publish_to_youtube'],
+  'facebook': ['fb', 'facebook_post', 'post_to_facebook', 'publish_to_facebook'],
   
   // CRM
   'salesforce': ['sf', 'sales_force', 'salesforce', 'sobject', 'account', 'contact', 'lead', 'opportunity', 'salesforce contact', 'salesforce opportunity'],

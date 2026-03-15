@@ -71,6 +71,9 @@ export interface BuildOptions {
   allowRegeneration?: boolean;
   aiSpecifiedNodesContext?: import('../../core/utils/ai-specified-nodes-context').AISpecifiedNodesContext; // ✅ UNIVERSAL: AI-specified nodes context
   tagsFromVariation?: string[]; // ✅ PHASE 4: Tags from selected variation (format: ["nodeType"] or ["nodeType:capability"])
+  explicitNodeTypes?: Set<string>; // ✅ PHASE 1: Explicit nodes from selected variation
+  blockedNodeTypes?: Set<string>;  // ✅ PHASE 1: Blocked conflicting nodes
+  selectedStructuredPrompt?: string; // ✅ CRITICAL: Selected variation prompt (used instead of originalPrompt for node detection)
 }
 
 /**
@@ -258,9 +261,33 @@ export class ProductionWorkflowBuilder {
     const allWarnings: string[] = [];
     
     // STEP 0: Detect transformations (STRICT PIPELINE CONTRACT)
+    // ✅ CRITICAL FIX: Use selectedStructuredPrompt instead of originalPrompt for transformation detection
+    // This ensures transformations are detected from the selected variation, not the original prompt
+    const promptForTransformationDetection = options?.selectedStructuredPrompt || originalPrompt;
     console.log('[ProductionWorkflowBuilder] STEP 0: Detecting required transformations...');
-    const transformationDetection = transformationDetector.detectTransformations(originalPrompt);
+    console.log(`[ProductionWorkflowBuilder] 🔍 Using prompt for transformation detection: "${promptForTransformationDetection.substring(0, 100)}..."`);
+    const transformationDetection = transformationDetector.detectTransformations(promptForTransformationDetection);
     console.log(`[ProductionWorkflowBuilder] 🔍 Transformation detection: detected=${transformationDetection.detected}, verbs=[${transformationDetection.verbs.join(', ')}], requiredNodeTypes=[${transformationDetection.requiredNodeTypes.join(', ')}]`);
+    
+    // ✅ WHITELIST-ONLY: Filter transformation detection to only whitelisted nodes
+    if (options?.explicitNodeTypes && options.explicitNodeTypes.size > 0 && transformationDetection.requiredNodeTypes.length > 0) {
+      const beforeFilter = transformationDetection.requiredNodeTypes.length;
+      transformationDetection.requiredNodeTypes = transformationDetection.requiredNodeTypes.filter(nodeType => {
+        const isWhitelisted = options.explicitNodeTypes!.has(nodeType);
+        if (!isWhitelisted) {
+          console.log(`[ProductionWorkflowBuilder] 🚫 WHITELIST-ONLY: Filtered out non-whitelisted transformation node: ${nodeType}`);
+        }
+        return isWhitelisted;
+      });
+      const afterFilter = transformationDetection.requiredNodeTypes.length;
+      if (beforeFilter > afterFilter) {
+        console.log(`[ProductionWorkflowBuilder] ✅ WHITELIST-ONLY: Filtered transformation detection: ${beforeFilter} → ${afterFilter} (removed ${beforeFilter - afterFilter} non-whitelisted nodes)`);
+        // If all transformation nodes were filtered out, mark as not detected
+        if (transformationDetection.requiredNodeTypes.length === 0) {
+          transformationDetection.detected = false;
+        }
+      }
+    }
     
     // STEP 1: Generate DSL from StructuredIntent (with transformation detection)
     // This is the ONLY way to generate workflow - LLM cannot generate graph directly
@@ -279,7 +306,13 @@ export class ProductionWorkflowBuilder {
         console.log(`[ProductionWorkflowBuilder] ✅ PHASE 8: Extracted capabilities from tags: ${JSON.stringify(nodeCapabilities)}`);
       }
       
-      dsl = await dslGenerator.generateDSL(intent, originalPrompt, transformationDetection, undefined, nodeCapabilities);
+        // ✅ PHASE 3: Pass explicit and blocked nodes to DSL generation
+        // ✅ CRITICAL FIX: Pass selectedStructuredPrompt to DSL generator so it uses selected variation instead of original prompt
+        dsl = await dslGenerator.generateDSL(intent, originalPrompt, transformationDetection, undefined, nodeCapabilities, {
+          explicitNodeTypes: options?.explicitNodeTypes,
+          blockedNodeTypes: options?.blockedNodeTypes,
+          selectedStructuredPrompt: options?.selectedStructuredPrompt, // ✅ CRITICAL: Pass selected variation
+        });
     } catch (error: unknown) {
       // ✅ STRICT VALIDATION: Handle DSLGenerationError (uncategorized actions or count mismatch)
       if (error instanceof DSLGenerationError) {
@@ -429,7 +462,8 @@ export class ProductionWorkflowBuilder {
     
     // STEP 2: Validate intent and get required nodes (no hallucination)
     console.log('[ProductionWorkflowBuilder] STEP 2: Validating intent and getting required nodes');
-    let requiredNodes = this.getRequiredNodes(intent, originalPrompt);
+    // ✅ PRESERVE EXPLICIT NODES: Pass explicitNodeTypes to preserve user's explicit choices during normalization
+    let requiredNodes = this.getRequiredNodes(intent, originalPrompt, options?.explicitNodeTypes);
     
     // ✅ NEW: Include mandatory nodes from keyword extraction (Stage 1)
     if (options.mandatoryNodeTypes && options.mandatoryNodeTypes.length > 0) {
@@ -638,6 +672,79 @@ export class ProductionWorkflowBuilder {
           console.warn(`[ProductionWorkflowBuilder] ⚠️  Deduplication failed: ${errorMessage} - continuing with original workflow`);
           allWarnings.push(`Deduplication failed: ${errorMessage}`);
           // Continue with original workflow (fail-safe)
+        }
+        
+        // ✅ PHASE 4: Post-DSL validation - Remove conflicting nodes and ensure explicit nodes exist
+        if (options?.explicitNodeTypes || options?.blockedNodeTypes) {
+          console.log('[ProductionWorkflowBuilder] ✅ PHASE 4: Post-DSL validation - enforcing explicit intent...');
+          
+          // ✅ CRITICAL: Remove conflicting nodes
+          if (options.blockedNodeTypes && options.blockedNodeTypes.size > 0) {
+            const originalNodeCount = workflow.nodes.length;
+            workflow.nodes = workflow.nodes.filter(node => {
+              if (options.blockedNodeTypes!.has(node.type)) {
+                console.log(`[ProductionWorkflowBuilder] 🚫 PHASE 4: Removing conflicting node: ${node.type}`);
+                return false;
+              }
+              return true;
+            });
+            
+            const removedCount = originalNodeCount - workflow.nodes.length;
+            if (removedCount > 0) {
+              console.log(`[ProductionWorkflowBuilder] 🚫 PHASE 4: Removed ${removedCount} conflicting node(s)`);
+              allWarnings.push(`Removed ${removedCount} conflicting node(s) based on explicit intent`);
+            }
+          }
+          
+          // ✅ CRITICAL: Ensure explicit nodes exist
+          if (options.explicitNodeTypes && options.explicitNodeTypes.size > 0) {
+            for (const explicitNode of options.explicitNodeTypes) {
+              const exists = workflow.nodes.some(node => node.type === explicitNode);
+              if (!exists) {
+                console.log(`[ProductionWorkflowBuilder] ✅ PHASE 4: Adding missing explicit node: ${explicitNode}`);
+                
+                // Get node definition for default config
+                const { unifiedNodeRegistry } = await import('../../core/registry/unified-node-registry');
+                const nodeDef = unifiedNodeRegistry.get(explicitNode);
+                
+                if (nodeDef) {
+                  workflow.nodes.push({
+                    id: `explicit_${explicitNode}_${Date.now()}`,
+                    type: explicitNode,
+                    data: {
+                      type: explicitNode,
+                      label: nodeDef.label || explicitNode,
+                      category: nodeDef.category || 'utility',
+                      config: nodeDef.defaultConfig ? nodeDef.defaultConfig() : {},
+                      _meta_origin: {
+                        source: 'user',
+                        approach: 'explicit_intent',
+                        stage: 'post_dsl_validation',
+                      },
+                    },
+                  });
+                  console.log(`[ProductionWorkflowBuilder] ✅ PHASE 4: Added explicit node: ${explicitNode}`);
+                } else {
+                  console.warn(`[ProductionWorkflowBuilder] ⚠️  PHASE 4: Cannot add explicit node ${explicitNode} - not found in registry`);
+                }
+              }
+            }
+          }
+          
+          // ✅ CRITICAL: Reconcile edges after node changes
+          if ((options.blockedNodeTypes && options.blockedNodeTypes.size > 0) || (options.explicitNodeTypes && options.explicitNodeTypes.size > 0)) {
+            try {
+              const { unifiedGraphOrchestrator } = await import('../../core/orchestration/unified-graph-orchestrator');
+              const reconcileResult = unifiedGraphOrchestrator.reconcileWorkflow(workflow);
+              workflow = reconcileResult.workflow;
+              console.log(`[ProductionWorkflowBuilder] ✅ PHASE 4: Reconciled edges after node changes`);
+              if (reconcileResult.warnings.length > 0) {
+                allWarnings.push(...reconcileResult.warnings);
+              }
+            } catch (error) {
+              console.warn(`[ProductionWorkflowBuilder] ⚠️  PHASE 4: Edge reconciliation failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            }
+          }
         }
         
         // ✅ WORLD-CLASS: STEP 3.5: Sync requiredNodes with actual workflow nodes (source of truth)
@@ -1411,8 +1518,8 @@ export class ProductionWorkflowBuilder {
    * Get required nodes from intent (no hallucination)
    * ✅ FIXED: Includes transformation nodes from TransformationDetector
    */
-  private getRequiredNodes(intent: StructuredIntent, originalPrompt?: string): string[] {
-    return intentConstraintEngine.getRequiredNodes(intent, originalPrompt);
+  private getRequiredNodes(intent: StructuredIntent, originalPrompt?: string, explicitNodeTypes?: Set<string>): string[] {
+    return intentConstraintEngine.getRequiredNodes(intent, originalPrompt, explicitNodeTypes);
   }
   
   /**

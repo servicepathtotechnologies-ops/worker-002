@@ -671,117 +671,147 @@ export class LinearFlowValidationLayer extends ValidationLayer {
   }
   
   private categorizeNode(nodeType: string, node?: WorkflowNode): 'data_source' | 'processing' | 'conditional' | 'output' | 'other' {
-    // ✅ REGISTRY-BASED: Use unified node registry and capability registry for categorization
+    // ✅ UNIVERSAL: Use operation semantics registry (same as DSL layer) - NO HARDCODING
+    // ✅ ERROR-FREE: All edge cases handled gracefully with proper fallbacks
+    
+    // Early return for invalid input
+    if (!nodeType || typeof nodeType !== 'string') {
+      return 'other';
+    }
+    
     const { unifiedNodeRegistry } = require('../../core/registry/unified-node-registry');
     const { nodeCapabilityRegistryDSL } = require('./node-capability-registry-dsl');
-    const { isTriggerNode } = require('../../core/utils/universal-node-type-checker');
     const { NodeMetadataHelper } = require('../../core/types/node-metadata');
+    const { getOperationSemantic, getDSLCategoryFromSemantic } = require('../../core/registry/node-operation-semantics');
     
     const nodeDef = unifiedNodeRegistry.get(nodeType);
     const lower = nodeType.toLowerCase();
     
-    // ✅ UNIVERSAL: Prioritize intendedCapability from metadata (AI-determined, context-aware)
-    // This is the PRIMARY source of truth for multi-capability nodes
+    // ✅ SAFE: Extract metadata with null checks
+    let dslCategory: 'data_source' | 'transformation' | 'output' | undefined;
     let intendedCapability: 'data_source' | 'transformation' | 'output' | undefined;
+    let operation: string | undefined;
+    
     if (node) {
-      const metadata = NodeMetadataHelper.getMetadata(node);
-      intendedCapability = metadata?.dsl?.intendedCapability;
+      try {
+        const metadata = NodeMetadataHelper.getMetadata(node);
+        dslCategory = metadata?.dsl?.category;
+        intendedCapability = metadata?.dsl?.intendedCapability;
+        operation = metadata?.dsl?.operation || node.data?.config?.operation;
+        // Normalize operation (handle empty strings, null, undefined)
+        if (operation && typeof operation === 'string') {
+          operation = operation.trim();
+          if (operation === '') {
+            operation = undefined;
+          }
+        } else {
+          operation = undefined;
+        }
+      } catch (error) {
+        // Metadata extraction failed - continue with undefined values
+        // This is safe - we have fallbacks
+      }
     }
     
-    // 🔍 DEBUG: Track categorization for problematic nodes
-    const isDebugNode = ['javascript', 'ai_chat_model', 'linkedin', 'log_output', 'postgresql'].includes(lower);
-    if (isDebugNode) {
-      const capabilities = nodeCapabilityRegistryDSL.getCapabilities(nodeType);
-      const isTransformation = nodeCapabilityRegistryDSL.isTransformation(nodeType);
-      const isDataSource = nodeCapabilityRegistryDSL.isDataSource(nodeType);
-      const isOutput = nodeCapabilityRegistryDSL.isOutput(nodeType);
-      console.log(
-        `[LinearFlowValidation] 🔍 DEBUG categorizeNode(${nodeType}): ` +
-        `intendedCapability=${intendedCapability || 'none'}, ` +
-        `capabilities=[${capabilities.join(', ')}], ` +
-        `isTransformation=${isTransformation}, ` +
-        `isDataSource=${isDataSource}, ` +
-        `isOutput=${isOutput}, ` +
-        `registryCategory=${nodeDef?.category || 'none'}`
-      );
-    }
-    
-    // ✅ REGISTRY-BASED: Check conditional nodes first (if_else, switch)
+    // ✅ PRIORITY 1: Check conditional nodes first (if_else, switch)
     if (lower === 'if_else' || lower === 'switch' || lower.includes('if_else') || lower.includes('switch')) {
-      if (isDebugNode) console.log(`[LinearFlowValidation] 🔍 DEBUG ${nodeType}: Returning 'conditional' (conditional node check)`);
       return 'conditional';
     }
     
-    // ✅ UNIVERSAL: Use intendedCapability if available (AI-determined, context-aware)
-    // This is the PRIMARY source of truth for multi-capability nodes
+    // ✅ PRIORITY 2: Use DSL-determined category (PRIMARY - DSL already used operation semantics)
+    // This is the PRIMARY source of truth - DSL layer already did the work using universal operation semantics
+    if (dslCategory === 'data_source') {
+      return 'data_source';
+    }
+    if (dslCategory === 'transformation') {
+      return 'processing';
+    }
+    if (dslCategory === 'output') {
+      return 'output';
+    }
+    
+    // ✅ PRIORITY 3: Use operation semantics registry (same universal system DSL uses)
+    // This works for ALL nodes with ANY operation - NO HARDCODING
+    // ✅ ERROR-FREE: getOperationSemantic and getDSLCategoryFromSemantic never throw - they return safe values
+    if (operation && typeof operation === 'string' && nodeType && typeof nodeType === 'string') {
+      try {
+        const semanticInfo = getOperationSemantic(nodeType, operation);
+        if (semanticInfo && semanticInfo.semantic) {
+          const dslCategoryFromSemantic = getDSLCategoryFromSemantic(semanticInfo.semantic, nodeType);
+          
+          // Map DSL category to validation category
+          if (dslCategoryFromSemantic === 'dataSource') {
+            return 'data_source';
+          }
+          if (dslCategoryFromSemantic === 'transformation') {
+            return 'processing';
+          }
+          if (dslCategoryFromSemantic === 'output') {
+            return 'output';
+          }
+        }
+      } catch (error) {
+        // Operation semantics registry should never throw, but handle gracefully if it does
+        // Continue to fallback - this is safe
+      }
+    }
+    
+    // ✅ PRIORITY 4: Use intendedCapability from metadata (DSL-determined fallback)
     if (intendedCapability === 'transformation') {
-      if (isDebugNode) console.log(`[LinearFlowValidation] 🔍 DEBUG ${nodeType}: Returning 'processing' (intendedCapability=transformation)`);
       return 'processing';
     }
     if (intendedCapability === 'data_source') {
-      if (isDebugNode) console.log(`[LinearFlowValidation] 🔍 DEBUG ${nodeType}: Returning 'data_source' (intendedCapability=data_source)`);
       return 'data_source';
     }
     if (intendedCapability === 'output') {
-      if (isDebugNode) console.log(`[LinearFlowValidation] 🔍 DEBUG ${nodeType}: Returning 'output' (intendedCapability=output)`);
       return 'output';
     }
     
-    // ✅ FALLBACK: Use capability registry if intendedCapability not available
-    // Priority: transformation > dataSource > output (to ensure postgresql is 'data_source', not 'output')
-    // This fixes the "Output node cannot be followed by data source node" error
-    if (nodeCapabilityRegistryDSL.isTransformation(nodeType)) {
-      // AI nodes, transformation nodes are processing
-      if (isDebugNode) console.log(`[LinearFlowValidation] 🔍 DEBUG ${nodeType}: Returning 'processing' (isTransformation=true, fallback)`);
-      return 'processing';
+    // ✅ PRIORITY 5: Fallback to capability registry (only if DSL/operation semantics unavailable)
+    // ✅ ERROR-FREE: Capability registry methods return boolean, never throw
+    try {
+      if (nodeCapabilityRegistryDSL.isTransformation(nodeType)) {
+        return 'processing';
+      }
+      
+      if (nodeCapabilityRegistryDSL.isDataSource(nodeType)) {
+        return 'data_source';
+      }
+      
+      if (nodeCapabilityRegistryDSL.isOutput(nodeType)) {
+        return 'output';
+      }
+    } catch (error) {
+      // Capability registry should never throw, but handle gracefully if it does
+      // Continue to fallback - this is safe
     }
     
-    // ✅ CRITICAL FIX: Prioritize data_source over output for nodes with both capabilities
-    // This ensures postgresql, mysql, etc. are classified as 'data_source' in linear flow validation
-    // even if they also have 'output' capability (for write operations)
-    if (nodeCapabilityRegistryDSL.isDataSource(nodeType)) {
-      // Data source nodes (even if they also have output capability)
-      if (isDebugNode) console.log(`[LinearFlowValidation] 🔍 DEBUG ${nodeType}: Returning 'data_source' (isDataSource=true, fallback)`);
-      return 'data_source';
-    }
-    
-    if (nodeCapabilityRegistryDSL.isOutput(nodeType)) {
-      // Pure output nodes (not also data sources)
-      if (isDebugNode) console.log(`[LinearFlowValidation] 🔍 DEBUG ${nodeType}: Returning 'output' (isOutput=true, not transformation/dataSource, fallback)`);
-      return 'output';
-    }
-    
-    // ✅ FALLBACK: Use registry category if available
-    if (nodeDef) {
+    // ✅ PRIORITY 6: Fallback to registry category
+    if (nodeDef && nodeDef.category) {
       const category = nodeDef.category;
       if (category === 'ai' || category === 'transformation') {
-        if (isDebugNode) console.log(`[LinearFlowValidation] 🔍 DEBUG ${nodeType}: Returning 'processing' (registry category=${category})`);
         return 'processing';
       }
       if (category === 'data') {
-        if (isDebugNode) console.log(`[LinearFlowValidation] 🔍 DEBUG ${nodeType}: Returning 'data_source' (registry category=${category})`);
         return 'data_source';
       }
       if (category === 'communication' || category === 'social' || category === 'output') {
-        if (isDebugNode) console.log(`[LinearFlowValidation] 🔍 DEBUG ${nodeType}: Returning 'output' (registry category=${category})`);
         return 'output';
       }
-      if (isDebugNode) console.log(`[LinearFlowValidation] 🔍 DEBUG ${nodeType}: Registry category=${category} not matched, continuing to legacy fallback`);
     }
     
-    // ✅ LEGACY FALLBACK: String matching for edge cases (should rarely be needed)
+    // ✅ PRIORITY 7: Legacy string matching fallback (should rarely be needed)
     if (lower.includes('if_else') || lower.includes('switch') || lower.includes('filter')) {
-      if (isDebugNode) console.log(`[LinearFlowValidation] 🔍 DEBUG ${nodeType}: Returning 'conditional' (legacy string match)`);
       return 'conditional';
     }
     
     if (lower.includes('ai_') || lower.includes('chat_model') || lower.includes('agent') ||
         lower.includes('summar') || lower.includes('transform')) {
-      if (isDebugNode) console.log(`[LinearFlowValidation] 🔍 DEBUG ${nodeType}: Returning 'processing' (legacy string match)`);
       return 'processing';
     }
     
-    if (isDebugNode) console.log(`[LinearFlowValidation] 🔍 DEBUG ${nodeType}: Returning 'other' (no matches found)`);
+    // ✅ SAFE FALLBACK: Return 'other' if no category can be determined
+    // This won't break workflow generation - validation will handle 'other' appropriately
     return 'other';
   }
   
@@ -914,22 +944,32 @@ export class FinalIntegrityValidationLayer extends ValidationLayer {
     });
     
     // Check 2: All nodes connected to output
-    // ✅ UNIVERSAL: log_output is always added as final output node (universal fix)
-    // Recognize all output nodes including log_output
-    const outputNodes = nodes.filter(node => {
-      const nodeType = unifiedNormalizeNodeTypeString(node.data?.type || node.type || '');
-      const isOutput = unifiedNodeCategorizer.isOutput(nodeType.toLowerCase());
-      // Always recognize log_output as output (universal final output node)
-      const isLogOutput = nodeType.toLowerCase() === 'log_output';
-      const outgoing = edges.filter(e => e.source === node.id);
-      return !outgoing.length && !isTriggerNode(node) && (isOutput || isLogOutput);
+    // ✅ UNIVERSAL FIX: Recognize ALL output nodes using registry (not hardcoded list)
+    // This works for ALL output nodes (CRM, email, social media, log_output, etc.) automatically
+    // ✅ IMPORTANT: Check for ANY output node in the workflow, not just terminal ones
+    // An output node can exist even if it's not yet connected (will be connected by edge reconciliation)
+    const allOutputNodes = nodes.filter(node => {
+      return !isTriggerNode(node) && isOutputNode(node);
     });
     
-    // ✅ UNIVERSAL: log_output should always exist (added before validation)
-    // If it doesn't exist, that's an error in the injection logic
-    if (outputNodes.length === 0) {
-      errors.push('No output nodes found in workflow - log_output should have been auto-injected');
+    // Terminal output nodes (no outgoing edges) - these are the final sinks
+    const terminalOutputNodes = allOutputNodes.filter(node => {
+      const outgoing = edges.filter(e => e.source === node.id);
+      return !outgoing.length;
+    });
+    
+    // ✅ FIX: Check for ANY output node in workflow, not just terminal ones
+    // If no output nodes exist at all, that's an error (workflow has no way to output results)
+    if (allOutputNodes.length === 0) {
+      errors.push('No output nodes found in workflow');
+      details.disconnectedNodes = nodes.filter(n => !isTriggerNode(n)).map(n => n.id);
+    } else if (terminalOutputNodes.length === 0 && allOutputNodes.length > 0) {
+      // Output nodes exist but none are terminal - they need to be connected
+      warnings.push(`Found ${allOutputNodes.length} output node(s) but none are terminal (may need connection)`);
     }
+    
+    // Use terminal output nodes for connectivity check (if any), otherwise use all output nodes
+    const outputNodes = terminalOutputNodes.length > 0 ? terminalOutputNodes : allOutputNodes;
     
     // Build reverse adjacency list (for backward traversal from outputs)
     const reverseAdj = new Map<string, string[]>();

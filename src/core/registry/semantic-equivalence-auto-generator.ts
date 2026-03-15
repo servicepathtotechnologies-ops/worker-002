@@ -186,8 +186,14 @@ export class SemanticEquivalenceAutoGenerator {
      // ⚠️ CRITICAL: Exclude overly-generic capabilities from equivalence generation
      // These are meta-capabilities that span fundamentally different services
      // Example: 'terminal' is used by both ai_chat_model and google_gmail, but they are NOT equivalent.
+     // Example: 'send_message' is used by Slack, Discord, Telegram - but they're NOT equivalent (different platforms).
      const EXCLUDED_CAPABILITIES = new Set<string>([
        'terminal',
+       'output',           // ✅ NEW: Too generic - spans different services (Slack, Discord, Gmail, etc.)
+       'send_message',     // ✅ NEW: Too generic - Slack ≠ Discord ≠ Telegram (different platforms)
+       'communication',    // ✅ NEW: Too generic - different communication channels
+       'notification',     // ✅ NEW: Too generic - different notification services
+       'write_data',       // ✅ NEW: Too generic - different write targets (sheets, database, crm)
      ]);
     
     // Group by capabilities
@@ -197,6 +203,11 @@ export class SemanticEquivalenceAutoGenerator {
         const normalizedCap = cap.toLowerCase();
         // Skip excluded/meta capabilities (e.g., 'terminal')
         if (EXCLUDED_CAPABILITIES.has(normalizedCap)) {
+          return;
+        }
+        
+        // ✅ NEW: Skip service-specific capabilities (too generic, span different services)
+        if (this.isServiceSpecificCapability(normalizedCap)) {
           return;
         }
         
@@ -388,6 +399,31 @@ export class SemanticEquivalenceAutoGenerator {
     }
     
     return equivalences;
+  }
+  
+  /**
+   * ✅ WORLD-CLASS: Check if capability is service-specific (should not create equivalence)
+   * 
+   * Some capabilities are too generic and span fundamentally different services.
+   * Example: 'send_message' is used by Slack, Discord, Telegram - but they're NOT equivalent.
+   * 
+   * @param capability - Capability to check
+   * @returns true if capability is too generic and should not create equivalence
+   */
+  private isServiceSpecificCapability(capability: string): boolean {
+    const normalized = capability.toLowerCase();
+    
+    // Generic capabilities that span different services
+    // These should NOT create equivalences because they're used by fundamentally different services
+    const genericCapabilities = [
+      'send_message',    // Slack, Discord, Telegram all have this - but they're different platforms
+      'output',          // Too broad - spans many different output types
+      'communication',   // Too broad - different communication channels
+      'notification',    // Too broad - different notification services
+      'write_data',      // Too broad - sheets, database, crm all have this - but they're different
+    ];
+    
+    return genericCapabilities.includes(normalized);
   }
   
   /**

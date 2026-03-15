@@ -320,9 +320,50 @@ export class SemanticNodeEquivalenceRegistry {
   }
   
   /**
+   * ✅ WORLD-CLASS: Check if two node types should NEVER be equivalent
+   * 
+   * Some services are fundamentally different even if they share capabilities.
+   * Example: Slack and Discord both send messages, but they're different platforms.
+   * 
+   * @param nodeType1 - First node type
+   * @param nodeType2 - Second node type
+   * @returns true if they should NEVER be equivalent
+   */
+  private shouldNeverBeEquivalent(nodeType1: string, nodeType2: string): boolean {
+    const type1 = nodeType1.toLowerCase();
+    const type2 = nodeType2.toLowerCase();
+    
+    // Communication services are distinct
+    const communicationServices = [
+      'slack_message', 'slack', 'slack_webhook',
+      'discord', 'discord_webhook',
+      'telegram', 'telegram_bot',
+      'google_gmail', 'gmail', 'email',
+      'microsoft_teams', 'teams',
+      'whatsapp', 'whatsapp_cloud',
+    ];
+    
+    const isComm1 = communicationServices.some(s => type1.includes(s));
+    const isComm2 = communicationServices.some(s => type2.includes(s));
+    
+    // If both are communication services but different ones, they're NOT equivalent
+    if (isComm1 && isComm2 && type1 !== type2) {
+      // Check if they're the same service (e.g., slack_message and slack)
+      const base1 = communicationServices.find(s => type1.includes(s))?.split('_')[0];
+      const base2 = communicationServices.find(s => type2.includes(s))?.split('_')[0];
+      
+      // Only equivalent if same base service (e.g., slack_message ↔ slack)
+      return base1 !== base2;
+    }
+    
+    return false;
+  }
+  
+  /**
    * Check if two node types are semantically equivalent
    * 
    * ✅ PRODUCTION-READY: Handles null/undefined inputs gracefully
+   * ✅ WORLD-CLASS: Respects explicit service exclusions (prevents false equivalences)
    */
   areEquivalent(
     nodeType1: string,
@@ -333,6 +374,11 @@ export class SemanticNodeEquivalenceRegistry {
     // ✅ PRODUCTION-READY: Validate inputs
     if (!nodeType1 || !nodeType2) {
       return false; // Can't be equivalent if either is missing
+    }
+    
+    // ✅ NEW: Check explicit exclusion
+    if (this.shouldNeverBeEquivalent(nodeType1, nodeType2)) {
+      return false; // Explicitly excluded - never equivalent
     }
     
     const canonical1 = this.getCanonicalType(nodeType1, operation, category);

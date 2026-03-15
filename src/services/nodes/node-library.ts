@@ -1338,7 +1338,12 @@ export class NodeLibrary {
           'Workflow triggered by external systems',
           'Manual execution only required',
         ],
-        keywords: ['schedule', 'daily', 'hourly', 'weekly', 'cron', 'time', 'every'],
+        keywords: [
+          'schedule', 'scheduled', 'schedule trigger', 'cron schedule',
+          'daily schedule', 'hourly schedule', 'weekly schedule',
+          'cron', 'cron job', 'scheduled task', 'schedule workflow',
+          'time schedule', 'recurring schedule'
+        ],
         useCases: ['Daily reports', 'Hourly syncs', 'Scheduled maintenance', 'Periodic data processing'],
         // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
         intentDescription: 'Time-based workflow trigger that executes workflows automatically on a schedule. Uses cron expressions to define when workflows should run (e.g., daily at 9 AM, every hour, weekly on Monday). Enables automated, recurring task execution without manual intervention.',
@@ -1422,7 +1427,12 @@ export class NodeLibrary {
           'No external system can call webhook',
           'Manual execution sufficient',
         ],
-        keywords: ['webhook', 'http', 'api', 'callback', 'event', 'trigger', 'when'],
+        keywords: [
+          'webhook', 'webhook trigger', 'http webhook', 'api webhook',
+          'webhook callback', 'webhook event', 'webhook url',
+          'incoming webhook', 'webhook endpoint', 'webhook receiver',
+          'webhook listener', 'webhook handler'
+        ],
         useCases: ['API callbacks', 'Form submissions', 'External system integration', 'Real-time events'],
         // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
         intentDescription: 'HTTP webhook trigger that executes workflows when external systems send HTTP requests. Receives POST/GET/PUT/DELETE requests at a configured URL path and triggers workflow execution in real-time. Used for API callbacks, form submissions, external system integration, and event-driven architectures.',
@@ -1477,7 +1487,12 @@ export class NodeLibrary {
           'External event triggers available',
           'Unattended operation required',
         ],
-        keywords: ['manual', 'on demand', 'run', 'execute', 'trigger'],
+        keywords: [
+          'manual', 'manual trigger', 'on demand', 'manual run',
+          'run manually', 'execute manually', 'manual execution',
+          'user trigger', 'manual start', 'trigger manually',
+          'on demand trigger', 'manual workflow'
+        ],
         useCases: ['Ad-hoc processing', 'Testing', 'One-time operations', 'User-initiated tasks'],
         // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
         intentDescription: 'Manual workflow trigger that executes workflows when users manually initiate them. No automatic scheduling or external events required. Used for ad-hoc processing, testing workflows, one-time operations, and user-initiated tasks that require human interaction.',
@@ -1519,7 +1534,12 @@ export class NodeLibrary {
           'Complex scheduling needed',
           'Specific times required',
         ],
-        keywords: ['interval', 'every', 'repeat', 'periodic'],
+        keywords: [
+          'interval', 'interval trigger', 'every interval', 'repeat interval',
+          'periodic interval', 'time interval', 'interval schedule',
+          'recurring interval', 'interval timer', 'interval execution',
+          'fixed interval', 'interval based'
+        ],
         useCases: ['Polling', 'Regular checks', 'Simple recurring tasks'],
         // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
         intentDescription: 'Interval-based workflow trigger that executes workflows at fixed time intervals (e.g., every 5 minutes, every hour). Simpler than cron-based scheduling, used for polling, regular checks, and simple recurring tasks that need to run at regular intervals.',
@@ -1600,7 +1620,11 @@ export class NodeLibrary {
           'Scheduled tasks (use schedule)',
           'Manual execution only (use manual_trigger)',
         ],
-        keywords: ['form', 'form submission', 'contact form', 'survey', 'application', 'submission'],
+        keywords: [
+          'form', 'form trigger', 'form submission', 'contact form',
+          'form submit', 'form data', 'web form', 'form response',
+          'form input', 'form capture', 'form collection', 'form handler'
+        ],
         useCases: ['Contact forms', 'Lead capture', 'Surveys', 'Applications', 'Feedback collection'],
         // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
         intentDescription: 'Form submission trigger that executes workflows when users submit web forms. Collects structured data from users through customizable form fields (text, email, textarea, etc.). Used for contact forms, lead capture, surveys, applications, and feedback collection workflows.',
@@ -1628,7 +1652,11 @@ export class NodeLibrary {
         },
       ],
       capabilities: ['form.trigger', 'form.collect', 'form.submit'],
-      keywords: ['form', 'form submission', 'contact form', 'survey'],
+      keywords: [
+        'form', 'form trigger', 'form submission', 'contact form',
+        'form submit', 'form data', 'web form', 'form response',
+        'form input', 'form capture', 'form collection', 'form handler'
+      ],
     };
   }
 
@@ -1700,7 +1728,11 @@ export class NodeLibrary {
           'File operations (use file nodes)',
           'Simple data transformation (use set/code nodes)',
         ],
-        keywords: ['api', 'http', 'request', 'fetch', 'call', 'endpoint', 'url'],
+        keywords: [
+          'http request', 'http call', 'api request', 'api call',
+          'http fetch', 'http get', 'http post', 'http endpoint',
+          'rest api', 'api endpoint', 'http url', 'http method'
+        ],
         useCases: ['API integration', 'Data fetching', 'Webhooks', 'External service calls'],
         // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
         intentDescription: 'HTTP request node that makes HTTP requests (GET, POST, PUT, PATCH, DELETE) to external APIs or web services. Fetches data from REST APIs, sends data to external systems, performs web scraping, and integrates with third-party services. Used for API integration, data fetching, webhooks, and external service calls.',
@@ -1772,7 +1804,11 @@ export class NodeLibrary {
           'Not a webhook-triggered workflow',
           'No response needed',
         ],
-        keywords: ['response', 'webhook', 'reply', 'return'],
+        keywords: [
+          'http response', 'http reply', 'http return', 'response http',
+          'webhook response', 'response webhook', 'http response node',
+          'response node', 'http reply node', 'http return node'
+        ],
         // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
         intentDescription: 'HTTP response node that sends HTTP responses back to webhook callers. Used in webhook-triggered workflows to return status codes, headers, and response body data to the calling system. Essential for building API endpoints, handling form submissions, and responding to webhook events.',
         intentCategories: ['http_response', 'webhook_response', 'api_endpoint'],
@@ -1832,7 +1868,11 @@ export class NodeLibrary {
           'Simple API calls',
           'File operations',
         ],
-        keywords: ['database', 'postgres', 'sql', 'insert', 'update', 'delete', 'query'],
+        keywords: [
+          'postgres', 'postgresql', 'postgres database', 'postgres db',
+          'postgresql database', 'postgres sql', 'postgres connection',
+          'postgresql connection', 'postgres integration', 'postgres api'
+        ],
         useCases: ['Data storage', 'Complex queries', 'Batch operations', 'Data synchronization'],
         // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
         intentDescription: 'PostgreSQL database node that executes SQL queries (SELECT, INSERT, UPDATE, DELETE) on PostgreSQL databases. Performs database operations including data storage, complex queries, batch operations, and data synchronization. Used for persistent data storage, database transactions, and complex SQL operations.',
@@ -1895,7 +1935,11 @@ export class NodeLibrary {
           'Standard PostgreSQL operations',
           'Other database systems',
         ],
-        keywords: ['supabase', 'realtime', 'modern'],
+        keywords: [
+          'supabase', 'supabase database', 'supabase db', 'supabase table',
+          'supabase realtime', 'supabase storage', 'supabase api',
+          'supabase integration', 'supabase backend'
+        ],
         useCases: ['Modern web apps', 'Realtime data', 'File storage'],
         // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
         intentDescription: 'Supabase integration node that interacts with Supabase (PostgreSQL + realtime + storage). Performs database operations (select, insert, update, delete) on Supabase tables, supports realtime subscriptions, and file storage. Used for modern web app backends, realtime data synchronization, and cloud database operations.',
@@ -1955,7 +1999,11 @@ export class NodeLibrary {
         whenNotToUse: [
           'Simple data operations',
         ],
-        keywords: ['read', 'select', 'fetch', 'get', 'retrieve'],
+        keywords: [
+          'database read', 'db read', 'read database', 'database select',
+          'db select', 'database query', 'db query', 'database fetch',
+          'db fetch', 'database get', 'db get', 'database retrieve'
+        ],
         useCases: ['Data retrieval', 'Complex queries'],
         // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
         intentDescription: 'Database read node that retrieves data from databases using SQL SELECT queries. Executes read-only database operations to fetch, retrieve, and query data. Used for data retrieval, complex queries, and reading data from persistent storage.',
@@ -1998,7 +2046,11 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions database write', 'INSERT/UPDATE/DELETE operations'],
         whenNotToUse: ['Read-only operations (use database_read)'],
-        keywords: ['database', 'write', 'insert', 'update', 'delete'],
+        keywords: [
+          'database write', 'db write', 'write database', 'database insert',
+          'db insert', 'database update', 'db update', 'database delete',
+          'db delete', 'database modify', 'db modify', 'database save'
+        ],
         useCases: ['Database write operations'],
         // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
         intentDescription: 'Database write node that executes SQL write operations (INSERT, UPDATE, DELETE) on databases. Performs data modification operations including inserting new records, updating existing records, and deleting records. Used for database write operations, data persistence, and data modification.',
@@ -2066,7 +2118,12 @@ export class NodeLibrary {
           'Database operations (use database nodes)',
           'Other spreadsheet services',
         ],
-        keywords: ['google sheets', 'spreadsheet', 'sheets', 'sheet', 'google', 'excel', 'gsheet', 'g sheet', 'googlesheet', 'googlesheets', 'read from sheets', 'write to sheets', 'get data from sheets', 'save to sheets'],
+        keywords: [
+          'sheet', 'sheets', 'spreadsheet', 'spreadsheets',
+          'google sheet', 'google sheets', 'googlesheet', 'googlesheets',
+          'gsheet', 'gsheets', 'g sheet', 'g sheets',
+          'google spreadsheet', 'googlespreadsheet'
+        ],
         useCases: ['Data extraction', 'Data storage', 'Spreadsheet automation', 'Google Workspace integration'],
         // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
         intentDescription: 'Google Sheets integration for reading, writing, and managing spreadsheet data. Connects to Google Sheets spreadsheets to extract data (read), store data (write/append), or update existing data. Used for data extraction from spreadsheets, data storage in spreadsheets, and spreadsheet automation workflows.',
@@ -2162,7 +2219,11 @@ export class NodeLibrary {
           'Spreadsheet operations (use google_sheets)',
           'Other document services',
         ],
-        keywords: ['google docs', 'google doc', 'document', 'docs', 'google', 'read document', 'write document'],
+        keywords: [
+          'google doc', 'google docs', 'googledoc', 'googledocs',
+          'gdoc', 'gdocs', 'g doc', 'g docs',
+          'google document', 'googledocument', 'read google doc', 'write google doc'
+        ],
         useCases: ['Document extraction', 'Document generation', 'Content processing', 'Google Workspace integration'],
         // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
         intentDescription: 'Google Docs integration node that reads or writes content in Google Docs documents. Extracts text content from documents, writes content to documents, and processes document data. Used for document extraction, document generation, content processing, and Google Workspace document integration.',
@@ -2253,7 +2314,11 @@ export class NodeLibrary {
           'Complex transformations (use code node)',
           'Conditional logic (use if node)',
         ],
-        keywords: ['set', 'map', 'transform', 'add field', 'assign'],
+        keywords: [
+          'set variable', 'set var', 'variable set', 'set value',
+          'assign variable', 'assign value', 'set field', 'set data',
+          'variable assign', 'set property', 'set attribute', 'set config'
+        ],
         useCases: ['Data mapping', 'Adding fields', 'Normalization'],
         intentDescription: 'A data manipulation node that sets or assigns values to variables. Allows storing computed values, default values, or transformed data into named variables that can be referenced later in the workflow. Used for simple data mapping, field assignment, and value storage.',
         intentCategories: ['data_manipulation', 'variable_assignment', 'data_mapping', 'value_storage'],
@@ -2303,7 +2368,11 @@ export class NodeLibrary {
           'Simple mappings (use set node)',
           'Conditional logic (use if node)',
         ],
-        keywords: ['code', 'javascript', 'transform', 'custom', 'complex'],
+        keywords: [
+          'javascript', 'js code', 'javascript code', 'code javascript',
+          'custom code', 'code node', 'javascript node', 'js node',
+          'code execution', 'javascript execution', 'run code', 'execute code'
+        ],
         useCases: ['Complex transformations', 'Custom logic', 'Data processing'],
         intentDescription: 'A code execution node that runs custom JavaScript code to perform complex data transformations, calculations, or custom logic. Provides full programmatic control over data processing, allowing for advanced algorithms, data validation, API response parsing, and custom business logic that cannot be achieved with simpler nodes.',
         intentCategories: ['code_execution', 'data_transformation', 'custom_logic', 'programming'],
@@ -2356,7 +2425,11 @@ export class NodeLibrary {
           'Simple data mapping (use set node)',
           'Complex code (use code/javascript node)',
         ],
-        keywords: ['function', 'custom function', 'execute function'],
+        keywords: [
+          'function', 'function node', 'custom function', 'execute function',
+          'function call', 'call function', 'function execution', 'run function',
+          'function invoke', 'invoke function', 'function execute', 'function run'
+        ],
         useCases: ['Custom logic', 'Function execution', 'Data processing'],
         intentDescription: 'A function execution node that runs custom functions with input parameters. Designed for reusable logic blocks, parameterized data transformations, and modular workflow components. Allows defining functions that can be called with different inputs, making workflows more maintainable and reusable.',
         intentCategories: ['function_execution', 'custom_logic', 'reusable_components', 'modular_workflow'],
@@ -2397,7 +2470,12 @@ export class NodeLibrary {
           'Single item processing',
           'Simple loops (use loop node)',
         ],
-        keywords: ['function item', 'each item', 'per item', 'for each'],
+        keywords: [
+          'function item', 'function per item', 'each item function',
+          'for each item', 'item function', 'function for each',
+          'per item function', 'function item loop', 'item loop function',
+          'function iterate', 'iterate function', 'function array item'
+        ],
         useCases: ['Array processing', 'Item transformation', 'Batch operations'],
         intentDescription: 'A function execution node that applies a custom function to each item in an array. Iterates through array elements and executes the specified function for each item, enabling batch processing, item-level transformations, and array-based operations. Useful for processing collections of data with custom logic.',
         intentCategories: ['array_processing', 'iteration', 'batch_processing', 'function_execution'],
@@ -2443,7 +2521,11 @@ export class NodeLibrary {
         whenNotToUse: [
           'Simple data operations',
         ],
-        keywords: ['date', 'time', 'format', 'timestamp', 'schedule'],
+        keywords: [
+          'date time', 'datetime', 'date format', 'time format',
+          'date time format', 'format date', 'format time', 'timestamp format',
+          'date conversion', 'time conversion', 'date parse', 'time parse'
+        ],
         useCases: ['Date formatting', 'Time conversion', 'Calculations'],
         intentDescription: 'A date and time manipulation node that parses, formats, calculates, and converts dates and timestamps. Supports various date operations including formatting dates into specific string formats, extracting date components, performing date arithmetic (add/subtract days, hours, etc.), timezone conversions, and generating schedules. Essential for any workflow dealing with temporal data.',
         intentCategories: ['date_time_processing', 'temporal_data', 'data_formatting', 'timezone_conversion'],
@@ -2489,7 +2571,12 @@ export class NodeLibrary {
           'Complex transformations (use code node)',
           'Conditional formatting (use if node + text formatter)',
         ],
-        keywords: ['format', 'template', 'text', 'string', 'interpolate', 'placeholder'],
+        keywords: [
+          'text format', 'text formatter', 'format text', 'string format',
+          'text template', 'string template', 'text interpolation',
+          'string interpolation', 'format string', 'text format node',
+          'string format node', 'text transform'
+        ],
         useCases: ['Message formatting', 'Text templates', 'String interpolation', 'Data formatting'],
         intentDescription: 'A text formatting node that creates formatted strings using templates with placeholders. Supports string interpolation, variable substitution, and template-based text generation. Allows creating dynamic messages, emails, notifications, or reports by inserting data values into predefined text templates. Essential for generating human-readable output from structured data.',
         intentCategories: ['text_formatting', 'string_processing', 'template_processing', 'message_generation'],
@@ -2562,7 +2649,11 @@ export class NodeLibrary {
           'Multiple paths (use switch)',
           'Simple data flow',
         ],
-        keywords: ['if', 'else', 'condition', 'when', 'check'],
+        keywords: [
+          'if else', 'if condition', 'conditional', 'if statement',
+          'condition check', 'if check', 'conditional logic', 'if then',
+          'if then else', 'conditional branch', 'if branch', 'condition node'
+        ],
         useCases: ['Conditional logic', 'Error handling', 'Validation'],
         // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
         intentDescription: 'Conditional branching node that executes different workflow paths based on true/false conditions. Evaluates conditions (equals, greater than, contains, etc.) and routes workflow execution to true or false branches. Used for conditional logic, error handling, data validation, and decision-making in workflows.',
@@ -2602,7 +2693,11 @@ export class NodeLibrary {
         whenNotToUse: [
           'Simple if/else (use if node)',
         ],
-        keywords: ['switch', 'route', 'multiple', 'paths'],
+        keywords: [
+          'switch', 'switch case', 'switch node', 'switch condition',
+          'multiple paths', 'switch route', 'switch branch', 'switch logic',
+          'case switch', 'switch statement', 'switch multiple', 'switch case node'
+        ],
         useCases: ['Multi-path logic', 'Routing', 'Status handling'],
         // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
         intentDescription: 'Multi-path conditional logic node that routes workflow execution based on value matching. Evaluates an expression and routes to different paths based on matching rules (case_1, case_2, etc.). Used for multi-path logic, routing based on status codes, category-based processing, and complex conditional branching.',
@@ -2642,7 +2737,11 @@ export class NodeLibrary {
         whenNotToUse: [
           'Simple data flow',
         ],
-        keywords: ['merge', 'combine', 'join', 'aggregate'],
+        keywords: [
+          'merge', 'merge node', 'merge data', 'merge results',
+          'combine data', 'merge branches', 'merge paths', 'merge output',
+          'data merge', 'result merge', 'merge combine', 'merge join'
+        ],
         useCases: ['Combining results', 'Data aggregation', 'Parallel processing'],
         // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
         intentDescription: 'Merge node that combines multiple branches of data flow into a single output. Merges parallel processing results, aggregates data from multiple sources, and joins related data. Used for combining results from parallel branches, data aggregation from multiple paths, and merging split workflow branches.',
@@ -2697,7 +2796,11 @@ export class NodeLibrary {
         whenNotToUse: [
           'Simple workflows without external calls',
         ],
-        keywords: ['error', 'retry', 'handle', 'fail', 'reliable'],
+        keywords: [
+          'error handler', 'error handling', 'handle error', 'error handle',
+          'error retry', 'retry error', 'error recovery', 'error fallback',
+          'error catch', 'catch error', 'error management', 'error control'
+        ],
         useCases: ['API error handling', 'Retry logic', 'Graceful degradation'],
         // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
         intentDescription: 'Error handler node that manages errors with retry logic and fallback values. Handles workflow errors by retrying failed operations, continuing workflow execution after errors, and providing graceful degradation. Used for API error handling, retry logic, and making workflows more reliable.',
@@ -2745,7 +2848,11 @@ export class NodeLibrary {
         whenNotToUse: [
           'Simple data flow',
         ],
-        keywords: ['wait', 'delay', 'rate limit', 'pause'],
+        keywords: [
+          'wait', 'wait node', 'wait delay', 'wait pause',
+          'wait time', 'wait interval', 'wait period', 'wait before',
+          'wait after', 'wait for', 'wait until', 'wait execution'
+        ],
         useCases: ['Rate limiting', 'Delays', 'Polling intervals'],
         // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
         intentDescription: 'Wait node that pauses workflow execution for a specified duration. Delays workflow execution between steps, implements rate limiting between API calls, and creates scheduled delays. Used for rate limiting, delays between operations, and polling intervals.',
@@ -2792,7 +2899,11 @@ export class NodeLibrary {
           'Long delays (>10 minutes) that might timeout',
           'If you need exact timing, consider schedule trigger',
         ],
-        keywords: ['wait', 'pause', 'delay', 'sleep', 'throttle'],
+        keywords: [
+          'delay', 'delay node', 'delay wait', 'delay pause',
+          'delay sleep', 'delay throttle', 'delay time', 'delay interval',
+          'delay period', 'delay execution', 'delay before', 'delay after'
+        ],
         useCases: ['Rate limiting', 'Waiting for webhook', 'Simulating user input'],
         intentDescription: 'Delay node that pauses workflow execution for a specified duration. Adds pauses between steps, simulates human-like delays, and waits for external systems to process requests. Used for rate limiting, waiting for webhook responses, and simulating user input timing.',
         intentCategories: ['delay', 'timing_control', 'rate_limiting', 'workflow_pause'],
@@ -2823,7 +2934,11 @@ export class NodeLibrary {
         originalInput: { type: 'object' },
       },
       schemaVersion: '1.0.0',
-      keywords: ['delay', 'wait', 'pause', 'sleep', 'throttle', 'rate limit', 'cooldown'],
+      keywords: [
+        'delay', 'delay node', 'delay wait', 'delay pause',
+        'delay sleep', 'delay throttle', 'delay time', 'delay interval',
+        'delay period', 'delay execution', 'delay before', 'delay after'
+      ],
       providers: [],
     };
   }
@@ -2854,7 +2969,11 @@ export class NodeLibrary {
           'If you need exact timing, use Delay',
           'For indefinite waits, not suitable',
         ],
-        keywords: ['timeout', 'limit', 'deadline', 'abort'],
+        keywords: [
+          'timeout', 'timeout node', 'timeout limit', 'timeout deadline',
+          'timeout abort', 'timeout max', 'timeout execution', 'timeout time',
+          'execution timeout', 'operation timeout', 'timeout error', 'timeout stop'
+        ],
         useCases: ['API call timeout', 'Database query timeout', 'Step timeout'],
         intentDescription: 'Timeout node that fails workflow execution if it takes longer than the specified time limit. Prevents long-running operations, ensures external API calls respond quickly, and enforces SLA requirements. Used for API call timeouts, database query timeouts, and step-level timeout enforcement.',
         intentCategories: ['timeout', 'execution_control', 'sla_enforcement', 'error_prevention'],
@@ -2880,7 +2999,11 @@ export class NodeLibrary {
         elapsedMs: { type: 'number' },
       },
       schemaVersion: '1.0.0',
-      keywords: ['timeout', 'limit', 'deadline', 'abort', 'time limit', 'max time', 'execution time'],
+      keywords: [
+        'timeout', 'timeout node', 'timeout limit', 'timeout deadline',
+        'timeout abort', 'timeout max', 'timeout execution', 'timeout time',
+        'execution timeout', 'operation timeout', 'timeout error', 'timeout stop'
+      ],
       providers: [],
     };
   }
@@ -2916,7 +3039,11 @@ export class NodeLibrary {
           'If workflow should continue',
           'For logging, use Log node',
         ],
-        keywords: ['return', 'exit', 'stop', 'break'],
+        keywords: [
+          'return', 'return node', 'return exit', 'return stop',
+          'return break', 'return value', 'return result', 'return data',
+          'exit return', 'stop return', 'return early', 'return workflow'
+        ],
         useCases: ['Early exit on condition', 'Sub-workflow result'],
         intentDescription: 'Return node that stops workflow execution and returns specified data. Allows early exit from workflows, returning specific results from sub-workflows, and conditional termination. Used for early exit on conditions, sub-workflow result returns, and controlled workflow termination.',
         intentCategories: ['flow_control', 'workflow_termination', 'early_exit', 'result_return'],
@@ -2937,7 +3064,11 @@ export class NodeLibrary {
       outputType: 'any',
       outputSchema: {},
       schemaVersion: '1.0.0',
-      keywords: ['return', 'exit', 'stop', 'break', 'terminate', 'end workflow', 'early exit'],
+      keywords: [
+        'return', 'return node', 'return exit', 'return stop',
+        'return break', 'return value', 'return result', 'return data',
+        'exit return', 'stop return', 'return early', 'return workflow'
+      ],
       providers: [],
     };
   }
@@ -2978,7 +3109,11 @@ export class NodeLibrary {
           'For simple operations, use built-in nodes',
           'If sub-workflow may run indefinitely',
         ],
-        keywords: ['subworkflow', 'execute', 'call', 'invoke'],
+        keywords: [
+          'execute workflow', 'execute work', 'workflow execute', 'invoke workflow',
+          'workflow invoke', 'call workflow', 'workflow call', 'subworkflow',
+          'nested workflow', 'workflow nested', 'run workflow', 'workflow run'
+        ],
         useCases: ['Reusable components', 'Modular design'],
         intentDescription: 'Execute workflow node that runs another workflow as a sub-workflow and returns its result. Enables workflow composition, modularization of complex logic, and reusable workflow components. Used for calling sub-workflows, modularizing complex logic, and creating reusable workflow components.',
         intentCategories: ['workflow_composition', 'modular_workflow', 'sub_workflow', 'workflow_reuse'],
@@ -3004,7 +3139,11 @@ export class NodeLibrary {
         workflowId: { type: 'string' },
       },
       schemaVersion: '1.0.0',
-        keywords: ['subworkflow', 'execute', 'call workflow', 'invoke workflow', 'nested workflow', 'workflow call'],
+        keywords: [
+          'execute workflow', 'execute work', 'workflow execute', 'invoke workflow',
+          'workflow invoke', 'call workflow', 'workflow call', 'subworkflow',
+          'nested workflow', 'workflow nested', 'run workflow', 'workflow run'
+        ],
       providers: [],
     };
   }
@@ -3029,7 +3168,11 @@ export class NodeLibrary {
           'If no error handling needed',
           'For simple conditionals, use If node',
         ],
-        keywords: ['try', 'catch', 'error', 'exception', 'handle'],
+        keywords: [
+          'try catch', 'try catch node', 'try catch error', 'try catch exception',
+          'catch try', 'exception catch', 'error catch', 'try block',
+          'catch block', 'try catch handle', 'try catch error handle', 'try catch block'
+        ],
         useCases: ['API call error handling', 'Database operation fallback'],
         intentDescription: 'Try/catch node that executes a branch and catches errors, routing execution to an error handler. Handles potential errors gracefully, provides fallback logic, and logs errors without stopping workflow execution. Used for API call error handling, database operation fallbacks, and graceful error recovery.',
         intentCategories: ['error_handling', 'exception_handling', 'error_recovery', 'fault_tolerance'],
@@ -3048,7 +3191,11 @@ export class NodeLibrary {
         error: { type: 'string', optional: true },
       },
       schemaVersion: '1.0.0',
-      keywords: ['try', 'catch'],
+      keywords: [
+        'try catch', 'try catch node', 'try catch error', 'try catch exception',
+        'catch try', 'exception catch', 'error catch', 'try block',
+        'catch block', 'try catch handle', 'try catch error handle', 'try catch block'
+      ],
       providers: [],
     };
   }
@@ -3095,7 +3242,11 @@ export class NodeLibrary {
           'If operation never succeeds on retry',
           'For permanent failures, use try/catch',
         ],
-        keywords: ['retry', 'attempt', 'repeat', 'backoff', 'retry on failure', 'retry logic', 'retry mechanism'],
+        keywords: [
+          'retry', 'retry node', 'retry attempt', 'retry repeat',
+          'retry backoff', 'retry failure', 'retry logic', 'retry mechanism',
+          'retry on error', 'retry on fail', 'retry operation', 'retry execution'
+        ],
         useCases: ['API retry', 'Database retry on deadlock'],
         intentDescription: 'Retry node that retries a branch on failure up to a maximum number of attempts with configurable delays and backoff strategies. Handles transient failures, improves reliability of external calls, and manages intermittent operation failures. Used for API retries, database retries on deadlocks, and improving workflow reliability.',
         intentCategories: ['retry_logic', 'error_recovery', 'reliability', 'fault_tolerance'],
@@ -3121,7 +3272,11 @@ export class NodeLibrary {
         lastError: { type: 'string', optional: true },
       },
       schemaVersion: '1.0.0',
-      keywords: ['retry'],
+      keywords: [
+        'retry', 'retry node', 'retry attempt', 'retry repeat',
+        'retry backoff', 'retry failure', 'retry logic', 'retry mechanism',
+        'retry on error', 'retry on fail', 'retry operation', 'retry execution'
+      ],
       providers: [],
     };
   }
@@ -3156,7 +3311,11 @@ export class NodeLibrary {
           'If branches depend on each other',
           'When order matters',
         ],
-        keywords: ['parallel', 'concurrent', 'simultaneous', 'fork', 'join', 'run in parallel', 'parallel execution', 'at the same time'],
+        keywords: [
+          'parallel', 'parallel node', 'parallel execution', 'parallel run',
+          'parallel process', 'parallel concurrent', 'parallel simultaneous',
+          'run parallel', 'execute parallel', 'parallel fork', 'parallel join'
+        ],
         useCases: ['Parallel API calls', 'Batch processing'],
         intentDescription: 'Parallel node that runs multiple branches concurrently and waits for all to complete (or first to complete in race mode). Performs independent tasks simultaneously, speeds up workflows by parallelizing operations, and implements fan-out/fan-in patterns. Used for parallel API calls, batch processing, and concurrent task execution.',
         intentCategories: ['parallel_execution', 'concurrency', 'performance_optimization', 'fan_out_fan_in'],
@@ -3175,7 +3334,11 @@ export class NodeLibrary {
           results: { type: 'array' },
         },
       schemaVersion: '1.0.0',
-      keywords: ['parallel'],
+      keywords: [
+        'parallel', 'parallel node', 'parallel execution', 'parallel run',
+        'parallel process', 'parallel concurrent', 'parallel simultaneous',
+        'run parallel', 'execute parallel', 'parallel fork', 'parallel join'
+      ],
       providers: [],
     };
   }
@@ -3215,7 +3378,11 @@ export class NodeLibrary {
           'For immediate processing, use direct execution',
           'If order is critical, ensure queue preserves order',
         ],
-        keywords: ['queue', 'push', 'enqueue', 'bull', 'redis'],
+        keywords: [
+          'queue push', 'queue enqueue', 'push queue', 'enqueue queue',
+          'queue node', 'queue push node', 'queue add', 'add queue',
+          'queue message', 'queue job', 'queue task', 'queue background'
+        ],
         useCases: ['Background jobs', 'Task distribution'],
         intentDescription: 'Queue push node that adds messages to a message queue for background processing. Offloads tasks to background workers, decouples workflow steps, and implements message queue patterns. Used for background job distribution, task queuing, and asynchronous processing.',
         intentCategories: ['message_queue', 'background_processing', 'task_distribution', 'asynchronous_processing'],
@@ -3240,7 +3407,11 @@ export class NodeLibrary {
         jobId: { type: 'string', optional: true },
       },
       schemaVersion: '1.0.0',
-      keywords: ['queue', 'push'],
+      keywords: [
+        'queue push', 'queue enqueue', 'push queue', 'enqueue queue',
+        'queue node', 'queue push node', 'queue add', 'add queue',
+        'queue message', 'queue job', 'queue task', 'queue background'
+      ],
       providers: ['redis', 'bull'],
     };
   }
@@ -3281,7 +3452,11 @@ export class NodeLibrary {
           'For real-time processing, use webhook',
           'If queue is empty and you cannot wait',
         ],
-        keywords: ['queue', 'consume', 'pop', 'dequeue', 'worker'],
+        keywords: [
+          'queue consume', 'queue pop', 'queue dequeue', 'consume queue',
+          'pop queue', 'dequeue queue', 'queue worker', 'worker queue',
+          'queue process', 'process queue', 'queue retrieve', 'retrieve queue'
+        ],
         useCases: ['Background job processing', 'Task execution'],
         intentDescription: 'Queue consume node that retrieves and processes messages from a message queue. Waits for messages from the queue, implements worker patterns, and handles background task processing. Used for background job processing, task execution from queues, and worker pattern implementation.',
         intentCategories: ['message_queue', 'worker_pattern', 'background_processing', 'task_consumption'],
@@ -3307,7 +3482,11 @@ export class NodeLibrary {
         jobId: { type: 'string' },
       },
       schemaVersion: '1.0.0',
-      keywords: ['queue', 'consume'],
+      keywords: [
+        'queue consume', 'queue pop', 'queue dequeue', 'consume queue',
+        'pop queue', 'dequeue queue', 'queue worker', 'worker queue',
+        'queue process', 'process queue', 'queue retrieve', 'retrieve queue'
+      ],
       providers: ['redis', 'bull'],
     };
   }
@@ -3342,7 +3521,11 @@ export class NodeLibrary {
           'For persistent storage, use database',
           'If data changes frequently',
         ],
-        keywords: ['cache', 'get', 'retrieve', 'redis'],
+        keywords: [
+          'cache get', 'cache retrieve', 'get cache', 'retrieve cache',
+          'cache node', 'cache get node', 'cache read', 'read cache',
+          'cache fetch', 'fetch cache', 'cache data', 'cache value'
+        ],
         useCases: ['Caching API responses', 'Session data'],
         intentDescription: 'Cache get node that retrieves values from a cache by key. Reduces repeated computations, provides fast data access, and implements caching layers. Used for caching API responses, session data retrieval, and performance optimization through caching.',
         intentCategories: ['caching', 'performance_optimization', 'data_retrieval', 'temporary_storage'],
@@ -3368,7 +3551,11 @@ export class NodeLibrary {
         value: { type: 'any' },
       },
       schemaVersion: '1.0.0',
-      keywords: ['cache', 'get'],
+      keywords: [
+        'cache get', 'cache retrieve', 'get cache', 'retrieve cache',
+        'cache node', 'cache get node', 'cache read', 'read cache',
+        'cache fetch', 'fetch cache', 'cache data', 'cache value'
+      ],
       providers: ['redis'],
     };
   }
@@ -3409,7 +3596,11 @@ export class NodeLibrary {
           'For permanent storage, use database',
           'If data is sensitive and must be encrypted',
         ],
-        keywords: ['cache', 'set', 'store', 'redis'],
+        keywords: [
+          'cache set', 'cache store', 'set cache', 'store cache',
+          'cache node', 'cache set node', 'cache write', 'write cache',
+          'cache save', 'save cache', 'cache data', 'cache value'
+        ],
         useCases: ['Caching results', 'Session management'],
         intentDescription: 'Cache set node that stores values in a cache with optional time-to-live (TTL). Caches expensive computations, stores temporary data, and implements session storage. Used for caching results, session management, and performance optimization through temporary data storage.',
         intentCategories: ['caching', 'performance_optimization', 'data_storage', 'temporary_storage'],
@@ -3433,7 +3624,11 @@ export class NodeLibrary {
         success: { type: 'boolean' },
       },
       schemaVersion: '1.0.0',
-      keywords: ['cache', 'set'],
+      keywords: [
+        'cache set', 'cache store', 'set cache', 'store cache',
+        'cache node', 'cache set node', 'cache write', 'write cache',
+        'cache save', 'save cache', 'cache data', 'cache value'
+      ],
       providers: ['redis'],
     };
   }
@@ -3497,7 +3692,12 @@ export class NodeLibrary {
           'For API keys, use API Key Auth',
           'If you have long-lived tokens',
         ],
-        keywords: ['oauth', 'oauth2', 'auth', 'authentication', 'token'],
+        keywords: [
+          'oauth', 'oauth2', 'oauth auth', 'oauth authentication',
+          'oauth token', 'oauth access token', 'oauth2 auth',
+          'oauth2 authentication', 'oauth2 token', 'oauth api',
+          'oauth integration', 'oauth connect', 'oauth authorize'
+        ],
         useCases: ['Google APIs', 'GitHub API', 'Salesforce'],
         intentDescription: 'OAuth2 authentication node that handles OAuth2 authentication flows and manages access tokens. Authenticates with OAuth2-protected APIs, manages token refresh, and provides access tokens for API calls. Used for Google APIs, GitHub API, Salesforce, and other OAuth2-protected services.',
         intentCategories: ['authentication', 'oauth2', 'token_management', 'api_authentication'],
@@ -3518,7 +3718,12 @@ export class NodeLibrary {
         expiresIn: { type: 'number', optional: true },
       },
       schemaVersion: '1.0.0',
-      keywords: ['oauth', 'auth'],
+      keywords: [
+        'oauth', 'oauth2', 'oauth auth', 'oauth authentication',
+        'oauth token', 'oauth access token', 'oauth2 auth',
+        'oauth2 authentication', 'oauth2 token', 'oauth api',
+        'oauth integration', 'oauth connect', 'oauth authorize'
+      ],
       providers: ['oauth2'],
     };
   }
@@ -3548,7 +3753,11 @@ export class NodeLibrary {
           'For OAuth2, use OAuth2 Auth',
           'If key needs to be rotated frequently',
         ],
-        keywords: ['apikey', 'auth', 'key'],
+        keywords: [
+          'api key', 'apikey', 'api key auth', 'api key authentication',
+          'api key token', 'api key node', 'key api', 'api key integration',
+          'api key connect', 'api key auth node', 'api key authentication node'
+        ],
         useCases: ['OpenAI API', 'Stripe API'],
         intentDescription: 'API key authentication node that provides API keys for authenticating with services that use API key-based authentication. Retrieves stored API keys and provides them for API calls. Used for OpenAI API, Stripe API, and other services that use simple API key authentication.',
         intentCategories: ['authentication', 'api_key', 'simple_auth', 'api_authentication'],
@@ -3573,7 +3782,11 @@ export class NodeLibrary {
         apiKey: { type: 'string' },
       },
       schemaVersion: '1.0.0',
-      keywords: ['apikey'],
+      keywords: [
+        'api key', 'apikey', 'api key auth', 'api key authentication',
+        'api key token', 'api key node', 'key api', 'api key integration',
+        'api key connect', 'api key auth node', 'api key authentication node'
+      ],
       providers: ['apikey'],
     };
   }
@@ -3595,7 +3808,10 @@ export class NodeLibrary {
         'notification.send',
       ],
       providers: ['slack'],
-      keywords: ['slack', 'slack message', 'slack notification'],
+      keywords: [
+        'slack', 'slack message', 'slack channel', 'slack workspace',
+        'slack webhook', 'slack bot', 'slack api', 'slack integration'
+      ],
       configSchema: {
         required: ['webhookUrl'],
         optional: {
@@ -3641,7 +3857,10 @@ export class NodeLibrary {
         whenNotToUse: [
           'Other notification channels',
         ],
-        keywords: ['slack', 'notification', 'message', 'alert'],
+        keywords: [
+          'slack', 'slack message', 'slack channel', 'slack workspace',
+          'slack webhook', 'slack bot', 'slack api', 'slack integration'
+        ],
         useCases: ['Team notifications', 'Alerts', 'Reports'],
         // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
         intentDescription: 'Slack message node that sends messages to Slack channels or users via Slack webhooks or API. Sends notifications, alerts, and reports to Slack workspaces. Used for team notifications, alert systems, and Slack-based communication workflows.',
@@ -3675,7 +3894,12 @@ export class NodeLibrary {
         'terminal', // Can serve as workflow output
       ],
       providers: ['google'],
-      keywords: ['gmail', 'google mail', 'google email', 'gmail them', 'send via gmail', 'mail via gmail'],
+      keywords: [
+        'gmail', 'google gmail', 'googlemail', 'googlegmail',
+        'google mail', 'google email', 'mail via google', 'email via google',
+        'send gmail', 'gmail send', 'send via gmail', 'email via gmail',
+        'gmail them', 'mail via gmail'
+      ],
       configSchema: {
         // `operation` is a runtime/system field with a default ('send') and should not
         // be surfaced as a missing user input. Treating it as required causes
@@ -3797,7 +4021,11 @@ export class NodeLibrary {
           'Generic email sending (use email node with SMTP)',
           'Other email providers',
         ],
-        keywords: ['gmail', 'google mail', 'google email', 'gmail them', 'send via gmail', 'email via gmail', 'mail via gmail', 'email', 'send email', 'mail'],
+        keywords: [
+          'gmail', 'google gmail', 'googlemail', 'googlegmail',
+          'google mail', 'google email', 'gmail api', 'gmail oauth',
+          'gmail integration', 'gmail account', 'gmail inbox'
+        ],
         useCases: ['Gmail notifications', 'Google Workspace integration', 'OAuth email sending', 'Email reading', 'Email searching'],
         // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
         intentDescription: 'Gmail email integration for sending, reading, and managing emails via Google Gmail API. Uses OAuth authentication to access Gmail accounts. Performs email operations like sending emails to recipients, reading email messages, searching emails, and managing Gmail inbox. Used for email notifications, email automation, and Google Workspace email workflows.',
@@ -3870,7 +4098,11 @@ export class NodeLibrary {
         'smtp.send',
       ],
       providers: ['smtp'],
-      keywords: ['email', 'mail', 'smtp'],
+      keywords: [
+        'email', 'email node', 'smtp email', 'email smtp',
+        'send email', 'email send', 'smtp send', 'email mail',
+        'email notification', 'email message', 'smtp mail', 'email via smtp'
+      ],
       configSchema: {
         required: ['to', 'subject', 'text'],
         optional: {
@@ -3900,7 +4132,11 @@ export class NodeLibrary {
         whenNotToUse: [
           'Other notification channels',
         ],
-        keywords: ['email', 'mail', 'send', 'notify'],
+        keywords: [
+          'email', 'email node', 'smtp email', 'email smtp',
+          'send email', 'email send', 'smtp send', 'email mail',
+          'email notification', 'email message', 'smtp mail', 'email via smtp'
+        ],
         useCases: ['Email notifications', 'Reports', 'Alerts'],
         // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
         intentDescription: 'Generic email node that sends emails via SMTP (Simple Mail Transfer Protocol). Sends email notifications, reports, and alerts to recipients using SMTP servers. Used for email notifications, automated reports, and alert systems when Gmail/Outlook OAuth is not needed.',
@@ -3941,7 +4177,11 @@ export class NodeLibrary {
         whenNotToUse: [
           'Production workflows without logging needs',
         ],
-        keywords: ['log', 'debug', 'audit', 'monitor'],
+        keywords: [
+          'log output', 'log node', 'output log', 'log data',
+          'debug log', 'audit log', 'monitor log', 'log message',
+          'log result', 'log response', 'log info', 'log debug'
+        ],
         useCases: ['Debugging', 'Audit trails', 'Monitoring'],
         // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
         intentDescription: 'Log output node that logs data to console or file for debugging, audit trails, and monitoring. Records workflow execution data, debug information, and audit logs. Used for debugging workflows, creating audit trails, and monitoring workflow execution.',
@@ -3970,7 +4210,11 @@ export class NodeLibrary {
         'outlook.read',
       ],
       providers: ['microsoft'],
-      keywords: ['outlook', 'microsoft outlook', 'outlook email', 'send via outlook'],
+      keywords: [
+        'outlook', 'microsoft outlook', 'outlook email', 'outlook mail',
+        'send outlook', 'send via outlook', 'outlook send', 'outlook message',
+        'microsoft email', 'outlook notification', 'outlook integration', 'outlook api'
+      ],
       configSchema: {
         required: [],
         optional: {
@@ -4038,7 +4282,11 @@ export class NodeLibrary {
           'Gmail integration (use google_gmail)',
           'Other email providers',
         ],
-        keywords: ['outlook', 'microsoft outlook', 'outlook email'],
+        keywords: [
+          'outlook', 'microsoft outlook', 'outlook email', 'outlook mail',
+          'send outlook', 'send via outlook', 'outlook send', 'outlook message',
+          'microsoft email', 'outlook notification', 'outlook integration', 'outlook api'
+        ],
         useCases: ['Outlook email sending', 'Microsoft email integration'],
         // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
         intentDescription: 'Microsoft Outlook email integration that sends, reads, and manages emails via Outlook API using OAuth authentication. Performs email operations like sending emails, reading messages, searching emails, and managing Outlook inbox. Used for Outlook email automation and Microsoft email integration.',
@@ -4138,7 +4386,11 @@ export class NodeLibrary {
           'Slack notifications (use slack_message)',
           'Email notifications (use email/google_gmail)',
         ],
-        keywords: ['telegram', 'telegram bot', 'telegram message'],
+        keywords: [
+          'telegram', 'telegram message', 'send telegram', 'telegram bot',
+          'telegram notification', 'post telegram', 'telegram post', 'notify telegram',
+          'telegram send', 'message telegram', 'telegram alert'
+        ],
         useCases: ['Alerts to Telegram channel', 'Bot notifications', 'Status updates'],
         // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
         intentDescription: 'Telegram message node that sends messages to Telegram chats using Telegram Bot API. Sends text messages, photos, videos, documents, and other media types to Telegram channels or users. Used for Telegram bot notifications, alerts to Telegram channels, and Telegram-based communication workflows.',
@@ -4171,7 +4423,10 @@ export class NodeLibrary {
       // Capability metadata for connector resolution
       capabilities: ['notification.send', 'telegram.send', 'message.send'],
       providers: ['telegram'],
-      keywords: ['telegram', 'telegram message', 'telegram bot'],
+      keywords: [
+        'telegram', 'telegram message', 'telegram bot', 'telegram chat',
+        'telegram api', 'telegram integration', 'telegram channel'
+      ],
     };
   }
 
@@ -4280,7 +4535,11 @@ export class NodeLibrary {
           'Non-Salesforce CRMs (use HubSpot/Zoho/etc.)',
           'Simple spreadsheets (use Google Sheets)',
         ],
-        keywords: ['salesforce', 'sf', 'sobject', 'account', 'contact', 'lead', 'opportunity'], // Removed 'crm' - use sample workflows instead
+        keywords: [
+          'salesforce', 'sales force', 'sfdc', 'salesforce crm', 'salesforcecrm',
+          'salesforce record', 'create salesforce', 'sf', 'salesforce contact',
+          'salesforce deal', 'salesforce opportunity', 'salesforce account'
+        ],
         useCases: [
           'Create/update Salesforce contacts or leads from form submissions',
           'Query Salesforce data and use it downstream',
@@ -4341,7 +4600,12 @@ export class NodeLibrary {
       // Capability metadata for connector resolution
       capabilities: ['crm.read', 'crm.write', 'salesforce.crm'],
       providers: ['salesforce'],
-      keywords: ['salesforce', 'sf', 'salesforce contact', 'salesforce opportunity'], // Removed 'crm' - use sample workflows instead
+      keywords: [
+        'salesforce', 'sales force', 'sfdc', 'salesforce crm', 'salesforcecrm',
+        'salesforce record', 'sf', 'salesforce contact', 'salesforce account',
+        'salesforce deal', 'salesforce opportunity', 'salesforce lead',
+        'salesforce case', 'salesforce integration', 'salesforce api'
+      ],
     };
   }
 
@@ -4393,7 +4657,12 @@ export class NodeLibrary {
           'Basic calculations',
           'No AI capabilities needed',
         ],
-        keywords: ['ai agent', 'chatbot', 'chat bot', 'conversational ai', 'ai assistant', 'ai reasoning', 'natural language', 'agent'],
+        keywords: [
+          'ai agent', 'ai assistant', 'ai chatbot', 'chatbot ai',
+          'conversational ai', 'ai conversation', 'ai agent node',
+          'agent ai', 'ai reasoning', 'ai reasoning agent', 'natural language agent',
+          'ai agent assistant', 'ai agent chatbot'
+        ],
         useCases: ['Chatbots', 'AI assistants', 'Conversational interfaces', 'AI-powered workflows', 'AI agents with memory'],
         // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
         intentDescription: 'Autonomous AI agent with memory, tools, and reasoning capabilities. Performs complex AI interactions, conversational AI, chatbot functionality, and AI-powered decision making. Uses chat models with memory and tools to provide intelligent, context-aware responses and actions. Used for chatbots, AI assistants, conversational interfaces, and complex AI workflows.',
@@ -4462,7 +4731,11 @@ export class NodeLibrary {
         whenNotToUse: [
           'AI Agent workflows (use ai_agent + chat_model)',
         ],
-        keywords: ['ai', 'chat model', 'llm', 'ollama', 'openai', 'claude', 'gemini'],
+        keywords: [
+          'ai chat model', 'chat model', 'ai model', 'llm model',
+          'ai chat', 'chat ai', 'ai llm', 'llm chat',
+          'ai conversation', 'chat conversation', 'ai chat node', 'chat model node'
+        ],
         useCases: ['Summarization', 'Classification', 'Text generation'],
         // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
         intentDescription: 'AI-powered text processing using language models. Performs natural language tasks like summarization, analysis, classification, generation, and transformation of text data. Uses LLM (Large Language Model) to understand context and generate intelligent responses.',
@@ -4496,7 +4769,7 @@ export class NodeLibrary {
         'data.analyze',
       ],
       providers: ['ollama', 'openai', 'anthropic', 'google'],
-      keywords: ['ai service', 'ai processing', 'ai analysis', 'text processing', 'summarize', 'analyze'],
+      keywords: ['ai service', 'ai_service', 'ai service node'],
       configSchema: {
         // ✅ CRITICAL: Required fields for question generation
         // prompt is required (inputData is optional alternative, validated in validationRules)
@@ -4580,7 +4853,10 @@ export class NodeLibrary {
           'Direct chat model calls (use ai_chat_model)',
           'Simple data transformation (use javascript)',
         ],
-        keywords: ['ai service', 'ai processing', 'ai', 'llm', 'openai', 'summarize', 'analyze', 'extract', 'classify', 'ai text', 'ai model'],
+        keywords: [
+          'ai service', 'ai_service', 'ai service node',
+          'ai service type'
+        ],
         useCases: ['Text summarization', 'Data analysis', 'Content extraction', 'Classification', 'Translation', 'AI text processing'],
         intentDescription: 'Generic AI service node that performs various AI-powered text processing operations including summarization, analysis, extraction, classification, and translation. Provides a unified interface for AI operations with configurable service types and providers. Used for text summarization, data analysis, content extraction, classification, translation, and general AI text processing.',
         intentCategories: ['ai_processing', 'text_processing', 'ai_summarization', 'ai_analysis', 'nlp', 'ai_service'],
@@ -4729,7 +5005,11 @@ export class NodeLibrary {
           'Project management must happen in a different tool (e.g. Jira, Asana).',
           'No ClickUp workspace or API access is available.',
         ],
-        keywords: ['clickup', 'tasks', 'project management', 'workspace', 'space', 'list'],
+        keywords: [
+          'clickup', 'click up', 'clickupcrm', 'clickup crm',
+          'create clickup', 'clickup task', 'clickup tasks', 'clickup list',
+          'clickup workspace', 'clickup space', 'clickup project'
+        ],
         useCases: [
           'Create a ClickUp task whenever a form is submitted.',
           'Sync CRM events into ClickUp task lists.',
@@ -4811,7 +5091,12 @@ export class NodeLibrary {
           'API-based triggers',
           'Form submissions',
         ],
-        keywords: ['chat', 'chatbot', 'conversation', 'ai chat', 'chat trigger', 'conversational'],
+        keywords: [
+          'chat trigger', 'chatbot trigger', 'chat trigger node',
+          'conversation trigger', 'chat conversation', 'chatbot conversation',
+          'ai chat trigger', 'chat ai trigger', 'conversational trigger',
+          'chat interface', 'chatbot interface', 'chat bot trigger'
+        ],
         useCases: ['Chatbots', 'AI assistants', 'Conversational workflows'],
         // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
         intentDescription: 'Chat trigger that executes workflows from chat or AI interactions. Receives chat messages from users and triggers workflow execution. Used for chatbot workflows, conversational AI, AI assistants, and chat-based user interactions.',
@@ -4896,7 +5181,11 @@ export class NodeLibrary {
         whenNotToUse: [
           'Other social media platforms',
         ],
-        keywords: ['linkedin', 'linked in', 'linked-in', 'li', 'professional network', 'post to linkedin', 'linkedin post', 'post on linkedin', 'share on linkedin'],
+        keywords: [
+          'linkedin', 'linked in', 'linked-in', 'linkedin post',
+          'linkedin profile', 'linkedin company', 'linkedin article',
+          'linkedin api', 'linkedin integration'
+        ],
         useCases: ['LinkedIn posts', 'Professional updates', 'Content sharing'],
         intentDescription: 'LinkedIn integration node that posts content to LinkedIn, manages LinkedIn profiles and company pages. Creates text posts, media posts, articles, and manages LinkedIn content. Used for professional content sharing, LinkedIn automation, and social media marketing on LinkedIn.',
         intentCategories: ['social_media', 'linkedin', 'content_sharing', 'professional_network', 'social_automation'],
@@ -4974,7 +5263,10 @@ export class NodeLibrary {
         whenNotToUse: [
           'Other social media platforms',
         ],
-        keywords: ['twitter', 'tweet', 'x.com', 'post to twitter'],
+        keywords: [
+          'twitter', 'tweet', 'x.com', 'x twitter', 'twitter x',
+          'twitter api', 'twitter integration', 'twitter account'
+        ],
         useCases: ['Twitter posts', 'Tweet sharing', 'Social updates'],
         intentDescription: 'Twitter/X integration node that posts tweets, manages Twitter accounts, searches tweets, and interacts with Twitter API. Creates tweets, deletes tweets, searches recent tweets, and manages Twitter content. Used for Twitter automation, tweet sharing, and social media marketing on Twitter/X.',
         intentCategories: ['social_media', 'twitter', 'tweet', 'content_sharing', 'social_automation'],
@@ -5037,7 +5329,11 @@ export class NodeLibrary {
         whenNotToUse: [
           'Other social media platforms',
         ],
-        keywords: ['instagram', 'insta', 'post to instagram', 'ig'],
+        keywords: [
+          'instagram', 'insta', 'ig', 'instagram post',
+          'instagram story', 'instagram media', 'instagram api',
+          'instagram integration'
+        ],
         useCases: ['Instagram posts', 'Image sharing', 'Visual content'],
         intentDescription: 'Instagram integration node that posts content to Instagram including images, videos, stories, and manages Instagram media. Creates and publishes Instagram posts, manages media, and interacts with Instagram API. Used for Instagram automation, visual content sharing, and social media marketing on Instagram.',
         intentCategories: ['social_media', 'instagram', 'image_sharing', 'visual_content', 'social_automation'],
@@ -5104,7 +5400,12 @@ export class NodeLibrary {
         whenNotToUse: [
           'Other video platforms (e.g. TikTok, Vimeo)',
         ],
-        keywords: ['youtube', 'you tube', 'yt', 'upload to youtube', 'post on youtube', 'youtube video'],
+        keywords: [
+          'youtube', 'you tube', 'yt', 'youtube video',
+          'upload youtube', 'upload to youtube', 'post youtube',
+          'post on youtube', 'youtube upload', 'youtube post',
+          'youtube channel', 'youtube publish'
+        ],
         useCases: ['Publish marketing videos', 'Post YouTube shorts', 'Upload product demos'],
         intentDescription: 'YouTube integration node that publishes videos or posts to YouTube channels. Uploads videos, updates video metadata, creates YouTube posts, and manages YouTube content. Used for video marketing, YouTube automation, and publishing video content to YouTube channels.',
         intentCategories: ['social_media', 'youtube', 'video_upload', 'content_sharing', 'video_marketing'],
@@ -5113,7 +5414,12 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['video.upload', 'video.update', 'youtube.post'],
       providers: ['youtube'],
-      keywords: ['youtube', 'you tube', 'yt'],
+      keywords: [
+        'youtube', 'you tube', 'yt', 'youtube video',
+        'upload youtube', 'upload to youtube', 'post youtube',
+        'post on youtube', 'youtube upload', 'youtube post',
+        'youtube channel', 'youtube publish'
+      ],
     };
   }
 
@@ -5198,7 +5504,13 @@ export class NodeLibrary {
           'When a new contact is added to HubSpot',
         ],
         whenNotToUse: ['Non-HubSpot CRMs (use Salesforce/Zoho/etc.)', 'Simple spreadsheets (use Google Sheets)'],
-        keywords: ['hubspot', 'hub spot'], // Removed 'crm' - use sample workflows instead
+        // ✅ ENHANCED: Word-based keywords (pattern-based, not sentence-based)
+        // System will match these words in any sentence variation
+        keywords: [
+          'hubspot', 'hub spot', 'hubspot crm', 'hubspotcrm',
+          'hubspot contact', 'hubspot deal', 'hubspot record', 'hubspot company',
+          'hubspot ticket', 'hubspot pipeline', 'hubspot integration', 'hubspot api'
+        ],
         useCases: ['Contact management', 'Deal tracking', 'Company management', 'Ticket management'],
         intentDescription: 'HubSpot CRM integration node that performs CRM operations on HubSpot objects including contacts, companies, deals, tickets, products, and other HubSpot entities. Creates, updates, retrieves, searches, and manages HubSpot records. Used for contact management, deal tracking, company management, ticket management, and syncing data with HubSpot.',
         intentCategories: ['crm', 'hubspot', 'customer_relationship_management', 'contact_management', 'deal_tracking'],
@@ -5207,7 +5519,12 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['crm.read', 'crm.write', 'crm.search', 'hubspot.contact', 'hubspot.deal'],
       providers: ['hubspot'],
-      keywords: ['hubspot', 'hub spot'],
+      // ✅ ENHANCED: Word-based keywords (pattern-based, not sentence-based)
+      keywords: [
+        'hubspot', 'hub spot', 'hubspot crm', 'hubspotcrm',
+        'hubspot contact', 'hubspot deal', 'hubspot record', 'hubspot company',
+        'hubspot ticket', 'hubspot pipeline', 'hubspot integration', 'hubspot api'
+      ],
     };
   }
 
@@ -5266,7 +5583,12 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions Airtable', 'Need to read/write Airtable records', 'Database operations in Airtable'],
         whenNotToUse: ['Other database systems', 'Simple spreadsheets (use Google Sheets)'],
-        keywords: ['airtable', 'air table'],
+        keywords: [
+          'airtable', 'air table', 'airtablebase', 'airtable base',
+          'airtable record', 'airtable records', 'airtable table',
+          'airtable database', 'airtable sync', 'airtable integration',
+          'airtable api'
+        ],
         useCases: ['Airtable record management', 'Data sync with Airtable'],
         intentDescription: 'Airtable integration node that reads, writes, updates, and deletes records in Airtable bases and tables. Performs database-like operations on Airtable records including creating, reading, updating, and deleting records. Used for Airtable record management, data synchronization with Airtable, and database operations in Airtable.',
         intentCategories: ['database', 'airtable', 'data_storage', 'record_management', 'data_sync'],
@@ -5275,7 +5597,12 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['database.read', 'database.write', 'airtable.record'],
       providers: ['airtable'],
-      keywords: ['airtable'],
+      keywords: [
+        'airtable', 'air table', 'airtablebase', 'airtable base',
+        'airtable record', 'airtable records', 'airtable table',
+        'airtable database', 'airtable sync', 'airtable integration',
+        'airtable api'
+      ],
     };
   }
 
@@ -5339,7 +5666,11 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions Notion', 'Need to read/write Notion pages or databases'],
         whenNotToUse: ['Other productivity tools', 'Simple notes (use other nodes)'],
-        keywords: ['notion'],
+        keywords: [
+          'notion', 'notion page', 'notion database', 'notion db',
+          'notion workspace', 'notion block', 'notion integration',
+          'notion api', 'notion sync'
+        ],
         useCases: ['Notion page management', 'Database operations in Notion'],
         intentDescription: 'Notion integration node that reads, writes, updates, and deletes pages, databases, and blocks in Notion. Performs operations on Notion content including creating pages, managing databases, searching content, and managing Notion blocks. Used for Notion page management, database operations in Notion, and productivity workflow automation.',
         intentCategories: ['productivity', 'notion', 'content_management', 'database', 'knowledge_management'],
@@ -5348,7 +5679,11 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['notion.read', 'notion.write', 'notion.page'],
       providers: ['notion'],
-      keywords: ['notion'],
+      keywords: [
+        'notion', 'notion page', 'notion database', 'notion db',
+        'notion workspace', 'notion block', 'notion integration',
+        'notion api', 'notion sync'
+      ],
     };
   }
 
@@ -5408,7 +5743,11 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions Zoho CRM', 'CRM workflows with Zoho', 'Syncing data with Zoho CRM'],
         whenNotToUse: ['Other CRMs (use HubSpot/Salesforce/etc.)'],
-        keywords: ['zoho'], // Removed 'crm' - use sample workflows instead
+        keywords: [
+          'zoho', 'zoho crm', 'zohocrm', 'zoho contact', 'zoho record',
+          'zoho deal', 'zoho lead', 'zoho account', 'zoho module',
+          'zoho integration', 'zoho api'
+        ],
         useCases: ['Zoho CRM record management', 'Data sync with Zoho'],
         intentDescription: 'Zoho CRM integration node that performs CRM operations on Zoho CRM modules including Leads, Contacts, Accounts, Deals, and related lists. Creates, updates, retrieves, searches, and deletes Zoho CRM records. Used for Zoho CRM record management, data synchronization with Zoho CRM, and CRM workflow automation.',
         intentCategories: ['crm', 'zoho', 'customer_relationship_management', 'record_management', 'data_sync'],
@@ -5417,7 +5756,11 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['crm.read', 'crm.write', 'zoho.record'],
       providers: ['zoho'],
-      keywords: ['zoho', 'zoho crm'],
+      keywords: [
+        'zoho', 'zoho crm', 'zohocrm', 'zoho contact', 'zoho record',
+        'zoho deal', 'zoho lead', 'zoho account', 'zoho module',
+        'zoho integration', 'zoho api'
+      ],
     };
   }
 
@@ -5467,7 +5810,12 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions Pipedrive', 'CRM workflows with Pipedrive'],
         whenNotToUse: ['Other CRMs (use HubSpot/Salesforce/etc.)'],
-        keywords: ['pipedrive', 'pipe drive'],
+        keywords: [
+          'pipedrive', 'pipe drive', 'pipedrive crm', 'pipedrivecrm',
+          'pipedrive deal', 'pipedrive contact', 'pipedrive record',
+          'pipedrive person', 'pipedrive organization', 'pipedrive activity',
+          'pipedrive integration', 'pipedrive api'
+        ],
         useCases: ['Pipedrive deal management', 'Person/organization management'],
         intentDescription: 'Pipedrive CRM integration node that manages deals, persons, organizations, and activities in Pipedrive. Creates, updates, retrieves, searches, and deletes Pipedrive resources. Used for Pipedrive deal management, person and organization management, and CRM workflow automation with Pipedrive.',
         intentCategories: ['crm', 'pipedrive', 'customer_relationship_management', 'deal_management', 'contact_management'],
@@ -5476,7 +5824,11 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['crm.read', 'crm.write', 'pipedrive.deal'],
       providers: ['pipedrive'],
-      keywords: ['pipedrive'],
+      keywords: [
+        'pipedrive', 'pipe drive', 'pipedrive crm', 'pipedrivecrm',
+        'create pipedrive', 'pipedrive deal', 'pipedrive contact',
+        'pipedrive record', 'crm pipedrive', 'pipedrive create', 'pipedrive update'
+      ],
     };
   }
 
@@ -5508,7 +5860,10 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions Discord notifications', 'Send messages to Discord channels'],
         whenNotToUse: ['Slack notifications (use slack_message)', 'Email notifications (use email/google_gmail)'],
-        keywords: ['discord', 'discord message'],
+        keywords: [
+          'discord', 'discord message', 'discord channel', 'discord server',
+          'discord webhook', 'discord bot', 'discord api', 'discord integration'
+        ],
         useCases: ['Discord notifications', 'Team communication via Discord'],
         intentDescription: 'Discord integration node that sends messages to Discord channels or users via Discord Bot API. Sends text messages, notifications, and alerts to Discord channels. Used for Discord notifications, team communication via Discord, and Discord-based workflow automation.',
         intentCategories: ['communication', 'discord', 'notification', 'team_collaboration', 'chat_message'],
@@ -5517,7 +5872,10 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['notification.send', 'discord.send', 'message.send'],
       providers: ['discord'],
-      keywords: ['discord'],
+      keywords: [
+        'discord', 'discord message', 'discord channel', 'discord server',
+        'discord webhook', 'discord bot', 'discord api', 'discord integration'
+      ],
     };
   }
 
@@ -5545,7 +5903,10 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['Input is JSON string or nested object', 'Need to parse and extract fields from JSON'],
         whenNotToUse: ['Simple data operations', 'Already parsed JSON objects'],
-        keywords: ['json', 'parse', 'extract'],
+        keywords: [
+          'json parser', 'json parser node', 'json parse node',
+          'json parser type'
+        ],
         useCases: ['JSON parsing', 'Field extraction'],
         intentDescription: 'JSON parser node that parses JSON strings into JavaScript objects and extracts specific fields. Converts JSON string data into structured objects, extracts specific fields from parsed JSON, and prepares JSON data for further processing. Used for JSON parsing, field extraction from JSON, and converting string data to structured objects.',
         intentCategories: ['data_parsing', 'json_processing', 'data_extraction', 'data_transformation'],
@@ -5580,7 +5941,10 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['Need to combine data from multiple sources', 'Merge arrays or objects'],
         whenNotToUse: ['Simple data flow', 'Single source data'],
-        keywords: ['merge', 'combine', 'join'],
+        keywords: [
+          'merge data', 'merge data node', 'merge data operation',
+          'merge data node type'
+        ],
         useCases: ['Data merging', 'Combining results'],
         intentDescription: 'Merge data node that combines data structures from multiple sources. Merges arrays or objects using different modes (append, join, overwrite) and combines data from parallel branches or multiple sources. Used for data merging, combining results from multiple sources, and integrating data from different paths.',
         intentCategories: ['data_merging', 'data_combination', 'data_integration', 'array_processing'],
@@ -5609,7 +5973,10 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['Need to rename or transform fields', 'Edit field values'],
         whenNotToUse: ['Simple data flow', 'No field transformation needed'],
-        keywords: ['edit', 'rename', 'transform', 'fields'],
+        keywords: [
+          'edit fields', 'edit fields node', 'edit field node',
+          'edit fields node type'
+        ],
         useCases: ['Field editing', 'Data transformation'],
         intentDescription: 'Edit fields node that edits, renames, or transforms field values in data objects. Modifies field names, transforms field values, and restructures data objects. Used for field editing, data transformation, and restructuring data objects.',
         intentCategories: ['data_transformation', 'field_manipulation', 'data_restructuring', 'field_editing'],
@@ -5634,7 +6001,12 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['Error-based workflow triggers', 'Error handling workflows'],
         whenNotToUse: ['Normal workflow triggers'],
-        keywords: ['error trigger', 'error handling'],
+        keywords: [
+          'error trigger', 'error trigger node', 'trigger error', 'error event trigger',
+          'error workflow trigger', 'trigger on error', 'error based trigger',
+          'error handler trigger', 'error catch trigger', 'error exception trigger',
+          'error fail trigger', 'error stop trigger'
+        ],
         useCases: ['Error workflows'],
         intentDescription: 'Error trigger node that executes workflows when errors occur in other workflows or systems. Triggers error handling workflows, processes error events, and manages error-based automation. Used for error handling workflows, error event processing, and error-based automation.',
         intentCategories: ['error_handling', 'error_trigger', 'fault_tolerance', 'error_processing'],
@@ -5654,7 +6026,12 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['Workflow-to-workflow triggers', 'Chaining workflows'],
         whenNotToUse: ['External triggers'],
-        keywords: ['workflow trigger', 'chain workflow'],
+        keywords: [
+          'workflow trigger', 'workflow chain', 'chain workflow', 'workflow chain trigger',
+          'trigger workflow', 'workflow trigger node', 'nested workflow trigger',
+          'subworkflow trigger', 'workflow invoke trigger', 'workflow call trigger',
+          'workflow execute trigger', 'workflow nested trigger'
+        ],
         useCases: ['Workflow chaining'],
         intentDescription: 'Workflow trigger node that triggers workflows from other workflows. Enables workflow-to-workflow triggering, workflow chaining, and nested workflow execution. Used for workflow chaining, workflow composition, and triggering workflows from other workflows.',
         intentCategories: ['workflow_trigger', 'workflow_chaining', 'workflow_composition', 'nested_workflow'],
@@ -5684,7 +6061,10 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['Need to filter array items', 'Remove items based on condition'],
         whenNotToUse: ['Simple data flow'],
-        keywords: ['filter', 'remove', 'exclude'],
+        keywords: [
+          'filter', 'filter node', 'filter array', 'filter condition',
+          'filter node type'
+        ],
         useCases: ['Array filtering'],
         // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
         intentDescription: 'Filter node that filters array items based on conditions. Removes array items that do not match specified conditions, keeping only items that satisfy the filter criteria. Used for array filtering, data filtering, and removing items based on conditions.',
@@ -5720,7 +6100,11 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['Need to iterate over array', 'Process multiple items'],
         whenNotToUse: ['Single item processing'],
-        keywords: ['loop', 'iterate', 'foreach', 'each'],
+        keywords: [
+          'loop', 'loop node', 'loop iterate', 'loop foreach',
+          'loop each', 'iterate loop', 'foreach loop', 'each loop',
+          'loop array', 'array loop', 'loop items', 'loop data'
+        ],
         useCases: ['Array iteration'],
         // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
         intentDescription: 'Loop node that iterates over array items with a maximum iterations limit. Processes each item in an array sequentially, executing workflow steps for each item. Used for array iteration, processing multiple items, and batch processing with iteration limits.',
@@ -5741,7 +6125,11 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['Need pass-through node', 'Debugging'],
         whenNotToUse: ['Normal workflows'],
-        keywords: ['noop', 'pass through'],
+        keywords: [
+          'noop', 'noop node', 'no operation', 'no op',
+          'pass through', 'passthrough', 'pass through node',
+          'no operation node', 'skip node', 'pass node', 'through node'
+        ],
         useCases: ['Pass-through'],
         intentDescription: 'NoOp (no operation) node that passes data through without performing any operation. Acts as a pass-through node for debugging, workflow structure, or placeholder purposes. Used for pass-through operations, debugging workflows, and maintaining workflow structure.',
         intentCategories: ['utility', 'pass_through', 'debugging', 'placeholder'],
@@ -5771,7 +6159,11 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['Need to process large arrays in batches', 'Batch processing'],
         whenNotToUse: ['Small arrays'],
-        keywords: ['batch', 'split', 'chunk'],
+        keywords: [
+          'split batches', 'split batch', 'batch split', 'split in batches',
+          'batch chunk', 'chunk batch', 'split data batch', 'batch process split',
+          'split array batch', 'batch array split', 'split items batch', 'batch items split'
+        ],
         useCases: ['Batch processing'],
         intentDescription: 'Split in batches node that splits arrays into smaller batches for processing. Divides large arrays into smaller chunks to process them in batches, preventing memory issues and enabling batch processing. Used for batch processing, handling large datasets, and processing arrays in manageable chunks.',
         intentCategories: ['batch_processing', 'array_processing', 'data_chunking', 'performance_optimization'],
@@ -5800,7 +6192,11 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['Need to stop workflow with error', 'Error handling'],
         whenNotToUse: ['Normal flow'],
-        keywords: ['stop', 'error', 'fail'],
+        keywords: [
+          'stop error', 'stop and error', 'stop on error', 'error stop',
+          'fail stop', 'stop fail', 'error stop node', 'stop error node',
+          'stop workflow error', 'error stop workflow', 'stop execution error', 'error stop execution'
+        ],
         useCases: ['Error stopping'],
         intentDescription: 'Stop and error node that stops workflow execution with an error message. Terminates workflow execution when errors occur, validation fails, or conditions are not met. Used for error stopping, workflow termination on errors, and error handling in workflows.',
         intentCategories: ['error_handling', 'workflow_termination', 'error_stopping', 'fault_tolerance'],
@@ -5835,7 +6231,11 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['Need to set variables', 'Store computed values'],
         whenNotToUse: ['Simple data flow'],
-        keywords: ['set', 'variable', 'store'],
+        keywords: [
+          'set variable', 'set var', 'variable set', 'set value',
+          'assign variable', 'assign value', 'set field', 'set data',
+          'variable assign', 'set property', 'set attribute', 'set config'
+        ],
         useCases: ['Variable setting'],
         intentDescription: 'Set variable node that sets workflow variables for use in other nodes. Stores computed values, default values, or transformed data into named variables that can be referenced throughout the workflow. Used for variable setting, storing computed values, and sharing data across workflow nodes.',
         intentCategories: ['variable_assignment', 'data_storage', 'workflow_variables', 'value_storage'],
@@ -5874,7 +6274,10 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['Need mathematical calculations', 'Number operations'],
         whenNotToUse: ['Simple data flow'],
-        keywords: ['math', 'calculate', 'compute', 'add', 'subtract'],
+        keywords: [
+          'math', 'math node', 'math operation', 'math add',
+          'math subtract', 'math multiply', 'math divide'
+        ],
         useCases: ['Mathematical operations'],
         intentDescription: 'Math node that performs mathematical operations and calculations on numbers. Executes arithmetic operations including addition, subtraction, multiplication, division, and other mathematical functions. Used for mathematical calculations, number operations, and computational tasks in workflows.',
         intentCategories: ['mathematical_operations', 'calculations', 'arithmetic', 'number_processing'],
@@ -5909,7 +6312,11 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['Need to parse HTML', 'Extract HTML content'],
         whenNotToUse: ['Simple text'],
-        keywords: ['html', 'parse html', 'extract html'],
+        keywords: [
+          'html', 'html node', 'html parse', 'parse html',
+          'html extract', 'extract html', 'html parser', 'html data',
+          'html parse node', 'parse html node', 'html content parse', 'html parse extract'
+        ],
         useCases: ['HTML parsing'],
         intentDescription: 'HTML node that parses and manipulates HTML content. Parses HTML strings into structured data, extracts HTML elements, cleans HTML content, and processes HTML documents. Used for HTML parsing, web scraping, and extracting content from HTML documents.',
         intentCategories: ['html_processing', 'web_scraping', 'content_extraction', 'data_parsing'],
@@ -5944,7 +6351,11 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['Need to parse XML', 'Extract XML content'],
         whenNotToUse: ['Simple text'],
-        keywords: ['xml', 'parse xml'],
+        keywords: [
+          'xml', 'xml node', 'xml parse', 'parse xml',
+          'xml extract', 'extract xml', 'xml parser', 'xml data',
+          'xml parse node', 'parse xml node', 'xml content parse', 'xml parse extract'
+        ],
         useCases: ['XML parsing'],
         intentDescription: 'XML node that parses and manipulates XML content. Parses XML strings into structured data, extracts XML elements, and processes XML documents. Used for XML parsing, extracting data from XML documents, and processing XML-formatted data.',
         intentCategories: ['xml_processing', 'data_parsing', 'content_extraction', 'structured_data'],
@@ -5984,7 +6395,11 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['Need to parse CSV', 'Generate CSV', 'CSV operations'],
         whenNotToUse: ['Simple data'],
-        keywords: ['csv', 'parse csv', 'generate csv'],
+        keywords: [
+          'csv', 'csv node', 'csv parse', 'parse csv',
+          'csv generate', 'generate csv', 'csv data', 'csv file',
+          'csv parse node', 'parse csv node', 'csv read', 'csv write'
+        ],
         useCases: ['CSV operations'],
         intentDescription: 'CSV node that parses and generates CSV (Comma-Separated Values) data. Parses CSV strings into structured arrays/objects, generates CSV strings from data arrays, and handles CSV format conversions. Used for CSV parsing, CSV generation, and working with CSV-formatted data.',
         intentCategories: ['csv_processing', 'data_parsing', 'data_formatting', 'file_processing'],
@@ -6013,7 +6428,10 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['Need to rename object keys', 'Key transformation'],
         whenNotToUse: ['Simple data flow'],
-        keywords: ['rename', 'keys', 'transform keys'],
+        keywords: [
+          'rename keys', 'rename keys node', 'rename key node',
+          'rename keys node type'
+        ],
         useCases: ['Key renaming'],
         intentDescription: 'Rename keys node that renames object keys in data objects. Transforms object structure by renaming keys according to specified mappings. Used for key renaming, data structure transformation, and restructuring object keys.',
         intentCategories: ['data_transformation', 'key_manipulation', 'data_restructuring', 'field_renaming'],
@@ -6059,7 +6477,10 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['Need to aggregate data', 'Calculate totals', 'Statistics', 'Join arrays into text'],
         whenNotToUse: ['Simple data flow', 'AI-powered summarization or analysis (use ai_chat_model instead)'],
-        keywords: ['aggregate', 'sum', 'avg', 'count', 'total', 'join', 'concat', 'concatenate', 'merge'],
+        keywords: [
+          'aggregate', 'aggregate node', 'aggregate operation',
+          'aggregate node type'
+        ],
         useCases: ['Data aggregation'],
         // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
         intentDescription: 'Mathematical and statistical data aggregation operations. Performs numerical calculations like sum, average, count, min, max on numeric data fields, or joins/concatenates text arrays. Used for data consolidation and mathematical operations, NOT for AI-powered text processing or summarization.',
@@ -6101,7 +6522,9 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['Need to sort arrays', 'Order data'],
         whenNotToUse: ['Simple data flow'],
-        keywords: ['sort', 'order', 'arrange'],
+        keywords: [
+          'sort', 'sort node', 'sort array', 'sort node type'
+        ],
         useCases: ['Array sorting'],
         intentDescription: 'Sort node that sorts arrays by specified fields in ascending or descending order. Orders array items based on field values, supports numeric, string, and date sorting. Used for array sorting, ordering data, and arranging items in specific sequences.',
         intentCategories: ['array_processing', 'data_sorting', 'data_ordering', 'array_manipulation'],
@@ -6135,7 +6558,11 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['Need to limit array size', 'Take first N items'],
         whenNotToUse: ['Simple data flow'],
-        keywords: ['limit', 'take', 'first'],
+        keywords: [
+          'limit', 'limit node', 'limit data', 'limit array',
+          'limit take', 'take limit', 'limit first', 'first limit',
+          'data limit', 'array limit', 'limit result', 'limit output'
+        ],
         useCases: ['Array limiting'],
         intentDescription: 'Limit node that limits array size to a specified number of items. Takes only the first N items from an array, preventing processing of large datasets. Used for array limiting, pagination, and controlling data volume in workflows.',
         intentCategories: ['array_processing', 'data_limiting', 'pagination', 'performance_optimization'],
@@ -6164,7 +6591,11 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions set fields', 'Need to override fields', 'Simple mapping'],
         whenNotToUse: ['Complex transforms (use javascript)', 'Single variable assignment (use set_variable)'],
-        keywords: ['set', 'fields', 'map', 'override'],
+        keywords: [
+          'set', 'set node', 'set fields', 'set data',
+          'set map', 'set override', 'set value', 'set field',
+          'data set', 'field set', 'set object', 'set record'
+        ],
         useCases: ['Field mapping'],
         // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
         intentDescription: 'Set node that sets or overrides multiple fields on the current data item. Maps and transforms data by setting field values, overriding existing fields, and creating new fields. Used for field mapping, data transformation, and simple data manipulation.',
@@ -6205,7 +6636,11 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions OpenAI', 'GPT models', 'OpenAI chat'],
         whenNotToUse: ['Other AI models'],
-        keywords: ['openai', 'gpt', 'gpt-4', 'gpt-3.5'],
+        keywords: [
+          'openai', 'openai gpt', 'gpt', 'gpt-4', 'gpt-3.5', 'gpt4', 'gpt35',
+          'openai chat', 'gpt chat', 'openai model', 'gpt model',
+          'openai api', 'gpt api', 'openai completion'
+        ],
         useCases: ['OpenAI chat completion'],
         intentDescription: 'OpenAI GPT integration node that performs chat completion using OpenAI GPT models (GPT-4, GPT-3.5-turbo). Sends chat messages to OpenAI API and receives AI-generated responses. Used for OpenAI chat completion, GPT-powered text generation, and OpenAI API integration.',
         intentCategories: ['ai_chat', 'openai', 'gpt', 'text_generation', 'llm'],
@@ -6214,7 +6649,11 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['ai.chat', 'openai.completion'],
       providers: ['openai'],
-      keywords: ['openai', 'gpt'],
+      keywords: [
+        'openai', 'openai gpt', 'gpt', 'gpt-4', 'gpt-3.5', 'gpt4', 'gpt35',
+        'openai chat', 'gpt chat', 'openai model', 'gpt model',
+        'openai api', 'gpt api', 'openai completion'
+      ],
       // ✅ CRITICAL: Explicit I/O type contract for type system
       nodeCapability: {
         inputType: ['text', 'array'], // Can accept both text and array
@@ -6254,7 +6693,11 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions Claude', 'Anthropic models'],
         whenNotToUse: ['Other AI models'],
-        keywords: ['claude', 'anthropic'],
+        keywords: [
+          'claude', 'anthropic claude', 'claude ai', 'anthropic',
+          'claude model', 'anthropic model', 'claude chat', 'anthropic chat',
+          'claude api', 'anthropic api', 'claude completion', 'anthropic completion'
+        ],
         useCases: ['Claude chat completion'],
         intentDescription: 'Anthropic Claude integration node that performs chat completion using Anthropic Claude models (Claude-3-Opus, Claude-3-Sonnet). Sends chat messages to Anthropic API and receives AI-generated responses. Used for Claude chat completion, Anthropic-powered text generation, and Claude API integration.',
         intentCategories: ['ai_chat', 'anthropic', 'claude', 'text_generation', 'llm'],
@@ -6263,7 +6706,11 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['ai.chat', 'anthropic.completion'],
       providers: ['anthropic'],
-      keywords: ['claude', 'anthropic'],
+      keywords: [
+        'claude', 'anthropic claude', 'claude ai', 'anthropic',
+        'claude model', 'anthropic model', 'claude chat', 'anthropic chat',
+        'claude api', 'anthropic api', 'claude completion', 'anthropic completion'
+      ],
       // ✅ CRITICAL: Explicit I/O type contract for type system
       nodeCapability: {
         inputType: ['text', 'array'], // Can accept both text and array
@@ -6303,7 +6750,11 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions Gemini', 'Google AI models'],
         whenNotToUse: ['Other AI models'],
-        keywords: ['gemini', 'google ai'],
+        keywords: [
+          'gemini', 'google gemini', 'gemini ai', 'google ai',
+          'gemini model', 'google gemini model', 'gemini chat', 'google gemini chat',
+          'gemini api', 'google gemini api', 'gemini completion', 'google ai completion'
+        ],
         useCases: ['Gemini chat completion'],
         intentDescription: 'Google Gemini integration node that performs chat completion using Google Gemini models (Gemini Pro, Gemini Pro Vision). Sends prompts to Google Gemini API and receives AI-generated responses. Used for Gemini chat completion, Google AI-powered text generation, and Gemini API integration.',
         intentCategories: ['ai_chat', 'google', 'gemini', 'text_generation', 'llm'],
@@ -6312,7 +6763,11 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['ai.chat', 'google.completion'],
       providers: ['google'],
-      keywords: ['gemini'],
+      keywords: [
+        'gemini', 'google gemini', 'gemini ai', 'google ai',
+        'gemini model', 'google gemini model', 'gemini chat', 'google gemini chat',
+        'gemini api', 'google gemini api', 'gemini completion', 'google ai completion'
+      ],
       // ✅ CRITICAL: Explicit I/O type contract for type system
       nodeCapability: {
         inputType: ['text', 'array'], // Can accept both text and array
@@ -6352,7 +6807,11 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions Ollama', 'Local AI models'],
         whenNotToUse: ['Cloud AI models'],
-        keywords: ['ollama', 'local ai'],
+        keywords: [
+          'ollama', 'ollama ai', 'ollama model', 'ollama chat',
+          'ollama llm', 'local ollama', 'ollama local', 'ollama api',
+          'ollama integration'
+        ],
         useCases: ['Local AI chat'],
         intentDescription: 'Ollama integration node that performs chat completion using local Ollama models. Runs AI models locally without requiring cloud API access, providing privacy and cost benefits. Used for local AI chat, on-premises AI processing, and local LLM integration.',
         intentCategories: ['ai_chat', 'ollama', 'local_ai', 'text_generation', 'llm'],
@@ -6361,7 +6820,11 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['ai.chat', 'ollama.completion'],
       providers: ['ollama'],
-      keywords: ['ollama'],
+      keywords: [
+        'ollama', 'ollama ai', 'ollama model', 'ollama chat',
+        'ollama llm', 'local ollama', 'ollama local', 'ollama api',
+        'ollama integration'
+      ],
       // ✅ CRITICAL: Explicit I/O type contract for type system
       nodeCapability: {
         inputType: ['text', 'array'], // Can accept both text and array
@@ -6396,7 +6859,10 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions summarize', 'Text summarization'],
         whenNotToUse: ['Simple text'],
-        keywords: ['summarize', 'summary', 'condense'],
+        keywords: [
+          'text summarizer', 'text summarization', 'summarizer',
+          'text summary', 'ai summarizer', 'text summarizer node'
+        ],
         useCases: ['Text summarization'],
         intentDescription: 'Text summarizer node that summarizes long text into shorter versions. Condenses lengthy text content into concise summaries while preserving key information. Used for text summarization, content condensation, and creating brief summaries from long documents.',
         intentCategories: ['ai_summarization', 'text_processing', 'content_condensation', 'nlp'],
@@ -6431,7 +6897,10 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions sentiment', 'Emotion analysis'],
         whenNotToUse: ['Simple text'],
-        keywords: ['sentiment', 'emotion', 'analyze sentiment'],
+        keywords: [
+          'sentiment analyzer', 'sentiment analysis', 'sentiment node',
+          'sentiment analyzer node', 'sentiment analyzer type'
+        ],
         useCases: ['Sentiment analysis'],
         intentDescription: 'Sentiment analyzer node that analyzes sentiment and emotions in text. Determines whether text expresses positive, negative, or neutral sentiment, and identifies emotional tones. Used for sentiment analysis, emotion detection, and understanding text sentiment in workflows.',
         intentCategories: ['sentiment_analysis', 'emotion_detection', 'text_analysis', 'nlp'],
@@ -6472,7 +6941,11 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['AI Agent needs chat model', 'Chat model connection'],
         whenNotToUse: ['Direct AI usage'],
-        keywords: ['chat model', 'model connector'],
+        keywords: [
+          'chat model', 'chat model node', 'model chat', 'chat model connector',
+          'model connector', 'chat model connector', 'ai chat model',
+          'llm chat model', 'chat model llm', 'model chat node', 'chat model api'
+        ],
         useCases: ['AI Agent connection'],
         intentDescription: 'Chat model connector node that provides chat model configuration for AI Agent nodes. Connects AI Agent nodes to specific chat models (Ollama, OpenAI, Claude, Gemini) with configurable parameters. Used for AI Agent connection, chat model configuration, and connecting AI agents to language models.',
         intentCategories: ['ai_connector', 'chat_model', 'ai_agent_support', 'model_configuration'],
@@ -6501,7 +6974,11 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['AI Agent needs memory', 'Context storage'],
         whenNotToUse: ['Stateless AI'],
-        keywords: ['memory', 'context', 'store'],
+        keywords: [
+          'memory', 'memory node', 'ai memory', 'memory store',
+          'memory context', 'context memory', 'memory ai',
+          'ai context', 'memory store', 'store memory', 'memory retrieval'
+        ],
         useCases: ['AI memory'],
         intentDescription: 'Memory node that provides memory storage for AI Agent context. Stores conversation history, context, and state for AI agents, enabling context-aware AI interactions. Used for AI memory, context storage, and maintaining conversation state in AI agents.',
         intentCategories: ['ai_memory', 'context_storage', 'ai_agent_support', 'state_management'],
@@ -6530,7 +7007,11 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['AI Agent needs tools', 'External function access'],
         whenNotToUse: ['Direct AI usage'],
-        keywords: ['tool', 'function', 'connector'],
+        keywords: [
+          'tool', 'tool node', 'ai tool', 'tool connector',
+          'function tool', 'tool function', 'ai tool connector',
+          'tool api', 'tool integration', 'ai tool node', 'tool ai'
+        ],
         useCases: ['AI tool connection'],
         intentDescription: 'Tool connector node that provides external function access for AI Agent nodes. Connects AI agents to external tools and functions, enabling AI agents to perform actions beyond text generation. Used for AI tool connection, external function access, and extending AI agent capabilities.',
         intentCategories: ['ai_tool', 'function_connector', 'ai_agent_support', 'tool_integration'],
@@ -6570,7 +7051,11 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['Need to POST data', 'Send data via HTTP POST'],
         whenNotToUse: ['GET requests (use http_request)'],
-        keywords: ['post', 'http post', 'send data'],
+        keywords: [
+          'http post', 'http post node', 'post http', 'http post request',
+          'post request', 'http send', 'http post send', 'post data',
+          'http post data', 'post http data', 'http post method', 'post method'
+        ],
         useCases: ['HTTP POST requests'],
         intentDescription: 'HTTP POST node that sends POST requests with JSON data to HTTP endpoints. Sends data to external APIs, creates resources via POST, and submits data to web services. Used for HTTP POST requests, API data submission, and sending data to external systems.',
         intentCategories: ['http_post', 'api_integration', 'data_submission', 'http_request'],
@@ -6605,7 +7090,11 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['Webhook needs response', 'Send webhook response'],
         whenNotToUse: ['Not webhook workflow'],
-        keywords: ['webhook response', 'respond'],
+        keywords: [
+          'webhook response', 'webhook respond', 'respond webhook',
+          'webhook response node', 'response webhook node', 'webhook reply',
+          'webhook return', 'webhook response send', 'send webhook response'
+        ],
         useCases: ['Webhook responses'],
         intentDescription: 'Webhook response node that sends HTTP responses back to webhook callers. Returns status codes, headers, and response body data to systems that triggered the workflow via webhook. Used for webhook responses, API endpoint responses, and responding to webhook events.',
         intentCategories: ['webhook_response', 'http_response', 'api_endpoint', 'webhook_handling'],
@@ -6644,7 +7133,11 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions GraphQL', 'GraphQL API calls'],
         whenNotToUse: ['REST API (use http_request)'],
-        keywords: ['graphql', 'gql'],
+        keywords: [
+          'graphql', 'gql', 'graphql query', 'graphql request',
+          'graphql api', 'graphql node', 'gql query', 'gql request',
+          'graphql mutation', 'graphql query node', 'graphql api node'
+        ],
         useCases: ['GraphQL requests'],
         intentDescription: 'GraphQL node that makes GraphQL requests to GraphQL APIs. Executes GraphQL queries and mutations, sends GraphQL requests with variables, and retrieves data from GraphQL endpoints. Used for GraphQL API integration, GraphQL queries, and GraphQL-based data fetching.',
         intentCategories: ['graphql', 'api_integration', 'data_fetching', 'query_language'],
@@ -6684,7 +7177,12 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions Google Drive', 'File operations in Drive'],
         whenNotToUse: ['Google Sheets (use google_sheets)', 'Google Docs (use google_doc)'],
-        keywords: ['google drive', 'drive', 'file upload'],
+        keywords: [
+          'google drive', 'googledrive', 'gdrive', 'g drive',
+          'google drive file', 'drive file', 'google drive upload',
+          'drive upload', 'google drive download', 'drive download',
+          'google drive folder', 'drive folder', 'google drive storage'
+        ],
         useCases: ['Google Drive operations'],
         intentDescription: 'Google Drive integration node that performs file operations in Google Drive including uploading, downloading, and listing files. Manages files in Google Drive storage, handles file uploads and downloads, and interacts with Google Drive API. Used for Google Drive file operations, file storage, and Google Workspace file management.',
         intentCategories: ['file_storage', 'google_workspace', 'google_drive', 'file_management'],
@@ -6709,7 +7207,12 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['google.drive', 'file.upload', 'file.download'],
       providers: ['google'],
-      keywords: ['google drive', 'drive'],
+      keywords: [
+        'google drive', 'googledrive', 'gdrive', 'g drive',
+        'google drive file', 'drive file', 'google drive upload',
+        'drive upload', 'google drive download', 'drive download',
+        'google drive folder', 'drive folder', 'google drive storage'
+      ],
     };
   }
 
@@ -6791,7 +7294,12 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions Google Calendar', 'Calendar operations'],
         whenNotToUse: ['Other calendar systems'],
-        keywords: ['google calendar', 'calendar', 'event'],
+        keywords: [
+          'google calendar', 'googledcalendar', 'gcalendar', 'g calendar',
+          'google calendar event', 'calendar event', 'google event',
+          'create calendar event', 'calendar create', 'google calendar create',
+          'google calendar update', 'calendar update', 'google calendar sync'
+        ],
         useCases: ['Calendar management'],
         intentDescription: 'Google Calendar integration node that creates, reads, updates, and manages calendar events in Google Calendar. Performs calendar operations including creating events, listing events, searching events, and managing calendar data. Used for calendar management, event scheduling, and Google Workspace calendar integration.',
         intentCategories: ['calendar', 'google_workspace', 'event_scheduling', 'calendar_management'],
@@ -6816,7 +7324,12 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['google.calendar', 'calendar.event'],
       providers: ['google'],
-      keywords: ['google calendar', 'calendar'],
+      keywords: [
+        'google calendar', 'googledcalendar', 'gcalendar', 'g calendar',
+        'google calendar event', 'calendar event', 'google event',
+        'create calendar event', 'calendar create', 'google calendar create',
+        'google calendar update', 'calendar update', 'google calendar sync'
+      ],
     };
   }
 
@@ -6844,7 +7357,12 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions Google Contacts', 'Contact management'],
         whenNotToUse: ['Other contact systems'],
-        keywords: ['google contacts', 'contacts'],
+        keywords: [
+          'google contacts', 'googledcontacts', 'gcontacts', 'g contacts',
+          'google contact', 'contact google', 'google contacts create',
+          'create google contact', 'google contacts update', 'update google contact',
+          'google contacts sync', 'sync google contacts', 'google contacts list'
+        ],
         useCases: ['Contact management'],
         intentDescription: 'Google Contacts integration node that manages contacts in Google Contacts. Creates, reads, updates, and deletes contacts, manages contact information, and interacts with Google Contacts API. Used for contact management, contact synchronization, and Google Workspace contact integration.',
         intentCategories: ['contact_management', 'google_workspace', 'contact_sync', 'address_book'],
@@ -6869,7 +7387,12 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['google.contacts', 'contact.manage'],
       providers: ['google'],
-      keywords: ['google contacts', 'contacts'],
+      keywords: [
+        'google contacts', 'googledcontacts', 'gcontacts', 'g contacts',
+        'google contact', 'contact google', 'google contacts create',
+        'create google contact', 'google contacts update', 'update google contact',
+        'google contacts sync', 'sync google contacts', 'google contacts list'
+      ],
     };
   }
 
@@ -6897,7 +7420,12 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions Google Tasks', 'Task management'],
         whenNotToUse: ['Other task systems'],
-        keywords: ['google tasks', 'tasks'],
+        keywords: [
+          'google tasks', 'googledtasks', 'gtasks', 'g tasks',
+          'google task', 'task google', 'google tasks create',
+          'create google task', 'google tasks update', 'update google task',
+          'google tasks list', 'list google tasks', 'google tasks sync'
+        ],
         useCases: ['Task management'],
         intentDescription: 'Google Tasks integration node that manages tasks in Google Tasks. Creates, reads, updates, and deletes tasks, manages task lists, and interacts with Google Tasks API. Used for task management, task tracking, and Google Workspace task integration.',
         intentCategories: ['task_management', 'google_workspace', 'productivity', 'task_tracking'],
@@ -6922,7 +7450,12 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['google.tasks', 'task.manage'],
       providers: ['google'],
-      keywords: ['google tasks', 'tasks'],
+      keywords: [
+        'google tasks', 'googledtasks', 'gtasks', 'g tasks',
+        'google task', 'task google', 'google tasks create',
+        'create google task', 'google tasks update', 'update google task',
+        'google tasks list', 'list google tasks', 'google tasks sync'
+      ],
     };
   }
 
@@ -6950,7 +7483,12 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions BigQuery', 'Data warehouse queries'],
         whenNotToUse: ['Other databases'],
-        keywords: ['bigquery', 'big query', 'data warehouse'],
+        keywords: [
+          'bigquery', 'big query', 'google bigquery', 'bigquery google',
+          'bigquery query', 'query bigquery', 'bigquery data',
+          'bigquery warehouse', 'data warehouse bigquery', 'bigquery sql',
+          'bigquery api', 'bigquery integration', 'bigquery database'
+        ],
         useCases: ['BigQuery queries'],
         intentDescription: 'Google BigQuery integration node that queries Google BigQuery data warehouse using SQL. Executes SQL queries on BigQuery datasets, performs data warehouse operations, and retrieves large-scale data. Used for BigQuery queries, data warehouse operations, and analyzing large datasets in Google Cloud.',
         intentCategories: ['data_warehouse', 'bigquery', 'google_cloud', 'sql_query', 'analytics'],
@@ -6970,7 +7508,12 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['google.bigquery', 'database.query'],
       providers: ['google'],
-      keywords: ['bigquery'],
+      keywords: [
+        'bigquery', 'big query', 'google bigquery', 'bigquery google',
+        'bigquery query', 'query bigquery', 'bigquery data',
+        'bigquery warehouse', 'data warehouse bigquery', 'bigquery sql',
+        'bigquery api', 'bigquery integration', 'bigquery database'
+      ],
     };
   }
 
@@ -6999,7 +7542,12 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['Slack webhook notifications', 'Simple Slack messages'],
         whenNotToUse: ['Complex Slack operations (use slack_message)'],
-        keywords: ['slack webhook', 'slack notification'],
+        keywords: [
+          'slack webhook', 'slack webhook node', 'webhook slack', 'slack webhook message',
+          'slack webhook send', 'send slack webhook', 'slack webhook notification',
+          'slack webhook api', 'slack webhook integration', 'slack incoming webhook',
+          'incoming slack webhook', 'slack webhook url', 'slack webhook endpoint'
+        ],
         useCases: ['Slack webhook messages'],
         intentDescription: 'Slack webhook node that sends messages to Slack channels via Slack incoming webhooks. Sends simple text messages to Slack using webhook URLs. Used for Slack webhook notifications, simple Slack messaging, and Slack-based alerts.',
         intentCategories: ['slack', 'webhook', 'notification', 'communication', 'team_collaboration'],
@@ -7008,7 +7556,12 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['notification.send', 'slack.send'],
       providers: ['slack'],
-      keywords: ['slack webhook'],
+      keywords: [
+        'slack webhook', 'slack webhook node', 'webhook slack', 'slack webhook message',
+        'slack webhook send', 'send slack webhook', 'slack webhook notification',
+        'slack webhook api', 'slack webhook integration', 'slack incoming webhook',
+        'incoming slack webhook', 'slack webhook url', 'slack webhook endpoint'
+      ],
     };
   }
 
@@ -7036,7 +7589,12 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['Discord webhook notifications', 'Simple Discord messages'],
         whenNotToUse: ['Complex Discord operations (use discord)'],
-        keywords: ['discord webhook'],
+        keywords: [
+          'discord webhook', 'discord webhook node', 'webhook discord', 'discord webhook message',
+          'discord webhook send', 'send discord webhook', 'discord webhook notification',
+          'discord webhook api', 'discord webhook integration', 'discord incoming webhook',
+          'incoming discord webhook', 'discord webhook url', 'discord webhook endpoint'
+        ],
         useCases: ['Discord webhook messages'],
         intentDescription: 'Discord webhook node that sends messages to Discord channels via Discord webhooks. Sends simple text messages to Discord using webhook URLs. Used for Discord webhook notifications, simple Discord messaging, and Discord-based alerts.',
         intentCategories: ['discord', 'webhook', 'notification', 'communication', 'chat_message'],
@@ -7045,7 +7603,12 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['notification.send', 'discord.send'],
       providers: ['discord'],
-      keywords: ['discord webhook'],
+      keywords: [
+        'discord webhook', 'discord webhook node', 'webhook discord', 'discord webhook message',
+        'discord webhook send', 'send discord webhook', 'discord webhook notification',
+        'discord webhook api', 'discord webhook integration', 'discord incoming webhook',
+        'incoming discord webhook', 'discord webhook url', 'discord webhook endpoint'
+      ],
     };
   }
 
@@ -7073,7 +7636,10 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions Microsoft Teams', 'Teams notifications'],
         whenNotToUse: ['Other communication platforms'],
-        keywords: ['teams', 'microsoft teams'],
+        keywords: [
+          'teams', 'microsoft teams', 'ms teams', 'teams message',
+          'teams integration', 'teams api', 'teams webhook', 'teams channel'
+        ],
         useCases: ['Teams notifications'],
         intentDescription: 'Microsoft Teams integration node that sends messages to Microsoft Teams channels via Teams webhooks. Sends notifications, alerts, and messages to Teams channels. Used for Teams notifications, Microsoft Teams communication, and Teams-based workflow alerts.',
         intentCategories: ['microsoft_teams', 'communication', 'notification', 'team_collaboration', 'microsoft'],
@@ -7082,7 +7648,10 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['notification.send', 'teams.send'],
       providers: ['microsoft'],
-      keywords: ['teams', 'microsoft teams'],
+      keywords: [
+        'teams', 'microsoft teams', 'ms teams', 'teams message',
+        'teams integration', 'teams api', 'teams webhook', 'teams channel'
+      ],
     };
   }
 
@@ -7145,7 +7714,12 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions WhatsApp', 'WhatsApp messaging'],
         whenNotToUse: ['Other messaging platforms'],
-        keywords: ['whatsapp', 'whats app'],
+        keywords: [
+          'whatsapp', 'whats app', 'whatsapp message', 'whatsapp send',
+          'send whatsapp', 'whatsapp notification', 'whatsapp chat',
+          'whatsapp api', 'whatsapp integration', 'whatsapp cloud',
+          'whatsapp cloud api', 'whatsapp business'
+        ],
         useCases: ['WhatsApp messaging'],
         intentDescription: 'WhatsApp Cloud API integration node that sends messages via WhatsApp Cloud API. Sends text messages, media, locations, contacts, and templates to WhatsApp users. Used for WhatsApp messaging, WhatsApp automation, and WhatsApp-based notifications.',
         intentCategories: ['whatsapp', 'messaging', 'communication', 'notification', 'mobile_messaging'],
@@ -7154,7 +7728,12 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['notification.send', 'whatsapp.send'],
       providers: ['whatsapp'],
-      keywords: ['whatsapp'],
+      keywords: [
+        'whatsapp', 'whats app', 'whatsapp message', 'whatsapp send',
+        'send whatsapp', 'whatsapp notification', 'whatsapp chat',
+        'whatsapp api', 'whatsapp integration', 'whatsapp cloud',
+        'whatsapp cloud api', 'whatsapp business'
+      ],
     };
   }
 
@@ -7196,7 +7775,10 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions Twilio', 'SMS/Voice messaging'],
         whenNotToUse: ['Other messaging platforms'],
-        keywords: ['twilio', 'sms', 'voice'],
+        keywords: [
+          'twilio', 'twilio sms', 'twilio voice', 'twilio message',
+          'twilio api', 'twilio integration', 'twilio phone', 'twilio call'
+        ],
         useCases: ['SMS/Voice messaging'],
         intentDescription: 'Twilio integration node that sends SMS and voice messages via Twilio API. Sends text messages (SMS) and makes voice calls to phone numbers. Used for SMS messaging, voice calls, and Twilio-based communication workflows.',
         intentCategories: ['twilio', 'sms', 'voice', 'communication', 'mobile_messaging'],
@@ -7205,7 +7787,10 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['notification.send', 'twilio.sms', 'twilio.voice'],
       providers: ['twilio'],
-      keywords: ['twilio'],
+      keywords: [
+        'twilio', 'twilio sms', 'twilio voice', 'twilio message',
+        'twilio api', 'twilio integration', 'twilio phone', 'twilio call'
+      ],
     };
   }
 
@@ -7245,7 +7830,11 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions Facebook posting', 'Facebook automation'],
         whenNotToUse: ['Other social media platforms'],
-        keywords: ['facebook', 'fb'],
+        keywords: [
+          'facebook', 'fb', 'facebook post', 'facebook page',
+          'facebook api', 'facebook integration', 'facebook graph',
+          'facebook share'
+        ],
         useCases: ['Facebook posting'],
         intentDescription: 'Facebook integration node that posts content to Facebook pages. Creates posts on Facebook pages, manages Facebook content, and interacts with Facebook Graph API. Used for Facebook posting, Facebook automation, and social media marketing on Facebook.',
         intentCategories: ['social_media', 'facebook', 'content_sharing', 'social_automation'],
@@ -7254,7 +7843,10 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['social.post', 'facebook.post'],
       providers: ['facebook'],
-      keywords: ['facebook'],
+      keywords: [
+        'facebook', 'fb', 'facebook post', 'facebook page',
+        'facebook api', 'facebook integration', 'facebook graph'
+      ],
     };
   }
 
@@ -7283,7 +7875,11 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions MySQL', 'MySQL database operations'],
         whenNotToUse: ['Other databases'],
-        keywords: ['mysql', 'my sql'],
+        keywords: [
+          'mysql', 'my sql', 'mysql database', 'mysql db',
+          'mysql connection', 'mysql integration', 'mysql api',
+          'mysql table'
+        ],
         useCases: ['MySQL operations'],
         intentDescription: 'MySQL database integration node that executes SQL queries on MySQL databases. Performs database operations including SELECT, INSERT, UPDATE, DELETE queries with parameterized statements. Used for MySQL database operations, data storage, and MySQL-based data management.',
         intentCategories: ['database', 'mysql', 'sql', 'data_storage', 'relational_database'],
@@ -7308,7 +7904,12 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['database.read', 'database.write'],
       providers: ['mysql'],
-      keywords: ['mysql'],
+      keywords: [
+        'mysql', 'my sql', 'mysql database', 'mysql db',
+        'mysql query', 'mysql connection', 'mysql insert',
+        'mysql update', 'mysql delete', 'mysql select',
+        'mysql data', 'mysql table', 'mysql database node'
+      ],
     };
   }
 
@@ -7341,7 +7942,11 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions MongoDB', 'MongoDB operations'],
         whenNotToUse: ['SQL databases'],
-        keywords: ['mongodb', 'mongo'],
+        keywords: [
+          'mongodb', 'mongo', 'mongo db', 'mongodb database',
+          'mongodb db', 'mongodb collection', 'mongo collection',
+          'mongodb integration', 'mongodb api'
+        ],
         useCases: ['MongoDB operations'],
         intentDescription: 'MongoDB integration node that performs database operations on MongoDB collections. Executes MongoDB operations including find, insert, update, and delete on MongoDB documents. Used for MongoDB operations, NoSQL database management, and document-based data storage.',
         intentCategories: ['database', 'mongodb', 'nosql', 'document_database', 'data_storage'],
@@ -7366,7 +7971,12 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['database.read', 'database.write'],
       providers: ['mongodb'],
-      keywords: ['mongodb', 'mongo'],
+      keywords: [
+        'mongodb', 'mongo', 'mongo db', 'mongodb database',
+        'mongodb db', 'mongodb collection', 'mongo collection',
+        'mongodb query', 'mongo query', 'mongodb insert',
+        'mongodb update', 'mongodb delete', 'mongodb find'
+      ],
     };
   }
 
@@ -7399,7 +8009,11 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions Redis', 'Cache operations'],
         whenNotToUse: ['Persistent databases'],
-        keywords: ['redis', 'cache'],
+        keywords: [
+          'redis', 'redis cache', 'redis database', 'redis db',
+          'redis get', 'redis set', 'redis data', 'redis key',
+          'redis value', 'redis store', 'redis retrieve', 'redis cache node'
+        ],
         useCases: ['Redis cache operations'],
         intentDescription: 'Redis integration node that performs cache operations on Redis. Executes Redis operations including get, set, and delete on Redis keys. Used for Redis cache operations, temporary data storage, and high-performance caching.',
         intentCategories: ['cache', 'redis', 'temporary_storage', 'performance_optimization', 'key_value_store'],
@@ -7424,7 +8038,11 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['cache.read', 'cache.write'],
       providers: ['redis'],
-      keywords: ['redis'],
+      keywords: [
+        'redis', 'redis cache', 'redis database', 'redis db',
+        'redis get', 'redis set', 'redis data', 'redis key',
+        'redis value', 'redis store', 'redis retrieve', 'redis cache node'
+      ],
     };
   }
 
@@ -7492,7 +8110,12 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions Freshdesk', 'Support ticket operations'],
         whenNotToUse: ['Other CRMs'],
-        keywords: ['freshdesk', 'fresh desk'],
+        keywords: [
+          'freshdesk', 'fresh desk', 'freshdesk ticket', 'freshdesk support',
+          'freshdesk create', 'create freshdesk', 'freshdesk update',
+          'update freshdesk', 'freshdesk api', 'freshdesk integration',
+          'freshdesk ticket create', 'freshdesk customer support'
+        ],
         useCases: ['Support ticket management'],
         intentDescription: 'Freshdesk integration node that performs support ticket operations in Freshdesk. Creates, reads, updates, and deletes tickets, contacts, and companies in Freshdesk. Used for support ticket management, customer support automation, and Freshdesk CRM operations.',
         intentCategories: ['crm', 'freshdesk', 'support_ticket', 'customer_support', 'helpdesk'],
@@ -7501,7 +8124,12 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['crm.read', 'crm.write', 'freshdesk.ticket'],
       providers: ['freshdesk'],
-      keywords: ['freshdesk'],
+      keywords: [
+        'freshdesk', 'fresh desk', 'freshdesk ticket', 'freshdesk support',
+        'freshdesk create', 'create freshdesk', 'freshdesk update',
+        'update freshdesk', 'freshdesk api', 'freshdesk integration',
+        'freshdesk ticket create', 'freshdesk customer support'
+      ],
     };
   }
 
@@ -7529,7 +8157,12 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions Intercom', 'Intercom messaging'],
         whenNotToUse: ['Other messaging platforms'],
-        keywords: ['intercom'],
+        keywords: [
+          'intercom', 'intercom message', 'intercom send', 'send intercom',
+          'intercom conversation', 'intercom chat', 'intercom api',
+          'intercom integration', 'intercom notification', 'intercom customer',
+          'intercom user', 'intercom contact'
+        ],
         useCases: ['Intercom messaging'],
         intentDescription: 'Intercom integration node that performs messaging operations in Intercom. Sends messages, retrieves conversations, and manages Intercom messaging. Used for Intercom messaging, customer communication via Intercom, and Intercom-based customer support.',
         intentCategories: ['crm', 'intercom', 'messaging', 'customer_communication', 'customer_support'],
@@ -7538,7 +8171,12 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['messaging.send', 'intercom.message'],
       providers: ['intercom'],
-      keywords: ['intercom'],
+      keywords: [
+        'intercom', 'intercom message', 'intercom send', 'send intercom',
+        'intercom conversation', 'intercom chat', 'intercom api',
+        'intercom integration', 'intercom notification', 'intercom customer',
+        'intercom user', 'intercom contact'
+      ],
     };
   }
 
@@ -7571,7 +8209,12 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions Mailchimp', 'Email marketing'],
         whenNotToUse: ['Other email platforms'],
-        keywords: ['mailchimp', 'email marketing'],
+        keywords: [
+          'mailchimp', 'mail chimp', 'mailchimp email', 'mailchimp campaign',
+          'mailchimp list', 'mailchimp subscriber', 'mailchimp api',
+          'mailchimp integration', 'mailchimp marketing', 'mailchimp send',
+          'send mailchimp', 'mailchimp email marketing'
+        ],
         useCases: ['Email marketing'],
         intentDescription: 'Mailchimp integration node that performs email marketing operations in Mailchimp. Subscribes and unsubscribes contacts to email lists, sends marketing emails, and manages Mailchimp campaigns. Used for email marketing, newsletter management, and Mailchimp-based email campaigns.',
         intentCategories: ['email_marketing', 'mailchimp', 'newsletter', 'campaign_management', 'email_campaigns'],
@@ -7580,7 +8223,12 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['email.marketing', 'mailchimp.subscribe'],
       providers: ['mailchimp'],
-      keywords: ['mailchimp'],
+      keywords: [
+        'mailchimp', 'mail chimp', 'mailchimp email', 'mailchimp campaign',
+        'mailchimp list', 'mailchimp subscriber', 'mailchimp api',
+        'mailchimp integration', 'mailchimp marketing', 'mailchimp send',
+        'send mailchimp', 'mailchimp email marketing'
+      ],
     };
   }
 
@@ -7608,7 +8256,12 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions ActiveCampaign', 'Marketing automation'],
         whenNotToUse: ['Other marketing platforms'],
-        keywords: ['activecampaign', 'active campaign'],
+        keywords: [
+          'activecampaign', 'active campaign', 'activecampaign email',
+          'activecampaign campaign', 'activecampaign contact', 'activecampaign api',
+          'activecampaign integration', 'activecampaign marketing', 'activecampaign automation',
+          'activecampaign send', 'send activecampaign', 'activecampaign workflow'
+        ],
         useCases: ['Marketing automation'],
         intentDescription: 'ActiveCampaign integration node that performs marketing automation operations in ActiveCampaign. Adds, updates, and deletes contacts, manages marketing campaigns, and automates marketing workflows. Used for marketing automation, email marketing campaigns, and ActiveCampaign-based marketing workflows.',
         intentCategories: ['marketing_automation', 'activecampaign', 'email_marketing', 'campaign_management', 'crm'],
@@ -7617,7 +8270,12 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['marketing.automation', 'activecampaign.contact'],
       providers: ['activecampaign'],
-      keywords: ['activecampaign'],
+      keywords: [
+        'activecampaign', 'active campaign', 'activecampaign email',
+        'activecampaign campaign', 'activecampaign contact', 'activecampaign api',
+        'activecampaign integration', 'activecampaign marketing', 'activecampaign automation',
+        'activecampaign send', 'send activecampaign', 'activecampaign workflow'
+      ],
     };
   }
 
@@ -7641,7 +8299,11 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['Need to read binary files', 'File reading'],
         whenNotToUse: ['Text files'],
-        keywords: ['read file', 'binary file'],
+        keywords: [
+          'read file', 'read binary file', 'file read', 'binary file read',
+          'read file node', 'file read node', 'read binary', 'binary read',
+          'file read binary', 'read file binary', 'file read data', 'read file data'
+        ],
         useCases: ['File reading'],
         intentDescription: 'Read binary file node that reads binary files from the filesystem. Reads binary data from files including images, PDFs, and other binary formats. Used for file reading, binary file processing, and accessing binary file content.',
         intentCategories: ['file_operations', 'binary_file', 'file_reading', 'file_processing'],
@@ -7675,7 +8337,11 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['Need to write binary files', 'File writing'],
         whenNotToUse: ['Text files'],
-        keywords: ['write file', 'binary file'],
+        keywords: [
+          'write file', 'write binary file', 'file write', 'binary file write',
+          'write file node', 'file write node', 'write binary', 'binary write',
+          'file write binary', 'write file binary', 'file write data', 'write file data'
+        ],
         useCases: ['File writing'],
         intentDescription: 'Write binary file node that writes binary files to the filesystem. Writes binary data to files including images, PDFs, and other binary formats. Used for file writing, binary file creation, and saving binary file content.',
         intentCategories: ['file_operations', 'binary_file', 'file_writing', 'file_processing'],
@@ -7748,7 +8414,12 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions AWS S3', 'S3 storage operations'],
         whenNotToUse: ['Other storage systems'],
-        keywords: ['s3', 'aws s3', 'amazon s3'],
+        keywords: [
+          's3', 'aws s3', 'amazon s3', 's3 storage',
+          's3 bucket', 's3 file', 's3 upload', 'upload s3',
+          's3 download', 'download s3', 's3 object', 's3 data',
+          'aws storage', 'amazon storage', 's3 aws'
+        ],
         useCases: ['S3 storage'],
         intentDescription: 'AWS S3 integration node that performs storage operations on Amazon S3. Uploads, downloads, and lists files in S3 buckets, manages cloud storage, and interacts with AWS S3 API. Used for S3 storage, cloud file management, and AWS-based file storage operations.',
         intentCategories: ['file_storage', 'aws', 's3', 'cloud_storage', 'file_management'],
@@ -7757,7 +8428,12 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['storage.upload', 'storage.download', 's3.file'],
       providers: ['aws'],
-      keywords: ['s3', 'aws s3'],
+      keywords: [
+        's3', 'aws s3', 'amazon s3', 's3 storage',
+        's3 bucket', 's3 file', 's3 upload', 'upload s3',
+        's3 download', 'download s3', 's3 object', 's3 data',
+        'aws storage', 'amazon storage', 's3 aws'
+      ],
     };
   }
 
@@ -7800,7 +8476,12 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions Dropbox', 'Dropbox file operations'],
         whenNotToUse: ['Other storage systems'],
-        keywords: ['dropbox'],
+        keywords: [
+          'dropbox', 'dropbox file', 'dropbox upload', 'upload dropbox',
+          'dropbox download', 'download dropbox', 'dropbox folder',
+          'dropbox storage', 'dropbox file storage', 'dropbox sync',
+          'sync dropbox', 'dropbox api', 'dropbox integration'
+        ],
         useCases: ['Dropbox operations'],
         intentDescription: 'Dropbox integration node that performs file operations in Dropbox. Uploads, downloads, and lists files in Dropbox storage, manages cloud files, and interacts with Dropbox API. Used for Dropbox operations, cloud file management, and Dropbox-based file storage.',
         intentCategories: ['file_storage', 'dropbox', 'cloud_storage', 'file_management'],
@@ -7809,7 +8490,12 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['storage.upload', 'storage.download', 'dropbox.file'],
       providers: ['dropbox'],
-      keywords: ['dropbox'],
+      keywords: [
+        'dropbox', 'dropbox file', 'dropbox upload', 'upload dropbox',
+        'dropbox download', 'download dropbox', 'dropbox folder',
+        'dropbox storage', 'dropbox file storage', 'dropbox sync',
+        'sync dropbox', 'dropbox api', 'dropbox integration'
+      ],
     };
   }
 
@@ -7847,7 +8533,12 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions OneDrive', 'OneDrive file operations'],
         whenNotToUse: ['Other storage systems'],
-        keywords: ['onedrive', 'one drive'],
+        keywords: [
+          'onedrive', 'one drive', 'onedrive file', 'onedrive upload',
+          'upload onedrive', 'onedrive download', 'download onedrive',
+          'onedrive folder', 'onedrive storage', 'onedrive sync',
+          'sync onedrive', 'onedrive api', 'onedrive integration'
+        ],
         useCases: ['OneDrive operations'],
         intentDescription: 'OneDrive integration node that performs file operations in Microsoft OneDrive. Uploads, downloads, and lists files in OneDrive storage, manages cloud files, and interacts with OneDrive API. Used for OneDrive operations, Microsoft cloud file management, and OneDrive-based file storage.',
         intentCategories: ['file_storage', 'onedrive', 'microsoft', 'cloud_storage', 'file_management'],
@@ -7856,7 +8547,12 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['storage.upload', 'storage.download', 'onedrive.file'],
       providers: ['microsoft'],
-      keywords: ['onedrive'],
+      keywords: [
+        'onedrive', 'one drive', 'onedrive file', 'onedrive upload',
+        'upload onedrive', 'onedrive download', 'download onedrive',
+        'onedrive folder', 'onedrive storage', 'onedrive sync',
+        'sync onedrive', 'onedrive api', 'onedrive integration'
+      ],
     };
   }
 
@@ -7889,7 +8585,11 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions FTP', 'FTP file operations'],
         whenNotToUse: ['Other storage systems'],
-        keywords: ['ftp'],
+        keywords: [
+          'ftp', 'ftp file', 'ftp upload', 'upload ftp',
+          'ftp download', 'download ftp', 'ftp transfer', 'ftp file transfer',
+          'ftp node', 'ftp connection', 'ftp server', 'ftp protocol'
+        ],
         useCases: ['FTP operations'],
         intentDescription: 'FTP integration node that performs file operations via FTP (File Transfer Protocol). Uploads, downloads, and lists files on FTP servers, manages remote file storage, and interacts with FTP servers. Used for FTP operations, remote file management, and FTP-based file transfers.',
         intentCategories: ['file_storage', 'ftp', 'file_transfer', 'remote_storage'],
@@ -7898,7 +8598,11 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['storage.upload', 'storage.download', 'ftp.file'],
       providers: ['ftp'],
-      keywords: ['ftp'],
+      keywords: [
+        'ftp', 'ftp file', 'ftp upload', 'upload ftp',
+        'ftp download', 'download ftp', 'ftp transfer', 'ftp file transfer',
+        'ftp node', 'ftp connection', 'ftp server', 'ftp protocol'
+      ],
     };
   }
 
@@ -7931,7 +8635,11 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions SFTP', 'SFTP file operations'],
         whenNotToUse: ['Other storage systems'],
-        keywords: ['sftp', 'secure ftp'],
+        keywords: [
+          'sftp', 'secure ftp', 'sftp file', 'sftp upload',
+          'upload sftp', 'sftp download', 'download sftp', 'sftp transfer',
+          'sftp file transfer', 'sftp node', 'sftp connection', 'sftp server'
+        ],
         useCases: ['SFTP operations'],
         intentDescription: 'SFTP integration node that performs file operations via SFTP (Secure File Transfer Protocol). Uploads, downloads, and lists files on SFTP servers with encrypted connections, manages secure remote file storage, and interacts with SFTP servers. Used for SFTP operations, secure remote file management, and encrypted file transfers.',
         intentCategories: ['file_storage', 'sftp', 'secure_file_transfer', 'remote_storage', 'encrypted_transfer'],
@@ -7940,7 +8648,11 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['storage.upload', 'storage.download', 'sftp.file'],
       providers: ['sftp'],
-      keywords: ['sftp'],
+      keywords: [
+        'sftp', 'secure ftp', 'sftp file', 'sftp upload',
+        'upload sftp', 'sftp download', 'download sftp', 'sftp transfer',
+        'sftp file transfer', 'sftp node', 'sftp connection', 'sftp server'
+      ],
     };
   }
 
@@ -8024,7 +8736,12 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions GitHub', 'GitHub operations'],
         whenNotToUse: ['Other git platforms'],
-        keywords: ['github', 'git hub'],
+        keywords: [
+          'github', 'git hub', 'github repo', 'github repository',
+          'github issue', 'github pull request', 'github pr',
+          'github commit', 'github push', 'github create',
+          'github update', 'github api', 'github integration'
+        ],
         useCases: ['GitHub operations'],
         intentDescription: 'GitHub integration node that performs repository operations on GitHub. Creates issues, adds comments, creates pull requests, triggers workflows, lists repositories, and manages GitHub resources. Used for GitHub operations, repository management, issue tracking, and GitHub-based DevOps workflows.',
         intentCategories: ['devops', 'github', 'version_control', 'repository_management', 'issue_tracking'],
@@ -8049,7 +8766,12 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['git.manage', 'github.repo'],
       providers: ['github'],
-      keywords: ['github'],
+      keywords: [
+        'github', 'git hub', 'github repo', 'github repository',
+        'github issue', 'github pull request', 'github pr',
+        'github commit', 'github push', 'github create',
+        'github update', 'github api', 'github integration'
+      ],
     };
   }
 
@@ -8101,7 +8823,12 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions GitLab', 'GitLab operations'],
         whenNotToUse: ['Other git platforms'],
-        keywords: ['gitlab', 'git lab'],
+        keywords: [
+          'gitlab', 'git lab', 'gitlab repo', 'gitlab repository',
+          'gitlab issue', 'gitlab merge request', 'gitlab mr',
+          'gitlab commit', 'gitlab push', 'gitlab create',
+          'gitlab update', 'gitlab api', 'gitlab integration'
+        ],
         useCases: ['GitLab operations'],
         intentDescription: 'GitLab integration node that performs repository operations on GitLab. Creates, reads, updates, and deletes issues, manages GitLab projects, and interacts with GitLab API. Used for GitLab operations, repository management, issue tracking, and GitLab-based DevOps workflows.',
         intentCategories: ['devops', 'gitlab', 'version_control', 'repository_management', 'issue_tracking'],
@@ -8110,7 +8837,12 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['git.manage', 'gitlab.repo'],
       providers: ['gitlab'],
-      keywords: ['gitlab'],
+      keywords: [
+        'gitlab', 'git lab', 'gitlab repo', 'gitlab repository',
+        'gitlab issue', 'gitlab merge request', 'gitlab mr',
+        'gitlab commit', 'gitlab push', 'gitlab create',
+        'gitlab update', 'gitlab api', 'gitlab integration'
+      ],
     };
   }
 
@@ -8138,7 +8870,12 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions Bitbucket', 'Bitbucket operations'],
         whenNotToUse: ['Other git platforms'],
-        keywords: ['bitbucket', 'bit bucket'],
+        keywords: [
+          'bitbucket', 'bit bucket', 'bitbucket repo', 'bitbucket repository',
+          'bitbucket issue', 'bitbucket pull request', 'bitbucket pr',
+          'bitbucket commit', 'bitbucket push', 'bitbucket api',
+          'bitbucket integration', 'bitbucket create', 'bitbucket update'
+        ],
         useCases: ['Bitbucket operations'],
         intentDescription: 'Bitbucket integration node that performs repository operations on Bitbucket. Creates, reads, updates, and deletes resources, manages Bitbucket repositories, and interacts with Bitbucket API. Used for Bitbucket operations, repository management, and Bitbucket-based DevOps workflows.',
         intentCategories: ['devops', 'bitbucket', 'version_control', 'repository_management'],
@@ -8147,7 +8884,12 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['git.manage', 'bitbucket.repo'],
       providers: ['bitbucket'],
-      keywords: ['bitbucket'],
+      keywords: [
+        'bitbucket', 'bit bucket', 'bitbucket repo', 'bitbucket repository',
+        'bitbucket issue', 'bitbucket pull request', 'bitbucket pr',
+        'bitbucket commit', 'bitbucket push', 'bitbucket api',
+        'bitbucket integration', 'bitbucket create', 'bitbucket update'
+      ],
     };
   }
 
@@ -8208,7 +8950,11 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions Jira', 'Issue tracking'],
         whenNotToUse: ['Other issue trackers'],
-        keywords: ['jira', 'issue tracking'],
+        keywords: [
+          'jira', 'jira issue', 'jira ticket', 'jira task',
+          'jira create', 'create jira', 'jira update', 'update jira',
+          'jira api', 'jira integration', 'jira workflow', 'jira project'
+        ],
         useCases: ['Jira operations'],
         intentDescription: 'Jira integration node that performs issue tracking operations in Jira. Creates, reads, updates, and deletes issues, manages Jira projects, and interacts with Jira API. Used for Jira operations, issue tracking, project management, and Jira-based workflow automation.',
         intentCategories: ['devops', 'jira', 'issue_tracking', 'project_management', 'workflow_automation'],
@@ -8217,7 +8963,11 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['issue.manage', 'jira.issue'],
       providers: ['jira'],
-      keywords: ['jira'],
+      keywords: [
+        'jira', 'jira issue', 'jira ticket', 'jira task',
+        'jira create', 'create jira', 'jira update', 'update jira',
+        'jira api', 'jira integration', 'jira workflow', 'jira project'
+      ],
     };
   }
 
@@ -8245,7 +8995,12 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions Jenkins', 'CI/CD operations'],
         whenNotToUse: ['Other CI/CD platforms'],
-        keywords: ['jenkins', 'ci/cd'],
+        keywords: [
+          'jenkins', 'jenkins ci', 'jenkins cd', 'jenkins pipeline',
+          'jenkins build', 'jenkins job', 'jenkins trigger', 'jenkins api',
+          'jenkins integration', 'jenkins automation', 'jenkins deploy',
+          'jenkins ci cd', 'ci cd jenkins'
+        ],
         useCases: ['Jenkins operations'],
         intentDescription: 'Jenkins integration node that performs CI/CD operations in Jenkins. Triggers builds, checks build status, cancels builds, and manages Jenkins jobs. Used for Jenkins operations, CI/CD automation, build management, and Jenkins-based DevOps workflows.',
         intentCategories: ['devops', 'jenkins', 'ci_cd', 'build_automation', 'continuous_integration'],
@@ -8254,7 +9009,12 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['ci.build', 'jenkins.job'],
       providers: ['jenkins'],
-      keywords: ['jenkins'],
+      keywords: [
+        'jenkins', 'jenkins ci', 'jenkins cd', 'jenkins pipeline',
+        'jenkins build', 'jenkins job', 'jenkins trigger', 'jenkins api',
+        'jenkins integration', 'jenkins automation', 'jenkins deploy',
+        'jenkins ci cd', 'ci cd jenkins'
+      ],
     };
   }
 
@@ -8324,7 +9084,12 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions Shopify', 'Shopify store operations'],
         whenNotToUse: ['Other e-commerce platforms'],
-        keywords: ['shopify'],
+        keywords: [
+          'shopify', 'shopify store', 'shopify product', 'shopify order',
+          'shopify customer', 'create shopify', 'shopify create',
+          'shopify update', 'update shopify', 'shopify api',
+          'shopify integration', 'shopify ecommerce', 'shopify commerce'
+        ],
         useCases: ['Shopify operations'],
         intentDescription: 'Shopify integration node that performs e-commerce operations in Shopify stores. Creates, reads, updates, and deletes products, orders, customers, and other Shopify resources. Used for Shopify operations, e-commerce automation, store management, and Shopify-based business workflows.',
         intentCategories: ['ecommerce', 'shopify', 'store_management', 'product_management', 'order_management'],
@@ -8349,7 +9114,12 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['ecommerce.manage', 'shopify.product'],
       providers: ['shopify'],
-      keywords: ['shopify'],
+      keywords: [
+        'shopify', 'shopify store', 'shopify product', 'shopify order',
+        'shopify customer', 'create shopify', 'shopify create',
+        'shopify update', 'update shopify', 'shopify api',
+        'shopify integration', 'shopify ecommerce', 'shopify commerce'
+      ],
     };
   }
 
@@ -8407,7 +9177,12 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions WooCommerce', 'WooCommerce operations'],
         whenNotToUse: ['Other e-commerce platforms'],
-        keywords: ['woocommerce', 'woo commerce'],
+        keywords: [
+          'woocommerce', 'woo commerce', 'woocommerce store', 'woocommerce product',
+          'woocommerce order', 'woocommerce customer', 'woocommerce api',
+          'woocommerce integration', 'woocommerce ecommerce', 'woocommerce create',
+          'create woocommerce', 'woocommerce update', 'update woocommerce'
+        ],
         useCases: ['WooCommerce operations'],
         intentDescription: 'WooCommerce integration node that performs e-commerce operations in WooCommerce stores. Creates, reads, updates, and deletes products, orders, customers, and other WooCommerce resources. Used for WooCommerce operations, e-commerce automation, store management, and WooCommerce-based business workflows.',
         intentCategories: ['ecommerce', 'woocommerce', 'store_management', 'product_management', 'order_management'],
@@ -8432,7 +9207,12 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['ecommerce.manage', 'woocommerce.product'],
       providers: ['woocommerce'],
-      keywords: ['woocommerce'],
+      keywords: [
+        'woocommerce', 'woo commerce', 'woocommerce store', 'woocommerce product',
+        'woocommerce order', 'woocommerce customer', 'woocommerce api',
+        'woocommerce integration', 'woocommerce ecommerce', 'woocommerce create',
+        'create woocommerce', 'woocommerce update', 'update woocommerce'
+      ],
     };
   }
 
@@ -8508,7 +9288,12 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions Stripe', 'Payment processing'],
         whenNotToUse: ['Other payment platforms'],
-        keywords: ['stripe', 'payment'],
+        keywords: [
+          'stripe', 'stripe payment', 'stripe pay', 'stripe charge',
+          'stripe customer', 'stripe invoice', 'stripe subscription',
+          'payment stripe', 'stripe api', 'stripe integration',
+          'stripe process', 'process stripe', 'stripe transaction'
+        ],
         useCases: ['Payment processing'],
         intentDescription: 'Stripe integration node that performs payment processing operations via Stripe. Charges customers, processes refunds, creates customers, and manages payment transactions. Used for payment processing, payment automation, transaction management, and Stripe-based payment workflows.',
         intentCategories: ['payment_processing', 'stripe', 'transaction_management', 'ecommerce', 'financial'],
@@ -8533,7 +9318,12 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['payment.process', 'stripe.charge'],
       providers: ['stripe'],
-      keywords: ['stripe'],
+      keywords: [
+        'stripe', 'stripe payment', 'stripe pay', 'stripe charge',
+        'stripe customer', 'stripe invoice', 'stripe subscription',
+        'payment stripe', 'stripe api', 'stripe integration',
+        'stripe process', 'process stripe', 'stripe transaction'
+      ],
     };
   }
 
@@ -8591,7 +9381,12 @@ export class NodeLibrary {
       aiSelectionCriteria: {
         whenToUse: ['User mentions PayPal', 'PayPal payments'],
         whenNotToUse: ['Other payment platforms'],
-        keywords: ['paypal', 'pay pal'],
+        keywords: [
+          'paypal', 'pay pal', 'paypal payment', 'paypal pay',
+          'paypal charge', 'paypal customer', 'paypal invoice',
+          'payment paypal', 'paypal api', 'paypal integration',
+          'paypal process', 'process paypal', 'paypal transaction'
+        ],
         useCases: ['PayPal payments'],
         intentDescription: 'PayPal integration node that performs payment processing operations via PayPal. Charges customers, processes refunds, creates payment orders, and manages PayPal transactions. Used for PayPal payment processing, payment automation, transaction management, and PayPal-based payment workflows.',
         intentCategories: ['payment_processing', 'paypal', 'transaction_management', 'ecommerce', 'financial'],
@@ -8611,7 +9406,12 @@ export class NodeLibrary {
       validationRules: [],
       capabilities: ['payment.process', 'paypal.charge'],
       providers: ['paypal'],
-      keywords: ['paypal'],
+      keywords: [
+        'paypal', 'pay pal', 'paypal payment', 'paypal pay',
+        'paypal charge', 'paypal customer', 'paypal invoice',
+        'payment paypal', 'paypal api', 'paypal integration',
+        'paypal process', 'process paypal', 'paypal transaction'
+      ],
     };
   }
 

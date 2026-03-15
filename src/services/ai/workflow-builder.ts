@@ -65,6 +65,7 @@ import { getNodeOutputType, areTypesCompatible, getNodeOutputSchema } from '../.
 import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 import { resolveNodeType } from '../../core/utils/node-type-resolver-util';
 import { resolveAliasToCanonical } from '../../core/utils/comprehensive-alias-resolver';
+import { isOutputNode } from '../../core/utils/universal-node-type-checker';
 import { isEmptyValue } from '../../core/utils/is-empty-value';
 import { nodeTypeNormalizationService } from './node-type-normalization-service';
 import { capabilityResolver } from './capability-resolver';
@@ -93,6 +94,8 @@ import { nodeAutoConfigurator } from '../node-auto-configurator';
 import { platformSelectionResolver } from './platform-selection-resolver';
 import { generateTemplates } from './schema-aware-template-generator';
 import { validateMappings } from './template-validation-gate';
+import { AliasKeywordCollector } from './summarize-layer';
+import { nodeCapabilityRegistryDSL } from './node-capability-registry-dsl';
 
 export class AgenticWorkflowBuilder {
   private nodeLibrary: Map<string, any> = new Map();
@@ -131,6 +134,167 @@ export class AgenticWorkflowBuilder {
   private isInternalNodeType(nodeType: string): boolean {
     const def = unifiedNodeRegistry.get(nodeType);
     return (def?.tags || []).includes('internal');
+  }
+
+  /**
+   * ✅ UNIVERSAL: Get all keywords for a node type from registry
+   * Replaces hardcoded keyword lists with registry-based collection
+   */
+  private getKeywordsForNodeType(nodeType: string): string[] {
+    const schema = nodeLibrary.getSchema(nodeType);
+    if (!schema) return [];
+
+    const keywords = new Set<string>();
+    
+    // 1. From schema.keywords
+    if (schema.keywords && Array.isArray(schema.keywords)) {
+      schema.keywords.forEach((k: string) => keywords.add(k.toLowerCase()));
+    }
+    
+    // 2. From aiSelectionCriteria.keywords
+    if (schema.aiSelectionCriteria?.keywords && Array.isArray(schema.aiSelectionCriteria.keywords)) {
+      schema.aiSelectionCriteria.keywords.forEach((k: string) => keywords.add(k.toLowerCase()));
+    }
+    
+    // 3. From node type name (split by _ and -)
+    const typeWords = nodeType.toLowerCase().split(/[_\s-]+/);
+    typeWords.forEach(word => {
+      if (word.length > 2) keywords.add(word);
+    });
+    
+    // 4. From label
+    if (schema.label) {
+      const labelWords = schema.label.toLowerCase().split(/\s+/);
+      labelWords.forEach((word: string) => {
+        if (word.length > 2) keywords.add(word);
+      });
+    }
+    
+    return Array.from(keywords);
+  }
+
+  /**
+   * ✅ UNIVERSAL: Get all CRM node types from registry (using capabilities)
+   * Replaces hardcoded crmPlatforms arrays
+   */
+  private getCrmNodeTypes(): string[] {
+    const allNodeTypes = unifiedNodeRegistry.getAllTypes();
+    const crmNodes: string[] = [];
+    
+    for (const nodeType of allNodeTypes) {
+      const capabilities = nodeCapabilityRegistryDSL.getCapabilities(nodeType);
+      // Check if node has CRM capabilities
+      if (capabilities.some(cap => 
+        cap.toLowerCase().includes('crm') || 
+        cap.toLowerCase().includes('customer_relationship') ||
+        cap.toLowerCase().includes('salesforce') ||
+        cap.toLowerCase().includes('hubspot') ||
+        cap.toLowerCase().includes('zoho') ||
+        cap.toLowerCase().includes('pipedrive')
+      )) {
+        crmNodes.push(nodeType);
+      }
+    }
+    
+    return crmNodes;
+  }
+
+  /**
+   * ✅ UNIVERSAL: Check if a node type is a CRM node
+   */
+  private isCrmNodeType(nodeType: string): boolean {
+    const crmNodes = this.getCrmNodeTypes();
+    return crmNodes.includes(nodeType.toLowerCase());
+  }
+
+  /**
+   * ✅ UNIVERSAL: Get all node types that require authentication
+   * Replaces hardcoded requiresAuth arrays
+   */
+  private getNodesRequiringAuth(): string[] {
+    const allNodeTypes = unifiedNodeRegistry.getAllTypes();
+    const authNodes: string[] = [];
+    
+    for (const nodeType of allNodeTypes) {
+      const requiredCreds = unifiedNodeRegistry.getRequiredCredentials(nodeType);
+      if (requiredCreds && requiredCreds.length > 0) {
+        // Check if it's not OAuth (OAuth is handled via UI, not as credential)
+        const nodeDef = unifiedNodeRegistry.get(nodeType);
+        const isOAuth = nodeDef?.credentialSchema?.requirements?.some(req => 
+          req.category === 'oauth'
+        );
+        if (!isOAuth) {
+          authNodes.push(nodeType);
+        }
+      }
+    }
+    
+    return authNodes;
+  }
+
+  /**
+   * ✅ UNIVERSAL: Check if a node type requires authentication
+   */
+  private nodeRequiresAuth(nodeType: string): boolean {
+    const authNodes = this.getNodesRequiringAuth();
+    return authNodes.includes(nodeType.toLowerCase());
+  }
+
+  /**
+   * ✅ UNIVERSAL: Build keyword map for all node types from registry
+   * Replaces hardcoded integrationKeywords and serviceKeywords
+   */
+  private buildUniversalKeywordMap(): Record<string, string[]> {
+    const keywordMap: Record<string, string[]> = {};
+    const allNodeTypes = unifiedNodeRegistry.getAllTypes();
+    
+    for (const nodeType of allNodeTypes) {
+      const keywords = this.getKeywordsForNodeType(nodeType);
+      if (keywords.length > 0) {
+        keywordMap[nodeType] = keywords;
+      }
+    }
+    
+    return keywordMap;
+  }
+
+  /**
+   * ✅ UNIVERSAL: Select CRM node based on user intent (EXPLICIT > CATEGORY)
+   * Replaces hardcoded priority lists with intent-based selection
+   */
+  private selectCrmNodeByIntent(
+    detectedIntegrations: string[],
+    userPrompt: string
+  ): string | null {
+    const crmNodes = this.getCrmNodeTypes();
+    const promptLower = userPrompt.toLowerCase();
+    
+    // First, check for EXPLICIT mentions (user said specific CRM name)
+    for (const integration of detectedIntegrations) {
+      if (crmNodes.includes(integration.toLowerCase())) {
+        // Check if it's explicitly mentioned in prompt
+        const keywords = this.getKeywordsForNodeType(integration);
+        const isExplicit = keywords.some(keyword => {
+          // Check if keyword appears as a complete word in prompt
+          const regex = new RegExp(`\\b${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+          return regex.test(promptLower);
+        });
+        
+        if (isExplicit) {
+          console.log(`✅ [CRM Selection] Selected ${integration} (EXPLICIT mention)`);
+          return integration;
+        }
+      }
+    }
+    
+    // If no explicit mention, return first detected CRM (fallback)
+    const detectedCrm = detectedIntegrations.find(int => crmNodes.includes(int.toLowerCase()));
+    if (detectedCrm) {
+      console.log(`✅ [CRM Selection] Selected ${detectedCrm} (CATEGORY match)`);
+      return detectedCrm;
+    }
+    
+    return null;
   }
 
   /**
@@ -1102,89 +1266,48 @@ You are a workflow execution engine, not a diagram generator.`;
     const promptForIntegrations = userPrompt.toLowerCase();
     const detectedIntegrations: string[] = [];
     
-    // Detect integrations from prompt
-    // Includes both specific app names and generic category phrases (CRM, social media, etc.)
-    const integrationKeywords: Record<string, string[]> = {
-      // CRM / sales tools
-      hubspot: ['hubspot', 'hub spot'],
-      salesforce: ['salesforce', 'sf'],
-      airtable: ['airtable'],
-      clickup: ['clickup', 'click up'],
-      notion: ['notion'],
-      zoho_crm: [
-        'zoho',
-        'zoho crm',
-        'crm',                       // generic CRM → default to Zoho CRM
-        'crm system',
-        'customer relationship',
-        'customer relationship management',
-        'sales crm',
-        'deal pipeline crm',
-        'lead crm',
-        'manage leads in crm',
-        'sync leads to crm',
-        'update crm records'
-      ],
-      pipedrive: [
-        'pipedrive',
-        'sales pipeline tool',
-        'pipeline tool',
-        'deal pipeline',
-        'track deals',
-        'track opportunities'
-      ],
-
-      // Messaging / chat
-      telegram: ['telegram', 'telegram bot', 'telegram channel', 'telegram group'],
-      discord: ['discord'],
-      whatsapp_cloud: [
-        'whatsapp',
-        'whats app',
-        'whatsapp message',
-        'whatsapp notification',
-        'send a whatsapp',
-        'whatsapp alert'
-      ],
-
-      // Social / marketing
-      twitter: ['twitter', 'x.com'],
-      linkedin: [
-        'linkedin',
-        'linked in',
-        'social media',
-        'social channel',
-        'social platforms',
-        'post on social',
-        'share on social media',
-        'post on linkedin',
-        'share update on linkedin',
-        'internal linkedin update',
-        'announce on linkedin'
-      ],
-      instagram: ['instagram', 'ig', 'instagram story', 'instagram post'],
-      youtube: [
-        'youtube',
-        'you tube',
-        'yt',
-        'youtube video',
-        'upload to youtube',
-        'post on youtube',
-        'youtube short',
-        'youtube shorts'
-      ],
-
-      // Email
-      outlook: [
-        'outlook',
-        'microsoft outlook',
-        'outlook email',
-        'send email via outlook',
-        'outlook follow up'
-      ],
-    };
+    // ✅ UNIVERSAL: Detect integrations from prompt using registry-based keywords
+    // Replaces hardcoded integrationKeywords with dynamic registry lookup
+    const integrationKeywords = this.buildUniversalKeywordMap();
+    
+    // ✅ UNIVERSAL: Split prompt into words for word-based pattern matching
+    const promptWords = promptForIntegrations
+      .split(/[\s_\-.,;:!?()\[\]{}'"]+/)
+      .filter(word => word.length > 0);
     
     for (const [integration, keywords] of Object.entries(integrationKeywords)) {
-      if (keywords.some(keyword => promptForIntegrations.includes(keyword))) {
+      // ✅ UNIVERSAL: Use word-based pattern matching instead of sentence-based
+      const matched = keywords.some(keyword => {
+        // Split keyword into words
+        const keywordWords = keyword
+          .toLowerCase()
+          .split(/[\s_\-.,;:!?()\[\]{}'"]+/)
+          .filter(w => w.length > 0);
+        
+        if (keywordWords.length === 0) return false;
+        
+        // Check if ALL keyword words appear in prompt words
+        const stopWords = new Set(['a', 'an', 'the', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from']);
+        const importantKeywordWords = keywordWords.filter(w => !stopWords.has(w) || w.length > 2);
+        
+        if (importantKeywordWords.length === 0) {
+          // If only stop words, check if any word matches
+          return keywordWords.some(kw => 
+            promptWords.some(pw => pw === kw || pw.includes(kw) || kw.includes(pw))
+          );
+        }
+        
+        // Check if ALL important keyword words appear in prompt
+        return importantKeywordWords.every(keywordWord => 
+          promptWords.some(promptWord => 
+            promptWord === keywordWord || 
+            promptWord.includes(keywordWord) || 
+            keywordWord.includes(promptWord)
+          )
+        );
+      });
+      
+      if (matched) {
         detectedIntegrations.push(integration);
       }
     }
@@ -3153,16 +3276,13 @@ Use only nodes from the library above.`;
       
       // 🚨 CRITICAL FIX: Check for programmatically detected CRM platforms
       const detectedIntegrations = (requirements as any).detectedRequirements?.requiredIntegrations || [];
-      // Priority order: hubspot (default) > zoho_crm > salesforce > pipedrive
-      const crmPriority = ['hubspot', 'zoho_crm', 'salesforce', 'pipedrive'];
-      const detectedCrm = crmPriority.find(crm => 
-        detectedIntegrations.map((int: string) => int.toLowerCase()).includes(crm.toLowerCase())
-      );
+      // ✅ UNIVERSAL: Use intent-based selection instead of hardcoded priority
+      const detectedCrm = this.selectCrmNodeByIntent(detectedIntegrations, userPrompt);
       
       // Convert minimal structure to WorkflowGenerationStructure format
       const steps: WorkflowStepDefinition[] = minimal.steps.map((step: { type: string; description: string }, index: number) => {
-        // If CRM node and we detected a specific CRM platform, use that instead
-        if (detectedCrm && ['hubspot', 'zoho_crm', 'salesforce', 'pipedrive'].includes(step.type)) {
+        // ✅ UNIVERSAL: If CRM node and we detected a specific CRM platform, use that instead
+        if (detectedCrm && this.isCrmNodeType(step.type)) {
           console.log(`✅ [Vague Prompt Handler] Overriding CRM type from "${step.type}" to detected "${detectedCrm}"`);
           return {
             id: `step${index + 1}`,
@@ -3557,7 +3677,8 @@ Use only nodes from the library above.`;
     
     // 🚨 CRITICAL: Check if user says "specify platform" - if so, only detect ONE CRM platform
     const userSaysSpecifyPlatform = fullText.includes('specify platform') || fullText.includes('specify the platform');
-    const crmPlatforms = ['hubspot', 'zoho_crm', 'salesforce', 'pipedrive'];
+    // ✅ UNIVERSAL: Get CRM platforms from registry instead of hardcoded list
+    const crmPlatforms = this.getCrmNodeTypes();
     let crmDetected = false;
     
     // Check for each integration
@@ -3565,13 +3686,12 @@ Use only nodes from the library above.`;
       const isMentioned = patterns.some(pattern => pattern.test(fullText));
       if (isMentioned) {
         // 🚨 CRITICAL: If "specify platform" and this is a CRM, only add ONE CRM
-        if (userSaysSpecifyPlatform && crmPlatforms.includes(integration)) {
+        if (userSaysSpecifyPlatform && crmPlatforms.includes(integration.toLowerCase())) {
           if (!crmDetected) {
             detectedRequirements.requiredIntegrations.push(integration);
             crmDetected = true;
-            // Add to credentials if it requires authentication
-            const requiresAuth = ['hubspot', 'salesforce', 'airtable', 'slack', 'clickup', 'notion', 'telegram', 'discord', 'twitter', 'linkedin', 'instagram', 'zoho_crm', 'pipedrive'];
-            if (requiresAuth.includes(integration)) {
+            // ✅ UNIVERSAL: Check if node requires auth from registry
+            if (this.nodeRequiresAuth(integration)) {
               detectedRequirements.requiredCredentials.push(integration);
             }
             console.log(`🚨 [Integration Detection] Detected ${integration.toUpperCase()} integration requirement (only ONE CRM because "specify platform" was mentioned)`);
@@ -3580,9 +3700,8 @@ Use only nodes from the library above.`;
           }
         } else {
           detectedRequirements.requiredIntegrations.push(integration);
-          // Add to credentials if it requires authentication
-          const requiresAuth = ['hubspot', 'salesforce', 'airtable', 'slack', 'clickup', 'notion', 'telegram', 'discord', 'twitter', 'linkedin', 'instagram', 'zoho_crm', 'pipedrive'];
-          if (requiresAuth.includes(integration)) {
+          // ✅ UNIVERSAL: Check if node requires auth from registry
+          if (this.nodeRequiresAuth(integration)) {
             detectedRequirements.requiredCredentials.push(integration);
           }
           console.log(`🚨 [Integration Detection] Detected ${integration.toUpperCase()} integration requirement`);
@@ -3590,11 +3709,27 @@ Use only nodes from the library above.`;
       }
     }
     
-    // 🚨 CRITICAL: If "specify platform" but no CRM detected yet, default to hubspot
+    // 🚨 CRITICAL: If "specify platform" but no CRM detected yet, use intent-based selection
     if (userSaysSpecifyPlatform && !crmDetected && (fullText.includes('crm') || fullText.includes('sales agent') || fullText.includes('crm agent'))) {
-      detectedRequirements.requiredIntegrations.push('hubspot');
-      detectedRequirements.requiredCredentials.push('hubspot');
-      console.log(`🚨 [Integration Detection] User said "specify platform" but no specific CRM mentioned - defaulting to hubspot`);
+      // ✅ UNIVERSAL: Use intent-based selection instead of hardcoded default
+      const selectedCrm = this.selectCrmNodeByIntent(detectedRequirements.requiredIntegrations, fullText);
+      if (selectedCrm) {
+        detectedRequirements.requiredIntegrations.push(selectedCrm);
+        if (this.nodeRequiresAuth(selectedCrm)) {
+          detectedRequirements.requiredCredentials.push(selectedCrm);
+        }
+        console.log(`🚨 [Integration Detection] User said "specify platform" but no specific CRM mentioned - selected: ${selectedCrm}`);
+      } else {
+        // Fallback: use first CRM from registry
+        const firstCrm = crmPlatforms[0];
+        if (firstCrm) {
+          detectedRequirements.requiredIntegrations.push(firstCrm);
+          if (this.nodeRequiresAuth(firstCrm)) {
+            detectedRequirements.requiredCredentials.push(firstCrm);
+          }
+          console.log(`🚨 [Integration Detection] User said "specify platform" but no specific CRM mentioned - defaulting to first CRM: ${firstCrm}`);
+        }
+      }
     }
     
     // 🚨 CRITICAL: Detect LOOP requirement for "extract from X and create Y" patterns
@@ -4599,27 +4734,26 @@ Return JSON:
         const userPromptLower = ((requirements as any).originalPrompt || requirements.primaryGoal || '').toLowerCase();
         const userSaysSpecifyPlatform = userPromptLower.includes('specify platform') || userPromptLower.includes('specify the platform');
         if (userSaysSpecifyPlatform) {
-          const crmPlatforms = ['hubspot', 'zoho_crm', 'salesforce', 'pipedrive'];
+          // ✅ UNIVERSAL: Get CRM platforms from registry instead of hardcoded list
+          const crmPlatforms = this.getCrmNodeTypes();
           const crmSteps = enforcedStructure.steps.filter((step: any) => {
             const stepType = (step as any).data?.type || step.type || (step as any).nodeType || '';
-            return crmPlatforms.includes(stepType.toLowerCase());
+            return this.isCrmNodeType(stepType);
           });
           
           if (crmSteps.length > 1) {
             console.log(`⚠️  [CRM Deduplication] Found ${crmSteps.length} CRM nodes but user said "specify platform" - keeping only the first one`);
-            // Priority: hubspot > zoho_crm > salesforce > pipedrive
-            const crmPriority = ['hubspot', 'zoho_crm', 'salesforce', 'pipedrive'];
-            const firstCrmType = crmPriority.find(crm => 
-              crmSteps.some((step: any) => {
-                const stepType = (step as any).data?.type || step.type || (step as any).nodeType || '';
-                return stepType.toLowerCase() === crm.toLowerCase();
-              })
-            ) || ((crmSteps[0] as any).data?.type || crmSteps[0].type || (crmSteps[0] as any).nodeType);
+            // ✅ UNIVERSAL: Use intent-based selection instead of hardcoded priority
+            const detectedIntegrations = crmSteps.map((step: any) => {
+              return (step as any).data?.type || step.type || (step as any).nodeType || '';
+            });
+            const firstCrmType = this.selectCrmNodeByIntent(detectedIntegrations, userPromptLower) || 
+              ((crmSteps[0] as any).data?.type || crmSteps[0].type || (crmSteps[0] as any).nodeType);
             
-            // Remove all CRM steps except the first one (by priority)
+            // Remove all CRM steps except the first one (by intent)
             const nonCrmSteps = enforcedStructure.steps.filter((step: any) => {
               const stepType = (step as any).data?.type || step.type || (step as any).nodeType || '';
-              return !crmPlatforms.includes(stepType.toLowerCase());
+              return !this.isCrmNodeType(stepType);
             });
             
             const firstCrmStep = crmSteps.find((step: any) => {
@@ -5011,41 +5145,8 @@ Return JSON:
     const filteredSteps: typeof steps = [];
     const removedNodes: string[] = [];
     
-    // Define service keywords mapping (expanded for better detection)
-    const serviceKeywords: Record<string, string[]> = {
-      'slack_message': ['slack', 'notify', 'notification'],
-      'google_sheets': ['sheet', 'spreadsheet', 'sheets', 'google sheet'],
-      'google_doc': ['doc', 'document', 'google doc', 'google document'],
-      'google_gmail': ['gmail', 'google mail', 'google email', 'email via gmail', 'send via gmail', 'gmail them', 'gmail it', 'via gmail', 'send gmail', 'gmail send'],
-      'email': ['email', 'send email', 'send mail', 'mail'], // Only used if Gmail is NOT mentioned
-      'discord': ['discord'],
-      'linkedin': ['linkedin', 'linked in', 'linked-in', 'li ', 'social media', 'social channel', 'social post'],
-      'twitter': ['twitter', 'tweet', 'x.com', 'social media'],
-      'instagram': ['instagram', 'ig ', 'instagram story', 'instagram post'],
-      'whatsapp_cloud': ['whatsapp', 'whats app', 'whatsapp message', 'whatsapp notification'],
-      'youtube': ['youtube', 'you tube', 'yt', 'youtube video', 'upload to youtube', 'post on youtube'],
-      'hubspot': ['hubspot', 'hub spot', 'hubspot crm', 'crm', 'crm agent', 'customer relationship management'],
-      'salesforce': ['salesforce', 'sf', 'crm', 'crm agent', 'customer relationship management'],
-      'airtable': ['airtable'],
-      'clickup': ['clickup', 'click up'],
-      'notion': ['notion'],
-      // CRM nodes that were being dropped
-      'zoho_crm': ['zoho', 'zoho crm', 'crm system', 'customer relationship', 'sales crm', 'crm', 'crm agent', 'customer relationship management'], // ✅ Added 'crm' and 'crm agent' to match prompts like "create a crm agent"
-      'pipedrive': ['pipedrive', 'sales pipeline', 'deal pipeline', 'crm', 'crm agent'],
-      // Email / messaging
-      'outlook': ['outlook', 'microsoft outlook', 'outlook email'],
-      // ✅ Ensure Telegram nodes are kept when prompt mentions Telegram
-      'telegram': ['telegram', 'telegram bot', 'telegram channel', 'telegram group'],
-      // ✅ Ensure GitHub nodes are kept when prompt mentions GitHub / repos / issues / PRs
-      'github': ['github', 'git hub', 'repository', 'repo', 'issue', 'pull request', 'pr'],
-      // AI / HTTP
-      'ai_chat_model': ['ai chat model', 'chat model', 'ai model', 'ai agent', 'use ai', 'using ai', 'with ai', 'ai to', 'summarize', 'analyze', 'ai analysis', 'ai generate', 'ollama', 'llm'],
-      'ai_agent': ['ai agent', 'ai chat model', 'chat model', 'ai model', 'use ai', 'using ai', 'with ai', 'ai to', 'summarize', 'analyze', 'ai analysis', 'ai generate', 'ollama', 'llm'],
-      'text_summarizer': ['text summarizer', 'summarizer', 'summarize', 'summary', 'summarization', 'ai summarization', 'ai summarize', 'ai summarizer', 'condense', 'summarize using ai', 'ai to summarize'],
-      // Removed: ai_service is now a capability, not a node type
-      // Capabilities are resolved to real nodes: ollama, openai_gpt, etc.
-      'http_request': ['http', 'api', 'fetch', 'get', 'retrieve', 'call', 'endpoint', 'url'],
-    };
+    // ✅ UNIVERSAL: Use registry-based keyword mapping (replaces hardcoded serviceKeywords)
+    const serviceKeywords = this.buildUniversalKeywordMap();
     
     const isDebug = process.env.DEBUG === 'true' || process.env.NODE_ENV === 'development';
     if (isDebug) {
@@ -5059,7 +5160,8 @@ Return JSON:
       // NOTE: WorkflowStepDefinition doesn't formally expose data/nodeType, so we cast to any here.
       const stepAny = step as any;
       const stepType = (stepAny.data?.type || stepAny.type || stepAny.nodeType || '').toLowerCase();
-      const keywords = serviceKeywords[stepType] || [];
+      // ✅ UNIVERSAL: Get keywords from registry instead of hardcoded map
+      const keywords = serviceKeywords[stepType] || this.getKeywordsForNodeType(stepType);
       
       if (isDebug) {
         console.log(`🔍 [DIAGNOSTIC] [Node Filter] Step: type="${stepType}", keywords=[${keywords.join(', ')}]`);
@@ -5082,44 +5184,93 @@ Return JSON:
       }
       
       // Check if this service was mentioned in the prompt
+      // ✅ UNIVERSAL: Split prompt into words for word-based pattern matching
+      const promptWords = promptLower
+        .split(/[\s_\-.,;:!?()\[\]{}'"]+/)
+        .filter(word => word.length > 0);
+      
       let wasMentioned = false;
       if (isPlatformNode || isCrmNode) {
         // ✅ CRITICAL: For CRM nodes, also check if generic "crm" is mentioned (even if not in keywords)
-        if (isCrmNode && promptLower.includes('crm')) {
+        if (isCrmNode && promptWords.some(pw => pw === 'crm' || pw.includes('crm') || 'crm'.includes(pw))) {
           wasMentioned = true;
           if (isDebug) {
             console.log(`🔍 [DIAGNOSTIC] [Node Filter] CRM node "${stepType}" matched - generic "crm" found in prompt`);
           }
         } else {
-        // For platform/CRM nodes, check if ANY keyword matches (more flexible)
+          // ✅ UNIVERSAL: For platform/CRM nodes, use word-based pattern matching
         wasMentioned = keywords.some(keyword => {
-            // Use word boundary matching for better accuracy, but allow partial matches for short keywords like "crm"
-            if (keyword.length <= 4) {
-              // For short keywords like "crm", use simple includes check
-              const matches = promptLower.includes(keyword);
-              if (isDebug && matches) {
-                console.log(`🔍 [DIAGNOSTIC] [Node Filter] Short keyword "${keyword}" matched for "${stepType}"`);
-              }
-              return matches;
-            } else {
-              // For longer keywords, use word boundary matching
-          const regex = new RegExp(`\\b${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
-          const matches = regex.test(promptLower);
-          if (isDebug && matches) {
-            console.log(`🔍 [DIAGNOSTIC] [Node Filter] Keyword "${keyword}" matched for "${stepType}"`);
-          }
-          return matches;
+            // Split keyword into words
+            const keywordWords = keyword
+              .toLowerCase()
+              .split(/[\s_\-.,;:!?()\[\]{}'"]+/)
+              .filter(w => w.length > 0);
+            
+            if (keywordWords.length === 0) return false;
+            
+            // Check if ALL keyword words appear in prompt words
+            const stopWords = new Set(['a', 'an', 'the', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from']);
+            const importantKeywordWords = keywordWords.filter(w => !stopWords.has(w) || w.length > 2);
+            
+            if (importantKeywordWords.length === 0) {
+              // If only stop words, check if any word matches
+              return keywordWords.some(kw => 
+                promptWords.some(pw => pw === kw || pw.includes(kw) || kw.includes(pw))
+              );
             }
+            
+            // Check if ALL important keyword words appear in prompt
+            const allWordsFound = importantKeywordWords.every(keywordWord => 
+              promptWords.some(promptWord => 
+                promptWord === keywordWord || 
+                promptWord.includes(keywordWord) || 
+                keywordWord.includes(promptWord)
+              )
+            );
+            
+            if (isDebug && allWordsFound) {
+              console.log(`🔍 [DIAGNOSTIC] [Node Filter] Keyword "${keyword}" matched for "${stepType}" (word-based pattern match)`);
+            }
+            
+            return allWordsFound;
         });
         }
       } else {
-        // For other nodes, use simple includes check
+        // ✅ UNIVERSAL: For other nodes, use word-based pattern matching
         wasMentioned = keywords.some(keyword => {
-          const matches = promptLower.includes(keyword);
-          if (isDebug && matches) {
-            console.log(`🔍 [DIAGNOSTIC] [Node Filter] Keyword "${keyword}" matched for "${stepType}"`);
+          // Split keyword into words
+          const keywordWords = keyword
+            .toLowerCase()
+            .split(/[\s_\-.,;:!?()\[\]{}'"]+/)
+            .filter(w => w.length > 0);
+          
+          if (keywordWords.length === 0) return false;
+          
+          // Check if ALL keyword words appear in prompt words
+          const stopWords = new Set(['a', 'an', 'the', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from']);
+          const importantKeywordWords = keywordWords.filter(w => !stopWords.has(w) || w.length > 2);
+          
+          if (importantKeywordWords.length === 0) {
+            // If only stop words, check if any word matches
+            return keywordWords.some(kw => 
+              promptWords.some(pw => pw === kw || pw.includes(kw) || kw.includes(pw))
+            );
           }
-          return matches;
+          
+          // Check if ALL important keyword words appear in prompt
+          const allWordsFound = importantKeywordWords.every(keywordWord => 
+            promptWords.some(promptWord => 
+              promptWord === keywordWord || 
+              promptWord.includes(keywordWord) || 
+              keywordWord.includes(promptWord)
+            )
+          );
+          
+          if (isDebug && allWordsFound) {
+            console.log(`🔍 [DIAGNOSTIC] [Node Filter] Keyword "${keyword}" matched for "${stepType}" (word-based pattern match)`);
+          }
+          
+          return allWordsFound;
         });
       }
       
@@ -6977,7 +7128,8 @@ Return JSON:
       // 🚨 CRITICAL FIX: For vague prompts with CRM nodes, set default operation to "create"
       if (isVaguePrompt) {
         const nodeType = unifiedNormalizeNodeType(node);
-        const crmNodeTypes = ['hubspot', 'zoho_crm', 'salesforce', 'pipedrive'];
+        // ✅ UNIVERSAL: Get CRM node types from registry instead of hardcoded list
+        const crmNodeTypes = this.getCrmNodeTypes();
         if (crmNodeTypes.includes(nodeType)) {
           if (!config.operation) {
             config.operation = 'create';
@@ -11709,16 +11861,30 @@ return {
       return { nodes, edges };
     }
 
+    // ✅ UNIVERSAL FIX: Check for explicit output nodes using registry (not hardcoded list)
+    // This works for ALL output nodes (CRM, email, social media, etc.) automatically
+    const hasExplicitOutputs = terminalNonTriggerNodes.some(node => {
+      // Use registry-based check - works for ALL output nodes universally
+      return isOutputNode(node) && unifiedNormalizeNodeType(node) !== 'log_output';
+    });
+
     // If there is already a log_output node, make sure it is wired as the FINAL sink (not from trigger).
     const existingLogOutputs = nodes.filter(n => unifiedNormalizeNodeType(n) === 'log_output');
     const hasAnyOutputNode = terminalNonTriggerNodes.some(isOutputSinkNode);
 
-    // We only auto-add/auto-rewire when workflow has no explicit output OR when there is an auto-injected log_output present.
+    // ✅ FIX: We only auto-add/auto-rewire when:
+    // 1. No explicit output nodes exist (HubSpot, Gmail, etc.)
+    // 2. AND (no output sink node exists OR auto-injected log_output present)
     const shouldEnsureLog =
+      !hasExplicitOutputs && (
       existingLogOutputs.length > 0 ||
-      !hasAnyOutputNode;
+        !hasAnyOutputNode
+      );
 
     if (!shouldEnsureLog) {
+      if (hasExplicitOutputs) {
+        console.log(`[ensureOutputNode] ✅ Explicit output nodes detected, skipping log_output auto-injection`);
+      }
       return { nodes, edges };
     }
 
@@ -13334,8 +13500,8 @@ Identify what needs to be changed. Respond with JSON:
       steps: steps,
       connections: connections,
       required_credentials: detectedRequirements.requiredIntegrations.filter((int: string) => {
-        const requiresAuth = ['hubspot', 'salesforce', 'airtable', 'slack', 'clickup', 'notion', 'telegram', 'discord', 'twitter', 'linkedin', 'instagram', 'zoho_crm', 'pipedrive', 'gmail', 'google_sheets'];
-        return requiresAuth.includes(int);
+        // ✅ UNIVERSAL: Check if node requires auth from registry instead of hardcoded list
+        return this.nodeRequiresAuth(int);
       }),
       validation_status: 'valid',
     };

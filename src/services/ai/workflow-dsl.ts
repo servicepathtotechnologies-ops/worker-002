@@ -19,6 +19,7 @@ import { nodeLibrary } from '../nodes/node-library';
 import { unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 import { normalizeNodeTypeAsync } from './node-type-normalizer'; // Keep async version for now
 import { resolveNodeType } from '../../core/utils/node-type-resolver-util';
+import { isOutputNode } from '../../core/utils/universal-node-type-checker';
 import { semanticNodeResolver } from './semantic-node-resolver';
 import { semanticIntentAnalyzer } from './semantic-intent-analyzer';
 import { nodeMetadataEnricher } from './node-metadata-enricher';
@@ -515,7 +516,12 @@ export class DSLGenerator {
     originalPrompt?: string,
     transformationDetection?: { detected: boolean; verbs: string[]; requiredNodeTypes: string[] },
     confidenceScore?: number,
-    nodeCapabilities?: Record<string, 'data_source' | 'transformation' | 'output'>
+    nodeCapabilities?: Record<string, 'data_source' | 'transformation' | 'output'>,
+    options?: {
+      explicitNodeTypes?: Set<string>;  // ✅ PHASE 3: Explicit nodes from selected variation
+      blockedNodeTypes?: Set<string>;   // ✅ PHASE 3: Blocked conflicting nodes
+      selectedStructuredPrompt?: string; // ✅ CRITICAL: Selected variation prompt (used instead of originalPrompt)
+    }
   ): Promise<WorkflowDSL> {
     console.log('[DSLGenerator] Generating DSL from StructuredIntent...');
     
@@ -620,6 +626,12 @@ export class DSLGenerator {
           continue;
         }
         
+        // ✅ WHITELIST-ONLY: Only add if node is whitelisted (if whitelist exists)
+        if (options?.explicitNodeTypes && !options.explicitNodeTypes.has(dsType)) {
+          console.log(`[DSLGenerator] 🚫 WHITELIST-ONLY: Skipping non-whitelisted dataSource: ${dsType}`);
+          continue;
+        }
+        
         // Categorize as data source (should always be dataSource)
         // ✅ PHASE 2: Use schema operations directly instead of categorizer
         const dsCategory = this.determineCategoryFromSchema(schema, dsOperation);
@@ -685,6 +697,12 @@ export class DSLGenerator {
         // Skip if still cannot resolve
         if (!schema) {
           console.error(`[DSLGenerator] ❌ Transformation type "${rawType}" could not be resolved. Skipping this transformation.`);
+          continue;
+        }
+        
+        // ✅ WHITELIST-ONLY: Only add if node is whitelisted (if whitelist exists)
+        if (options?.explicitNodeTypes && !options.explicitNodeTypes.has(tfType)) {
+          console.log(`[DSLGenerator] 🚫 WHITELIST-ONLY: Skipping non-whitelisted transformation: ${tfType}`);
           continue;
         }
         
@@ -910,6 +928,13 @@ export class DSLGenerator {
         ]);
       }
       
+      // ✅ WHITELIST-ONLY: Only process if node is whitelisted (if whitelist exists)
+      // Check AFTER schema validation to ensure we have a valid actionType
+      if (options?.explicitNodeTypes && !options.explicitNodeTypes.has(actionType)) {
+        console.log(`[DSLGenerator] 🚫 WHITELIST-ONLY: Skipping non-whitelisted action: ${actionType} (from ${rawType})`);
+        continue;
+      }
+      
       // ✅ CRITICAL FIX: Infer operation from prompt context if missing
       // Priority: 1. Intent operation → 2. Prompt keywords → 3. Schema default
       let operation = action.operation;
@@ -927,10 +952,12 @@ export class DSLGenerator {
       // This ensures DSL generator and compiler use the same logic
       let categorized = false;
 
-      // Determine origin: check if node type is explicitly mentioned in original prompt
-      const isUserExplicit = originalPrompt && (
-        originalPrompt.toLowerCase().includes(actionType.toLowerCase()) ||
-        originalPrompt.toLowerCase().includes(rawType.toLowerCase())
+      // ✅ CRITICAL FIX: Check if node type is explicitly mentioned in selected variation (not original prompt)
+      // Use options.selectedStructuredPrompt if available (selected variation), otherwise fall back to originalPrompt
+      const promptToCheck = (options as any)?.selectedStructuredPrompt || originalPrompt || '';
+      const isUserExplicit = promptToCheck && (
+        promptToCheck.toLowerCase().includes(actionType.toLowerCase()) ||
+        promptToCheck.toLowerCase().includes(rawType.toLowerCase())
       );
       const originSource: 'user' | 'auto' | 'system' = isUserExplicit ? 'user' : 'auto';
       const originMetadata = {
@@ -1330,9 +1357,35 @@ export class DSLGenerator {
       trigger.type === 'chat_trigger'
     );
     
-    // Check if output is required but missing (and not a chatbot workflow)
-    if (hasWriteOperation && finalOutputs.length === 0 && !isChatbotWorkflow) {
-      console.log(`[DSLGenerator] 🔧 Auto-injecting log_output node (required by write operation but missing)`);
+    // ✅ UNIVERSAL FIX: Check if there are explicit output nodes using registry (not hardcoded list)
+    // This works for ALL output nodes (CRM, email, social media, etc.) automatically
+    const hasExplicitOutputs = finalOutputs.some(out => {
+      const outType = unifiedNormalizeNodeTypeString(out.type || '');
+      // Use registry-based check - works for ALL output nodes universally
+      return isOutputNode(outType) && outType !== 'log_output';
+    });
+    
+    // ✅ FIX 3: Prioritize explicit output nodes - place them BEFORE log_output
+    // If explicit outputs exist, ensure log_output is added AFTER them (not before)
+    if (hasExplicitOutputs) {
+      console.log(`[DSLGenerator] ℹ️  Explicit output nodes detected (${finalOutputs.map(o => o.type).join(', ')}), log_output will be added after explicit outputs if needed`);
+      
+      // ✅ FIX 3: If log_output already exists, move it to the end
+      const logOutputIndex = finalOutputs.findIndex(out => out.type === 'log_output');
+      if (logOutputIndex >= 0) {
+        const logOutput = finalOutputs[logOutputIndex];
+        finalOutputs = [
+          ...finalOutputs.slice(0, logOutputIndex),
+          ...finalOutputs.slice(logOutputIndex + 1),
+          logOutput, // Move log_output to end
+        ];
+        console.log(`[DSLGenerator] ✅ Moved log_output to end (after explicit outputs)`);
+      }
+    }
+    
+    // Check if output is required but missing (and not a chatbot workflow, and no explicit outputs exist)
+    if (hasWriteOperation && finalOutputs.length === 0 && !isChatbotWorkflow && !hasExplicitOutputs) {
+      console.log(`[DSLGenerator] 🔧 Auto-injecting log_output node (required by write operation but missing, and no explicit output nodes)`);
       
       // Verify log_output is registered
       if (!nodeLibrary.isNodeTypeRegistered('log_output')) {
@@ -1403,6 +1456,89 @@ export class DSLGenerator {
     finalDataSources = normalizedComponents.dataSources;
     finalTransformations = normalizedComponents.transformations;
     finalOutputs = normalizedComponents.outputs;
+    
+    // ✅ PHASE 3: Filter out blocked nodes from DSL steps
+    if (options?.blockedNodeTypes && options.blockedNodeTypes.size > 0) {
+      const blockedCount = {
+        dataSources: 0,
+        transformations: 0,
+        outputs: 0,
+      };
+      
+      finalDataSources = finalDataSources.filter(step => {
+        const nodeType = step.type || '';
+        if (options.blockedNodeTypes!.has(nodeType)) {
+          blockedCount.dataSources++;
+          console.log(`[DSLGenerator] 🚫 PHASE 3: Blocked conflicting node in DSL dataSources: ${nodeType}`);
+          return false;
+        }
+        return true;
+      });
+      
+      finalTransformations = finalTransformations.filter(step => {
+        const nodeType = step.type || '';
+        if (options.blockedNodeTypes!.has(nodeType)) {
+          blockedCount.transformations++;
+          console.log(`[DSLGenerator] 🚫 PHASE 3: Blocked conflicting node in DSL transformations: ${nodeType}`);
+          return false;
+        }
+        return true;
+      });
+      
+      finalOutputs = finalOutputs.filter(step => {
+        const nodeType = step.type || '';
+        if (options.blockedNodeTypes!.has(nodeType)) {
+          blockedCount.outputs++;
+          console.log(`[DSLGenerator] 🚫 PHASE 3: Blocked conflicting node in DSL outputs: ${nodeType}`);
+          return false;
+        }
+        return true;
+      });
+      
+      const totalBlocked = blockedCount.dataSources + blockedCount.transformations + blockedCount.outputs;
+      if (totalBlocked > 0) {
+        console.log(`[DSLGenerator] 🚫 PHASE 3: Blocked ${totalBlocked} conflicting node(s) from DSL`);
+      }
+    }
+    
+    // ✅ PHASE 3: Ensure explicit nodes are in DSL
+    if (options?.explicitNodeTypes && options.explicitNodeTypes.size > 0) {
+      for (const explicitNode of options.explicitNodeTypes) {
+        // Check if explicit node exists in any DSL component
+        const existsInDataSources = finalDataSources.some(step => step.type === explicitNode);
+        const existsInTransformations = finalTransformations.some(step => step.type === explicitNode);
+        const existsInOutputs = finalOutputs.some(step => step.type === explicitNode);
+        
+        if (!existsInDataSources && !existsInTransformations && !existsInOutputs) {
+          console.log(`[DSLGenerator] ✅ PHASE 3: Adding missing explicit node to DSL: ${explicitNode}`);
+          
+          // Determine which component to add to based on node capabilities
+          const { nodeCapabilityRegistryDSL } = await import('./node-capability-registry-dsl');
+          if (nodeCapabilityRegistryDSL.isDataSource(explicitNode)) {
+            finalDataSources.push({
+              id: `ds_${stepCounter++}`,
+              type: explicitNode,
+              operation: 'read',
+              description: `Explicit node: ${explicitNode}`,
+            });
+          } else if (nodeCapabilityRegistryDSL.isTransformation(explicitNode)) {
+            finalTransformations.push({
+              id: `tf_${stepCounter++}`,
+              type: explicitNode,
+              operation: 'transform',
+              description: `Explicit node: ${explicitNode}`,
+            });
+          } else if (nodeCapabilityRegistryDSL.isOutput(explicitNode)) {
+            finalOutputs.push({
+              id: `out_${stepCounter++}`,
+              type: explicitNode,
+              operation: 'send',
+              description: `Explicit node: ${explicitNode}`,
+            });
+          }
+        }
+      }
+    }
 
     // ✅ WORLD-CLASS UNIVERSAL: Ensure completeness BEFORE building execution order
     // This ensures all required nodes are in DSL before ordering (prevents branches)
@@ -2400,8 +2536,9 @@ export class DSLGenerator {
     nextStepCounter: number;
     injectedNodeTypes: string[];
   }> {
-    // ✅ FIX #1: AI operations that require LLM node (REMOVED 'transform' and 'process' - too generic)
-    // Only include explicit AI operations, not generic data transformation operations
+    // ✅ FIX #1: AI operations that require LLM node (REMOVED 'transform', 'process', 'create' - too generic)
+    // Only include explicit AI operations, not generic data transformation or CRUD operations
+    // 'create' is a CRUD operation (create record in CRM), NOT an AI operation
     const aiOperations = ['summarize', 'summarise', 'analyze', 'analyse', 'classify', 'generate', 'ai_processing', 'translate', 'extract'];
     
     // ✅ FIX #2: Check if original prompt mentions AI (semantic validation)

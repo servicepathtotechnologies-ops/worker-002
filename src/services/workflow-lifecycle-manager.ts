@@ -34,6 +34,8 @@ import { credentialInjector } from './ai/credential-injector';
 // ✅ UNIFIED ORCHESTRATION: Import orchestrator for edge-safe node injection
 import { unifiedGraphOrchestrator } from '../core/orchestration';
 import { executionOrderManager } from '../core/orchestration/execution-order-manager';
+// ✅ CAPABILITY-BASED DEDUPLICATION: Import capability registry to prevent duplicate AI nodes
+import { nodeCapabilityRegistryDSL } from './ai/node-capability-registry-dsl';
 
 export interface WorkflowGenerationResult {
   workflow: Workflow;
@@ -251,6 +253,8 @@ export class WorkflowLifecycleManager {
       mandatoryNodeTypes?: string[];
       mandatoryNodesWithOperations?: Array<{ nodeType: string; operationHint?: string; context?: string }>; // ✅ NEW: Nodes with operation hints
       providedCredentials?: Record<string, Record<string, any>>;
+      explicitNodeTypes?: Set<string>; // ✅ PHASE 1: Explicit nodes from selected variation
+      blockedNodeTypes?: Set<string>;  // ✅ PHASE 1: Blocked conflicting nodes
     },
     onProgress?: (step: number, stepName: string, progress: number, details?: any) => void
   ): Promise<WorkflowGenerationResult> {
@@ -363,7 +367,11 @@ export class WorkflowLifecycleManager {
     } else {
       // Legacy NodeResolver behavior - ✅ UNIVERSAL FIX: Use selectedStructuredPrompt
       const promptForResolution = constraints?.selectedStructuredPrompt || userPrompt;
-      resolution = nodeResolver.resolvePrompt(promptForResolution);
+      // ✅ PHASE 2: Pass explicit and blocked nodes to node resolver
+      resolution = nodeResolver.resolvePrompt(promptForResolution, undefined, {
+        explicitNodeTypes: constraints?.explicitNodeTypes,
+        blockedNodeTypes: constraints?.blockedNodeTypes,
+      });
 
       if (!resolution.success && resolution.errors.length > 0) {
         console.error('[WorkflowLifecycle] Node resolution failed:', resolution.errors);
@@ -554,9 +562,33 @@ export class WorkflowLifecycleManager {
         
         // Check if this canonical type already exists in the workflow
         if (!existingNodeTypes.includes(resolvedNodeType)) {
-          console.log(`[WorkflowLifecycle] ✅ Adding missing resolved node via orchestrator: ${nodeType} (canonical: ${resolvedNodeType})`);
-          // Use resolved canonical type for schema lookup
+          // ✅ SAFETY LAYER 1: Verify schema exists before adding (prevents unregistered types like linkedin_post)
           const schema = nodeLibrary.getSchema(resolvedNodeType);
+          if (!schema) {
+            console.warn(`[WorkflowLifecycle] ⚠️  Skipping node injection: ${nodeType} (resolved to ${resolvedNodeType}) - schema not found. This node type is not registered.`);
+            continue; // Skip this node - it's not a valid registered type
+          }
+          
+          // ✅ SAFETY LAYER 2: Capability-based deduplication (prevents duplicate AI nodes like ai_chat_model + ai_agent)
+          const newNodeCapability = this.getNodeCapabilityCategory(resolvedNodeType);
+          if (newNodeCapability) {
+            const existingNodeWithSameCapability = workflow.nodes.find((n: any) => {
+              const existingNodeType = unifiedNormalizeNodeType(n);
+              const existingResolvedType = resolveNodeType(existingNodeType);
+              const existingCapability = this.getNodeCapabilityCategory(existingResolvedType);
+              return existingCapability === newNodeCapability && existingCapability !== null;
+            });
+            
+            if (existingNodeWithSameCapability) {
+              const existingNodeType = unifiedNormalizeNodeType(existingNodeWithSameCapability);
+              const existingResolvedType = resolveNodeType(existingNodeType);
+              console.log(`[WorkflowLifecycle] 🔍 Skipping duplicate capability: ${nodeType} (resolved to ${resolvedNodeType}, capability: ${newNodeCapability}) - ${existingResolvedType} already provides this capability`);
+              continue; // Skip this node - capability already provided by existing node
+            }
+          }
+          
+          console.log(`[WorkflowLifecycle] ✅ Adding missing resolved node via orchestrator: ${nodeType} (canonical: ${resolvedNodeType})`);
+          // Use resolved canonical type for schema lookup (schema already verified above)
           if (schema) {
             const { randomUUID } = require('crypto');
             const newNode: WorkflowNode = {
@@ -846,6 +878,45 @@ export class WorkflowLifecycleManager {
     }
 
     return workflow;
+  }
+
+  /**
+   * ✅ CAPABILITY-BASED DEDUPLICATION: Get node capability category
+   * Uses NodeCapabilityRegistryDSL (same logic as summarize-layer.ts)
+   * Prevents duplicate nodes with same capability (e.g., ai_chat_model + ai_agent)
+   * 
+   * @param nodeType - Node type to categorize
+   * @returns Capability category: 'data_source' | 'transformation' | 'output' | null
+   */
+  private getNodeCapabilityCategory(nodeType: string): 'data_source' | 'transformation' | 'output' | null {
+    // ✅ PRIMARY: Use capability registry (most reliable - works for ALL nodes)
+    if (nodeCapabilityRegistryDSL.isDataSource(nodeType)) {
+      return 'data_source';
+    }
+    if (nodeCapabilityRegistryDSL.isTransformation(nodeType)) {
+      return 'transformation';
+    }
+    if (nodeCapabilityRegistryDSL.isOutput(nodeType)) {
+      return 'output';
+    }
+    
+    // ✅ FALLBACK: Use unified node registry category
+    const nodeDef = unifiedNodeRegistry.get(nodeType);
+    if (nodeDef) {
+      const category = nodeDef.category;
+      if (category === 'data' || category === 'trigger') {
+        return 'data_source';
+      }
+      if (category === 'ai' || category === 'transformation' || category === 'logic' || category === 'utility') {
+        return 'transformation';
+      }
+      if (category === 'communication' || category === 'social' || category === 'output') {
+        return 'output';
+      }
+    }
+    
+    // Return null if cannot determine (safer than defaulting)
+    return null;
   }
 
   private normalizeAllNodeTypesToCanonical(workflow: Workflow): Workflow {

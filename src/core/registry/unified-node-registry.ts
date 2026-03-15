@@ -394,7 +394,24 @@ export class UnifiedNodeRegistry implements INodeRegistry {
       'devops': 'data', // DevOps nodes (github, gitlab, jira) are data sources
     };
     
-    // If category maps directly, use it
+    // ✅ STEP 1.5: Check node type patterns EARLY (before categoryMap) to catch communication nodes
+    // This ensures google_gmail is categorized as 'communication' (output), not 'data' (source)
+    const communicationTypes = ['gmail', 'email', 'slack', 'discord', 'telegram', 'teams', 'whatsapp', 'message', 'notify', 'twilio'];
+    const isCommunication = communicationTypes.some(comm => nodeType.includes(comm));
+    const socialMediaTypes = ['linkedin', 'twitter', 'instagram', 'facebook', 'youtube'];
+    const isSocialMedia = socialMediaTypes.some(social => nodeType.includes(social));
+    
+    // ✅ CRITICAL FIX: Check communication BEFORE categoryMap
+    // This ensures google_gmail is categorized as 'communication' (output), not 'data' (source)
+    // Check tags first (from schema)
+    const hasOutputTags = tags.some((tag: string) => 
+      ['output', 'send', 'notify', 'post', 'publish', 'share', 'email', 'message', 'slack', 'discord', 'telegram', 'linkedin', 'twitter', 'instagram', 'facebook', 'social', 'communication'].includes(tag)
+    );
+    if (isSocialMedia || isCommunication || hasOutputTags || originalCategory === 'social' || originalCategory === 'communication' || originalCategory === 'output' || originalCategory === 'microsoft') {
+      return 'communication';
+    }
+    
+    // If category maps directly, use it (BUT skip if it's a communication node - already handled above)
     if (originalCategory && categoryMap[originalCategory]) {
       return categoryMap[originalCategory];
     }
@@ -430,10 +447,7 @@ export class UnifiedNodeRegistry implements INodeRegistry {
       readOperations.some(readOp => op.includes(readOp))
     );
     
-    // ✅ STEP 3: Check tags for category hints
-    const hasOutputTags = tags.some((tag: string) => 
-      ['output', 'send', 'notify', 'post', 'publish', 'share', 'email', 'message', 'slack', 'discord', 'telegram', 'linkedin', 'twitter', 'instagram', 'facebook', 'social', 'communication'].includes(tag)
-    );
+    // ✅ STEP 3: Check tags for category hints (hasOutputTags already defined above)
     const hasDataSourceTags = tags.some((tag: string) => 
       ['read', 'fetch', 'get', 'list', 'query', 'data_source', 'input'].includes(tag)
     );
@@ -448,13 +462,7 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     );
     
     // ✅ STEP 4: Check node type patterns (COMPREHENSIVE coverage)
-    // Social media nodes
-    const socialMediaTypes = ['linkedin', 'twitter', 'instagram', 'facebook', 'youtube'];
-    const isSocialMedia = socialMediaTypes.some(social => nodeType.includes(social));
-    
-    // Communication nodes
-    const communicationTypes = ['gmail', 'email', 'slack', 'discord', 'telegram', 'teams', 'whatsapp', 'message', 'notify', 'twilio'];
-    const isCommunication = communicationTypes.some(comm => nodeType.includes(comm));
+    // (isCommunication and isSocialMedia already defined above)
     
     // CRM nodes
     const crmTypes = ['hubspot', 'salesforce', 'zoho', 'pipedrive', 'crm', 'freshdesk', 'intercom', 'mailchimp', 'activecampaign'];
@@ -535,6 +543,7 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     }
     
     // Social media and communication nodes are always communication (output)
+    // (Already handled above, but keep for completeness)
     if (isSocialMedia || isCommunication || hasOutputTags || originalCategory === 'social' || originalCategory === 'communication' || originalCategory === 'output' || originalCategory === 'microsoft') {
       return 'communication';
     }

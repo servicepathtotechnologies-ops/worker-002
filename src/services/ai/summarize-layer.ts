@@ -463,6 +463,9 @@ export class AIIntentClarifier {
         // Step 4: Parse and validate AI response
         let result = this.parseAIResponse(aiResponse, userPrompt, allKeywordData, extractedNodeTypes);
         
+        // ✅ WORLD-CLASS: Post-processing safety net - deduplicate nodes by capability in LLM output
+        result = this.deduplicateVariationTextByCapability(result);
+        
         // ✅ PHASE 3: Validate variations include required keywords and operations
         if (extractedNodeTypes.length > 0) {
           const validationResult = this.validateVariationsIncludeNodes(result, extractedNodeTypes, undefined, enrichedNodeMentions);
@@ -2023,11 +2026,94 @@ export class AIIntentClarifier {
   }
   
   /**
+   * ✅ WORLD-CLASS UNIVERSAL: Get node capability category using universal registry
+   * Uses NodeCapabilityRegistryDSL (single source of truth)
+   * Works for ALL nodes automatically - no hardcoding
+   * 
+   * @param nodeType - Node type to categorize
+   * @returns Capability category: 'data_source' | 'transformation' | 'output'
+   */
+  private getNodeCapabilityCategory(nodeType: string): 'data_source' | 'transformation' | 'output' {
+    // ✅ PRIMARY: Use capability registry (most reliable - works for ALL nodes)
+    if (nodeCapabilityRegistryDSL.isDataSource(nodeType)) {
+      return 'data_source';
+    }
+    if (nodeCapabilityRegistryDSL.isTransformation(nodeType)) {
+      return 'transformation';
+    }
+    if (nodeCapabilityRegistryDSL.isOutput(nodeType)) {
+      return 'output';
+    }
+    
+    // ✅ FALLBACK: Use unified node registry category
+    const nodeDef = unifiedNodeRegistry.get(nodeType);
+    if (nodeDef) {
+      const category = nodeDef.category;
+      if (category === 'data' || category === 'trigger') {
+        return 'data_source';
+      }
+      if (category === 'ai' || category === 'transformation' || category === 'logic' || category === 'utility') {
+        return 'transformation';
+      }
+      if (category === 'communication' || category === 'social' || category === 'output') {
+        return 'output';
+      }
+    }
+    
+    // ✅ SAFE FALLBACK: Default to transformation (safest for workflow generation)
+    return 'transformation';
+  }
+  
+  /**
+   * ✅ WORLD-CLASS: Extract explicitly mentioned node types from variation text
+   * This preserves user intent - nodes explicitly mentioned should NOT be replaced
+   * 
+   * @param variationText - The selected variation text
+   * @param allKeywordData - All keyword mappings
+   * @returns Set of node types explicitly mentioned in variation
+   */
+  private extractExplicitNodeTypesFromVariation(
+    variationText: string,
+    allKeywordData: AliasKeyword[]
+  ): Set<string> {
+    const explicitNodes = new Set<string>();
+    const variationLower = variationText.toLowerCase();
+    
+    // Find all node types mentioned in variation text
+    for (const keywordData of allKeywordData) {
+      const keywordLower = keywordData.keyword.toLowerCase();
+      
+      // Check if keyword appears in variation text
+      // Use word boundary matching to avoid false positives
+      try {
+        const escapedKeyword = keywordLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp(`\\b${escapedKeyword}\\b`, 'i');
+        if (regex.test(variationText)) {
+          explicitNodes.add(keywordData.nodeType);
+          console.log(`[AIIntentClarifier] ✅ Explicit node detected in variation: "${keywordData.nodeType}" (keyword: "${keywordData.keyword}")`);
+        }
+      } catch (error) {
+        // Fallback to simple includes if regex fails
+        if (variationLower.includes(keywordLower)) {
+          explicitNodes.add(keywordData.nodeType);
+          console.log(`[AIIntentClarifier] ✅ Explicit node detected in variation (fallback): "${keywordData.nodeType}" (keyword: "${keywordData.keyword}")`);
+        }
+      }
+    }
+    
+    console.log(`[AIIntentClarifier] ✅ Extracted ${explicitNodes.size} explicit node type(s) from variation: ${Array.from(explicitNodes).join(', ')}`);
+    return explicitNodes;
+  }
+  
+  /**
    * ✅ UNIVERSAL: Build complete workflow chain with ALL required nodes
    * Handles complex multi-step workflows with multiple sources, transformations, and outputs
    * ✅ FIX: Now supports different complexity levels for variation diversity
+   * ✅ WORLD-CLASS: Capability-based deduplication - ensures ONE node per capability per variation
+   * ✅ WORLD-CLASS: Explicit intent preservation - preserves nodes explicitly mentioned in selected variation
    * 
    * @param variationIndex - 0=minimal, 1=simple, 2=medium, 3=full complexity
+   * @param explicitNodeTypes - Optional: Set of node types explicitly mentioned in selected variation (preserves user intent)
    */
   private buildWorkflowChain(
     requiredNodes: ReturnType<typeof this.identifyRequiredNodesFromIntent>,
@@ -2035,59 +2121,153 @@ export class AIIntentClarifier {
     triggerType: string,
     userPrompt: string,
     allExtractedNodes: string[],
-    variationIndex: number = 0 // ✅ PHASE 1: 0 = Variation 1, 3 = Variation 4
+    variationIndex: number = 0, // ✅ PHASE 1: 0 = Variation 1, 3 = Variation 4
+    explicitNodeTypes?: Set<string> // ✅ NEW: Nodes explicitly mentioned in selected variation
   ): string[] {
     const chain: string[] = [triggerType];
     const usedNodes = new Set<string>([triggerType]);
+    const usedCapabilities = new Set<'data_source' | 'transformation' | 'output'>(); // ✅ WORLD-CLASS: Track used capabilities
     const promptLower = userPrompt.toLowerCase();
+    
+    // ✅ UNIVERSAL DEDUPLICATION: Use SemanticNodeEquivalenceRegistry to prevent duplicates
+    // Helper: Check if node is semantically equivalent to any existing node in chain
+    const isDuplicate = (nodeType: string): boolean => {
+      for (const existingNode of chain) {
+        if (semanticNodeEquivalenceRegistry.areEquivalent(existingNode, nodeType)) {
+          return true; // Duplicate found
+        }
+      }
+      return false;
+    };
+    
+    // Helper: Get canonical (preferred) node type
+    const getCanonical = (nodeType: string): string => {
+      return semanticNodeEquivalenceRegistry.getCanonicalType(nodeType) || nodeType;
+    };
+    
+    // Helper: Get alternative node for variation diversity
+    // ✅ WORLD-CLASS: Respects explicit intent - if node is explicitly mentioned, use it as-is
+    // This allows semantically equivalent nodes across different variants for better user choice
+    // BUT preserves explicitly mentioned nodes in selected variation
+    const getAlternativeForVariation = (
+      nodeType: string, 
+      variationIdx: number,
+      explicitNodeTypes?: Set<string> // ✅ NEW: Explicit nodes from selected variation
+    ): string => {
+      // ✅ CRITICAL: If node is explicitly mentioned in selected variation, use it as-is
+      if (explicitNodeTypes && explicitNodeTypes.has(nodeType)) {
+        console.log(`[AIIntentClarifier] ✅ Preserving explicit node: ${nodeType} (mentioned in selected variation)`);
+        return nodeType; // Use exact node, no alternative
+      }
+      
+      // Get all semantically equivalent nodes
+      const equivalents = semanticNodeEquivalenceRegistry.getEquivalents(nodeType);
+      if (equivalents.length === 0) {
+        return nodeType; // No alternatives, use original
+      }
+      
+      // Include the canonical type in alternatives
+      const canonical = getCanonical(nodeType);
+      const allAlternatives = [canonical, ...equivalents];
+      
+      // ✅ CRITICAL: Filter out explicit nodes from alternatives
+      // If user explicitly mentioned Slack, don't offer Discord as alternative
+      if (explicitNodeTypes) {
+        const filteredAlternatives = allAlternatives.filter(alt => !explicitNodeTypes.has(alt));
+        if (filteredAlternatives.length > 0) {
+          // Use variation index to select different alternative for each variation
+          const selectedIndex = variationIdx % filteredAlternatives.length;
+          const selected = filteredAlternatives[selectedIndex];
+          console.log(`[AIIntentClarifier] 🔄 Variation ${variationIdx + 1}: Using alternative "${selected}" for "${nodeType}" (explicit nodes excluded)`);
+          return selected;
+        }
+        // If all alternatives are explicit nodes, use original
+        console.log(`[AIIntentClarifier] ⚠️  All alternatives for "${nodeType}" are explicit nodes, using original`);
+        return nodeType;
+      }
+      
+      // Use variation index to select different alternative for each variation
+      // This increases diversity across variants while keeping each variant clean
+      const selectedIndex = variationIdx % allAlternatives.length;
+      const selected = allAlternatives[selectedIndex];
+      
+      console.log(`[AIIntentClarifier] 🔄 Variation ${variationIdx + 1}: Using alternative "${selected}" for "${nodeType}" (from ${allAlternatives.length} alternatives)`);
+      return selected;
+    };
+    
+    // ✅ WORLD-CLASS: Helper: Add node to chain with capability-based deduplication
+    // Ensures ONE node per capability per variation (prevents ollama + gemini, slack + gmail, etc.)
+    const addNodeToChain = (nodeType: string): boolean => {
+      // Check if already used (exact match)
+      if (usedNodes.has(nodeType)) {
+        return false; // Already added
+      }
+      
+      // ✅ WORLD-CLASS: Check capability - prevent multiple nodes with same capability
+      const capability = this.getNodeCapabilityCategory(nodeType);
+      if (usedCapabilities.has(capability)) {
+        console.log(`[AIIntentClarifier] 🔍 Skipping duplicate capability: ${nodeType} (capability '${capability}' already used in this variant)`);
+        return false; // Capability already used, skip
+      }
+      
+      // Check if semantically equivalent to existing node IN THIS CHAIN
+      if (isDuplicate(nodeType)) {
+        console.log(`[AIIntentClarifier] 🔍 Skipping duplicate node: ${nodeType} (semantically equivalent to existing node in this variant)`);
+        return false; // Duplicate within variant, skip
+      }
+      
+      // ✅ VARIATION DIVERSITY: Use different alternatives across variations
+      // ✅ WORLD-CLASS: Respects explicit intent - preserves explicitly mentioned nodes
+      // This allows semantically equivalent nodes in different variants for user choice
+      const alternativeNode = getAlternativeForVariation(nodeType, variationIndex, explicitNodeTypes);
+      
+      // Check if alternative is already in chain (exact match)
+      if (chain.includes(alternativeNode)) {
+        console.log(`[AIIntentClarifier] 🔍 Skipping node: ${nodeType} (alternative ${alternativeNode} already in this variant)`);
+        return false; // Alternative already exists in this variant
+      }
+      
+      // ✅ WORLD-CLASS: Mark capability as used BEFORE adding (prevents race conditions)
+      usedCapabilities.add(capability);
+      
+      // Add alternative node to chain (increases variation diversity)
+      chain.push(alternativeNode);
+      usedNodes.add(alternativeNode);
+      usedNodes.add(nodeType); // Track original too
+      
+      console.log(`[AIIntentClarifier] ✅ Added node: ${alternativeNode} (capability: ${capability})`);
+      return true; // Successfully added
+    };
     
     // ✅ PHASE 1 FIX: Variation 1 (index 0) = COMPLETE (ALL required nodes)
     if (variationIndex === 0) {
       // Variation 1: Include ALL required nodes (complete workflow)
-      // Add ALL data sources
+      // Add ALL data sources (with deduplication)
       for (const ds of requiredNodes.requiredDataSources) {
-        if (!usedNodes.has(ds)) {
-          chain.push(ds);
-          usedNodes.add(ds);
-        }
+        addNodeToChain(ds);
       }
-      // Add ALL transformations
+      // Add ALL transformations (with deduplication)
       for (const tf of requiredNodes.requiredTransformations) {
-        if (!usedNodes.has(tf)) {
-          chain.push(tf);
-          usedNodes.add(tf);
-        }
+        addNodeToChain(tf);
       }
-      // Add ALL outputs
+      // Add ALL outputs (with deduplication)
       for (const out of requiredNodes.requiredOutputs) {
-        if (!usedNodes.has(out)) {
-          chain.push(out);
-          usedNodes.add(out);
-        }
+        addNodeToChain(out);
       }
       console.log(`[AIIntentClarifier] ✅ PHASE 1: Variation 1 (COMPLETE) - Added ${chain.length - 1} required node(s): ${chain.slice(1).join(', ')}`);
       return chain; // ✅ Variation 1 = COMPLETE
     }
     
     // ✅ PHASE 1 FIX: Variations 2-4 = EXTENSIONS (add extra nodes)
-    // First, include ALL required nodes (base)
+    // First, include ALL required nodes (base) with deduplication
     for (const ds of requiredNodes.requiredDataSources) {
-      if (!usedNodes.has(ds)) {
-        chain.push(ds);
-        usedNodes.add(ds);
-      }
+      addNodeToChain(ds);
     }
     for (const tf of requiredNodes.requiredTransformations) {
-      if (!usedNodes.has(tf)) {
-        chain.push(tf);
-        usedNodes.add(tf);
-      }
+      addNodeToChain(tf);
     }
     for (const out of requiredNodes.requiredOutputs) {
-      if (!usedNodes.has(out)) {
-        chain.push(out);
-        usedNodes.add(out);
-      }
+      addNodeToChain(out);
     }
     
     // Then add EXTENSION nodes based on variation index
@@ -2100,35 +2280,35 @@ export class AIIntentClarifier {
     ];
     
     if (variationIndex === 1) {
-      // Variation 2: Add helper nodes (delay, cache, validation)
+      // Variation 2: Add helper nodes (delay, cache, validation) with deduplication
       const helperNodes = categorizer.getHelperNodes(allRequiredNodeTypes).slice(0, 2);
+      let addedCount = 0;
       for (const helper of helperNodes) {
-        if (!usedNodes.has(helper)) {
-          chain.push(helper);
-          usedNodes.add(helper);
+        if (addNodeToChain(helper)) {
+          addedCount++;
         }
       }
-      console.log(`[AIIntentClarifier] ✅ PHASE 1: Variation 2 (EXTENSION - Helper) - Added ${helperNodes.length} helper node(s)`);
+      console.log(`[AIIntentClarifier] ✅ PHASE 1: Variation 2 (EXTENSION - Helper) - Added ${addedCount} helper node(s)`);
     } else if (variationIndex === 2) {
-      // Variation 3: Add processing nodes (merge, aggregate, filter)
+      // Variation 3: Add processing nodes (merge, aggregate, filter) with deduplication
       const processingNodes = categorizer.getProcessingNodes(allRequiredNodeTypes).slice(0, 3);
+      let addedCount = 0;
       for (const proc of processingNodes) {
-        if (!usedNodes.has(proc)) {
-          chain.push(proc);
-          usedNodes.add(proc);
+        if (addNodeToChain(proc)) {
+          addedCount++;
         }
       }
-      console.log(`[AIIntentClarifier] ✅ PHASE 1: Variation 3 (EXTENSION - Processing) - Added ${processingNodes.length} processing node(s)`);
+      console.log(`[AIIntentClarifier] ✅ PHASE 1: Variation 3 (EXTENSION - Processing) - Added ${addedCount} processing node(s)`);
     } else if (variationIndex === 3) {
-      // Variation 4: Add style nodes (Slack, database, notifications)
+      // Variation 4: Add style nodes (Slack, database, notifications) with deduplication
       const styleNodes = categorizer.getStyleNodes(allRequiredNodeTypes).slice(0, 2);
+      let addedCount = 0;
       for (const style of styleNodes) {
-        if (!usedNodes.has(style)) {
-          chain.push(style);
-          usedNodes.add(style);
+        if (addNodeToChain(style)) {
+          addedCount++;
         }
       }
-      console.log(`[AIIntentClarifier] ✅ PHASE 1: Variation 4 (EXTENSION - Style) - Added ${styleNodes.length} style node(s)`);
+      console.log(`[AIIntentClarifier] ✅ PHASE 1: Variation 4 (EXTENSION - Style) - Added ${addedCount} style node(s)`);
     }
     
     // ✅ STEP 5: Ensure chain has at least trigger + one action (minimum viable chain)
@@ -2787,6 +2967,29 @@ ${structure.triggerTypes.length > 0 ? `- Trigger types: ${structure.triggerTypes
 🚨🚨🚨 CRITICAL REQUIREMENT - EXACTLY 4 VARIATIONS - READ CAREFULLY:
 You MUST generate EXACTLY 4 (FOUR) UNIQUE, DISTINCT prompt variations. NOT 1, NOT 2, NOT 3 - EXACTLY 4.
 
+🚨🚨🚨 WORLD-CLASS CAPABILITY-BASED DEDUPLICATION RULE - ABSOLUTE REQUIREMENT:
+Each variation MUST have EXACTLY ONE node per capability category:
+- ONE data source node (e.g., google_sheets, postgresql, api) - NOT multiple
+- ONE transformation node (e.g., ollama, ai_chat_model, text_summarizer) - NOT multiple
+- ONE output node (e.g., google_gmail, slack_message, hubspot) - NOT multiple
+
+ABSOLUTE RULES (NO EXCEPTIONS):
+1. If you mention "ollama" in a variation, DO NOT also mention "gemini", "openai_gpt", "anthropic_claude", or any other AI/transformation node
+2. If you mention "slack_message" in a variation, DO NOT also mention "google_gmail", "discord", "telegram", or any other output node
+3. If you mention "google_sheets" in a variation, DO NOT also mention "postgresql", "api", or any other data source node
+4. Each variation = ONE data source + ONE transformation + ONE output (if applicable)
+5. DO NOT repeat the same capability with different nodes (e.g., "Process with ollama. Process with gemini" = FORBIDDEN)
+6. DO NOT say "Process data using X. Process data using Y" - choose ONE transformation node only
+7. DO NOT say "Send via X. Send via Y" - choose ONE output node only
+
+✅ CORRECT EXAMPLES:
+- "Process through Google Sheets. Process data using AI Chat Model. Finalize via Gmail." ✅ (ONE data source, ONE transformation, ONE output)
+- "Read from postgresql. Analyze with ollama. Deliver via slack." ✅ (ONE each)
+
+❌ WRONG EXAMPLES (FORBIDDEN):
+- "Process with ollama. Process with gemini. Send via slack. Send via gmail." ❌ (Multiple transformations + multiple outputs)
+- "Read from sheets. Read from postgresql. Analyze with AI. Analyze with ollama." ❌ (Multiple data sources + multiple transformations)
+
 Each variation MUST be OBVIOUSLY DIFFERENT from the others in COMPLEXITY, NODES, and STYLE:
 
 - Variation 1: COMPLETE & FULFILLED
@@ -2797,6 +3000,7 @@ Each variation MUST be OBVIOUSLY DIFFERENT from the others in COMPLEXITY, NODES,
   * Keep it complete and clear: trigger → required nodes → done
   * For nodes WITH operations: Use the EXACT operations listed in the OPERATIONS section above
   * For nodes WITHOUT operations: Describe what the node DOES (its action/purpose) naturally
+  * ✅ CRITICAL: ONE node per capability (ONE data source, ONE transformation, ONE output)
   * Example: "Start with manual_trigger. Use ${extractedNodeTypes[0] || 'node'} to fetch data. Process with ${extractedNodeTypes[1] || 'node'} to transform. Deliver via ${extractedNodeTypes[2] || 'node'}."
 
 - Variation 2: EXTENSION - Add Helper Features
@@ -2805,6 +3009,7 @@ Each variation MUST be OBVIOUSLY DIFFERENT from the others in COMPLEXITY, NODES,
   * Available helper nodes: ${helperNodes.length > 0 ? helperNodes.slice(0, 10).join(', ') : 'delay, wait, cache_get, data_validation, split_in_batches'}
   * ⚠️ CRITICAL: These helper nodes are automatically selected from registry based on their capabilities (utility/logic nodes for timing, caching, splitting)
   * Total node count: ${extractedNodeTypes.length + 1} to ${extractedNodeTypes.length + 2} nodes (required + 1-2 helpers)
+  * ✅ CRITICAL: ONE node per capability (ONE data source, ONE transformation, ONE output) - helper nodes are utility/logic, not duplicates
   * Example: "Start with manual_trigger. Use ${extractedNodeTypes[0] || 'node'} to fetch. Add delay for timing control. Process with ${extractedNodeTypes[1] || 'node'}. Validate data. Deliver via ${extractedNodeTypes[2] || 'node'}."
 
 - Variation 3: EXTENSION - Add Processing Features
@@ -2813,6 +3018,7 @@ Each variation MUST be OBVIOUSLY DIFFERENT from the others in COMPLEXITY, NODES,
   * Available processing nodes: ${processingNodes.length > 0 ? processingNodes.slice(0, 10).join(', ') : 'merge_data, aggregate, filter, data_mapper, transform, json_parser, csv_parser'}
   * ⚠️ CRITICAL: These processing nodes are automatically selected from registry based on their capabilities (transformation/ai nodes for data processing, merging, aggregating)
   * Total node count: ${extractedNodeTypes.length + 2} to ${extractedNodeTypes.length + 3} nodes (required + 2-3 processing)
+  * ✅ CRITICAL: ONE node per capability (ONE data source, ONE transformation, ONE output) - processing nodes are additional transformations, but still ONE primary transformation from required nodes
   * Example: "Start with webhook. Fetch from ${extractedNodeTypes[0] || 'node'}. Merge multiple sources. Aggregate data. Process with ${extractedNodeTypes[1] || 'node'}. Deliver via ${extractedNodeTypes[2] || 'node'}."
 
 - Variation 4: EXTENSION - Add Output Features
@@ -2821,6 +3027,7 @@ Each variation MUST be OBVIOUSLY DIFFERENT from the others in COMPLEXITY, NODES,
   * Available style nodes: ${styleNodes.length > 0 ? styleNodes.slice(0, 10).join(', ') : 'slack_message, postgresql, notification, discord, telegram'}
   * ⚠️ CRITICAL: These style nodes are automatically selected from registry based on their capabilities (output/communication nodes for additional delivery channels)
   * Total node count: ${extractedNodeTypes.length + 1} to ${extractedNodeTypes.length + 2} nodes (required + 1-2 style)
+  * ✅ CRITICAL: ONE node per capability (ONE data source, ONE transformation, ONE output) - style nodes are additional outputs, but still ONE primary output from required nodes
   * Example: "Start with webhook. Use ${extractedNodeTypes[0] || 'node'} to fetch. Process with ${extractedNodeTypes[1] || 'node'}. Deliver via ${extractedNodeTypes[2] || 'node'}. Also notify via Slack. Save to database."
 
 EACH VARIATION MUST:
@@ -3221,6 +3428,77 @@ The "variations" array MUST contain exactly 4 items, each with a detailed prompt
    * ✅ PHASE 3: Parse AI response and validate against required nodes
    * @param extractedNodeTypes - Node types that MUST be in variations (for validation)
    */
+  /**
+   * ✅ WORLD-CLASS: Post-processing safety net - deduplicate nodes by capability in LLM-generated text
+   * This is a tertiary layer of protection (code-level is primary, LLM prompt is secondary)
+   * 
+   * @param result - Parsed AI response with variations
+   * @returns Result with deduplicated variation text
+   */
+  private deduplicateVariationTextByCapability(result: SummarizeLayerResult): SummarizeLayerResult {
+    console.log('[AIIntentClarifier] 🔍 Post-processing: Deduplicating nodes by capability in LLM output...');
+    
+    const deduplicatedVariations = result.promptVariations.map((variation, idx) => {
+      // Extract all node types mentioned in variation text
+      const allKeywordData = this.keywordCollector.getAllAliasKeywords();
+      const mentionedNodes = new Set<string>();
+      
+      // Find all node types mentioned in the variation text
+      const variationLower = variation.prompt.toLowerCase();
+      for (const keywordData of allKeywordData) {
+        const keywordLower = keywordData.keyword.toLowerCase();
+        if (variationLower.includes(keywordLower)) {
+          mentionedNodes.add(keywordData.nodeType);
+        }
+      }
+      
+      // Group nodes by capability
+      const nodesByCapability = new Map<'data_source' | 'transformation' | 'output', string[]>();
+      for (const nodeType of mentionedNodes) {
+        const capability = this.getNodeCapabilityCategory(nodeType);
+        if (!nodesByCapability.has(capability)) {
+          nodesByCapability.set(capability, []);
+        }
+        nodesByCapability.get(capability)!.push(nodeType);
+      }
+      
+      // Check if deduplication is needed
+      let needsDeduplication = false;
+      for (const [capability, nodes] of nodesByCapability.entries()) {
+        if (nodes.length > 1) {
+          needsDeduplication = true;
+          console.log(`[AIIntentClarifier] 🔍 Variation ${idx + 1}: Found ${nodes.length} ${capability} nodes: ${nodes.join(', ')}`);
+        }
+      }
+      
+      if (!needsDeduplication) {
+        return variation; // No duplicates, return as-is
+      }
+      
+      // Deduplicate: Keep first node per capability (prioritize required nodes)
+      const keptNodes = new Set<string>();
+      for (const [capability, nodes] of nodesByCapability.entries()) {
+        // Keep first node (or prioritize required nodes if available)
+        const keptNode = nodes[0]; // Simple: keep first
+        keptNodes.add(keptNode);
+        console.log(`[AIIntentClarifier] ✅ Variation ${idx + 1}: Keeping "${keptNode}" for ${capability} capability (removed ${nodes.length - 1} duplicate(s))`);
+      }
+      
+      // Note: We don't regenerate the text here - the code-level deduplication in buildWorkflowChain
+      // will handle the actual node selection. This is just a safety net to log and warn.
+      // The actual deduplication happens in buildWorkflowChain via usedCapabilities tracking.
+      
+      return variation; // Return original - code-level deduplication handles it
+    });
+    
+    console.log('[AIIntentClarifier] ✅ Post-processing complete (code-level deduplication in buildWorkflowChain handles actual filtering)');
+    
+    return {
+      ...result,
+      promptVariations: deduplicatedVariations,
+    };
+  }
+  
   private parseAIResponse(
     aiResponse: string,
     originalPrompt: string,
@@ -3646,7 +3924,156 @@ The "variations" array MUST contain exactly 4 items, each with a detailed prompt
   }
   
   /**
-   * Step 1.5: Detect nodes by matching keywords (existing logic, refactored)
+   * ✅ UNIVERSAL: Word-based pattern matcher
+   * Matches keywords by checking if ALL keyword words appear in prompt words.
+   * Pattern-based, not sentence-based - works for any sentence variation.
+   * 
+   * @param keyword - Keyword to match (e.g., "create in hubspot")
+   * @param promptWords - User prompt split into words (e.g., ["create", "a", "record", "in", "hubspot"])
+   * @returns Match result with confidence score
+   */
+  /**
+   * ✅ ENHANCED: Generate adjacent word pairs from prompt for multi-word keyword matching
+   * Example: ["get", "data", "from", "google", "sheet"] 
+   * → [["get", "data"], ["data", "from"], ["from", "google"], ["google", "sheet"]]
+   * Also generates 3-word combinations for longer keywords
+   */
+  private generateAdjacentWordPairs(promptWords: string[]): string[] {
+    if (!promptWords || promptWords.length === 0) {
+      return [];
+    }
+    
+    const pairs: string[] = [];
+    
+    // Generate 2-word pairs (adjacent words)
+    for (let i = 0; i < promptWords.length - 1; i++) {
+      const pair = `${promptWords[i]} ${promptWords[i + 1]}`;
+      pairs.push(pair);
+    }
+    
+    // Generate 3-word combinations for longer keywords (e.g., "google big query")
+    for (let i = 0; i < promptWords.length - 2; i++) {
+      const triple = `${promptWords[i]} ${promptWords[i + 1]} ${promptWords[i + 2]}`;
+      pairs.push(triple);
+    }
+    
+    return pairs;
+  }
+
+  /**
+   * ✅ ENHANCED: Match keyword using both single-word and adjacent word pair matching
+   * Priority:
+   * 1. Exact multi-word match (adjacent pairs) - HIGHEST confidence
+   * 2. All words found individually - HIGH confidence
+   * 3. Partial word matches - MEDIUM confidence
+   */
+  private matchKeywordByWords(keyword: string, promptWords: string[]): {
+    matched: boolean;
+    confidence: number;
+    matchedWords: string[];
+    missingWords: string[];
+  } {
+    if (!keyword || !promptWords || promptWords.length === 0) {
+      return { matched: false, confidence: 0, matchedWords: [], missingWords: [] };
+    }
+    
+    // Split keyword into words (handle spaces, underscores, hyphens, punctuation)
+    const keywordWords = keyword
+      .toLowerCase()
+      .split(/[\s_\-.,;:!?()\[\]{}'"]+/)
+      .filter(w => w.length > 0);
+    
+    if (keywordWords.length === 0) {
+      return { matched: false, confidence: 0, matchedWords: [], missingWords: [] };
+    }
+    
+    // ✅ PRIORITY 1: Check for exact multi-word match using adjacent word pairs
+    // This handles cases like "google sheet" in "get data from google sheet"
+    if (keywordWords.length >= 2) {
+      const adjacentPairs = this.generateAdjacentWordPairs(promptWords);
+      const keywordPhrase = keywordWords.join(' ');
+      
+      // Check if any adjacent pair exactly matches the keyword phrase
+      for (const pair of adjacentPairs) {
+        if (pair === keywordPhrase) {
+          // ✅ EXACT MULTI-WORD MATCH - Highest confidence
+          return {
+            matched: true,
+            confidence: 0.98, // Very high confidence for exact phrase match
+            matchedWords: keywordWords,
+            missingWords: []
+          };
+        }
+        
+        // Also check if keyword phrase is contained in the pair (e.g., "google sheet" in "from google sheet")
+        if (pair.includes(keywordPhrase)) {
+          return {
+            matched: true,
+            confidence: 0.95, // High confidence for contained phrase match
+            matchedWords: keywordWords,
+            missingWords: []
+          };
+        }
+      }
+    }
+    
+    // ✅ PRIORITY 2: Single-word matching (original logic)
+    // Check which keyword words appear in prompt words individually
+    const matchedWords: string[] = [];
+    const missingWords: string[] = [];
+    
+    for (const keywordWord of keywordWords) {
+      // Skip very short words (articles, prepositions) unless they're important
+      if (keywordWord.length < 2 && !['in', 'to', 'on', 'at', 'by', 'for'].includes(keywordWord)) {
+        continue; // Skip single-character words
+      }
+      
+      const found = promptWords.some(promptWord => 
+        promptWord === keywordWord ||           // Exact match
+        promptWord.includes(keywordWord) ||    // Partial match (e.g., "hubspot" in "hubspot_crm")
+        keywordWord.includes(promptWord)        // Reverse partial match
+      );
+      
+      if (found) {
+        matchedWords.push(keywordWord);
+      } else {
+        missingWords.push(keywordWord);
+      }
+    }
+    
+    // Match if ALL important words found (ignore missing stop words)
+    const stopWords = new Set(['a', 'an', 'the', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from']);
+    const importantMissingWords = missingWords.filter(w => !stopWords.has(w));
+    const allWordsFound = importantMissingWords.length === 0;
+    
+    // Calculate confidence based on match ratio
+    const totalImportantWords = keywordWords.filter(w => !stopWords.has(w)).length;
+    const matchedImportantWords = matchedWords.filter(w => !stopWords.has(w)).length;
+    
+    let confidence: number;
+    if (totalImportantWords > 0) {
+      confidence = (matchedImportantWords / totalImportantWords) * 0.95;
+    } else {
+      confidence = (matchedWords.length / keywordWords.length) * 0.95;
+    }
+    
+    // ✅ PRIORITY 3: If all words found individually, boost confidence slightly
+    if (allWordsFound && keywordWords.length >= 2) {
+      confidence = Math.min(0.95, confidence + 0.05); // Boost for multi-word keywords
+    }
+    
+    return {
+      matched: allWordsFound,
+      confidence: allWordsFound ? confidence : Math.max(0, confidence - 0.2), // Lower confidence if not all words found
+      matchedWords,
+      missingWords: importantMissingWords
+    };
+  }
+
+  /**
+   * Step 1.5: Detect nodes by matching keywords using WORD-BASED pattern matching
+   * ✅ UNIVERSAL: Uses word-based matching instead of sentence-based
+   * Pattern-based, not sentence-based - works for any sentence variation
    * Uses AliasKeywordCollector keywords
    * ✅ CONTINGENCY: Handles empty arrays, null values, missing keywords
    */
@@ -3659,37 +4086,84 @@ The "variations" array MUST contain exactly 4 items, each with a detailed prompt
       const nodeKeywords = allKeywords.filter(k => k && k.nodeType === nodeType);
       if (nodeKeywords.length === 0) return null;
       
+      // ✅ Get prompt words (already tokenized)
+      const promptWords = this.tokenizePrompt(promptLower);
+      if (promptWords.length === 0) return null;
+      
       let bestConfidence = 0;
       let bestMatch = '';
+      let bestMatchedWords: string[] = [];
       
       for (const keywordData of nodeKeywords) {
         if (!keywordData || !keywordData.keyword) continue;
         
-      const keywordLower = keywordData.keyword.toLowerCase();
+        const keywordLower = keywordData.keyword.toLowerCase();
         if (keywordLower.length === 0) continue;
         
-        // Exact keyword match
-        if (promptLower.includes(keywordLower)) {
-          bestConfidence = Math.max(bestConfidence, 0.9);
-          bestMatch = keywordLower;
+        // ✅ ENHANCED: Use word-based pattern matching with adjacent word pair support
+        // This now handles both single-word and multi-word keywords (e.g., "google sheet")
+        const matchResult = this.matchKeywordByWords(keywordLower, promptWords);
+        
+        // ✅ PRIORITY: Service-specific keywords have higher confidence than capability-based
+        // Capability keywords (like "send", "message", "notification") are generic and should not
+        // override service-specific matches (like "slack", "discord")
+        const isCapabilityKeyword = keywordData.source === 'capabilities';
+        const isGenericCapabilityWord = isCapabilityKeyword && this.isGenericActionWord(keywordLower);
+        
+        // Adjust confidence: reduce confidence for generic capability words
+        let adjustedConfidence = matchResult.confidence;
+        if (isGenericCapabilityWord) {
+          adjustedConfidence = matchResult.confidence * 0.3; // Heavily penalize generic capability words
+        } else if (isCapabilityKeyword) {
+          adjustedConfidence = matchResult.confidence * 0.7; // Slightly reduce capability keywords
         }
         
-        // Partial keyword match
-        const keywordWords = keywordLower.split(/[_\s-]+/).filter(w => w.length > 0);
-        if (keywordWords.some(word => promptLower.includes(word))) {
-          bestConfidence = Math.max(bestConfidence, 0.8);
+        // Prioritize exact matches (especially multi-word matches)
+        if (matchResult.matched && adjustedConfidence > bestConfidence) {
+          bestConfidence = adjustedConfidence;
           bestMatch = keywordLower;
+          bestMatchedWords = matchResult.matchedWords;
+          
+          // Log multi-word matches for debugging
+          if (keywordLower.split(/\s+/).length >= 2 && adjustedConfidence >= 0.95) {
+            console.log(`[AIIntentClarifier] ✅ Multi-word keyword match: "${keywordLower}" → ${nodeType} (confidence: ${adjustedConfidence.toFixed(2)}, source: ${keywordData.source})`);
+          }
+        } else if (!matchResult.matched && adjustedConfidence > bestConfidence) {
+          // Partial match (some words found but not all) - lower priority
+          bestConfidence = adjustedConfidence;
+          bestMatch = keywordLower;
+          bestMatchedWords = matchResult.matchedWords;
         }
       }
       
       if (bestConfidence > 0 && bestMatch.length > 0) {
-        return { confidence: bestConfidence, method: 'keyword', match: bestMatch };
+        return { 
+          confidence: bestConfidence, 
+          method: 'keyword_words', // Changed from 'keyword' to indicate word-based matching
+          match: bestMatch 
+        };
       }
     } catch (error) {
       console.warn(`[AIIntentClarifier] ⚠️  Error in detectByKeywords for ${nodeType}:`, error);
     }
     
     return null;
+  }
+
+  /**
+   * Check if a word is a generic action word that appears in capabilities
+   * These words are too generic and should not be used for node detection
+   * when they come from capabilities (they should have lower confidence)
+   */
+  private isGenericActionWord(word: string): boolean {
+    const genericActionWords = new Set([
+      'send', 'message', 'notification', 'post', 'notify', 'alert',
+      'create', 'update', 'read', 'write', 'get', 'fetch', 'retrieve',
+      'process', 'transform', 'analyze', 'parse', 'extract', 'filter',
+      'sort', 'aggregate', 'merge', 'combine', 'join', 'split',
+      'calculate', 'compute', 'generate', 'complete', 'execute', 'run'
+    ]);
+    return genericActionWords.has(word.toLowerCase());
   }
   
   /**

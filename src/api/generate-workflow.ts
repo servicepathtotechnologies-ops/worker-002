@@ -674,6 +674,8 @@ async function handlePhasedRefine(
         selectedStructuredPrompt, // ✅ NEW: Pass selected structured prompt
         originalPrompt, // ✅ NEW: Pass original prompt for reference
         mandatoryNodeTypes, // ✅ PHASE 5: Pass mandatory nodes from selected variation
+        explicitNodeTypes: (req as any).explicitNodeTypes, // ✅ PHASE 1: Explicit nodes from variation
+        blockedNodeTypes: (req as any).blockedNodeTypes,   // ✅ PHASE 1: Blocked conflicting nodes
       });
       // Convert lifecycle result to expected format
       workflowResult = {
@@ -1336,6 +1338,8 @@ async function handlePhasedRefine(
         selectedStructuredPrompt, // ✅ NEW: Pass selected structured prompt
         originalPrompt, // ✅ NEW: Pass original prompt for reference
         mandatoryNodeTypes, // ✅ PHASE 5: Pass mandatory nodes from selected variation
+        explicitNodeTypes: (req as any).explicitNodeTypes, // ✅ PHASE 1: Explicit nodes from variation
+        blockedNodeTypes: (req as any).blockedNodeTypes,   // ✅ PHASE 1: Blocked conflicting nodes
       });
       
       return res.json({
@@ -2121,11 +2125,42 @@ export default async function generateWorkflow(req: Request, res: Response) {
             // Continue with original prompt if summarize layer fails
           }
         } else {
-          // ✅ PHASE 4: User has selected a variation - extract nodes from matchedKeywords
-          console.log('[Analyze Mode] ✅ PHASE 4: User selected a variation - extracting nodes from matchedKeywords...');
+          // ✅ PHASE 1: User has selected a variation - extract explicit nodes IMMEDIATELY
+          console.log('[Analyze Mode] ✅ PHASE 1: User selected a variation - extracting explicit nodes from variation text...');
           finalPrompt = selectedPromptVariation;
           
-          // Extract matchedKeywords from selected variation
+          // ✅ CRITICAL: Extract explicit nodes from variation text BEFORE any other processing
+          // This ensures explicit intent is known before node detection or DSL generation
+          try {
+            const { extractExplicitNodeTypesFromVariation, getBlockedNodeTypes } = await import('../core/utils/explicit-intent-extractor');
+            const keywordCollector = new AliasKeywordCollector();
+            const allKeywordData = keywordCollector.getAllAliasKeywords();
+            
+            // Extract explicit nodes using service-specific keyword matching
+            const explicitNodeTypes = extractExplicitNodeTypesFromVariation(
+              selectedPromptVariation,
+              allKeywordData
+            );
+            
+            // Derive blocked nodes (e.g., if Slack is explicit, block Discord)
+            const blockedNodeTypes = getBlockedNodeTypes(explicitNodeTypes);
+            
+            // ✅ CRITICAL: Store explicit and blocked nodes in request context
+            // These will be used throughout the pipeline to enforce user intent
+            (req as any).explicitNodeTypes = explicitNodeTypes;
+            (req as any).blockedNodeTypes = blockedNodeTypes;
+            
+            if (explicitNodeTypes.size > 0) {
+              console.log(`[Analyze Mode] ✅ PHASE 1: Extracted ${explicitNodeTypes.size} explicit node(s): ${Array.from(explicitNodeTypes).join(', ')}`);
+            }
+            if (blockedNodeTypes.size > 0) {
+              console.log(`[Analyze Mode] ✅ PHASE 1: Blocked ${blockedNodeTypes.size} conflicting node(s): ${Array.from(blockedNodeTypes).join(', ')}`);
+            }
+          } catch (error) {
+            console.error('[Analyze Mode] ⚠️ Failed to extract explicit nodes (non-fatal):', error);
+          }
+          
+          // ✅ PHASE 4: Also extract nodes from matchedKeywords (for backward compatibility)
           const selectedVariationId = (req.body as any).selectedVariationId;
           const selectedVariationMatchedKeywords = (req.body as any).selectedVariationMatchedKeywords;
           
@@ -2138,9 +2173,10 @@ export default async function generateWorkflow(req: Request, res: Response) {
             );
             
             // ✅ PHASE 4: Store nodes from selected variation for later use
+            // Note: Explicit nodes take priority over matchedKeywords
             if (nodesFromVariation.length > 0) {
               (req as any).mandatoryNodeTypes = nodesFromVariation;
-              console.log(`[Analyze Mode] ✅ PHASE 4: Extracted ${nodesFromVariation.length} node(s) from selected variation: ${nodesFromVariation.join(', ')}`);
+              console.log(`[Analyze Mode] ✅ PHASE 4: Extracted ${nodesFromVariation.length} node(s) from matchedKeywords: ${nodesFromVariation.join(', ')}`);
             }
           }
         }

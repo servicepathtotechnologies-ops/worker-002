@@ -128,26 +128,62 @@ export class NodeResolver {
       position: number;
     }>();
     
-    // Scan prompt for all keywords in the index
+    // ✅ UNIVERSAL: Split prompt into words for word-based pattern matching
+    const promptWords = promptLower
+      .split(/[\s_\-.,;:!?()\[\]{}'"]+/)
+      .filter(word => word.length > 0);
+    
+    // Scan prompt for all keywords in the index using WORD-BASED pattern matching
     for (const [keyword, nodeTypes] of this.keywordIndex) {
-      // Use word boundary matching for better accuracy
-      const keywordPattern = new RegExp(`\\b${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
-      const match = keywordPattern.exec(promptLower);
+      // ✅ UNIVERSAL: Use word-based pattern matching instead of sentence-based
+      // Split keyword into words
+      const keywordWords = keyword
+        .toLowerCase()
+        .split(/[\s_\-.,;:!?()\[\]{}'"]+/)
+        .filter(w => w.length > 0);
       
-      if (match) {
-        const position = match.index;
-        for (const nodeType of nodeTypes) {
-          // Only add if node type is registered
-          if (this.nodeLibrary.isNodeTypeRegistered(nodeType)) {
-            const existing = detectedNodes.get(nodeType);
-            // Keep the earliest match (most likely the primary mention)
-            if (!existing || position < existing.position) {
-              detectedNodes.set(nodeType, {
-                nodeType,
-                keyword,
-                position,
-              });
-            }
+      if (keywordWords.length === 0) continue;
+      
+      // Check if ALL keyword words appear in prompt words
+      const stopWords = new Set(['a', 'an', 'the', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from']);
+      const importantKeywordWords = keywordWords.filter(w => !stopWords.has(w) || w.length > 2);
+      
+      if (importantKeywordWords.length === 0) {
+        // If only stop words, check if any word matches
+        const anyWordMatches = keywordWords.some(kw => 
+          promptWords.some(pw => pw === kw || pw.includes(kw) || kw.includes(pw))
+        );
+        if (!anyWordMatches) continue;
+      } else {
+        // Check if ALL important keyword words appear in prompt
+        const allWordsFound = importantKeywordWords.every(keywordWord => 
+          promptWords.some(promptWord => 
+            promptWord === keywordWord || 
+            promptWord.includes(keywordWord) || 
+            keywordWord.includes(promptWord)
+          )
+        );
+        
+        if (!allWordsFound) continue;
+      }
+      
+      // Calculate position (use first word's position as approximation)
+      const firstKeywordWord = keywordWords[0];
+      const position = promptWords.findIndex(pw => 
+        pw === firstKeywordWord || pw.includes(firstKeywordWord) || firstKeywordWord.includes(pw)
+      ) * 10; // Multiply by 10 for approximate character position
+      
+      for (const nodeType of nodeTypes) {
+        // Only add if node type is registered
+        if (this.nodeLibrary.isNodeTypeRegistered(nodeType)) {
+          const existing = detectedNodes.get(nodeType);
+          // Keep the earliest match (most likely the primary mention)
+          if (!existing || position < existing.position) {
+            detectedNodes.set(nodeType, {
+              nodeType,
+              keyword,
+              position: position >= 0 ? position : 0,
+            });
           }
         }
       }
@@ -729,7 +765,14 @@ export class NodeResolver {
    * @param prompt - The prompt to resolve
    * @param contextPrompt - Optional context prompt (e.g., original prompt) for disambiguation
    */
-  resolvePrompt(prompt: string, contextPrompt?: string): {
+  resolvePrompt(
+    prompt: string, 
+    contextPrompt?: string,
+    options?: {
+      explicitNodeTypes?: Set<string>;  // ✅ PHASE 2: Explicit nodes to prioritize
+      blockedNodeTypes?: Set<string>;   // ✅ PHASE 2: Nodes to block (conflicting)
+    }
+  ): {
     success: boolean;
     nodeIds: string[];
     errors: NodeResolutionError[];
@@ -742,6 +785,12 @@ export class NodeResolver {
     console.log(`[NodeResolver] 🔍 Resolving prompt: "${prompt.substring(0, 100)}..."`);
     if (contextPrompt) {
       console.log(`[NodeResolver] 🔍 With context: "${contextPrompt.substring(0, 100)}..."`);
+    }
+    if (options?.explicitNodeTypes && options.explicitNodeTypes.size > 0) {
+      console.log(`[NodeResolver] ✅ PHASE 2: Explicit nodes to prioritize: ${Array.from(options.explicitNodeTypes).join(', ')}`);
+    }
+    if (options?.blockedNodeTypes && options.blockedNodeTypes.size > 0) {
+      console.log(`[NodeResolver] 🚫 PHASE 2: Blocked nodes: ${Array.from(options.blockedNodeTypes).join(', ')}`);
     }
     
     const intents = this.extractIntents(prompt, contextPrompt);
@@ -757,6 +806,14 @@ export class NodeResolver {
 
       if (resolution.success && resolution.result) {
         const resolvedNodeId = resolution.result.nodeId;
+        
+        // ✅ PHASE 2: Filter out blocked nodes
+        if (options?.blockedNodeTypes && options.blockedNodeTypes.has(resolvedNodeId)) {
+          console.log(`[NodeResolver] 🚫 PHASE 2: Blocked conflicting node: ${resolvedNodeId}`);
+          warnings.push(`Blocked conflicting node: ${resolvedNodeId} (explicit intent specified different service)`);
+          continue; // Skip blocked nodes
+        }
+        
         console.log(`[NodeResolver] ✅ Resolved intent → ${resolvedNodeId} (confidence: ${resolution.result.confidence})`);
         
         if (!nodeIds.includes(resolvedNodeId)) {
@@ -772,6 +829,27 @@ export class NodeResolver {
       } else if (resolution.error) {
         console.log(`[NodeResolver] ❌ Failed to resolve intent: ${resolution.error.message}`);
         errors.push(resolution.error);
+      }
+    }
+    
+    // ✅ PHASE 2: Prioritize explicit nodes (move them to front)
+    if (options?.explicitNodeTypes && options.explicitNodeTypes.size > 0) {
+      const explicitNodes = nodeIds.filter(nodeId => options.explicitNodeTypes!.has(nodeId));
+      const otherNodes = nodeIds.filter(nodeId => !options.explicitNodeTypes!.has(nodeId));
+      nodeIds.length = 0; // Clear array
+      nodeIds.push(...explicitNodes, ...otherNodes); // Explicit first
+      if (explicitNodes.length > 0) {
+        console.log(`[NodeResolver] ✅ PHASE 2: Prioritized ${explicitNodes.length} explicit node(s): ${explicitNodes.join(', ')}`);
+      }
+    }
+    
+    // ✅ PHASE 2: Ensure explicit nodes are included (if they weren't detected)
+    if (options?.explicitNodeTypes && options.explicitNodeTypes.size > 0) {
+      for (const explicitNode of options.explicitNodeTypes) {
+        if (!nodeIds.includes(explicitNode)) {
+          console.log(`[NodeResolver] ✅ PHASE 2: Adding missing explicit node: ${explicitNode}`);
+          nodeIds.unshift(explicitNode); // Add to front
+        }
       }
     }
     

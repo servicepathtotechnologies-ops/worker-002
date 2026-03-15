@@ -77,7 +77,9 @@ export class IntentAwarePlanner {
     originalPrompt?: string,
     mandatoryNodes?: string[],
     mandatoryNodesWithOperations?: Array<{ nodeType: string; operationHint?: string; context?: string }>,
-    selectedStructuredPrompt?: string // ✅ NEW: Selected prompt variation for context-aware mapping
+    selectedStructuredPrompt?: string, // ✅ NEW: Selected prompt variation for context-aware mapping
+    explicitNodeTypes?: Set<string>, // ✅ NEW: Explicit nodes from selected variation (preserves user intent)
+    blockedNodeTypes?: Set<string>   // ✅ FIX 2: Blocked conflicting nodes
   ): Promise<PlanningResult> {
     console.log('[IntentAwarePlanner] Planning workflow from SimpleIntent...');
     
@@ -89,9 +91,26 @@ export class IntentAwarePlanner {
       const intentType = this.understandIntentType(intent);
       console.log(`[IntentAwarePlanner] Intent type: ${intentType.type} - ${intentType.description}`);
       
-      // Step 2: Map entities to node types using registry
-      let nodeRequirements = await this.determineRequiredNodes(intent, originalPrompt);
+      // ✅ WHITELIST-ONLY: Map entities to node types using registry
+      // Use selectedStructuredPrompt (not originalPrompt) to ensure only nodes from selected variation
+      let nodeRequirements = await this.determineRequiredNodes(intent, originalPrompt, explicitNodeTypes);
       console.log(`[IntentAwarePlanner] Determined ${nodeRequirements.length} required nodes`);
+      
+      // ✅ WHITELIST-ONLY: Filter to ONLY whitelisted nodes (if whitelist exists)
+      if (explicitNodeTypes && explicitNodeTypes.size > 0) {
+        const beforeFilter = nodeRequirements.length;
+        nodeRequirements = nodeRequirements.filter(node => {
+          const isWhitelisted = explicitNodeTypes.has(node.type);
+          if (!isWhitelisted) {
+            console.log(`[IntentAwarePlanner] 🚫 WHITELIST-ONLY: Filtered out non-whitelisted node from nodeRequirements: ${node.type}`);
+          }
+          return isWhitelisted;
+        });
+        const afterFilter = nodeRequirements.length;
+        if (beforeFilter > afterFilter) {
+          console.log(`[IntentAwarePlanner] ✅ WHITELIST-ONLY: Filtered nodeRequirements: ${beforeFilter} → ${afterFilter} (removed ${beforeFilter - afterFilter} non-whitelisted nodes)`);
+        }
+      }
       
       // ✅ NEW: Enforce mandatory nodes from keyword extraction (Stage 1)
       if (mandatoryNodes && mandatoryNodes.length > 0) {
@@ -113,15 +132,34 @@ export class IntentAwarePlanner {
       console.log(`[IntentAwarePlanner] Execution order: ${executionOrder.length} nodes`);
       
       // Step 5: Add missing implicit nodes (with duplicate check)
-      const completeNodes = await this.addImplicitNodes(nodeRequirements, intent, originalPrompt, selectedStructuredPrompt);
+      // ✅ WHITELIST-ONLY: Pass whitelist to addImplicitNodes to only allow whitelisted nodes
+      const completeNodes = await this.addImplicitNodes(nodeRequirements, intent, originalPrompt, selectedStructuredPrompt, explicitNodeTypes, undefined);
       console.log(`[IntentAwarePlanner] Complete nodes: ${completeNodes.length} (added ${completeNodes.length - nodeRequirements.length} implicit)`);
       
+      // ✅ WHITELIST-ONLY: Final filter to ONLY whitelisted nodes (if whitelist exists)
+      let finalNodes = completeNodes;
+      if (explicitNodeTypes && explicitNodeTypes.size > 0) {
+        const beforeFilter = finalNodes.length;
+        finalNodes = finalNodes.filter(node => {
+          const isWhitelisted = explicitNodeTypes.has(node.type);
+          if (!isWhitelisted) {
+            console.log(`[IntentAwarePlanner] 🚫 WHITELIST-ONLY: Filtered out non-whitelisted node from completeNodes: ${node.type}`);
+          }
+          return isWhitelisted;
+        });
+        const afterFilter = finalNodes.length;
+        if (beforeFilter > afterFilter) {
+          console.log(`[IntentAwarePlanner] ✅ WHITELIST-ONLY: Final filter - removed ${beforeFilter - afterFilter} non-whitelisted node(s) from completeNodes`);
+        }
+      }
+      
       // Step 6: Build StructuredIntent with correct order
-      const structuredIntent = this.buildStructuredIntent(completeNodes, executionOrder, intent);
+      // ✅ WHITELIST-ONLY: Use filtered nodes (only whitelisted)
+      const structuredIntent = this.buildStructuredIntent(finalNodes, executionOrder, intent, undefined);
       
       return {
         structuredIntent,
-        nodeRequirements: completeNodes,
+        nodeRequirements: finalNodes, // ✅ WHITELIST-ONLY: Return filtered nodes
         executionOrder,
         dependencyGraph,
         errors,
@@ -198,10 +236,12 @@ export class IntentAwarePlanner {
   /**
    * Determine required nodes from SimpleIntent entities
    * Uses registry to map entities to node types
+   * ✅ WHITELIST-ONLY: Filters to only whitelisted nodes if whitelist provided
    */
   private async determineRequiredNodes(
     intent: SimpleIntent,
-    originalPrompt?: string
+    originalPrompt?: string,
+    whitelistNodeTypes?: Set<string> // ✅ WHITELIST-ONLY: Only allow nodes in this set
   ): Promise<NodeRequirement[]> {
     const nodes: NodeRequirement[] = [];
     const nodeIds = new Set<string>(); // Track to prevent duplicates
@@ -290,6 +330,12 @@ export class IntentAwarePlanner {
           `[IntentAwarePlanner] ✅ OPERATION-FIRST: Using operation "${operation}" (semantic="${semanticInfo.semantic}") → DSL category "${category}" for ${mention.nodeType}`
         );
         
+        // ✅ WHITELIST-ONLY: Only add if node is in whitelist (if whitelist exists)
+        if (whitelistNodeTypes && !whitelistNodeTypes.has(mention.nodeType)) {
+          console.log(`[IntentAwarePlanner] 🚫 WHITELIST-ONLY: Skipping non-whitelisted node from nodeMentions: ${mention.nodeType}`);
+          continue;
+        }
+        
         nodes.push({
           id: `mention_${nodes.length}`,
           type: mention.nodeType,
@@ -302,11 +348,16 @@ export class IntentAwarePlanner {
       }
     }
     
-    // Map sources to data source nodes
+    // ✅ WHITELIST-ONLY: Map sources to data source nodes (only if whitelisted)
     if (intent.sources && intent.sources.length > 0) {
       for (const source of intent.sources) {
         const nodeType = await this.mapEntityToNodeType(source, 'dataSource', originalPrompt);
         if (nodeType && !nodeIds.has(nodeType)) {
+          // ✅ WHITELIST-ONLY: Only add if whitelisted
+          if (whitelistNodeTypes && !whitelistNodeTypes.has(nodeType)) {
+            console.log(`[IntentAwarePlanner] 🚫 WHITELIST-ONLY: Skipping non-whitelisted source node: ${nodeType}`);
+            continue;
+          }
           nodes.push({
             id: `ds_${nodes.length}`,
             type: nodeType,
@@ -318,11 +369,16 @@ export class IntentAwarePlanner {
       }
     }
     
-    // Map transformations to transformation nodes
+    // ✅ WHITELIST-ONLY: Map transformations to transformation nodes (only if whitelisted)
     if (intent.transformations && intent.transformations.length > 0) {
       for (const transformation of intent.transformations) {
         const nodeType = await this.mapEntityToNodeType(transformation, 'transformation', originalPrompt);
         if (nodeType && !nodeIds.has(nodeType)) {
+          // ✅ WHITELIST-ONLY: Only add if whitelisted
+          if (whitelistNodeTypes && !whitelistNodeTypes.has(nodeType)) {
+            console.log(`[IntentAwarePlanner] 🚫 WHITELIST-ONLY: Skipping non-whitelisted transformation node: ${nodeType}`);
+            continue;
+          }
           nodes.push({
             id: `tf_${nodes.length}`,
             type: nodeType,
@@ -334,11 +390,16 @@ export class IntentAwarePlanner {
       }
     }
     
-    // Map destinations to output nodes
+    // ✅ WHITELIST-ONLY: Map destinations to output nodes (only if whitelisted)
     if (intent.destinations && intent.destinations.length > 0) {
       for (const destination of intent.destinations) {
         const nodeType = await this.mapEntityToNodeType(destination, 'output', originalPrompt);
         if (nodeType && !nodeIds.has(nodeType)) {
+          // ✅ WHITELIST-ONLY: Only add if whitelisted
+          if (whitelistNodeTypes && !whitelistNodeTypes.has(nodeType)) {
+            console.log(`[IntentAwarePlanner] 🚫 WHITELIST-ONLY: Skipping non-whitelisted destination node: ${nodeType}`);
+            continue;
+          }
           // ✅ Use registry-driven operation mapping based on verbs and schema
           const nodeDef = unifiedNodeRegistry.get(nodeType);
           const category: 'dataSource' | 'transformation' | 'output' = 'output';
@@ -356,12 +417,17 @@ export class IntentAwarePlanner {
       }
     }
 
-    // Map providers to nodes (universal support for service mentions like GitHub, Jenkins)
+    // ✅ WHITELIST-ONLY: Map providers to nodes (only if whitelisted)
     // Providers can act as data sources or outputs depending on category
     if (intent.providers && intent.providers.length > 0) {
       for (const provider of intent.providers) {
         const nodeType = await this.mapEntityToNodeType(provider, 'dataSource', originalPrompt);
         if (nodeType && !nodeIds.has(nodeType)) {
+          // ✅ WHITELIST-ONLY: Only add if whitelisted
+          if (whitelistNodeTypes && !whitelistNodeTypes.has(nodeType)) {
+            console.log(`[IntentAwarePlanner] 🚫 WHITELIST-ONLY: Skipping non-whitelisted provider node: ${nodeType}`);
+            continue;
+          }
           const nodeDef = unifiedNodeRegistry.get(nodeType);
           let category: 'dataSource' | 'transformation' | 'output' = 'dataSource';
 
@@ -405,8 +471,9 @@ export class IntentAwarePlanner {
       }
     }
     
-    // ✅ FIX #1: Detect transformation verbs in original prompt (e.g., "summarise", "analyze")
+    // ✅ WHITELIST-ONLY: Detect transformation verbs (only if whitelisted)
     // This ensures AI nodes are added when user explicitly mentions transformation verbs
+    // BUT only if the detected node is in the whitelist
     if (originalPrompt) {
       try {
         const { TransformationDetector } = await import('./transformation-detector');
@@ -417,52 +484,64 @@ export class IntentAwarePlanner {
           console.log(`[IntentAwarePlanner] ✅ Detected transformation verbs: ${detection.verbs.join(', ')}`);
           console.log(`[IntentAwarePlanner] ✅ Required AI node types: ${detection.requiredNodeTypes.join(', ')}`);
           
-          // Check if any AI transformation node already exists
-          const existingAINodes = nodes.filter(n => {
-            const nodeType = unifiedNormalizeNodeTypeString(n.type);
-            return detection.requiredNodeTypes.some(requiredType => {
-              const requiredNormalized = unifiedNormalizeNodeTypeString(requiredType);
-              // Check if node type matches or is semantically equivalent
-              return nodeType === requiredNormalized || 
-                     nodeType.includes('ai') || 
-                     nodeType.includes('chat') ||
-                     nodeType.includes('llm');
-            });
-          });
+          // ✅ WHITELIST-ONLY: Filter to only whitelisted AI node types
+          const whitelistedAINodeTypes = whitelistNodeTypes 
+            ? detection.requiredNodeTypes.filter(nodeType => {
+                const normalized = unifiedNormalizeNodeTypeString(nodeType);
+                return whitelistNodeTypes.has(normalized);
+              })
+            : detection.requiredNodeTypes;
           
-          if (existingAINodes.length === 0) {
-            // No AI node exists - add the first required AI node type
-            const aiNodeType = detection.requiredNodeTypes[0];
-            const normalizedAINodeType = unifiedNormalizeNodeTypeString(aiNodeType);
-            
-            // Determine operation from detected verb
-            // ✅ UNIVERSAL: Map TransformationVerb enum to operation string
-            let operation = 'transform';
-            const { TransformationVerb } = await import('./transformation-detector');
-            if (detection.verbs.includes(TransformationVerb.SUMMARIZE)) {
-              operation = 'summarize';
-            } else if (detection.verbs.includes(TransformationVerb.ANALYZE)) {
-              operation = 'analyze';
-            } else if (detection.verbs.includes(TransformationVerb.CLASSIFY)) {
-              operation = 'classify';
-            } else if (detection.verbs.includes(TransformationVerb.GENERATE)) {
-              operation = 'generate';
-            } else if (detection.verbs.includes(TransformationVerb.TRANSLATE)) {
-              operation = 'translate';
-            } else if (detection.verbs.includes(TransformationVerb.EXTRACT)) {
-              operation = 'extract';
-            }
-            
-            nodes.push({
-              id: `tf_ai_${nodes.length}`,
-              type: normalizedAINodeType,
-              operation,
-              category: 'transformation',
+          if (whitelistedAINodeTypes.length === 0 && whitelistNodeTypes) {
+            console.log(`[IntentAwarePlanner] 🚫 WHITELIST-ONLY: All detected AI node types filtered out (not in whitelist)`);
+          } else if (whitelistedAINodeTypes.length > 0) {
+            // Check if any AI transformation node already exists
+            const existingAINodes = nodes.filter(n => {
+              const nodeType = unifiedNormalizeNodeTypeString(n.type);
+              return whitelistedAINodeTypes.some(requiredType => {
+                const requiredNormalized = unifiedNormalizeNodeTypeString(requiredType);
+                // Check if node type matches or is semantically equivalent
+                return nodeType === requiredNormalized || 
+                       nodeType.includes('ai') || 
+                       nodeType.includes('chat') ||
+                       nodeType.includes('llm');
+              });
             });
-            nodeIds.add(normalizedAINodeType);
-            console.log(`[IntentAwarePlanner] ✅ Added AI transformation node: ${normalizedAINodeType} (operation: ${operation}) from detected verb: ${detection.verbs[0]}`);
-          } else {
-            console.log(`[IntentAwarePlanner] ✅ AI transformation node already exists: ${existingAINodes.map(n => n.type).join(', ')}`);
+            
+            if (existingAINodes.length === 0) {
+              // No AI node exists - add the first whitelisted AI node type
+              const aiNodeType = whitelistedAINodeTypes[0];
+              const normalizedAINodeType = unifiedNormalizeNodeTypeString(aiNodeType);
+              
+              // Determine operation from detected verb
+              // ✅ UNIVERSAL: Map TransformationVerb enum to operation string
+              let operation = 'transform';
+              const { TransformationVerb } = await import('./transformation-detector');
+              if (detection.verbs.includes(TransformationVerb.SUMMARIZE)) {
+                operation = 'summarize';
+              } else if (detection.verbs.includes(TransformationVerb.ANALYZE)) {
+                operation = 'analyze';
+              } else if (detection.verbs.includes(TransformationVerb.CLASSIFY)) {
+                operation = 'classify';
+              } else if (detection.verbs.includes(TransformationVerb.GENERATE)) {
+                operation = 'generate';
+              } else if (detection.verbs.includes(TransformationVerb.TRANSLATE)) {
+                operation = 'translate';
+              } else if (detection.verbs.includes(TransformationVerb.EXTRACT)) {
+                operation = 'extract';
+              }
+              
+              nodes.push({
+                id: `tf_ai_${nodes.length}`,
+                type: normalizedAINodeType,
+                operation,
+                category: 'transformation',
+              });
+              nodeIds.add(normalizedAINodeType);
+              console.log(`[IntentAwarePlanner] ✅ Added whitelisted AI transformation node: ${normalizedAINodeType} (operation: ${operation}) from detected verb: ${detection.verbs[0]}`);
+            } else {
+              console.log(`[IntentAwarePlanner] ✅ AI transformation node already exists: ${existingAINodes.map(n => n.type).join(', ')}`);
+            }
           }
         }
       } catch (error) {
@@ -1156,7 +1235,9 @@ export class IntentAwarePlanner {
     nodes: NodeRequirement[],
     intent: SimpleIntent,
     originalPrompt?: string,
-    selectedStructuredPrompt?: string // ✅ NEW: Selected prompt variation for context-aware mapping
+    selectedStructuredPrompt?: string, // ✅ NEW: Selected prompt variation for context-aware mapping
+    explicitNodeTypes?: Set<string>, // ✅ NEW: Explicit nodes from selected variation (preserves user intent)
+    blockedNodeTypes?: Set<string>   // ✅ FIX 2: Blocked conflicting nodes
   ): Promise<NodeRequirement[]> {
     const completeNodes = [...nodes];
     const existingTypes = new Set(nodes.map(n => n.type));
@@ -1257,25 +1338,87 @@ export class IntentAwarePlanner {
         } else if (promptLower.includes('email') || promptLower.includes('gmail') || promptLower.includes('send')) {
           outputNodeType = 'google_gmail';
         } else if (promptLower.includes('slack') || promptLower.includes('message')) {
-          outputNodeType = 'slack_message';
+          // ✅ WORLD-CLASS: Check if explicit nodes specify a different output
+          // If user explicitly mentioned Slack in selected variation, use slack_message
+          // If user explicitly mentioned Discord, use discord (preserves explicit intent)
+          if (explicitNodeTypes) {
+            if (explicitNodeTypes.has('slack_message')) {
+              outputNodeType = 'slack_message';
+              console.log(`[IntentAwarePlanner] ✅ Using explicit node: slack_message (mentioned in selected variation)`);
+            } else if (explicitNodeTypes.has('discord')) {
+              outputNodeType = 'discord';
+              console.log(`[IntentAwarePlanner] ✅ Using explicit node: discord (mentioned in selected variation)`);
+            } else if (explicitNodeTypes.has('telegram')) {
+              outputNodeType = 'telegram';
+              console.log(`[IntentAwarePlanner] ✅ Using explicit node: telegram (mentioned in selected variation)`);
+            } else {
+              // Check for any explicit output node
+              const { nodeCapabilityRegistryDSL } = await import('./node-capability-registry-dsl');
+              for (const explicitNode of explicitNodeTypes) {
+                if (nodeCapabilityRegistryDSL.isOutput(explicitNode)) {
+                  outputNodeType = explicitNode;
+                  console.log(`[IntentAwarePlanner] ✅ Using explicit output node: ${explicitNode} (mentioned in selected variation)`);
+                  break;
+                }
+              }
+              // If no explicit output found, default to slack_message
+              if (!outputNodeType || outputNodeType === 'log') {
+                outputNodeType = 'slack_message';
+              }
+            }
+          } else {
+            outputNodeType = 'slack_message';
+          }
         } else {
-          // Default to log node for terminal workflows
-          outputNodeType = 'log';
+          // ✅ WORLD-CLASS: Check explicit nodes for output before defaulting to log
+          if (explicitNodeTypes) {
+            const { nodeCapabilityRegistryDSL } = await import('./node-capability-registry-dsl');
+            for (const explicitNode of explicitNodeTypes) {
+              if (nodeCapabilityRegistryDSL.isOutput(explicitNode)) {
+                outputNodeType = explicitNode;
+                console.log(`[IntentAwarePlanner] ✅ Using explicit output node: ${explicitNode} (mentioned in selected variation)`);
+                break;
+              }
+            }
+          }
+          // Default to log node for terminal workflows (only if no explicit output found)
+          if (!outputNodeType) {
+            outputNodeType = 'log';
+          }
         }
       }
       
+      // ✅ BEST APPROACH: No blocking needed - we only use nodes from selected variation
+      // If explicitNodeTypes is provided, prioritize explicit output nodes
       if (outputNodeType && !existingTypes.has(outputNodeType)) {
+        // ✅ BEST APPROACH: Prioritize explicit output nodes from selected variation
+        if (explicitNodeTypes && explicitNodeTypes.size > 0) {
+          const { nodeCapabilityRegistryDSL } = await import('./node-capability-registry-dsl');
+          for (const explicitNode of explicitNodeTypes) {
+            if (nodeCapabilityRegistryDSL.isOutput(explicitNode)) {
+              outputNodeType = explicitNode;
+              console.log(`[IntentAwarePlanner] ✅ Using explicit output node from selected variation: ${outputNodeType}`);
+              break;
+            }
+          }
+        }
+        
         const nodeDef = unifiedNodeRegistry.get(outputNodeType);
         const defaultOp = nodeDef?.defaultConfig?.()?.operation || 'write';
         
-        console.log(`[IntentAwarePlanner] ✅ PHASE 2-2: Adding implicit output node: ${outputNodeType} (operation: ${defaultOp})`);
-        completeNodes.push({
-          id: `out_${completeNodes.length}`,
-          type: outputNodeType,
-          operation: defaultOp,
-          category: 'output',
-        });
-        existingTypes.add(outputNodeType);
+        // ✅ WHITELIST-ONLY: Only add output node if it's whitelisted (if whitelist exists)
+        if (explicitNodeTypes && !explicitNodeTypes.has(outputNodeType)) {
+          console.log(`[IntentAwarePlanner] 🚫 WHITELIST-ONLY: Skipping non-whitelisted implicit output node: ${outputNodeType}`);
+        } else {
+          console.log(`[IntentAwarePlanner] ✅ PHASE 2-2: Adding implicit output node: ${outputNodeType} (operation: ${defaultOp})`);
+          completeNodes.push({
+            id: `out_${completeNodes.length}`,
+            type: outputNodeType,
+            operation: defaultOp,
+            category: 'output',
+          });
+          existingTypes.add(outputNodeType);
+        }
       }
     }
     
@@ -1321,13 +1464,17 @@ export class IntentAwarePlanner {
   private buildStructuredIntent(
     nodes: NodeRequirement[],
     executionOrder: string[],
-    intent: SimpleIntent
+    intent: SimpleIntent,
+    blockedNodeTypes?: Set<string> // ✅ BEST APPROACH: Not needed, but kept for backward compatibility
   ): StructuredIntent {
     // Build trigger
     const trigger = this.mapTriggerType(intent.trigger?.type || 'manual');
     const triggerConfig = intent.trigger?.type === 'schedule' ? {
       interval: 'daily', // Default, can be inferred from prompt
     } : undefined;
+    
+    // ✅ BEST APPROACH: No filtering needed - all nodes come from selected variation
+    // SimpleIntent was extracted from selected variation, so no conflicting nodes
     
     // Separate nodes by category
     const dataSourceNodes = nodes.filter(n => n.category === 'dataSource');

@@ -415,13 +415,15 @@ export class WorkflowPipelineOrchestrator {
     originalPrompt: string, // ✅ NEW: Original user prompt (preserved for reference only)
     existingCredentials?: Record<string, any>,
     providedCredentials?: Record<string, Record<string, any>>,
-      options?: {
+    options?: {
       mode?: 'analyze' | 'build';
       onProgress?: (step: number, stepName: string, progress: number, details?: any) => void;
       mandatoryNodeTypes?: string[]; // ✅ NEW: Mandatory nodes from keyword extraction
       mandatoryNodesWithOperations?: Array<{ nodeType: string; operationHint?: string; context?: string }>; // ✅ NEW: Nodes with operation hints
       selectedStructuredPrompt?: string; // For consistency
       originalPrompt?: string; // For consistency
+      explicitNodeTypes?: Set<string>; // ✅ PHASE 1: Explicit nodes from selected variation
+      blockedNodeTypes?: Set<string>;  // ✅ PHASE 1: Blocked conflicting nodes
     }
   ): Promise<PipelineResult> {
     console.log(`[PipelineOrchestrator] Starting pipeline with selected structured prompt: "${selectedStructuredPrompt.substring(0, 100)}..."`);
@@ -546,71 +548,76 @@ export class WorkflowPipelineOrchestrator {
       // ✅ CRITICAL FIX: Extract nodes from selectedStructuredPrompt FIRST (before generating StructuredIntent)
       // This ensures we only use nodes from the selected variation, not from original prompt or other sources
       let nodesFromSelectedVariation: string[] = [];
+      let explicitNodeTypes: Set<string> | undefined = undefined; // ✅ NEW: Explicit nodes from selected variation
+      let blockedNodeTypes: Set<string> | undefined = undefined; // ✅ NEW: Blocked conflicting nodes
       if (selectedStructuredPrompt && selectedStructuredPrompt !== originalPrompt) {
         console.log(`[PipelineOrchestrator] ✅ STEP 0.5: Extracting nodes from selected prompt variation...`);
         try {
-          const { NodeResolver } = await import('./node-resolver');
-          const { nodeLibrary } = await import('../nodes/node-library');
-          const nodeResolver = new NodeResolver(nodeLibrary);
-          // ✅ CRITICAL FIX: Pass originalPrompt as context for context-aware Email → Gmail mapping
-          console.log(`[PipelineOrchestrator] 🔍 Extracting nodes from selected variation...`);
+          // ✅ FIX 1: Use unified explicit-intent-extractor utility (service-specific mapping + blocked nodes)
+          const { extractExplicitNodeTypesFromVariation, getBlockedNodeTypes } = await import('../../core/utils/explicit-intent-extractor');
+          const { AliasKeywordCollector } = await import('./summarize-layer');
+          const keywordCollector = new AliasKeywordCollector();
+          const allKeywordData = keywordCollector.getAllAliasKeywords();
+          
+          // ✅ WORLD-CLASS: Extract explicit nodes using service-specific keyword matching
+          explicitNodeTypes = extractExplicitNodeTypesFromVariation(
+            selectedStructuredPrompt,
+            allKeywordData
+          );
+          
+          // ✅ CRITICAL: Derive blocked nodes (e.g., if Slack is explicit, block Discord)
+          blockedNodeTypes = getBlockedNodeTypes(explicitNodeTypes);
+          
+          if (explicitNodeTypes.size > 0) {
+            console.log(`[PipelineOrchestrator] ✅ Extracted ${explicitNodeTypes.size} explicit node type(s) from selected variation: ${Array.from(explicitNodeTypes).join(', ')}`);
+          }
+          // ✅ BEST APPROACH: Use ONLY nodes from selected variation (no additional detection)
+          console.log(`[PipelineOrchestrator] 🔍 Using nodes ONLY from selected variation...`);
           console.log(`[PipelineOrchestrator]   - Selected variation: "${selectedStructuredPrompt.substring(0, 150)}..."`);
-          console.log(`[PipelineOrchestrator]   - Original prompt (context): "${originalPrompt.substring(0, 150)}..."`);
+          console.log(`[PipelineOrchestrator]   - Original prompt (context only): "${originalPrompt.substring(0, 150)}..."`);
           
-          const resolution = nodeResolver.resolvePrompt(selectedStructuredPrompt, originalPrompt);
-          
-          if (resolution.success && resolution.nodeIds.length > 0) {
-            nodesFromSelectedVariation = resolution.nodeIds;
-            console.log(`[PipelineOrchestrator] ✅ Extracted ${nodesFromSelectedVariation.length} node(s) from selected variation: ${nodesFromSelectedVariation.join(', ')}`);
+          // ✅ BEST APPROACH: If we have explicit nodes from variation, use them directly (no additional detection)
+          if (explicitNodeTypes && explicitNodeTypes.size > 0) {
+            nodesFromSelectedVariation = Array.from(explicitNodeTypes);
+            console.log(`[PipelineOrchestrator] ✅ Using ${nodesFromSelectedVariation.length} explicit node(s) from selected variation: ${nodesFromSelectedVariation.join(', ')}`);
+            console.log(`[PipelineOrchestrator] ✅ SKIPPING additional node detection - using only nodes from selected variation`);
+          } else {
+            // Fallback: Only if no explicit nodes found, do minimal detection from selected variation
+            console.log(`[PipelineOrchestrator] ⚠️  No explicit nodes found, doing minimal detection from selected variation...`);
+            const { NodeResolver } = await import('./node-resolver');
+            const { nodeLibrary } = await import('../nodes/node-library');
+            const nodeResolver = new NodeResolver(nodeLibrary);
+            const resolution = nodeResolver.resolvePrompt(selectedStructuredPrompt, originalPrompt, {
+              explicitNodeTypes: explicitNodeTypes,
+            });
             
-            // ✅ VERIFICATION: Check if Gmail is detected when Email is mentioned
-            const selectedLower = selectedStructuredPrompt.toLowerCase();
-            const originalLower = originalPrompt.toLowerCase();
-            const mentionsEmailInSelected = selectedLower.includes('email') && !selectedLower.includes('gmail');
-            const mentionsGmailInOriginal = originalLower.includes('gmail') || originalLower.includes('google mail') || originalLower.includes('google email');
-            const hasGmailInNodes = nodesFromSelectedVariation.some(node => 
-              node.toLowerCase().includes('gmail') || node.toLowerCase() === 'google_gmail'
-            );
-            
-            if (mentionsEmailInSelected && mentionsGmailInOriginal) {
-              if (hasGmailInNodes) {
-                console.log(`[PipelineOrchestrator] ✅ Gmail detection VERIFIED: "Email" in selected variation correctly mapped to google_gmail`);
-              } else {
-                console.log(`[PipelineOrchestrator] ⚠️  Gmail detection FAILED: "Email" in selected variation NOT mapped to google_gmail`);
-                console.log(`[PipelineOrchestrator]   - Selected mentions Email: ✅`);
-                console.log(`[PipelineOrchestrator]   - Original mentions Gmail: ✅`);
-                console.log(`[PipelineOrchestrator]   - But extracted nodes don't include google_gmail: ${nodesFromSelectedVariation.join(', ')}`);
-              }
+            if (resolution.success && resolution.nodeIds.length > 0) {
+              nodesFromSelectedVariation = resolution.nodeIds;
+              console.log(`[PipelineOrchestrator] ✅ Extracted ${nodesFromSelectedVariation.length} node(s) from selected variation: ${nodesFromSelectedVariation.join(', ')}`);
             }
-            
-            // ✅ CRITICAL: Override mandatoryNodeTypes with nodes from selected variation
-            // This ensures ONLY nodes from selected variation are used, not from keyword extraction
+          }
+          
+          // ✅ BEST APPROACH: Use nodes from selected variation directly as mandatory nodes
+          // No filtering needed - we only use nodes from selected variation (no conflicting nodes)
+          if (nodesFromSelectedVariation.length > 0) {
             if (!options?.mandatoryNodeTypes || options.mandatoryNodeTypes.length === 0) {
               options = {
                 ...options,
                 mandatoryNodeTypes: nodesFromSelectedVariation,
+                explicitNodeTypes: explicitNodeTypes,
+                // ✅ BEST APPROACH: No blocked nodes needed - we only use nodes from selected variation
               };
-              console.log(`[PipelineOrchestrator] ✅ Using nodes from selected variation as mandatory nodes`);
+              console.log(`[PipelineOrchestrator] ✅ Using ${nodesFromSelectedVariation.length} node(s) from selected variation as mandatory nodes: ${nodesFromSelectedVariation.join(', ')}`);
             } else {
-              // Merge: Use intersection of keyword extraction and selected variation
-              const keywordNodes = new Set(options.mandatoryNodeTypes);
-              const variationNodes = new Set(nodesFromSelectedVariation);
-              const intersection = Array.from(variationNodes).filter(node => keywordNodes.has(node));
-              
-              if (intersection.length > 0) {
-                options = {
-                  ...options,
-                  mandatoryNodeTypes: intersection,
-                };
-                console.log(`[PipelineOrchestrator] ✅ Using intersection of keyword extraction and selected variation: ${intersection.join(', ')}`);
-              } else {
-                // If no intersection, prioritize selected variation (user's explicit choice)
-                options = {
-                  ...options,
-                  mandatoryNodeTypes: nodesFromSelectedVariation,
-                };
-                console.log(`[PipelineOrchestrator] ✅ No intersection found - using selected variation nodes only: ${nodesFromSelectedVariation.join(', ')}`);
-              }
+              // ✅ BEST APPROACH: Prioritize selected variation over keyword extraction
+              // Selected variation is user's explicit choice - it takes precedence
+              options = {
+                ...options,
+                mandatoryNodeTypes: nodesFromSelectedVariation, // ✅ Use selected variation nodes (user's choice)
+                explicitNodeTypes: explicitNodeTypes,
+                // ✅ BEST APPROACH: No blocked nodes needed - we only use nodes from selected variation
+              };
+              console.log(`[PipelineOrchestrator] ✅ Prioritizing selected variation nodes over keyword extraction: ${nodesFromSelectedVariation.join(', ')}`);
             }
           } else {
             console.warn(`[PipelineOrchestrator] ⚠️  Node resolution from selected variation failed or returned no nodes`);
@@ -631,11 +638,28 @@ export class WorkflowPipelineOrchestrator {
       try {
         console.log(`[PipelineOrchestrator] ✅ Using NEW ARCHITECTURE: SimpleIntent → Intent-Aware Planner (PRIMARY)`);
         
-        // ✅ PHASE 2 + PHASE 4: Extract SimpleIntent with guardrails and error recovery
+        // ✅ WHITELIST-ONLY: Extract SimpleIntent from SELECTED VARIATION (not original prompt)
+        // Selected variation is the source of truth - it contains the user's explicit choice
         const { intentExtractor } = await import('./intent-extractor');
-        // ✅ ROOT-LEVEL FIX: Use ORIGINAL PROMPT for intent extraction (pure user intent)
-        // Selected structured prompt is ONLY for framing/understanding, not for deterministic nodeMentions
-        const simpleIntentResult = await intentExtractor.extractIntent(originalPrompt);
+        // ✅ WHITELIST-ONLY: Use SELECTED VARIATION for intent extraction
+        const simpleIntentResult = await intentExtractor.extractIntent(selectedStructuredPrompt);
+        console.log(`[PipelineOrchestrator] ✅ Extracted SimpleIntent from selected variation (not original prompt)`);
+        
+        // ✅ WHITELIST-ONLY: Filter SimpleIntent.nodeMentions to ONLY whitelisted nodes
+        if (explicitNodeTypes && explicitNodeTypes.size > 0 && simpleIntentResult.intent.nodeMentions) {
+          const beforeFilter = simpleIntentResult.intent.nodeMentions.length;
+          simpleIntentResult.intent.nodeMentions = simpleIntentResult.intent.nodeMentions.filter(mention => {
+            const isWhitelisted = explicitNodeTypes.has(mention.nodeType);
+            if (!isWhitelisted) {
+              console.log(`[PipelineOrchestrator] 🚫 WHITELIST-ONLY: Filtered out non-whitelisted node from SimpleIntent.nodeMentions: ${mention.nodeType}`);
+            }
+            return isWhitelisted;
+          });
+          const afterFilter = simpleIntentResult.intent.nodeMentions.length;
+          if (beforeFilter > afterFilter) {
+            console.log(`[PipelineOrchestrator] ✅ WHITELIST-ONLY: Filtered SimpleIntent.nodeMentions: ${beforeFilter} → ${afterFilter} (removed ${beforeFilter - afterFilter} non-whitelisted nodes)`);
+          }
+        }
         
         // ✅ PHASE 4: Validate SimpleIntent with Output Validator
         const { outputValidator } = await import('./output-validator');
@@ -678,15 +702,23 @@ export class WorkflowPipelineOrchestrator {
           const { intentAwarePlanner } = await import('./intent-aware-planner');
           // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt for planning
           // ✅ NEW: Pass mandatory nodes from keyword extraction (Stage 1)
-          const mandatoryNodes = options?.mandatoryNodeTypes || [];
+          // ✅ WORLD-CLASS: Prioritize explicit nodes from selected variation (preserves user intent)
+          // ✅ BEST APPROACH: Use explicit nodes from selected variation as mandatory nodes
+          // No blocking needed - we only use nodes from selected variation
+          const mandatoryNodes = explicitNodeTypes && explicitNodeTypes.size > 0
+            ? Array.from(explicitNodeTypes) // ✅ Use explicit nodes from selected variation
+            : (options?.mandatoryNodeTypes || []);
           const mandatoryNodesWithOperations = options?.mandatoryNodesWithOperations || [];
-          // ✅ CRITICAL FIX: Pass selectedStructuredPrompt to IntentAwarePlanner for context-aware mapping
+          // ✅ BEST APPROACH: Pass selectedStructuredPrompt to IntentAwarePlanner
+          // ✅ BEST APPROACH: No blocked nodes needed - we only use nodes from selected variation
           const planningResult = await intentAwarePlanner.planWorkflow(
             finalSimpleIntent, 
-            originalPrompt, // originalPrompt for fallback context
+            selectedStructuredPrompt, // ✅ BEST APPROACH: Use selected variation (not original prompt)
             mandatoryNodes,
             mandatoryNodesWithOperations,
-            selectedStructuredPrompt // ✅ NEW: Selected variation for context-aware Email → Gmail mapping
+            selectedStructuredPrompt, // ✅ Selected variation for context-aware mapping
+            explicitNodeTypes, // ✅ Explicit nodes from selected variation
+            undefined // ✅ BEST APPROACH: No blocked nodes - we only use nodes from selected variation
           );
           
           if (planningResult.errors.length === 0) {
@@ -1169,13 +1201,16 @@ export class WorkflowPipelineOrchestrator {
           console.log(`[PipelineOrchestrator] ✅ PHASE 4: Extracted ${tagsFromVariation.length} tag(s) from selected variation: ${tagsFromVariation.join(', ')}`);
         }
         
-        buildResult = await buildProductionWorkflow(structuredIntent, selectedStructuredPrompt, {
+        buildResult = await buildProductionWorkflow(structuredIntent, originalPrompt, {
           maxRetries: 3,
           strictMode: true,
           allowRegeneration: true,
           mandatoryNodeTypes: options?.mandatoryNodeTypes, // ✅ NEW: Pass mandatory nodes
           aiSpecifiedNodesContext, // ✅ UNIVERSAL: Pass AI-specified nodes context
           tagsFromVariation, // ✅ PHASE 4: Pass tags to preserve nodes in tags
+          explicitNodeTypes: options?.explicitNodeTypes, // ✅ PHASE 1: Explicit nodes from variation
+          blockedNodeTypes: options?.blockedNodeTypes,   // ✅ PHASE 1: Blocked conflicting nodes
+          selectedStructuredPrompt: selectedStructuredPrompt, // ✅ CRITICAL: Pass selected variation for node detection
         });
         
         if (!buildResult.success || !buildResult.workflow) {

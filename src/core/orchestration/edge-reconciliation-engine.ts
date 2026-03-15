@@ -20,6 +20,7 @@ import { unifiedNormalizeNodeTypeString } from '../utils/unified-node-type-norma
 import { universalHandleResolver } from '../error-prevention';
 import { universalEdgeCreationService } from '../../services/edges/universal-edge-creation-service';
 import { nodeCapabilityRegistryDSL } from '../../services/ai/node-capability-registry-dsl';
+import { isOutputNode } from '../utils/universal-node-type-checker';
 import { randomUUID } from 'crypto';
 
 export interface EdgeReconciliationResult {
@@ -216,15 +217,77 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
       }
     }
     
-    // ✅ STEP 6: Ensure log_output is ALWAYS connected from the last non-terminal node
-    // This is a universal requirement - log_output must be the final terminal node
-    const logOutputNodes = workflow.nodes.filter(n => {
+    // ✅ STEP 6: Ensure ALL output nodes (HubSpot, Gmail, CRM, Communication, etc.) are connected from last transformation node
+    // ✅ UNIVERSAL FIX: Use isOutputNode() function instead of hardcoded list
+    // This ensures ANY node that acts as an output is properly connected, regardless of type
+    const outputNodes = workflow.nodes.filter(n => {
+      return isOutputNode(n);
+    });
+    
+    for (const outputNode of outputNodes) {
+      const outputIndex = orderedNodeIds.indexOf(outputNode.id);
+      if (outputIndex < 0) continue;
+      
+      // Check if output node already has incoming edges
+      const hasIncoming = edgesToKeep.some(e => e.target === outputNode.id);
+      if (hasIncoming) continue; // Already connected
+      
+      // Find the last transformation node before this output node
+      let lastTransformationNodeId: string | null = null;
+      for (let i = outputIndex - 1; i >= 0; i--) {
+        const candidateId = orderedNodeIds[i];
+        const candidateNode = workflow.nodes.find(n => n.id === candidateId);
+        if (!candidateNode) continue;
+        
+        const candidateType = unifiedNormalizeNodeTypeString(candidateNode.type || candidateNode.data?.type || '');
+        const candidateDef = unifiedNodeRegistry.get(candidateType);
+        
+        // Skip if it's another output node or trigger
+        if (candidateDef?.category === 'trigger' || isOutputNode(candidateNode)) {
+          continue;
+        }
+        
+        // Found a transformation or data source node - connect from here
+        lastTransformationNodeId = candidateId;
+        break;
+      }
+      
+      if (lastTransformationNodeId) {
+        const edgeExists = edgesToKeep.some(
+          e => e.source === lastTransformationNodeId && e.target === outputNode.id
+        );
+        
+        if (!edgeExists) {
+          const edge = this.createEdgeFromOrder(
+            workflow,
+            lastTransformationNodeId,
+            outputNode.id,
+            executionOrder
+          );
+          if (edge) {
+            edgesToAdd.push(edge);
+            console.log(
+              `[EdgeReconciliationEngine] ✅ Connected output node: ${unifiedNormalizeNodeTypeString(outputNode.type || outputNode.data?.type || '')} (${outputNode.id.substring(0, 8)}) from last transformation node`
+            );
+          }
+        }
+      }
+    }
+    
+    // ✅ STEP 7: Ensure ALL output nodes (including log_output) are properly connected
+    // ✅ UNIVERSAL FIX: Check for ALL output nodes using isOutputNode(), not just log_output
+    // This ensures any output node (CRM, email, log_output, etc.) is connected properly
+    const allOutputNodes = workflow.nodes.filter(n => {
+      return isOutputNode(n);
+    });
+    
+    const logOutputNodes = allOutputNodes.filter(n => {
       const nodeType = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
       return nodeType === 'log_output';
     });
     
     console.log(
-      `[EdgeReconciliationEngine] 🔍 DEBUG STEP 6: Found ${logOutputNodes.length} log_output node(s), ` +
+      `[EdgeReconciliationEngine] 🔍 DEBUG STEP 7: Found ${allOutputNodes.length} output node(s) (${logOutputNodes.length} log_output), ` +
       `execution order has ${orderedNodeIds.length} nodes: [${orderedNodeIds.map(id => {
         const node = workflow.nodes.find(n => n.id === id);
         const type = unifiedNormalizeNodeTypeString(node?.type || node?.data?.type || 'unknown');
@@ -232,6 +295,7 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
       }).join(' → ')}]`
     );
     
+    // Process log_output nodes specifically (if any exist)
     for (const logOutputNode of logOutputNodes) {
       const logOutputIndex = orderedNodeIds.indexOf(logOutputNode.id);
       console.log(
@@ -389,7 +453,7 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
     // Combine all edges
     const finalEdges = [...edgesToKeep, ...edgesToAdd];
     
-    // ✅ STEP 6: Auto-remove orphaned nodes that are not required
+    // ✅ STEP 8: Auto-remove orphaned nodes that are not required
     // This implements the user's insight: orphaned nodes = unnecessary nodes = should be removed
     // ✅ PHASE 4: Pass tagsFromVariation to preserve nodes in tags
     const { nodes: finalNodes, nodesRemoved, removedNodeTypes } = this.removeUnrequiredOrphanedNodes(
@@ -513,6 +577,21 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
         nodesToKeep.push(node);
         console.log(
           `[EdgeReconciliationEngine] ✅ Preserving orphaned node from tags: ${nodeType} (${node.id})`
+        );
+        continue;
+      }
+      
+      // ✅ UNIVERSAL FIX: Never remove output nodes - use isOutputNode() function instead of hardcoded list
+      // This ensures ANY node that acts as an output (CRM, email, log_output, etc.) is preserved
+      // ✅ UNIVERSAL FIX: Use isOutputNode() function instead of multiple hardcoded checks
+      // This ensures ANY node that acts as an output is preserved, regardless of type
+      const isOutputNodeCheck = isOutputNode(node);
+      
+      if (isOutputNodeCheck) {
+        // Output node but orphaned = edge creation failed, but keep it so it can be connected
+        nodesToKeep.push(node);
+        console.log(
+          `[EdgeReconciliationEngine] ⚠️  Keeping orphaned output node: ${nodeType} (${node.id}) - will attempt to connect instead of remove`
         );
         continue;
       }
