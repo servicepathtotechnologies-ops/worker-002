@@ -5,6 +5,12 @@
  * This prevents saving invalid workflows that would fail at runtime.
  */
 
+import type { Workflow } from '../types/ai-types';
+import { unifiedGraphOrchestrator } from '../orchestration/unified-graph-orchestrator';
+import { unifiedNodeRegistry } from '../registry/unified-node-registry';
+import { resolveEffectiveFieldFillMode } from '../utils/fill-mode-resolver';
+import { isStructuralOwnership } from '../utils/field-ownership';
+
 // Workflow types (inline to avoid circular dependencies)
 interface WorkflowNode {
   id: string;
@@ -67,11 +73,92 @@ interface WorkflowEdge {
   targetHandle?: string;
 }
 
+function hasDirectedCycle(nodes: WorkflowNode[], edges: WorkflowEdge[]): boolean {
+  const adjacency = new Map<string, string[]>();
+  const nodeIds = new Set(nodes.map((n) => n.id));
+  for (const id of nodeIds) adjacency.set(id, []);
+  for (const edge of edges) {
+    if (nodeIds.has(edge.source) && nodeIds.has(edge.target)) {
+      adjacency.get(edge.source)!.push(edge.target);
+    }
+  }
+
+  const unvisited = 0;
+  const visiting = 1;
+  const visited = 2;
+  const state = new Map<string, number>();
+  for (const id of nodeIds) state.set(id, unvisited);
+
+  const dfs = (id: string): boolean => {
+    state.set(id, visiting);
+    for (const next of adjacency.get(id) || []) {
+      const s = state.get(next) ?? unvisited;
+      if (s === visiting) return true;
+      if (s === unvisited && dfs(next)) return true;
+    }
+    state.set(id, visited);
+    return false;
+  };
+
+  for (const id of nodeIds) {
+    if ((state.get(id) ?? unvisited) === unvisited && dfs(id)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export interface SaveValidationResult {
   valid: boolean;
   errors: string[];
   warnings: string[];
   canSave: boolean; // Whether save should be allowed
+}
+
+export function validateStructuralReadiness(
+  nodes: WorkflowNode[],
+  options?: { strict?: boolean }
+): { errors: string[]; warnings: string[] } {
+  const strict = !!options?.strict;
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  for (const node of nodes) {
+    const nodeType = node.data?.type || node.type;
+    const config = (node.data?.config || {}) as Record<string, unknown>;
+    const def = unifiedNodeRegistry.get(nodeType);
+    if (!def) continue;
+    const inputSchema = def.inputSchema || {};
+    const requiredFields = def.requiredInputs || [];
+
+    for (const fieldName of requiredFields) {
+      const fieldDef = inputSchema[fieldName];
+      if (!fieldDef) continue;
+      if (!isStructuralOwnership(fieldName, fieldDef)) continue;
+      const mode = resolveEffectiveFieldFillMode(fieldName, inputSchema, config as Record<string, any>);
+      const value = config[fieldName];
+      const missing =
+        value === undefined ||
+        value === null ||
+        (typeof value === 'string' && value.trim() === '') ||
+        (Array.isArray(value) && value.length === 0) ||
+        (typeof value === 'object' && !Array.isArray(value) && Object.keys(value as Record<string, unknown>).length === 0);
+
+      if (!missing) continue;
+
+      const runtimeAllowed = fieldDef.fillMode?.supportsRuntimeAI !== false;
+      if (mode === 'runtime_ai' && runtimeAllowed) {
+        warnings.push(`Node "${node.data?.label || node.id}" defers required field "${fieldName}" to runtime_ai`);
+        continue;
+      }
+
+      const message = `Node "${node.data?.label || node.id}" missing required structural field "${fieldName}" before execution`;
+      if (strict) errors.push(message);
+      else warnings.push(message);
+    }
+  }
+
+  return { errors, warnings };
 }
 
 /**
@@ -105,23 +192,50 @@ export function validateWorkflowForSave(
     errors.push(`Found ${invalidEdges.length} edge(s) referencing non-existent nodes`);
   }
 
-  // 3. Validate node configurations
+  // 3. Validate node configurations (registry + fill-mode aware)
   for (const node of nodes) {
     const nodeType = node.data?.type || node.type;
     const config = node.data?.config || {};
+    const def = unifiedNodeRegistry.get(nodeType);
 
-    // Validate If/Else conditions
-    if (nodeType === 'if_else') {
-      if (!config.conditions && !config.condition) {
-        errors.push(`If/Else node "${node.data?.label || node.id}" is missing conditions`);
-      } else if (config.conditions && !Array.isArray(config.conditions)) {
-        // This will be normalized, but warn about it
-        warnings.push(`If/Else node "${node.data?.label || node.id}" has conditions in wrong format (should be array)`);
+    if (def) {
+      const requiredFields = def.requiredInputs || [];
+      for (const fieldName of requiredFields) {
+        const mode = resolveEffectiveFieldFillMode(fieldName, def.inputSchema, config as Record<string, any>);
+        const value = (config as Record<string, unknown>)[fieldName];
+        const missing =
+          value === undefined ||
+          value === null ||
+          (typeof value === 'string' && value.trim() === '') ||
+          (Array.isArray(value) && value.length === 0);
+        // Runtime AI ownership means required static value may be intentionally deferred.
+        if (missing && mode === 'runtime_ai') {
+          warnings.push(
+            `Node "${node.data?.label || node.id}" defers required field "${fieldName}" to runtime_ai`
+          );
+        }
       }
+
+      const configValidation = unifiedNodeRegistry.validateConfig(nodeType, config as Record<string, any>);
+      if (!configValidation.valid) {
+        errors.push(
+          ...configValidation.errors.map(
+            (e) => `Node "${node.data?.label || node.id}" (${nodeType}) invalid config: ${e}`
+          )
+        );
+      }
+    }
+
+    // Backward-compatible specific warning retained until old payloads are fully migrated.
+    if (nodeType === 'if_else' && config.conditions && !Array.isArray(config.conditions)) {
+      warnings.push(`If/Else node "${node.data?.label || node.id}" has conditions in wrong format (should be array)`);
     }
 
     // Add more node-specific validations as needed
   }
+
+  const readiness = validateStructuralReadiness(nodes, { strict: false });
+  warnings.push(...readiness.warnings);
 
   // 4. Check for cycles (basic check - full cycle detection would require DFS)
   const hasIncomingEdges = new Set(edges.map(e => e.target));
@@ -135,23 +249,10 @@ export function validateWorkflowForSave(
     warnings.push(`Found ${isolatedNodes.length} isolated node(s) that are not connected to the workflow`);
   }
 
-  // 5. Validate required node inputs (basic check)
-  // Full validation happens at attach-inputs time, but we can check for obvious issues
-  for (const node of nodes) {
-    const nodeType = node.data?.type || node.type;
-    if (nodeType === 'if_else') {
-      const config = node.data?.config || {};
-      if (config.conditions && Array.isArray(config.conditions)) {
-        for (let i = 0; i < config.conditions.length; i++) {
-          const cond = config.conditions[i];
-          if (typeof cond === 'object' && cond !== null && cond.expression) {
-            if (typeof cond.expression !== 'string' || cond.expression.trim() === '') {
-              errors.push(`If/Else node "${node.data?.label || node.id}" has empty condition at index ${i}`);
-            }
-          }
-        }
-      }
-    }
+  // 4.5 Strict DAG policy: workflow graph must remain acyclic.
+  // Repetition must be represented via loop node semantics, not graph back-edges.
+  if (hasDirectedCycle(nodes, edges)) {
+    errors.push('Workflow graph contains a cycle. Keep DAG structure and use loop node semantics for repetition.');
   }
 
   return {
@@ -300,6 +401,28 @@ export function normalizeWorkflowForSave(
     }
   }
   
+  // Switch-only: reconcile edges when switch nodes have cases (repair branch wiring without AI)
+  let finalNodes = normalizedNodes;
+  let finalEdges = normalizedEdges;
+  const hasSwitchWithCases = finalNodes.some(n => {
+    const t = n.data?.type || n.type;
+    if (t !== 'switch') return false;
+    const cfg = n.data?.config || {};
+    const c = (cfg as { cases?: unknown }).cases;
+    return Array.isArray(c) && c.length > 0;
+  });
+  if (hasSwitchWithCases) {
+    try {
+      const wf: Workflow = { nodes: finalNodes as any, edges: finalEdges as any };
+      const rec = unifiedGraphOrchestrator.reconcileWorkflow(wf);
+      finalNodes = rec.workflow.nodes as any;
+      finalEdges = rec.workflow.edges as any;
+      migrationsApplied.push('reconciled_switch_graph');
+    } catch (e) {
+      console.warn('[NormalizeWorkflow] switch reconcile skipped:', e);
+    }
+  }
+
   // ✅ TELEMETRY: Structured logging for normalization fixes
   if (migrationsApplied.length > 0) {
     const duplicateTriggersRemoved = triggerNodes.length > 1 ? triggerNodes.length - 1 : 0;
@@ -332,8 +455,8 @@ export function normalizeWorkflowForSave(
   }
 
   return {
-    nodes: normalizedNodes,
-    edges: normalizedEdges,
+    nodes: finalNodes,
+    edges: finalEdges,
     migrationsApplied,
   };
 }

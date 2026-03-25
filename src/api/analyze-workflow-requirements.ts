@@ -1,9 +1,7 @@
-// Analyze Workflow Requirements Route
-// Migrated from Supabase Edge Function
-// Uses Ollama models for analysis
+// Analyze Workflow Requirements Route - uses Gemini (GEMINI_API_KEY)
 
 import { Request, Response } from 'express';
-import { ollamaOrchestrator } from '../services/ai/ollama-orchestrator';
+import { geminiOrchestrator } from '../services/ai/gemini-orchestrator';
 
 export default async function analyzeWorkflowRequirements(req: Request, res: Response) {
   try {
@@ -44,9 +42,8 @@ export default async function analyzeWorkflowRequirements(req: Request, res: Res
       Respond with VALID JSON only.
     `;
 
-    // Use Ollama for workflow requirements analysis
-    console.log("Analyzing workflow requirements with Ollama (qwen2.5:14b-instruct-q4_K_M)");
-    const response = await ollamaOrchestrator.processRequest('workflow-analysis', {
+    console.log("Analyzing workflow requirements with Gemini");
+    const response = await geminiOrchestrator.processRequest('workflow-analysis', {
       prompt: `${systemPrompt}\n\nUser Request: ${prompt}`,
       temperature: 0.3,
     });

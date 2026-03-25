@@ -17,6 +17,17 @@ import { unifiedNodeRegistry } from '../registry/unified-node-registry';
 import { unifiedNormalizeNodeTypeString } from '../utils/unified-node-type-normalizer';
 
 /**
+ * Raw metadata type that includes AI-determined properties
+ * These are set directly on node.data.metadata by workflow-builder
+ */
+interface RawNodeMetadata {
+  aiDeterminedCategory?: 'dataSource' | 'transformation' | 'output';
+  aiRole?: string;
+  intendedCapability?: string;
+  [key: string]: unknown;
+}
+
+/**
  * Execution Order - Represents the canonical execution sequence
  */
 export interface ExecutionOrder {
@@ -382,62 +393,78 @@ class ExecutionOrderManagerImpl implements ExecutionOrderManager {
       const nodeDef = unifiedNodeRegistry.get(nodeType);
       const category = nodeDef?.category || '';
 
-      // ✅ UNIVERSAL: Prioritize intendedCapability from metadata (AI-determined, context-aware)
+      // ✅ AI-FIRST: Prioritize AI-determined category from metadata (Gemini's role mapping)
       // This is the PRIMARY source of truth for multi-capability nodes
+      const nodeMetadata = (node.data?.metadata || {}) as RawNodeMetadata;
+      const aiDeterminedCategory = nodeMetadata.aiDeterminedCategory; // From Gemini's role mapping
+      
+      // ✅ FALLBACK: Check intendedCapability from metadata (DSL flows)
       const { NodeMetadataHelper } = require('../../core/types/node-metadata');
       const metadata = NodeMetadataHelper.getMetadata(node);
       const intendedCapability = metadata?.dsl?.intendedCapability;
 
-      // Use capability registry to derive semantic role (data_source / transformation / output)
-      // This is UNIVERSAL – works for any node type.
-      // ✅ FALLBACK: Only use capability registry if intendedCapability not available
-      let capabilities: string[] = [];
-      try {
-        // Lazy import to avoid hard dependency at startup
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const { nodeCapabilityRegistryDSL } = require('../../services/ai/node-capability-registry-dsl');
-        capabilities = nodeCapabilityRegistryDSL.getCapabilities(nodeType) || [];
-      } catch {
-        capabilities = [];
-      }
-      const capsLower = capabilities.map(c => c.toLowerCase());
-
+      // ✅ AI-FIRST: Determine trigger role first (separate from category)
       const isTriggerRole =
-        capsLower.includes('trigger') ||
+        nodeDef?.category === 'trigger' ||
+        (nodeMetadata.aiRole && nodeMetadata.aiRole.toLowerCase() === 'trigger') ||
         category === 'trigger';
 
-      // ✅ UNIVERSAL: Use intendedCapability if available (AI-determined, context-aware)
-      // Otherwise fall back to capability-based classification
-      const isDataSourceRole = intendedCapability === 'data_source' || (
-        capsLower.includes('data_source') ||
-        capsLower.includes('read_data') ||
-        category === 'data'
-      );
+      // ✅ AI-FIRST: Use AI-determined category if available
+      let isDataSourceRole = false;
+      let isTransformationRole = false;
+      let isOutputRole = false;
 
-      const isTransformationRole = intendedCapability === 'transformation' || (
-        capsLower.includes('transformation') ||
-        capsLower.includes('ai_processing') ||
-        category === 'ai' ||
-        category === 'transformation' ||
-        category === 'logic'
-      );
+      if (aiDeterminedCategory) {
+        // Use AI-determined category directly
+        isDataSourceRole = aiDeterminedCategory === 'dataSource';
+        isTransformationRole = aiDeterminedCategory === 'transformation';
+        isOutputRole = aiDeterminedCategory === 'output';
+        console.log(`[ExecutionOrder] Using AI-determined category for ${nodeType}: ${aiDeterminedCategory} (from role: ${nodeMetadata.aiRole})`);
+      } else {
+        // ✅ FALLBACK: Use intendedCapability if available (DSL flows)
+        // Otherwise fall back to capability-based classification
+        let capabilities: string[] = [];
+        try {
+          // Lazy import to avoid hard dependency at startup
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const { nodeCapabilityRegistryDSL } = require('../../services/ai/node-capability-registry-dsl');
+          capabilities = nodeCapabilityRegistryDSL.getCapabilities(nodeType) || [];
+        } catch {
+          capabilities = [];
+        }
+        const capsLower = capabilities.map(c => c.toLowerCase());
 
-      // ✅ UNIVERSAL: Use intendedCapability if available (AI-determined, context-aware)
-      // Otherwise fall back to capability-based classification
-      const isOutputRole = intendedCapability === 'output' || (
-        (!isDataSourceRole && (
-          capsLower.includes('output') ||
-          capsLower.includes('write_data') ||
-          capsLower.includes('send_email') ||
-          capsLower.includes('send_post') ||
-          capsLower.includes('send_message') ||
-          capsLower.includes('notification') ||
-          capsLower.includes('terminal') ||
-          category === 'communication' ||
-          category === 'utility'
-        )) ||
-        nodeType === 'log_output' // log_output is always output, even if it has data_source capability
-      );
+        // ✅ FALLBACK: Use intendedCapability if available, otherwise capability-based
+        isDataSourceRole = intendedCapability === 'data_source' || (
+          capsLower.includes('data_source') ||
+          capsLower.includes('read_data') ||
+          category === 'data'
+        );
+
+        isTransformationRole = intendedCapability === 'transformation' || (
+          capsLower.includes('transformation') ||
+          capsLower.includes('ai_processing') ||
+          category === 'ai' ||
+          category === 'transformation' ||
+          category === 'logic'
+        );
+
+        // ✅ FALLBACK: Use intendedCapability if available, otherwise capability-based
+        isOutputRole = intendedCapability === 'output' || (
+          (!isDataSourceRole && (
+            capsLower.includes('output') ||
+            capsLower.includes('write_data') ||
+            capsLower.includes('send_email') ||
+            capsLower.includes('send_post') ||
+            capsLower.includes('send_message') ||
+            capsLower.includes('notification') ||
+            capsLower.includes('terminal') ||
+            category === 'communication' ||
+            category === 'utility'
+          )) ||
+          nodeType === 'log_output' // log_output is always output, even if it has data_source capability
+        );
+      }
       
       if (isTriggerRole) {
         triggerNodes.push(node);

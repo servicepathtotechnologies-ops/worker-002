@@ -82,7 +82,7 @@ Return a JSON object with this structure.`;
       { role: 'system' as const, content: systemPrompt },
       { role: 'user' as const, content: `User Prompt: "${userPrompt}"\n\nAnalyze this prompt and extract the context.` }
     ];
-    const response = await this.llmAdapter.chat('ollama', messages, { model: 'llama3.2' });
+    const response = await this.llmAdapter.chat('gemini', messages, { model: 'gemini-2.5-flash', apiKey: process.env.GEMINI_API_KEY });
     
     try {
       const context = JSON.parse(response.content);
@@ -171,7 +171,7 @@ Return JSON with:
       { role: 'system' as const, content: systemPrompt },
       { role: 'user' as const, content: `Match the user context to available nodes.` }
     ];
-    const response = await this.llmAdapter.chat('ollama', messages, { model: 'llama3.2' });
+    const response = await this.llmAdapter.chat('gemini', messages, { model: 'gemini-2.5-flash', apiKey: process.env.GEMINI_API_KEY });
     
     try {
       const result = JSON.parse(response.content);

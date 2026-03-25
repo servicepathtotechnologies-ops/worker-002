@@ -153,7 +153,8 @@ const NODE_TYPE_ALIASES: Record<string, string[]> = {
   'api_key_auth': ['apikey', 'api key', 'auth', 'key', 'api key auth', 'key auth', 'api authentication', 'api token', 'bearer token'],
   
   // Logging
-  'log_output': ['log', 'debug', 'audit', 'monitor', 'log_output', 'logging', 'log data', 'write log', 'console log', 'output log', 'debug log'],
+  // Include common LLM-generated variants like "logger"
+  'log_output': ['log', 'logger', 'debug', 'audit', 'monitor', 'log_output', 'logging', 'log data', 'write log', 'console log', 'output log', 'debug log'],
   
   // Triggers
   'schedule': ['cron', 'scheduled', 'timer', 'daily', 'hourly', 'weekly', 'time', 'every', 'schedule trigger', 'cron job', 'scheduled task', 'timer trigger', 'recurring', 'periodic schedule'],

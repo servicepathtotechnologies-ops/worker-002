@@ -55,7 +55,7 @@ export class ReasoningEngine {
     options: LLMOptions & { provider?: 'openai' | 'claude' | 'gemini' | 'ollama' } = { 
       model: 'qwen2.5:14b-instruct-q4_K_M', 
       temperature: 0.3,
-      provider: 'ollama'
+      provider: 'gemini'
     }
   ): Promise<ReasoningResult> {
     const reasoningSteps: ReasoningStep[] = [];
@@ -122,7 +122,7 @@ Be precise, logical, and explain your reasoning clearly.`,
     options: LLMOptions & { provider?: 'openai' | 'claude' | 'gemini' | 'ollama' } = { 
       model: 'qwen2.5:14b-instruct-q4_K_M', 
       temperature: 0.3,
-      provider: 'ollama'
+      provider: 'gemini'
     }
   ): Promise<Action[]> {
     const actionsList = availableActions
@@ -334,7 +334,7 @@ Think step by step. Return your reasoning in a structured format:
     options: LLMOptions & { provider?: 'openai' | 'claude' | 'gemini' | 'ollama' } = { 
       model: 'qwen2.5:14b-instruct-q4_K_M', 
       temperature: 0.1,
-      provider: 'ollama'
+      provider: 'gemini'
     }
   ): Promise<boolean> {
     const prompt = `Goal: ${goal}

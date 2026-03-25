@@ -8,7 +8,7 @@ export { questionFormatter } from './question-formatter';
 export { requirementsExtractor } from './requirements-extractor';
 export { workflowValidator } from './workflow-validator';
 export { agenticWorkflowBuilder } from './workflow-builder';
-export { ollamaOrchestrator } from './ollama-orchestrator';
+export { geminiOrchestrator } from './gemini-orchestrator';
 
 // Re-export types
 export type { AnalysisResult, Question, QuestionCategory } from './workflow-analyzer';

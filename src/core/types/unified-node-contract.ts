@@ -12,6 +12,11 @@
  * - Infinite scalability (500+ node types)
  */
 
+import type { FieldHelpCategory } from '../utils/field-help-metadata';
+
+export type FieldFillMode = 'manual_static' | 'runtime_ai' | 'buildtime_ai_once';
+export type FieldOwnershipClass = 'structural' | 'value' | 'credential';
+
 export interface NodeInputField {
   type: 'string' | 'number' | 'boolean' | 'array' | 'object' | 'json' | 'expression';
   description: string;
@@ -20,6 +25,63 @@ export interface NodeInputField {
   examples?: any[];
   validation?: (value: any) => boolean | string; // Return true if valid, or error message
   dependsOn?: string[]; // Field dependencies
+  /**
+   * Universal, registry-driven fill mode metadata.
+   * This describes how values for this input are expected to be provided:
+   * - manual_static: user (or static config) must provide the value
+   * - runtime_ai: value is filled at runtime from upstream JSON + intent
+   * - buildtime_ai_once: AI may generate a static value once during configuration.
+   *
+   * NOTE: This is metadata only; runtime behavior is enforced by dynamic-node-executor.
+   */
+  fillMode?: {
+    /** Default strategy when workflow builders / UI have no explicit choice. */
+    default: FieldFillMode;
+    /** Whether runtime AI input resolution is allowed for this field. */
+    supportsRuntimeAI?: boolean;
+    /** Whether build-time AI is allowed to generate a static value once. */
+    supportsBuildtimeAI?: boolean;
+  };
+  /**
+   * Semantic role for universal runtime AI behavior and UX grouping.
+   * This is metadata only (no node-specific execution branching).
+   */
+  role?: 'title_like' | 'long_body' | 'short_summary' | 'raw_json' | 'id' | 'config' | 'prompt' | 'recipient' | 'content';
+  /** Canonical ownership class used across planner/question/runtime phases. */
+  ownership?: FieldOwnershipClass;
+  /**
+   * Whether this field is essential for useful node behavior in the unified
+   * full-configuration wizard. Required fields are implicitly essential.
+   */
+  essentialForExecution?: boolean;
+  /**
+   * When set, this field mirrors another input field (canonical name on the same node).
+   * Dynamic executor copies from the canonical field before strict runtime_ai validation
+   * if this field is empty. Use with essentialForExecution: false on the alias to avoid
+   * duplicate strict requirements (e.g. Slack `text` vs `message`).
+   */
+  aliasOf?: string;
+  /**
+   * Registry-driven category for "how to get this value" UX and credential flows.
+   */
+  helpCategory?: FieldHelpCategory;
+  /** Optional canonical documentation URL for this field (console / vendor docs). */
+  docsUrl?: string;
+  /** Optional example string shown in guides (non-secret placeholder). */
+  exampleValue?: string;
+  /**
+   * UI hints for schema-driven Properties panel and GET /api/node-definitions.
+   * Populated from NodeLibrary field definitions (options, requiredIf); not used for execution.
+   */
+  ui?: {
+    options?: Array<{ label: string; value: string }>;
+    requiredIf?: { field: string; equals: unknown };
+    /** Visibility only (field optional when shown). Prefer over requiredIf when fields must not be marked required. */
+    visibleIf?: { field: string; equals: unknown };
+    widget?: 'text' | 'textarea' | 'json' | 'multi_email';
+    /** Shown under selects when config value matches whenValue (schema-driven UX). */
+    contextHints?: Array<{ whenValue: string; message: string }>;
+  };
 }
 
 export interface NodeInputSchema {
@@ -37,6 +99,22 @@ export interface NodeOutputPort {
 
 export interface NodeOutputSchema {
   [portName: string]: NodeOutputPort;
+}
+
+/**
+ * Effective output schema: the JSON shape a node produces at runtime.
+ * Used by intent→config to generate downstream node config/code from upstream output.
+ * - For static nodes: properties describe the fixed shape (e.g. http_request → status, body).
+ * - For dynamic nodes (form, code): properties are derived from config (form fields) or marked dynamic.
+ */
+export interface EffectiveOutputSchema {
+  type: 'object' | 'array' | 'string' | 'number' | 'boolean';
+  /** For type 'object': property names and types. Downstream nodes use these to generate code (e.g. $json.number). */
+  properties?: Record<string, { type: string; description?: string }>;
+  /** For type 'array': item shape when known. */
+  itemType?: 'object' | 'string' | 'number' | 'boolean';
+  /** True if output shape is defined by node config (e.g. form fields, code return). Caller should use upstream schema + intent. */
+  dynamic?: boolean;
 }
 
 export interface NodeCredentialRequirement {
@@ -274,6 +352,22 @@ export interface INodeRegistry {
    * Get input schema for node type
    */
   getInputSchema(nodeType: string): NodeInputSchema | undefined;
+  
+  /**
+   * Get effective output schema for a node given its config.
+   * For form: derives properties from config.fields. For code/javascript: returns dynamic object.
+   * Used by intent→config to generate downstream config/code from upstream JSON shape.
+   */
+  getEffectiveOutputSchema(nodeType: string, config?: Record<string, any>): EffectiveOutputSchema | undefined;
+
+  /**
+   * Branching nodes: effective outgoing port names for this workflow node instance
+   * (e.g. switch cases from persisted config). Prefer over definition.outgoingPorts alone.
+   */
+  getOutgoingPortsForWorkflowNode(node: {
+    type?: string;
+    data?: { type?: string; config?: Record<string, any> };
+  }): string[];
   
   /**
    * ✅ UNIVERSAL: Get all nodes with specific workflow-level behavior

@@ -154,26 +154,36 @@ export function normalizeWorkflowGraph(rawGraph: any): NormalizedWorkflowGraph {
       const nodeById = new Map<string, any>(normalizedNodes.map((n: any) => [n.id, n]));
       const logNodes = normalizedNodes.filter((n: any) => getType(n) === 'log_output');
       if (logNodes.length > 0) {
+        const logNodeIds = new Set(logNodes.map((n: any) => n.id));
         const existingLog = logNodes[0];
 
-        // Remove trigger → log_output edges and any outgoing from log_output (sink)
+        // Remove trigger -> log_output edges and any outgoing from any log_output (sink behavior).
         normalizedEdges = normalizedEdges.filter((e: any) => {
-          if (e?.source === existingLog.id) return false;
-          if (e?.target === existingLog.id) {
+          if (logNodeIds.has(e?.source)) return false;
+          if (logNodeIds.has(e?.target)) {
             const src = nodeById.get(e.source);
             if (src && isTrigger(src)) return false;
           }
           return true;
         });
 
-        // Compute terminal nodes (no outgoing), excluding triggers and log_output
-        const sources = new Set(normalizedEdges.map((e: any) => e.source));
-        const terminals = normalizedNodes
-          .filter((n: any) => !sources.has(n.id))
-          .filter((n: any) => !isTrigger(n))
-          .filter((n: any) => getType(n) !== 'log_output');
+        // If multiple logs exist (common for branching observability), preserve them as-is.
+        // Do not collapse all terminal paths into the first log node.
+        const shouldSkipSingleLogRewire = logNodes.length > 1;
+        if (shouldSkipSingleLogRewire) {
+          logger.debug(
+            `[NormalizeWorkflowGraph] 🔀 Preserving ${logNodes.length} log_output nodes; skipping single-log rewiring`
+          );
+        }
+        if (!shouldSkipSingleLogRewire) {
+          // Compute terminal nodes (no outgoing), excluding triggers and log_output
+          const sources = new Set(normalizedEdges.map((e: any) => e.source));
+          const terminals = normalizedNodes
+            .filter((n: any) => !sources.has(n.id))
+            .filter((n: any) => !isTrigger(n))
+            .filter((n: any) => getType(n) !== 'log_output');
 
-        if (terminals.length > 0) {
+          if (terminals.length > 0) {
           const hasFailureTerminal = terminals.some((n: any) => getType(n) === 'stop_and_error');
           const hasSuccessTerminal = terminals.some((n: any) => getType(n) !== 'stop_and_error');
 
@@ -237,6 +247,7 @@ export function normalizeWorkflowGraph(rawGraph: any): NormalizedWorkflowGraph {
             });
             existingPairs.add(key);
           });
+          }
         }
       }
     } catch (e) {
@@ -292,8 +303,8 @@ export function normalizeWorkflowGraph(rawGraph: any): NormalizedWorkflowGraph {
           logger.warn(`[NormalizeWorkflowGraph] ⚠️ Multiple triggers found (${triggerNodes.length}), using first: ${primaryTrigger.id}. This should not happen - graph builder should check before creating triggers.`);
         }
         
-        // Use all nodes for linearization (don't filter out triggers)
-        const nonTriggerNodes = normalizedNodes;
+        // Only non-trigger nodes are linearized after the single primary trigger.
+        const nonTriggerNodes = normalizedNodes.filter((n: any) => !isTriggerNode(n));
 
         // Build adjacency from existing edges to infer ordering
         const outgoingMap = new Map<string, string[]>();
@@ -339,8 +350,12 @@ export function normalizeWorkflowGraph(rawGraph: any): NormalizedWorkflowGraph {
           const nodeType = n.data?.type || n.type || '';
           return nodeType === 'if_else' || nodeType === 'switch';
         });
+        const hasBranchingHandles = normalizedEdges.some((e: any) =>
+          typeof e?.sourceHandle === 'string' &&
+          (e.sourceHandle === 'true' || e.sourceHandle === 'false' || e.sourceHandle.startsWith('case_'))
+        );
         
-        if (hasBranchingNodes) {
+        if (hasBranchingNodes || hasBranchingHandles) {
           // ✅ PRESERVE ALL EDGES from branching nodes - do not linearize
           const validNodeIds = new Set(ordered.map((n: any) => n.id));
           const preservedEdges = normalizedEdges.filter((e: any) => 

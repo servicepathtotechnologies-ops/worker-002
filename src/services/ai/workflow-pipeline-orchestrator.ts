@@ -366,6 +366,7 @@ export class WorkflowPipelineOrchestrator {
       mandatoryNodesWithOperations?: Array<{ nodeType: string; operationHint?: string; context?: string }>; // ✅ NEW: Nodes with operation hints
       selectedStructuredPrompt?: string; // ✅ NEW: Selected structured prompt (from summarize layer)
       originalPrompt?: string; // ✅ NEW: Original user prompt (preserved for reference)
+      tagsFromVariation?: string[]; // Tags from registry for selected nodes (ordering/pruning)
     }
   ): Promise<PipelineResult> {
     // ✅ FIXED: Prevent re-entry during build phase
@@ -422,6 +423,7 @@ export class WorkflowPipelineOrchestrator {
       mandatoryNodesWithOperations?: Array<{ nodeType: string; operationHint?: string; context?: string }>; // ✅ NEW: Nodes with operation hints
       selectedStructuredPrompt?: string; // For consistency
       originalPrompt?: string; // For consistency
+      tagsFromVariation?: string[]; // Tags from registry for selected nodes
       explicitNodeTypes?: Set<string>; // ✅ PHASE 1: Explicit nodes from selected variation
       blockedNodeTypes?: Set<string>;  // ✅ PHASE 1: Blocked conflicting nodes
     }
@@ -827,8 +829,10 @@ export class WorkflowPipelineOrchestrator {
       if (!structuredIntent) {
         try {
           const { planWorkflowSpecFromPrompt } = await import('./smart-planner-adapter');
-          // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt for spec planning
-          plannerSpec = await planWorkflowSpecFromPrompt(selectedStructuredPrompt);
+          const { mergePrimaryPlannerPrompt } = await import('./planner-prompt-merge');
+          plannerSpec = await planWorkflowSpecFromPrompt(
+            mergePrimaryPlannerPrompt(originalPrompt || '', selectedStructuredPrompt),
+          );
           if (plannerSpec) {
             console.log(`[PipelineOrchestrator] ✅ Fallback: Using planner output - converting to StructuredIntent`);
             const { convertPlannerSpecToIntent } = await import('./planner-to-intent-converter');
@@ -1193,10 +1197,10 @@ export class WorkflowPipelineOrchestrator {
         
         // ✅ PHASE 4: Extract tags from selected variation (if available)
         // Tags are the source of truth - nodes in tags must be preserved
-        // For now, use nodesFromSelectedVariation as tags (Phase 3 will update to use chain order)
-        const tagsFromVariation = nodesFromSelectedVariation.length > 0 
-          ? nodesFromSelectedVariation 
-          : options?.mandatoryNodeTypes || [];
+        // Prefer options.tagsFromVariation (from registry), else nodesFromSelectedVariation, else mandatoryNodeTypes
+        const tagsFromVariation = (options?.tagsFromVariation && options.tagsFromVariation.length > 0)
+          ? options.tagsFromVariation
+          : (nodesFromSelectedVariation.length > 0 ? nodesFromSelectedVariation : options?.mandatoryNodeTypes || []);
         if (tagsFromVariation.length > 0) {
           console.log(`[PipelineOrchestrator] ✅ PHASE 4: Extracted ${tagsFromVariation.length} tag(s) from selected variation: ${tagsFromVariation.join(', ')}`);
         }

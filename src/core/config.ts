@@ -21,10 +21,6 @@ export const config: any = {
   supabaseUrl: requireEnv('SUPABASE_URL', process.env.VITE_SUPABASE_URL || ''),
   supabaseKey: requireEnv('SUPABASE_SERVICE_ROLE_KEY', process.env.VITE_SUPABASE_SERVICE_ROLE_KEY || ''),
   
-  // Ollama
-  // Check both OLLAMA_BASE_URL (backend) and VITE_OLLAMA_BASE_URL (frontend) for compatibility
-  ollamaHost: process.env.OLLAMA_BASE_URL || process.env.VITE_OLLAMA_BASE_URL || (isProduction ? '' : 'http://localhost:11434'),
-  
   // Redis (if used)
   redisUrl: process.env.REDIS_URL,
   
@@ -53,6 +49,9 @@ export const config: any = {
   // Token Encryption
   encryptionKey: process.env.ENCRYPTION_KEY,
   
+  // Gemini-first node selection (Path B): use LLM + registry for node selection; when false or Path B fails, use keyword-based (Path A)
+  useGeminiFirstNodeSelection: process.env.USE_GEMINI_FIRST_NODE_SELECTION !== 'false',
+
   // Other
   lovableApiKey: process.env.LOVABLE_API_KEY,
   webhookSecret: process.env.WEBHOOK_SECRET,

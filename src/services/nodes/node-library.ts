@@ -48,6 +48,10 @@ export interface ConfigField {
   options?: Array<{ label: string; value: string }>;
   // Generic conditional-required contract (schema-driven)
   requiredIf?: { field: string; equals: any };
+  /** Show field when condition is met without implying required (unlike requiredIf). */
+  visibleIf?: { field: string; equals: unknown };
+  /** Properties panel: notes under selects when value matches (non-execution metadata) */
+  contextHints?: Array<{ whenValue: string; message: string }>;
 }
 
 export interface AISelectionCriteria {
@@ -948,10 +952,12 @@ export class NodeLibrary {
       }
     }
 
-    // Special validation for Gmail: to, subject, body required for send operation
+    // Special validation for Gmail send operation
     if (nodeType === 'google_gmail' && config.operation === 'send') {
-      if (!config.to || config.to.trim() === '') {
-        errors.push('Gmail send operation requires "to" field');
+      const recipientSource = typeof config.recipientSource === 'string' ? config.recipientSource : '';
+      const hasRecipientEmails = typeof config.recipientEmails === 'string' && config.recipientEmails.trim() !== '';
+      if (recipientSource === 'manual_entry' && !hasRecipientEmails) {
+        errors.push('Gmail send operation requires "recipientEmails" when recipientSource is manual_entry');
       }
       if (!config.subject || config.subject.trim() === '') {
         errors.push('Gmail send operation requires "subject" field');
@@ -1055,9 +1061,9 @@ export class NodeLibrary {
     }
 
     // Gmail: from is NOT a credential (OAuth handled separately)
-    // Gmail: to, subject, body are inputs, NOT credentials
+    // Gmail: recipientEmails, subject, body are inputs, NOT credentials
     if (nodeType === 'google_gmail') {
-      if (fieldNameLower === 'to' || fieldNameLower === 'subject' || fieldNameLower === 'body') {
+      if (fieldNameLower === 'recipientemails' || fieldNameLower === 'subject' || fieldNameLower === 'body') {
         return false; // These are inputs
       }
       if (fieldNameLower === 'from') {
@@ -1623,9 +1629,10 @@ export class NodeLibrary {
         keywords: [
           'form', 'form trigger', 'form submission', 'contact form',
           'form submit', 'form data', 'web form', 'form response',
-          'form input', 'form capture', 'form collection', 'form handler'
+          'form input', 'form capture', 'form collection', 'form handler',
+          'age', 'input age', 'user input', 'collect data', 'verify', 'eligible', 'vote', 'check', 'validate'
         ],
-        useCases: ['Contact forms', 'Lead capture', 'Surveys', 'Applications', 'Feedback collection'],
+        useCases: ['Contact forms', 'Lead capture', 'Surveys', 'Applications', 'Feedback collection', 'Age verification', 'Eligibility check'],
         // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
         intentDescription: 'Form submission trigger that executes workflows when users submit web forms. Collects structured data from users through customizable form fields (text, email, textarea, etc.). Used for contact forms, lead capture, surveys, applications, and feedback collection workflows.',
         intentCategories: ['form_trigger', 'data_collection', 'user_input', 'form_submission'],
@@ -1655,7 +1662,8 @@ export class NodeLibrary {
       keywords: [
         'form', 'form trigger', 'form submission', 'contact form',
         'form submit', 'form data', 'web form', 'form response',
-        'form input', 'form capture', 'form collection', 'form handler'
+        'form input', 'form capture', 'form collection', 'form handler',
+        'age', 'input age', 'user input', 'collect data', 'verify', 'eligible', 'vote', 'check', 'validate'
       ],
     };
   }
@@ -2371,9 +2379,10 @@ export class NodeLibrary {
         keywords: [
           'javascript', 'js code', 'javascript code', 'code javascript',
           'custom code', 'code node', 'javascript node', 'js node',
-          'code execution', 'javascript execution', 'run code', 'execute code'
+          'code execution', 'javascript execution', 'run code', 'execute code',
+          'verify', 'check', 'validate', 'age', 'eligible', 'vote', 'condition', 'logic', 'data validation'
         ],
-        useCases: ['Complex transformations', 'Custom logic', 'Data processing'],
+        useCases: ['Complex transformations', 'Custom logic', 'Data processing', 'Age verification', 'Eligibility check', 'Validation logic'],
         intentDescription: 'A code execution node that runs custom JavaScript code to perform complex data transformations, calculations, or custom logic. Provides full programmatic control over data processing, allowing for advanced algorithms, data validation, API response parsing, and custom business logic that cannot be achieved with simpler nodes.',
         intentCategories: ['code_execution', 'data_transformation', 'custom_logic', 'programming'],
       },
@@ -2624,7 +2633,8 @@ export class NodeLibrary {
             type: 'array',
             description: 'Conditions to evaluate. Each condition should have: field (string), operator (equals|not_equals|greater_than|less_than|greater_than_or_equal|less_than_or_equal|contains|not_contains), value (string|number|boolean)',
             examples: [
-              [{ field: 'input.age', operator: 'greater_than_or_equal', value: 18 }],
+              // Form / trigger output is top-level JSON — use $json.<field_internal_name> (matches form field name/key).
+              [{ field: '$json.age', operator: 'greater_than_or_equal', value: 18 }],
               [{ field: '$json.status', operator: 'equals', value: 'active' }],
               // Legacy format still supported:
               [{ leftValue: '{{$json.status}}', operation: 'equals', rightValue: 'error' }],
@@ -2652,9 +2662,10 @@ export class NodeLibrary {
         keywords: [
           'if else', 'if condition', 'conditional', 'if statement',
           'condition check', 'if check', 'conditional logic', 'if then',
-          'if then else', 'conditional branch', 'if branch', 'condition node'
+          'if then else', 'conditional branch', 'if branch', 'condition node',
+          'verify', 'eligible', 'vote', 'age', 'check', 'validate', 'true or false', 'true false', 'branch'
         ],
-        useCases: ['Conditional logic', 'Error handling', 'Validation'],
+        useCases: ['Conditional logic', 'Error handling', 'Validation', 'Age verification', 'Eligibility check', 'True or false output'],
         // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
         intentDescription: 'Conditional branching node that executes different workflow paths based on true/false conditions. Evaluates conditions (equals, greater than, contains, etc.) and routes workflow execution to true or false branches. Used for conditional logic, error handling, data validation, and decision-making in workflows.',
         intentCategories: ['conditional_logic', 'branching', 'decision_making', 'control_flow'],
@@ -2667,20 +2678,40 @@ export class NodeLibrary {
   private createSwitchSchema(): NodeSchema {
     return {
       type: 'switch',
+      schemaVersion: '1.1.0',
       label: 'Switch',
       category: 'logic',
       description: 'Multi-path conditional logic based on value matching',
       configSchema: {
-        required: ['routingType', 'rules'],
+        // Canonical: expression (discriminant, often {{$json.field}}) + cases (branch port values).
+        // Legacy `rules` is accepted at runtime and migrated to `cases` via registry.
+        required: ['expression', 'cases'],
         optional: {
+          expression: {
+            type: 'string',
+            description:
+              'Expression or template evaluated to a scalar (e.g. {{$json.status}}). Must match one of cases[].value.',
+            examples: ['{{$json.status}}', '{{$json.category}}', 'input.region'],
+          },
+          cases: {
+            type: 'array',
+            description:
+              'Case definitions; each value becomes an outgoing port name. Example: [{ value: "active", label: "Active" }]',
+            examples: [
+              [
+                { value: 'active', label: 'Active' },
+                { value: 'pending', label: 'Pending' },
+              ],
+            ],
+          },
           routingType: {
             type: 'string',
-            description: 'Routing type',
+            description: 'Optional hint: how expression is interpreted (e.g. expression, string, number)',
             examples: ['expression', 'string', 'number'],
           },
           rules: {
             type: 'array',
-            description: 'Routing rules',
+            description: 'Deprecated alias for cases; migrated automatically to cases',
           },
         },
       },
@@ -3937,31 +3968,66 @@ export class NodeLibrary {
           // Recipient selection is now strategy-based:
           // - recipientSource: how recipients are determined
           // - recipientEmails: manual recipients (comma-separated)
-          // - to: optional explicit single recipient (advanced / backward compatible)
           // OAuth handled separately via attach-credentials
           recipientSource: {
             type: 'string',
-            description: 'How should recipient email(s) be determined?',
+            description:
+              'How recipients are chosen when sending. Manual: type addresses in Recipient emails. Extract from sheet: runtime uses upstream row data first (typically from a Google Sheets node before Gmail). If upstream has no usable emails, optional inline spreadsheet ID + sheet/range on this node fetches via Google Sheets API (same Google account as Gmail). Precedence: upstream wins; inline fetch is only a fallback.',
             examples: ['manual_entry', 'extract_from_sheet'],
             // UI hint: render as select/radio-style choice
             options: [
               { label: 'Manually enter recipient email(s)', value: 'manual_entry' },
               { label: 'Extract recipient email(s) from Google Sheets output', value: 'extract_from_sheet' },
             ],
+            contextHints: [
+              {
+                whenValue: 'manual_entry',
+                message:
+                  'Enter recipients in Recipient emails (comma-separated). Recipient source is only the mode selector—not where you type email addresses.',
+              },
+              {
+                whenValue: 'extract_from_sheet',
+                message:
+                  'Precedence: (1) emails from upstream nodes (prefer a Google Sheets node with spreadsheet + range there). (2) If none found, optional inline Spreadsheet ID + sheet/range below fetches rows via Sheets API. (3) Connect Google with Gmail + Sheets scopes.',
+              },
+            ],
           },
           recipientEmails: {
             type: 'string',
             description:
-              'Recipient email address(es) for manual entry. Supports comma-separated list (e.g., "a@x.com, b@y.com"). Required if recipientSource is manual_entry.',
+              'Used only when Recipient source is Manual entry: one or more recipient addresses, comma- or newline-separated (e.g. a@x.com, b@y.com). This is the primary field for multiple manual recipients. If you use Extract from sheet, this field is hidden and not used—the workflow supplies emails from prior nodes.',
             examples: ['john@example.com', 'john@example.com, jane@example.com'],
             // Generic conditional-required contract (handled by input discovery layer)
             requiredIf: { field: 'recipientSource', equals: 'manual_entry' },
           },
-          to: {
+          /** Fallback when upstream outputs have no extractable emails; same names as google_sheets for consistency. */
+          spreadsheetId: {
             type: 'string',
-            description: 'Recipient email address (optional). If omitted, the system resolves recipients using recipientSource/intent/upstream data.',
-            examples: ['recipient@example.com', '{{$json.email}}'],
-            // ✅ This is a configurable input field
+            description:
+              'Optional fallback: Google Spreadsheet ID to read when Recipient source is Extract from sheet and upstream data has no usable recipient rows. Leave empty if a Google Sheets node upstream already supplies rows. Runtime order: upstream outputs first; this field only if that fails.',
+            examples: ['1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms'],
+            visibleIf: { field: 'recipientSource', equals: 'extract_from_sheet' },
+          },
+          sheetName: {
+            type: 'string',
+            description: 'Sheet tab name for optional inline fallback read (default Sheet1). Ignored unless Spreadsheet ID is set.',
+            default: 'Sheet1',
+            examples: ['Sheet1', 'Contacts'],
+            visibleIf: { field: 'recipientSource', equals: 'extract_from_sheet' },
+          },
+          range: {
+            type: 'string',
+            description:
+              'Optional A1 range within the sheet for inline fallback (e.g. A2:D500). Empty reads the whole tab. Same format as the Google Sheets node.',
+            examples: ['A2:D100'],
+            visibleIf: { field: 'recipientSource', equals: 'extract_from_sheet' },
+          },
+          useAiRecipientMapping: {
+            type: 'boolean',
+            description:
+              'When enabled, scan every cell in row objects for email addresses (not only columns named like "email"). Use when column headers are messy; still applies after upstream data or inline sheet fetch.',
+            default: false,
+            visibleIf: { field: 'recipientSource', equals: 'extract_from_sheet' },
           },
           subject: {
             type: 'string',
@@ -4678,27 +4744,10 @@ export class NodeLibrary {
       type: 'ai_chat_model',
       label: 'AI Chat Model',
       category: 'ai',
-      description: 'Call a chat model directly to generate a response (Ollama by default)',
+      description: 'Call Gemini 1.5 Flash directly to generate a response (uses GEMINI_API_KEY)',
       configSchema: {
         required: ['prompt'],
         optional: {
-          provider: {
-            type: 'string',
-            description: 'LLM provider (ollama, openai, claude, gemini)',
-            default: 'ollama',
-            examples: ['ollama', 'openai', 'claude', 'gemini'],
-          },
-          model: {
-            type: 'string',
-            description: 'Model name (AWS Production Models)',
-            default: 'qwen2.5:14b-instruct-q4_K_M',
-            examples: [
-              'qwen2.5:14b-instruct-q4_K_M',
-              'qwen2.5:7b-instruct-q4_K_M',
-              'qwen2.5-coder:7b-instruct-q4_K_M',
-              'ctrlchecks-workflow-builder',
-            ],
-          },
           temperature: {
             type: 'number',
             description: 'Creativity (0.0 - 1.0)',
@@ -4760,7 +4809,7 @@ export class NodeLibrary {
       type: 'ai_service',
       label: 'AI Service',
       category: 'ai',
-      description: 'Generic AI service for text processing, summarization, and data analysis',
+      description: 'Generic AI service for text processing, summarization, and data analysis (uses Gemini 1.5 Flash)',
       capabilities: [
         'ai.process',
         'ai.summarize',
@@ -4768,7 +4817,7 @@ export class NodeLibrary {
         'text.process',
         'data.analyze',
       ],
-      providers: ['ollama', 'openai', 'anthropic', 'google'],
+      providers: ['google'],
       keywords: ['ai service', 'ai_service', 'ai service node'],
       configSchema: {
         // ✅ CRITICAL: Required fields for question generation
@@ -4790,18 +4839,6 @@ export class NodeLibrary {
             description: 'Type of AI service operation',
             default: 'summarize',
             examples: ['summarize', 'analyze', 'extract', 'classify', 'translate'],
-          },
-          provider: {
-            type: 'string',
-            description: 'AI provider (ollama, openai, claude, gemini)',
-            default: 'ollama',
-            examples: ['ollama', 'openai', 'claude', 'gemini'],
-          },
-          model: {
-            type: 'string',
-            description: 'Model name (uses provider default if not specified)',
-            default: '', // Will use provider default
-            examples: ['qwen2.5:14b-instruct-q4_K_M', 'gpt-4', 'claude-3-opus'],
           },
           temperature: {
             type: 'number',
@@ -6779,51 +6816,47 @@ export class NodeLibrary {
   }
 
   private createOllamaSchema(): NodeSchema {
+    // ✅ MIGRATED: Ollama node now uses Gemini 1.5 Flash by default
+    // Model selection removed - uses GEMINI_API_KEY from config
     return {
       type: 'ollama',
-      label: 'Ollama',
+      label: 'AI Chat (Gemini)',
       category: 'ai',
-      description: 'Local Ollama models for chat completion',
+      description: 'AI chat completion using Gemini 1.5 Flash (default LLM)',
       configSchema: {
-        required: ['model', 'prompt'],
+        required: ['prompt'],
         optional: {
-          model: {
-            type: 'string',
-            description: 'Ollama model name (AWS Production Models)',
-            examples: [
-              'qwen2.5:14b-instruct-q4_K_M',
-              'qwen2.5:7b-instruct-q4_K_M',
-              'qwen2.5-coder:7b-instruct-q4_K_M',
-              'ctrlchecks-workflow-builder',
-            ],
-          },
           prompt: {
             type: 'string',
             description: 'Prompt text',
             examples: ['{{$json.prompt}}'],
           },
+          temperature: {
+            type: 'number',
+            description: 'Creativity (0.0 - 1.0)',
+            default: 0.7,
+            examples: [0.2, 0.7, 1.0],
+          },
         },
       },
       aiSelectionCriteria: {
-        whenToUse: ['User mentions Ollama', 'Local AI models'],
-        whenNotToUse: ['Cloud AI models'],
+        whenToUse: ['User needs AI chat', 'Text generation', 'AI conversation'],
+        whenNotToUse: ['Complex AI agent workflows'],
         keywords: [
           'ollama', 'ollama ai', 'ollama model', 'ollama chat',
-          'ollama llm', 'local ollama', 'ollama local', 'ollama api',
-          'ollama integration'
+          'ollama llm', 'ai chat', 'ai model', 'llm chat'
         ],
-        useCases: ['Local AI chat'],
-        intentDescription: 'Ollama integration node that performs chat completion using local Ollama models. Runs AI models locally without requiring cloud API access, providing privacy and cost benefits. Used for local AI chat, on-premises AI processing, and local LLM integration.',
-        intentCategories: ['ai_chat', 'ollama', 'local_ai', 'text_generation', 'llm'],
+        useCases: ['AI chat', 'Text generation'],
+        intentDescription: 'AI chat node that performs chat completion using Gemini 1.5 Flash. Uses the default GEMINI_API_KEY for all AI operations. Provides fast, cost-effective AI chat capabilities.',
+        intentCategories: ['ai_chat', 'text_generation', 'llm'],
       },
       commonPatterns: [],
       validationRules: [],
-      capabilities: ['ai.chat', 'ollama.completion'],
-      providers: ['ollama'],
+      capabilities: ['ai.chat', 'ai.completion'],
+      providers: ['google'],
       keywords: [
         'ollama', 'ollama ai', 'ollama model', 'ollama chat',
-        'ollama llm', 'local ollama', 'ollama local', 'ollama api',
-        'ollama integration'
+        'ollama llm', 'ai chat', 'ai model', 'llm chat'
       ],
       // ✅ CRITICAL: Explicit I/O type contract for type system
       nodeCapability: {
@@ -6875,6 +6908,13 @@ export class NodeLibrary {
         acceptsArray: true,
         producesArray: false,
       },
+      outputType: 'object',
+      outputSchema: {
+        response: {
+          type: 'string',
+          description: 'Summarized text produced by the model (primary narrative output for downstream nodes)',
+        },
+      },
     };
   }
 
@@ -6915,21 +6955,10 @@ export class NodeLibrary {
       type: 'chat_model',
       label: 'Chat Model',
       category: 'ai',
-      description: 'Chat model connector for AI Agent node',
+      description: 'Chat model connector for AI Agent node (uses Gemini 1.5 Flash by default)',
       configSchema: {
-        required: ['model'],
+        required: [],
         optional: {
-          provider: {
-            type: 'string',
-            description: 'Provider (ollama, openai, claude, gemini)',
-            default: 'ollama',
-            examples: ['ollama', 'openai', 'claude', 'gemini'],
-          },
-          model: {
-            type: 'string',
-            description: 'Chat model name',
-            examples: ['gpt-4', 'claude-3'],
-          },
           temperature: {
             type: 'number',
             description: 'Creativity/temperature (0.0 - 1.0)',
@@ -6947,7 +6976,7 @@ export class NodeLibrary {
           'llm chat model', 'chat model llm', 'model chat node', 'chat model api'
         ],
         useCases: ['AI Agent connection'],
-        intentDescription: 'Chat model connector node that provides chat model configuration for AI Agent nodes. Connects AI Agent nodes to specific chat models (Ollama, OpenAI, Claude, Gemini) with configurable parameters. Used for AI Agent connection, chat model configuration, and connecting AI agents to language models.',
+        intentDescription: 'Chat model connector node that provides chat model configuration for AI Agent nodes. Uses Gemini 1.5 Flash by default with GEMINI_API_KEY. Used for AI Agent connection, chat model configuration, and connecting AI agents to language models.',
         intentCategories: ['ai_connector', 'chat_model', 'ai_agent_support', 'model_configuration'],
       },
       commonPatterns: [],

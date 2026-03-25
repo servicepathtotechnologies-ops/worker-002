@@ -27,6 +27,7 @@ import { isValidHandle } from '../../core/utils/node-handle-registry';
 import { transformationDetector } from './transformation-detector';
 import { unifiedNodeCategorizer } from './unified-node-categorizer';
 import { nodeLibrary } from '../nodes/node-library';
+import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 
 /**
  * Base validation result interface
@@ -940,6 +941,36 @@ export class FinalIntegrityValidationLayer extends ValidationLayer {
       if (duplicates.length > 1) {
         errors.push(`Duplicate node ID found: "${nodeId}" (${duplicates.length} instances)`);
         details.duplicateNodes.push(nodeId);
+      }
+    });
+
+    // Check 1b: Non-merge nodes with multiple incoming edges mixing branch ports (true/false/case_*) and main-like edges
+    const incomingByTarget = new Map<string, WorkflowEdge[]>();
+    edges.forEach(edge => {
+      if (!incomingByTarget.has(edge.target)) incomingByTarget.set(edge.target, []);
+      incomingByTarget.get(edge.target)!.push(edge);
+    });
+    incomingByTarget.forEach((ins, targetId) => {
+      if (ins.length < 2) return;
+      const targetNode = nodes.find(n => n.id === targetId);
+      if (!targetNode) return;
+      const nt = unifiedNormalizeNodeTypeString(targetNode.type || targetNode.data?.type || '');
+      const ntDef = unifiedNodeRegistry.get(nt);
+      if (nt === 'merge' || (ntDef?.tags || []).includes('merge')) return;
+      const uniqueSources = new Set(ins.map(i => i.source));
+      if (uniqueSources.size < 2) return;
+      const edgeTypes = ins.map(i => String(i.type || i.sourceHandle || 'main').toLowerCase());
+      const hasExplicitBranch = edgeTypes.some(
+        t => t === 'true' || t === 'false' || t.startsWith('case_')
+      );
+      const hasMainLike = edgeTypes.some(t => {
+        const x = t || 'main';
+        return x === 'main' || x === 'default';
+      });
+      if (hasExplicitBranch && hasMainLike) {
+        warnings.push(
+          `Structural warning: node "${targetId}" (${nt}) has multiple incoming edges with mixed branch and main connectors — verify exclusive branches; use a merge node to combine paths.`
+        );
       }
     });
     

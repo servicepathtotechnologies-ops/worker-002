@@ -9,7 +9,7 @@
  * semantic AI-powered resolution.
  */
 
-import { ollamaOrchestrator } from './ollama-orchestrator';
+import { geminiOrchestrator } from './gemini-orchestrator';
 import { SemanticIntent } from './semantic-intent-analyzer';
 import { NodeMetadata } from './node-metadata-enricher';
 import { ResolutionLearningCache } from './resolution-learning-cache';
@@ -66,7 +66,7 @@ export class SemanticNodeResolver {
     const userPrompt = this.formatIntentForAI(intent);
 
     try {
-      const content = await ollamaOrchestrator.processRequest(
+      const content = await geminiOrchestrator.processRequest(
         'workflow-analysis',
         {
           system: systemPrompt,

@@ -46,6 +46,24 @@ describe('LRUNodeOutputsCache', () => {
     });
   });
 
+  describe('getMostRecentOutputEntry', () => {
+    test('returns newest entry by set time including cache key', () => {
+      cache.set('node-a', { x: 1 });
+      cache.set('node-b', { x: 2 });
+      const e = cache.getMostRecentOutputEntry([]);
+      expect(e?.key).toBe('node-b');
+      expect(e?.value).toEqual({ x: 2 });
+    });
+
+    test('excludes keys like getMostRecentOutput', () => {
+      cache.set('$json', { template: true });
+      cache.set('upstream-1', { data: 'from node' });
+      const e = cache.getMostRecentOutputEntry(['$json']);
+      expect(e?.key).toBe('upstream-1');
+      expect(cache.getMostRecentOutput(['$json'])).toEqual(e?.value);
+    });
+  });
+
   describe('LRU Eviction', () => {
     test('should evict least recently used when full', () => {
       // Fill cache to capacity

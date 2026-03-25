@@ -16,10 +16,11 @@
  * }
  */
 
-import { ollamaOrchestrator } from './ai/ollama-orchestrator';
+import { geminiOrchestrator } from './ai/gemini-orchestrator';
 import { nodeLibrary } from './nodes/node-library';
 import { resolveNodeType } from '../core/utils/node-type-resolver-util';
 import { unifiedNodeTypeMatcher } from '../core/utils/unified-node-type-matcher';
+import type { WorkflowPlan as GraphWorkflowPlan } from '../core/types/workflow-plan';
 
 /**
  * Get allowed node types from registry
@@ -162,7 +163,7 @@ export class WorkflowPlanner {
         const planningPrompt = this.buildPlanningPrompt(userPrompt, isRetry, constraints?.mandatoryNodes);
 
         // Call Ollama orchestrator
-        const response = await ollamaOrchestrator.processRequest('workflow-generation', {
+        const response = await geminiOrchestrator.processRequest('workflow-generation', {
           prompt: planningPrompt,
           system: this.getSystemPrompt(isRetry),
         }, {
@@ -267,6 +268,76 @@ export class WorkflowPlanner {
   }
 
   /**
+   * NEW: Plan a graph-level WorkflowPlan (nodes + edges) directly.
+   * Uses the universal WorkflowPlan JSON contract from core/types/workflow-plan.ts.
+   * This does NOT replace the step-based planner yet; it is a separate entrypoint
+   * that callers can opt into.
+   */
+  async planWorkflowGraph(
+    userPrompt: string,
+    constraints?: { mandatoryNodes?: string[]; suggestedNodes?: string[] }
+  ): Promise<GraphWorkflowPlan> {
+    let lastError: Error | null = null;
+    let rawResponse: string | null = null;
+
+    for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
+      try {
+        const isRetry = attempt > 1;
+        const temperature = isRetry ? 0.05 : this.baseTemperature;
+        const maxTokens = isRetry ? 800 : 1200;
+
+        console.log(`[WorkflowPlanner] [Graph] Attempt ${attempt}/${this.maxRetries} (temperature: ${temperature}, max_tokens: ${maxTokens})`);
+
+        const planningPrompt = this.buildGraphPlanningPrompt(
+          userPrompt,
+          isRetry,
+          constraints?.mandatoryNodes
+        );
+
+        const response = await geminiOrchestrator.processRequest('workflow-generation', {
+          prompt: planningPrompt,
+          system: this.getSystemPrompt(isRetry),
+        }, {
+          temperature,
+          max_tokens: maxTokens,
+          cache: false,
+        });
+
+        rawResponse = typeof response === 'string'
+          ? response
+          : (response?.content || (typeof response === 'object' && response !== null ? JSON.stringify(response) : String(response)));
+
+        if (!rawResponse || rawResponse.trim().length === 0) {
+          throw new Error(`Empty response from LLM on graph attempt ${attempt}`);
+        }
+
+        console.log(`[WorkflowPlanner] [Graph] Raw response (attempt ${attempt}):`, rawResponse.substring(0, 200));
+
+        const plan = this.parseGraphPlanningResponse(rawResponse);
+
+        if (!plan.nodes || plan.nodes.length === 0) {
+          throw new Error('Graph WorkflowPlan must contain at least one node');
+        }
+
+        console.log(`[WorkflowPlanner] [Graph] WorkflowPlan created successfully with ${plan.nodes.length} node(s) and ${plan.edges.length} edge(s)`);
+        return plan;
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        console.error(`[WorkflowPlanner] [Graph] Attempt ${attempt} failed:`, lastError.message);
+        if (rawResponse) {
+          console.error(`[WorkflowPlanner] [Graph] Raw response that failed:`, rawResponse.substring(0, 500));
+        }
+        if (attempt < this.maxRetries) {
+          await this.delay(this.retryDelay * attempt);
+          continue;
+        }
+      }
+    }
+
+    throw lastError || new Error('Graph workflow planning failed with unknown error');
+  }
+
+  /**
    * Build planning prompt for AI
    * Uses canonical node types from registry
    * ✅ NEW: Includes mandatory nodes from keyword extraction
@@ -332,11 +403,19 @@ ${triggerNodes.map((type, idx) => `  ${idx + 1}. ${type}`).join('\n')}
 Available Action Node Types (${actionNodes.length} total):
 ${this.formatNodeTypesForPrompt(nodeTypesByCategory)}
 
+🚨 AI NODE SELECTION RULES (DEFAULT TO \"ollama\"):
+- If the user asks for generic AI behavior (\"summarize\", \"analyse\", \"analyze\", \"generate\", \"classify\", \"chat\", etc.)
+  AND does NOT explicitly mention a specific provider (\"gemini\", \"openai\", \"gpt\", \"claude\", \"anthropic\"),
+  you MUST prefer the \"ollama\" node as the AI engine. The \"ollama\" node is the default AI chat/summarization node
+  wired to the platform's server-side Gemini API key and does NOT require user-provided API keys.
+- Only when the user explicitly asks for a specific provider (e.g. \"use Gemini\", \"use OpenAI\", \"use Claude\")
+  should you choose the corresponding provider-specific node type instead of \"ollama\".
+
 🚨 TRANSFORMATION DETECTION RULES:
-- If user prompt contains: "summarize", "summarise", "summary" → MUST include "text_summarizer" or "ollama_llm" or "openai_gpt" or "ai_agent" node
-- If user prompt contains: "analyze", "analyse", "analysis" → MUST include "ai_agent" or "ollama_llm" or "openai_gpt" node
-- If user prompt contains: "process text", "process_text", "ai processing" → MUST include "text_summarizer" or "ai_agent" or "ollama_llm" node
-- If user prompt contains: "classify", "translate", "extract", "generate" → MUST include appropriate AI/transformation node
+- If user prompt contains: \"summarize\", \"summarise\", \"summary\" → MUST include \"ollama\" or \"text_summarizer\" or \"openai_gpt\" or \"ai_agent\" node
+- If user prompt contains: \"analyze\", \"analyse\", \"analysis\" → MUST include \"ollama\" or \"ai_agent\" or \"openai_gpt\" node
+- If user prompt contains: \"process text\", \"process_text\", \"ai processing\" → MUST include \"ollama\" or \"text_summarizer\" or \"ai_agent\" node
+- If user prompt contains: \"classify\", \"translate\", \"extract\", \"generate\" → MUST include an appropriate AI/transformation node, preferring \"ollama\" when provider is not specified
 - NEVER skip transformation steps - if transformation is mentioned, it MUST be included in the workflow
 
 Return ONLY this JSON structure (no other text):
@@ -373,6 +452,130 @@ LOOP NODE RULES:
 ${isRetry ? '🚨 REMEMBER: JSON ONLY. NO MARKDOWN. NO CODE BLOCKS. NO EXPLANATIONS. Use ONLY the node types listed above. Generate MINIMAL workflow only.' : ''}
 
 RESPOND WITH JSON ONLY - NO EXPLANATIONS, NO PROSE, NO MARKDOWN`;
+  }
+
+  /**
+   * Build planning prompt for AI that returns a universal WorkflowPlan JSON:
+   * {
+   *   "description": "optional string",
+   *   "nodes": [{ "id": "form_1", "type": "form", "config": { ... } }, ...],
+   *   "edges": [{ "source": "form_1", "target": "if_1", "type": "main" }, ...]
+   * }
+   */
+  private buildGraphPlanningPrompt(
+    userPrompt: string,
+    isRetry: boolean = false,
+    mandatoryNodes?: string[]
+  ): string {
+    const strictJsonDirective = isRetry
+      ? `🚨 CRITICAL: You MUST respond with ONLY valid JSON. NO explanations, NO prose, NO markdown, NO code blocks. Your response MUST start with { and end with }.`
+      : `CRITICAL: You MUST respond with ONLY valid JSON. Do NOT include any explanations, markdown formatting, code blocks, or text outside the JSON object. Your response must start with { and end with }.`;
+
+    const availableNodeTypes = getAllowedNodeTypes();
+    const nodeTypesByCategory = this.groupNodesByCategory(availableNodeTypes);
+
+    const mandatoryNodesSection = mandatoryNodes && mandatoryNodes.length > 0
+      ? `\n🚨🚨🚨 CRITICAL - MANDATORY NODE TYPES:
+The following node types were extracted from the user's prompt and MUST be included in the \"nodes\" array of your response:
+${mandatoryNodes.map((node, idx) => `  ${idx + 1}. ${node}`).join('\n')}
+
+ABSOLUTE REQUIREMENT: ALL mandatory node types listed above MUST appear in the \"nodes\" array (by \"type\").
+DO NOT omit any mandatory node type, even if you think it's not needed.
+
+`
+      : '';
+
+    return `You are a workflow planning engine that outputs a universal WorkflowPlan JSON for an automation engine.
+
+${strictJsonDirective}
+
+User Request: "${userPrompt}"
+${mandatoryNodesSection}
+
+AVAILABLE NODE TYPES (from registry, use ONLY these \"type\" values):
+${this.formatNodeTypesForPrompt(nodeTypesByCategory)}
+
+WORKFLOWPLAN JSON CONTRACT (STRICT):
+You MUST return a SINGLE JSON object with this exact shape:
+{
+  "description": "optional short description of the workflow",
+  "nodes": [
+    {
+      "id": "string-unique-node-id-1",
+      "type": "canonical_node_type_from_registry",
+      "config": {
+        // optional, must follow the node's input schema (simple key/value pairs)
+      }
+    }
+    // ... more nodes ...
+  ],
+  "edges": [
+    {
+      "source": "id of source node (from nodes array)",
+      "target": "id of target node (from nodes array)",
+      "type": "main" | "true" | "false" | "case_1" | "case_2" | "case_3"
+    }
+    // ... more edges ...
+  ]
+}
+
+RULES:
+- Use ONLY node types from the AVAILABLE NODE TYPES list.
+- The graph MUST be a DAG (no cycles).
+- There must be exactly ONE trigger node (category 'trigger' in registry) as the starting point.
+- All non-trigger nodes must be reachable from the trigger via edges.
+- Use edge type \"main\" for normal linear flow.
+- Use \"true\" / \"false\" only for branches from if_else.
+- Use \"case_N\" only for branches from switch.
+
+RESPOND WITH JSON ONLY - NO EXPLANATIONS, NO PROSE, NO MARKDOWN.`;
+  }
+
+  /**
+   * Parse raw LLM response into a WorkflowPlan (nodes + edges).
+   * Strips markdown fences and performs minimal validation.
+   */
+  private parseGraphPlanningResponse(raw: string): GraphWorkflowPlan {
+    let jsonStr = raw.trim();
+    if (jsonStr.startsWith('```')) {
+      const lines = jsonStr.split('\n');
+      const firstLine = lines[0];
+      const lastLine = lines[lines.length - 1];
+      if (firstLine.includes('```') && lastLine.includes('```')) {
+        jsonStr = lines.slice(1, -1).join('\n').trim();
+      } else if (firstLine.includes('```')) {
+        jsonStr = lines.slice(1).join('\n').trim();
+      }
+    }
+
+    let parsed: any;
+    try {
+      parsed = JSON.parse(jsonStr);
+    } catch (err) {
+      throw new Error(`Failed to parse WorkflowPlan JSON: ${(err as Error).message}`);
+    }
+
+    if (!parsed || typeof parsed !== 'object') {
+      throw new Error('WorkflowPlan must be a JSON object');
+    }
+    if (!Array.isArray(parsed.nodes) || !Array.isArray(parsed.edges)) {
+      throw new Error('WorkflowPlan JSON must contain \"nodes\" and \"edges\" arrays');
+    }
+
+    // Normalize minimal shape
+    return {
+      description: typeof parsed.description === 'string' ? parsed.description : undefined,
+      nodes: parsed.nodes.map((n: any) => ({
+        id: String(n.id),
+        type: String(n.type),
+        config: n.config && typeof n.config === 'object' ? n.config : undefined,
+      })),
+      edges: parsed.edges.map((e: any) => ({
+        source: String(e.source),
+        target: String(e.target),
+        type: String(e.type),
+      })),
+    };
   }
 
   /**

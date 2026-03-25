@@ -2,6 +2,8 @@ import type { UnifiedNodeDefinition, NodeExecutionContext, NodeExecutionResult, 
 import type { NodeSchema } from '../../../services/nodes/node-library';
 import { executeViaLegacyExecutor } from '../unified-node-registry-legacy-adapter';
 import { resolveRecipients } from '../../utils/recipient-resolver';
+import { getGoogleAccessToken } from '../../../shared/google-sheets';
+import { fetchGoogleSheetReadRange } from '../../../shared/google-sheets-read-range';
 
 function ensureRecipientEmailsField(inputSchema: NodeInputSchema): NodeInputSchema {
   if (inputSchema.recipientEmails) return inputSchema;
@@ -59,9 +61,6 @@ async function executeGmailSend(context: NodeExecutionContext, schema: NodeSchem
   let recipientEmails = configWithResolvedInputs.recipientEmails || 
                         filteredBaseConfig.recipientEmails || 
                         context.config?.recipientEmails;
-  let explicitTo = configWithResolvedInputs.to || 
-                   filteredBaseConfig.to || 
-                   context.config?.to;
 
   // ✅ NEW: Check for recipientUrl field - extract email from URL if provided
   const recipientUrl = configWithResolvedInputs.recipientUrl || 
@@ -107,7 +106,7 @@ async function executeGmailSend(context: NodeExecutionContext, schema: NodeSchem
 
   // ✅ FALLBACK: If recipientSource contains an email address (user entered email in wrong field),
   // extract it and use it as recipientEmails
-  if (!recipientEmails && !explicitTo && recipientSource) {
+  if (!recipientEmails && recipientSource) {
     const { parseRecipientEmails } = await import('../../utils/recipient-resolver');
     const emailsFromSource = parseRecipientEmails(recipientSource);
     if (emailsFromSource.length > 0) {
@@ -120,21 +119,95 @@ async function executeGmailSend(context: NodeExecutionContext, schema: NodeSchem
     console.log('[Gmail Override] Config values:', {
       recipientSource,
       recipientEmails,
-      explicitTo,
       configWithResolvedInputs_recipientEmails: configWithResolvedInputs.recipientEmails,
       filteredBaseConfig_recipientEmails: filteredBaseConfig.recipientEmails,
       originalConfig_recipientEmails: context.config?.recipientEmails,
     });
   }
 
-  const resolution = resolveRecipients({
+  const useAggressive =
+    configWithResolvedInputs.useAiRecipientMapping === true ||
+    configWithResolvedInputs.useAiRecipientMapping === 'true';
+
+  let resolution = resolveRecipients({
     credentialInputRecipientEmails: recipientEmails,
-    explicitTo: explicitTo,
     recipientSource,
     userIntent,
     upstreamOutputs: upstreamList,
     maxRecipients: 100,
+    useAggressiveRowScan: useAggressive,
   });
+
+  // Hybrid fallback: only when extract_from_sheet, upstream produced no recipients, and inline sheet is configured.
+  if (
+    resolution.recipientList.length === 0 &&
+    recipientSource === 'extract_from_sheet'
+  ) {
+    const inlineSpreadsheetId = String(configWithResolvedInputs.spreadsheetId ?? '').trim();
+    if (inlineSpreadsheetId) {
+      const userIdsToTry: string[] = [];
+      if (context.userId) userIdsToTry.push(context.userId);
+      if (context.currentUserId && context.currentUserId !== context.userId) {
+        userIdsToTry.push(context.currentUserId);
+      }
+      const accessToken =
+        userIdsToTry.length > 0 ? await getGoogleAccessToken(context.supabase, userIdsToTry) : null;
+      if (!accessToken) {
+        return {
+          success: true,
+          output: {
+            ...(typeof context.inputs === 'object' && context.inputs !== null ? (context.inputs as any) : {}),
+            _error:
+              'Gmail: inline Google Sheets fallback requires a connected Google account (same OAuth as Gmail, with Sheets API access).',
+            _missingInputs: ['spreadsheetId'],
+          },
+        };
+      }
+      const sheetName = String(configWithResolvedInputs.sheetName ?? 'Sheet1').trim() || 'Sheet1';
+      const rangeRaw = configWithResolvedInputs.range;
+      const range =
+        typeof rangeRaw === 'string' && rangeRaw.trim() !== '' ? rangeRaw.trim() : undefined;
+
+      const fetched = await fetchGoogleSheetReadRange({
+        spreadsheetId: inlineSpreadsheetId,
+        sheetName,
+        range,
+        accessToken,
+      });
+
+      if ('error' in fetched) {
+        return {
+          success: true,
+          output: {
+            ...(typeof context.inputs === 'object' && context.inputs !== null ? (context.inputs as any) : {}),
+            _error: `Gmail: could not read inline spreadsheet — ${fetched.error}`,
+            _missingInputs: ['spreadsheetId'],
+          },
+        };
+      }
+
+      const synthetic = {
+        items: fetched.items,
+        rows: fetched.rows,
+        headers: fetched.headers,
+        values: fetched.values,
+        google_sheets: {
+          headers: fetched.headers,
+          rows: fetched.rows,
+          values: fetched.values,
+        },
+      };
+
+      resolution = resolveRecipients({
+        credentialInputRecipientEmails: recipientEmails,
+        recipientSource,
+        userIntent,
+        upstreamOutputs: [synthetic],
+        maxRecipients: 100,
+        useAggressiveRowScan: useAggressive,
+      });
+    }
+  }
 
   if (process.env.DEBUG_GMAIL_RECIPIENTS === 'true') {
     console.log('[RecipientResolver] Gmail recipient resolution:', {
@@ -152,8 +225,8 @@ async function executeGmailSend(context: NodeExecutionContext, schema: NodeSchem
       output: {
         ...(typeof context.inputs === 'object' && context.inputs !== null ? (context.inputs as any) : {}),
         _error:
-          'Gmail: missing recipient email(s). Provide recipientEmails (manual) or ensure upstream data contains an email column, or include an email in the prompt.',
-        _missingInputs: ['to'],
+          'Gmail: missing recipient email(s). For Extract from sheet: ensure a Google Sheets node upstream supplies rows with email-like columns, or set optional Spreadsheet ID + sheet on this node for fallback, or use manual recipients / prompt.',
+        _missingInputs: ['recipientEmails'],
       },
     };
   }
@@ -168,6 +241,7 @@ async function executeGmailSend(context: NodeExecutionContext, schema: NodeSchem
     coerceString(inputObjAny?.responseJson?.subject);
   const inputBody =
     coerceString(inputObjAny?.body) ||
+    (typeof inputObjAny?.response === 'string' ? coerceString(inputObjAny.response) : '') ||
     coerceString(inputObjAny?.response?.body) ||
     coerceString(inputObjAny?.response_text) ||
     coerceString(inputObjAny?.responseText) ||
@@ -205,11 +279,15 @@ async function executeGmailSend(context: NodeExecutionContext, schema: NodeSchem
     const upstreamObj = mostRecentUpstream as any;
     const upstreamSubject =
       coerceString(upstreamObj?.subject) ||
+      (typeof upstreamObj?.response === 'string'
+        ? coerceString((upstreamObj.response as string).split(/\r?\n/)[0] || '')
+        : '') ||
       coerceString(upstreamObj?.response?.subject) ||
       coerceString(upstreamObj?.response_json?.subject) ||
       coerceString(upstreamObj?.responseJson?.subject);
     const upstreamBody =
       coerceString(upstreamObj?.body) ||
+      (typeof upstreamObj?.response === 'string' ? coerceString(upstreamObj.response) : '') ||
       coerceString(upstreamObj?.response?.body) ||
       coerceString(upstreamObj?.response_text) ||
       coerceString(upstreamObj?.responseText) ||
@@ -276,7 +354,134 @@ async function executeGmailSend(context: NodeExecutionContext, schema: NodeSchem
 }
 
 export function overrideGoogleGmail(def: UnifiedNodeDefinition, schema: NodeSchema): UnifiedNodeDefinition {
-  const inputSchema = ensureRecipientEmailsField(def.inputSchema);
+  const baseSchema = ensureRecipientEmailsField(def.inputSchema);
+  const inputSchema: NodeInputSchema = {
+    ...baseSchema,
+    credentialId: baseSchema.credentialId
+      ? {
+          ...baseSchema.credentialId,
+          ownership: 'credential',
+          fillMode: {
+            default: 'manual_static',
+            supportsRuntimeAI: false,
+            supportsBuildtimeAI: false,
+          },
+        }
+      : baseSchema.credentialId,
+    operation: baseSchema.operation
+      ? {
+          ...baseSchema.operation,
+          ownership: 'structural',
+          fillMode: {
+            default: 'manual_static',
+            supportsRuntimeAI: false,
+            supportsBuildtimeAI: false,
+          },
+        }
+      : baseSchema.operation,
+    recipientSource: baseSchema.recipientSource
+      ? {
+          ...baseSchema.recipientSource,
+          ownership: 'structural',
+          fillMode: {
+            default: 'manual_static',
+            supportsRuntimeAI: false,
+            supportsBuildtimeAI: true,
+          },
+        }
+      : baseSchema.recipientSource,
+    recipientEmails: baseSchema.recipientEmails
+      ? {
+          ...baseSchema.recipientEmails,
+          ownership: 'value',
+          fillMode: {
+            default: 'manual_static',
+            supportsRuntimeAI: false,
+            supportsBuildtimeAI: true,
+          },
+          role: 'recipient',
+        }
+      : baseSchema.recipientEmails,
+    spreadsheetId: baseSchema.spreadsheetId
+      ? {
+          ...baseSchema.spreadsheetId,
+          ownership: 'structural',
+          fillMode: {
+            default: 'manual_static',
+            supportsRuntimeAI: false,
+            supportsBuildtimeAI: false,
+          },
+        }
+      : baseSchema.spreadsheetId,
+    range: baseSchema.range
+      ? {
+          ...baseSchema.range,
+          ownership: 'structural',
+          fillMode: {
+            default: 'manual_static',
+            supportsRuntimeAI: false,
+            supportsBuildtimeAI: false,
+          },
+        }
+      : baseSchema.range,
+    subject: baseSchema.subject
+      ? {
+          ...baseSchema.subject,
+          ownership: 'value',
+          fillMode: {
+            default: 'runtime_ai',
+            supportsRuntimeAI: true,
+            supportsBuildtimeAI: true,
+          },
+          role: 'title_like',
+        }
+      : baseSchema.subject,
+    body: baseSchema.body
+      ? {
+          ...baseSchema.body,
+          ownership: 'value',
+          fillMode: {
+            default: 'runtime_ai',
+            supportsRuntimeAI: true,
+            supportsBuildtimeAI: true,
+          },
+          role: 'long_body',
+        }
+      : baseSchema.body,
+    from: baseSchema.from
+      ? {
+          ...baseSchema.from,
+          ownership: 'value',
+          fillMode: {
+            default: 'manual_static',
+            supportsRuntimeAI: false,
+            supportsBuildtimeAI: true,
+          },
+        }
+      : baseSchema.from,
+    messageId: baseSchema.messageId
+      ? {
+          ...baseSchema.messageId,
+          ownership: 'value',
+          fillMode: {
+            default: 'manual_static',
+            supportsRuntimeAI: false,
+            supportsBuildtimeAI: false,
+          },
+        }
+      : baseSchema.messageId,
+    query: baseSchema.query
+      ? {
+          ...baseSchema.query,
+          ownership: 'value',
+          fillMode: {
+            default: 'manual_static',
+            supportsRuntimeAI: false,
+            supportsBuildtimeAI: true,
+          },
+        }
+      : baseSchema.query,
+  };
   return {
     ...def,
     inputSchema,

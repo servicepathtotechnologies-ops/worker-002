@@ -1,8 +1,9 @@
-// AI Node Processors - All AI operations use Ollama
-// Replaces external AI APIs in workflow nodes
+// ✅ MIGRATED: AI Node Processors - All AI operations use Gemini 1.5 Flash
+// Uses GEMINI_API_KEY from config - no model selection needed
 
 import { aiAdapter } from '../../../services/ai/ai-adapter';
-import { ollamaManager } from '../../../services/ai/ollama-manager';
+import { LLMAdapter } from '../../../shared/llm-adapter';
+import { config } from '../../../core/config';
 import { metricsTracker } from '../../../services/ai/metrics-tracker';
 import { performanceOptimizer } from '../../../services/ai/performance-optimizer';
 
@@ -41,15 +42,17 @@ export class TextAnalysisProcessor {
 
       const prompt = `Analyze this text (Analysis type: ${analysisType}):\n\n${text}\n\nProvide a detailed analysis.`;
 
+      // ✅ MIGRATED: Use Gemini 2.5 Flash by default
+      const defaultModel = 'gemini-2.5-flash';
       const cacheKey = performanceOptimizer.generateCacheKey(prompt, {
         analysisType,
-        model: config.model || 'qwen2.5:14b-instruct-q4_K_M',
+        model: config.model || defaultModel,
       });
 
       const result = await performanceOptimizer.getCachedResponse(
         cacheKey,
         () => aiAdapter.textGeneration(prompt, {
-          model: config.model || 'qwen2.5:14b-instruct-q4_K_M',
+          model: config.model || defaultModel,
           system: systemPrompt,
           temperature: config.temperature ?? 0.7,
           max_tokens: config.maxTokens,
@@ -57,16 +60,16 @@ export class TextAnalysisProcessor {
       );
 
       const duration = Date.now() - startTime;
-      metricsTracker.trackRequest(config.model || 'qwen2.5:14b-instruct-q4_K_M', true, duration);
+      metricsTracker.trackRequest(config.model || defaultModel, true, duration);
 
       return {
         analysis: result,
         analysisType,
-        model: config.model || 'qwen2.5:14b-instruct-q4_K_M',
+        model: config.model || defaultModel,
       };
     } catch (error) {
       const duration = Date.now() - startTime;
-      metricsTracker.trackRequest(config.model || 'qwen2.5:14b-instruct-q4_K_M', false, duration, 'text-analysis-error');
+      metricsTracker.trackRequest(config.model || 'gemini-2.5-flash', false, duration, 'text-analysis-error');
       throw error;
     }
   }
@@ -86,6 +89,9 @@ export class CodeGeneratorProcessor {
         throw new Error('Requirements are required for code generation');
       }
 
+      // ✅ MIGRATED: Use Gemini 2.5 Flash for code generation
+      // Note: codeGeneration doesn't support model parameter - uses default from aiAdapter
+      const defaultModel = 'gemini-2.5-flash';
       const code = await aiAdapter.codeGeneration(requirements, {
         language: language || config.language,
         framework: framework || config.framework,
@@ -93,17 +99,17 @@ export class CodeGeneratorProcessor {
       });
 
       const duration = Date.now() - startTime;
-      metricsTracker.trackRequest('qwen2.5-coder:7b', true, duration);
+      metricsTracker.trackRequest(defaultModel, true, duration);
 
       return {
         generatedCode: code,
         language: language || config.language,
         framework: framework || config.framework,
-        model: 'qwen2.5-coder:7b',
+        model: defaultModel,
       };
     } catch (error) {
       const duration = Date.now() - startTime;
-      metricsTracker.trackRequest('qwen2.5-coder:7b', false, duration, 'code-generation-error');
+      metricsTracker.trackRequest('gemini-2.5-flash', false, duration, 'code-generation-error');
       throw error;
     }
   }
@@ -140,13 +146,16 @@ export class ChatProcessor {
         { role: 'user' as const, content: message },
       ];
 
+      // ✅ MIGRATED: Use Gemini 2.5 Flash by default
+      const defaultModel = 'gemini-2.5-flash';
       const response = await aiAdapter.chat(messages, {
-        model: config.model || 'qwen2.5:14b-instruct-q4_K_M',
+        model: config.model || defaultModel,
         temperature: config.temperature ?? 0.7,
       });
 
       const duration = Date.now() - startTime;
-      metricsTracker.trackRequest(config.model || 'qwen2.5:14b-instruct-q4_K_M', true, duration);
+      const usedModel = config.model || defaultModel;
+      metricsTracker.trackRequest(usedModel, true, duration);
 
       return {
         response,
@@ -154,11 +163,12 @@ export class ChatProcessor {
           ...messages,
           { role: 'assistant' as const, content: response },
         ],
-        model: config.model || 'qwen2.5:14b-instruct-q4_K_M',
+        model: usedModel,
       };
     } catch (error) {
       const duration = Date.now() - startTime;
-      metricsTracker.trackRequest(config.model || 'qwen2.5:14b-instruct-q4_K_M', false, duration, 'chat-error');
+      const defaultModel = 'gemini-2.5-flash';
+      metricsTracker.trackRequest(config.model || defaultModel, false, duration, 'chat-error');
       throw error;
     }
   }
@@ -184,8 +194,10 @@ export class DocumentAnalysisProcessor {
 
       const prompt = `Analyze this document:\n\n${documentText}\n\n${focusPrompt}\n\nProvide a comprehensive analysis.`;
 
+      // ✅ MIGRATED: Use Gemini 2.5 Flash by default
+      const defaultModel = 'gemini-2.5-flash';
       const analysis = await aiAdapter.textGeneration(prompt, {
-        model: config.model || 'qwen2.5:14b-instruct-q4_K_M',
+        model: config.model || defaultModel,
         system: 'You are an expert document analyst. Provide detailed, structured analysis.',
         temperature: config.temperature ?? 0.5,
         max_tokens: config.maxTokens || 2000,
@@ -197,17 +209,19 @@ export class DocumentAnalysisProcessor {
       });
 
       const duration = Date.now() - startTime;
-      metricsTracker.trackRequest(config.model || 'qwen2.5:14b-instruct-q4_K_M', true, duration);
+      const usedModel = config.model || defaultModel;
+      metricsTracker.trackRequest(usedModel, true, duration);
 
       return {
         documentAnalysis: analysis,
         summary,
         focusAreas,
-        model: config.model || 'qwen2.5:14b-instruct-q4_K_M',
+        model: usedModel,
       };
     } catch (error) {
       const duration = Date.now() - startTime;
-      metricsTracker.trackRequest(config.model || 'qwen2.5:14b-instruct-q4_K_M', false, duration, 'document-analysis-error');
+      const defaultModel = 'gemini-2.5-flash';
+      metricsTracker.trackRequest(config.model || defaultModel, false, duration, 'document-analysis-error');
       throw error;
     }
   }
@@ -227,23 +241,25 @@ export class SummarizationProcessor {
         throw new Error('Text input is required');
       }
 
+      // ✅ MIGRATED: Use Gemini 2.5 Flash by default
+      const defaultModel = 'gemini-2.5-flash';
       const summary = await aiAdapter.summarize(text, {
         maxLength: maxLength || config.maxLength,
         focus: focus || config.focus,
       });
 
       const duration = Date.now() - startTime;
-      metricsTracker.trackRequest('qwen2.5:14b-instruct-q4_K_M', true, duration);
+      metricsTracker.trackRequest(defaultModel, true, duration);
 
       return {
         summary,
         originalLength: text.length,
         summaryLength: summary.length,
-        model: 'qwen2.5:14b-instruct-q4_K_M',
+        model: defaultModel,
       };
     } catch (error) {
       const duration = Date.now() - startTime;
-      metricsTracker.trackRequest('qwen2.5:14b-instruct-q4_K_M', false, duration, 'summarization-error');
+      metricsTracker.trackRequest('gemini-2.5-flash', false, duration, 'summarization-error');
       throw error;
     }
   }
@@ -263,6 +279,8 @@ export class TranslationProcessor {
         throw new Error('Text and target language are required');
       }
 
+      // ✅ MIGRATED: Use Gemini 2.5 Flash by default
+      const defaultModel = 'gemini-2.5-flash';
       const translation = await aiAdapter.translate(
         text,
         targetLanguage,
@@ -270,18 +288,18 @@ export class TranslationProcessor {
       );
 
       const duration = Date.now() - startTime;
-      metricsTracker.trackRequest('qwen2.5:14b-instruct-q4_K_M', true, duration);
+      metricsTracker.trackRequest(defaultModel, true, duration);
 
       return {
         translation,
         sourceLanguage: sourceLanguage || 'auto',
         targetLanguage,
         originalText: text,
-        model: 'qwen2.5:14b-instruct-q4_K_M',
+        model: defaultModel,
       };
     } catch (error) {
       const duration = Date.now() - startTime;
-      metricsTracker.trackRequest('qwen2.5:14b-instruct-q4_K_M', false, duration, 'translation-error');
+      metricsTracker.trackRequest('gemini-2.5-flash', false, duration, 'translation-error');
       throw error;
     }
   }
@@ -301,19 +319,21 @@ export class SentimentAnalysisProcessor {
         throw new Error('Text input is required');
       }
 
+      // ✅ MIGRATED: Use Gemini 2.5 Flash by default
+      const defaultModel = 'gemini-2.5-flash';
       const sentiment = await aiAdapter.sentimentAnalysis(text);
 
       const duration = Date.now() - startTime;
-      metricsTracker.trackRequest('qwen2.5:14b-instruct-q4_K_M', true, duration);
+      metricsTracker.trackRequest(defaultModel, true, duration);
 
       return {
         ...sentiment,
         text,
-        model: 'qwen2.5:14b-instruct-q4_K_M',
+        model: defaultModel,
       };
     } catch (error) {
       const duration = Date.now() - startTime;
-      metricsTracker.trackRequest('qwen2.5:14b-instruct-q4_K_M', false, duration, 'sentiment-analysis-error');
+      metricsTracker.trackRequest('gemini-2.5-flash', false, duration, 'sentiment-analysis-error');
       throw error;
     }
   }
@@ -333,21 +353,23 @@ export class SemanticSearchProcessor {
         throw new Error('Query and documents array are required');
       }
 
+      // ✅ MIGRATED: Use Gemini 2.5 Flash by default
+      const defaultModel = 'gemini-2.5-flash';
       const results = await aiAdapter.semanticSearch(query, documents, topK);
 
       const duration = Date.now() - startTime;
-      metricsTracker.trackRequest('qwen2.5:14b-instruct-q4_K_M', true, duration);
+      metricsTracker.trackRequest(defaultModel, true, duration);
 
       return {
         results,
         query,
         totalDocuments: documents.length,
         topK,
-        model: 'qwen2.5:14b-instruct-q4_K_M',
+        model: defaultModel,
       };
     } catch (error) {
       const duration = Date.now() - startTime;
-      metricsTracker.trackRequest('qwen2.5:14b-instruct-q4_K_M', false, duration, 'semantic-search-error');
+      metricsTracker.trackRequest('gemini-2.5-flash', false, duration, 'semantic-search-error');
       throw error;
     }
   }

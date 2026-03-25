@@ -13,6 +13,7 @@
  */
 
 import { nodeTypeResolver } from '../../services/nodes/node-type-resolver';
+import { unifiedNodeRegistry } from '../registry/unified-node-registry';
 
 // Use the singleton instance exported from node-type-resolver
 // NOTE: This instance is initialized by NodeLibrary after NodeLibrary is created
@@ -73,6 +74,29 @@ export function resolveNodeType(nodeType: string, debug: boolean = false): strin
  */
 export function resolveNodeTypes(nodeTypes: string[], debug: boolean = false): string[] {
   return nodeTypes.map(type => resolveNodeType(type, debug));
+}
+
+/**
+ * Strict canonical resolver for generation pipelines.
+ * Unlike resolveNodeType(), this does not use alias/capability heuristics.
+ * It only accepts canonical registry node types.
+ */
+export function resolveCanonicalNodeTypeStrict(nodeType: string): string {
+  const trimmed = typeof nodeType === 'string' ? nodeType.trim() : '';
+  if (!trimmed) {
+    throw new Error('Empty node type is not allowed');
+  }
+  if (unifiedNodeRegistry.has(trimmed)) {
+    return trimmed;
+  }
+  const lowered = trimmed.toLowerCase();
+  if (unifiedNodeRegistry.has(lowered)) {
+    return lowered;
+  }
+  throw new Error(
+    `[StrictNodeTypeResolver] Non-canonical node type "${nodeType}". ` +
+    `Generation paths accept only node types present in unified-node-registry.`
+  );
 }
 
 /**

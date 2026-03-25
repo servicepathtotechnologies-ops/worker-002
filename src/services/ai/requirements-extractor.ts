@@ -2,7 +2,7 @@
 // Step 4: Extract technical requirements from refined prompt
 // Uses Llama 3.1:8B to extract URLs, APIs, credentials, schedules, etc.
 
-import { ollamaOrchestrator } from './ollama-orchestrator';
+import { geminiOrchestrator } from './gemini-orchestrator';
 import { Requirements } from '../../core/types/ai-types';
 import { config } from '../../core/config';
 
@@ -46,12 +46,8 @@ export class RequirementsExtractor {
     return 'qwen2.5:14b-instruct-q4_K_M';
   }
 
-  /**
-   * Check if Ollama is configured and available
-   * If Ollama is available, we don't need external API keys like GEMINI_API_KEY
-   */
-  private isOllamaConfigured(): boolean {
-    return !!(config.ollamaHost && config.ollamaHost.trim().length > 0);
+  private isGeminiConfigured(): boolean {
+    return !!(config.geminiApiKey && config.geminiApiKey.trim().length > 0);
   }
 
   /**
@@ -73,7 +69,7 @@ export class RequirementsExtractor {
     );
 
     try {
-      const response = await ollamaOrchestrator.processRequest(
+      const response = await geminiOrchestrator.processRequest(
         'workflow-analysis',
         {
           system: this.buildSystemPrompt(),
@@ -105,7 +101,7 @@ export class RequirementsExtractor {
                                  errorMessage.includes('404') && errorMessage.includes('model');
       
       if (isModelUnavailable) {
-        console.warn('⚠️  [RequirementsExtractor] Ollama models not available, using rule-based fallback');
+        console.warn('⚠️  [RequirementsExtractor] AI models unavailable, using rule-based fallback');
       } else {
         console.error('❌ Error extracting requirements:', error);
       }

@@ -18,6 +18,8 @@ import { getSupabaseClient } from '../core/database/supabase-compat';
 import { workflowLifecycleManager } from '../services/workflow-lifecycle-manager';
 import { normalizeWorkflowGraph, validateNormalizedGraph } from '../core/utils/workflow-graph-normalizer';
 import { ErrorCode, createError } from '../core/utils/error-codes';
+import { getStructuralDiagnostics, materializeStructuralFields } from '../services/ai/structure-materializer';
+import { validateStructuralReadiness } from '../core/validation/workflow-save-validator';
 
 export default async function attachCredentialsHandler(req: Request, res: Response) {
   try {
@@ -135,20 +137,49 @@ export default async function attachCredentialsHandler(req: Request, res: Respon
     // Log the phase for debugging but don't block
     console.log(`[AttachCredentials] ✅ Allowing credential attachment in phase: ${currentPhase}`);
 
-    // Update phase to configuring_credentials (idempotent)
-    await supabase
-      .from('workflows')
-      .update({
-        status: 'configuring_credentials',
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', workflowId);
+    // Phase transitions are decided after readiness validation (no eager phase mutation).
 
     // ✅ CRITICAL: Use canonical normalization (same as save/attach-inputs/execute)
     // This ensures consistent graph structure across all operations
     const { normalizeWorkflowForSave } = await import('../core/validation/workflow-save-validator');
     const workflowGraph = workflow.graph || { nodes: workflow.nodes || [], edges: workflow.edges || [] };
-    const normalized = normalizeWorkflowForSave(workflowGraph.nodes || [], workflowGraph.edges || []);
+    const materialized = materializeStructuralFields({
+      nodes: workflowGraph.nodes || [],
+      edges: workflowGraph.edges || [],
+      metadata: {
+        ...((workflow as any)?.metadata || {}),
+        generatedFrom:
+          ((workflow as any)?.metadata?.generatedFrom as string) ||
+          (workflow as any)?.name ||
+          '',
+      },
+    } as any);
+    const structuralDiagnostics = getStructuralDiagnostics(materialized as any);
+    const structuralReadiness = validateStructuralReadiness((materialized as any).nodes || [], { strict: true });
+    if (structuralDiagnostics.unresolved.length > 0 || structuralReadiness.errors.length > 0) {
+      await supabase
+        .from('workflows')
+        .update({
+          status: 'active',
+          phase: 'configuring_inputs',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', workflowId);
+      return res.status(409).json(
+        createError(
+          ErrorCode.INVALID_PHASE,
+          'Structural inputs are incomplete. Attach inputs before credentials.',
+          {
+            workflowId,
+            phase: 'configuring_inputs',
+            unresolvedStructural: structuralDiagnostics.unresolved,
+            structuralErrors: structuralReadiness.errors,
+          },
+          true
+        )
+      );
+    }
+    const normalized = normalizeWorkflowForSave(materialized.nodes || [], materialized.edges || []);
     
     // ✅ TELEMETRY: Log normalization fixes
     if (normalized.migrationsApplied.length > 0) {
@@ -198,12 +229,21 @@ export default async function attachCredentialsHandler(req: Request, res: Respon
     // Filter out satisfied credentials - they don't need injection
     // ✅ Allow object credentials (e.g., SMTP host/user/pass/port bundle)
     const credentialsToInject: Record<string, string | Record<string, any>> = {};
+    const rejectedCredentialKeys: string[] = [];
     const satisfiedVaultKeys = new Set(
       (credentialDiscovery.satisfiedCredentials || []).map(c => c.vaultKey.toLowerCase())
+    );
+    const allowedVaultKeys = new Set(
+      (credentialDiscovery.requiredCredentials || []).map(c => String(c.vaultKey || '').toLowerCase()).filter(Boolean)
     );
     
     for (const [key, value] of Object.entries(credentials)) {
       const normalizedKey = key.toLowerCase();
+      if (!allowedVaultKeys.has(normalizedKey)) {
+        console.warn(`[AttachCredentials] Rejected unknown/non-credential key "${key}"`);
+        rejectedCredentialKeys.push(key);
+        continue;
+      }
       // Skip if this credential is already satisfied in vault
       if (satisfiedVaultKeys.has(normalizedKey)) {
         console.log(`[AttachCredentials] Skipping ${key} - already satisfied in vault`);
@@ -239,6 +279,21 @@ export default async function attachCredentialsHandler(req: Request, res: Respon
       } else {
         console.warn(`[AttachCredentials] Skipping ${key} - unsupported credential value type: ${typeof value}`);
       }
+    }
+
+    if (rejectedCredentialKeys.length > 0) {
+      return res.status(400).json(
+        createError(
+          ErrorCode.INVALID_CREDENTIAL_FORMAT,
+          'One or more provided credential keys are invalid for this workflow.',
+          {
+            workflowId,
+            rejectedKeys: rejectedCredentialKeys,
+            allowedCredentialKeys: Array.from(allowedVaultKeys),
+          },
+          true
+        )
+      );
     }
     
     // ✅ CRITICAL: Idempotent credential injection - merge with existing

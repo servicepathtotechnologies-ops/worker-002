@@ -19,7 +19,7 @@
  * - Integrate with workflow executor
  */
 
-import { ollamaOrchestrator } from './ai/ollama-orchestrator';
+import { geminiOrchestrator } from './ai/gemini-orchestrator';
 import { getNodeOutputSchema, NODE_OUTPUT_SCHEMAS } from '../core/types/node-output-types';
 import { nodeLibrary } from './nodes/node-library';
 import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../core/utils/unified-node-type-normalizer';
@@ -109,7 +109,7 @@ export class DataSelector {
         const filterPrompt = this.buildFilterPrompt(userPrompt, sourceInfo, context);
         
         // Call Ollama orchestrator
-        const response = await ollamaOrchestrator.processRequest('workflow-generation', {
+        const response = await geminiOrchestrator.processRequest('workflow-generation', {
           prompt: filterPrompt,
           system: this.getSystemPrompt(isRetry),
         }, {

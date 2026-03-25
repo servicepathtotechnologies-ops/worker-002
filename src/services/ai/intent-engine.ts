@@ -8,7 +8,7 @@
  * Prompt → LLM Semantic Parser → Domain Ontology Matcher → Structured Intent Object
  */
 
-import { ollamaOrchestrator } from './ollama-orchestrator';
+import { geminiOrchestrator } from './gemini-orchestrator';
 import { nodeLibrary } from '../nodes/node-library';
 import type { TrainingWorkflow } from './workflow-training-service';
 
@@ -133,7 +133,7 @@ CRITICAL RULES:
 JSON:`;
 
     try {
-      const result = await ollamaOrchestrator.processRequest('workflow-generation', {
+      const result = await geminiOrchestrator.processRequest('workflow-generation', {
         prompt: semanticPrompt,
         temperature: 0.2,  // Low temperature for deterministic output
         maxTokens: 500,

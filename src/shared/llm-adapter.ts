@@ -1,7 +1,5 @@
 // LLM Adapter Layer for CtrlChecks AI
-// Unified interface for all LLM providers (OpenAI, Claude, Gemini, Ollama)
-
-import { Ollama } from 'ollama';
+// Unified interface for LLM providers (OpenAI, Claude, Gemini). Ollama removed; use Gemini.
 
 export interface LLMMessage {
   role: 'system' | 'user' | 'assistant';
@@ -36,195 +34,47 @@ export interface EmbeddingResponse {
 export type LLMProvider = 'openai' | 'claude' | 'gemini' | 'ollama';
 
 /**
- * Unified LLM Adapter
- * Provides consistent interface across all LLM providers
+ * Unified LLM Adapter (Gemini default; ollama routes to Gemini)
  */
 export class LLMAdapter {
-  private ollama: Ollama | null = null;
-
-  constructor() {
-    // Initialize Ollama client if OLLAMA_BASE_URL is set
-    // Check both OLLAMA_BASE_URL (backend) and VITE_OLLAMA_BASE_URL (frontend) for compatibility
-    const ollamaHost = process.env.OLLAMA_BASE_URL || process.env.VITE_OLLAMA_BASE_URL || 'http://localhost:11434';
-    try {
-      // Parse the endpoint URL to extract hostname and port
-      // The Ollama client expects hostname:port format (no protocol) for HTTP endpoints
-      // This prevents SSL errors when connecting to HTTP endpoints
-      let hostConfig: string;
-      
-      try {
-        const url = new URL(ollamaHost);
-        
-        if (url.protocol === 'https:') {
-          hostConfig = ollamaHost; // Keep full URL for HTTPS
-        } else {
-          // For HTTP endpoints, use hostname:port (no protocol)
-          const port = url.port || '11434';
-          if (port === '80' || port === '') {
-            hostConfig = url.hostname;
-          } else {
-            hostConfig = `${url.hostname}:${port}`;
-          }
-        }
-      } catch (error) {
-        // If URL parsing fails, try to extract hostname:port manually
-        if (ollamaHost.startsWith('http://')) {
-          hostConfig = ollamaHost.replace('http://', '').split('/')[0];
-        } else if (ollamaHost.startsWith('https://')) {
-          hostConfig = ollamaHost;
-        } else {
-          hostConfig = ollamaHost;
-        }
-      }
-      
-      this.ollama = new Ollama({ host: hostConfig });
-    } catch (error) {
-      console.warn('Ollama client initialization failed:', error);
-    }
-  }
-
+  constructor() {}
   /**
-   * Chat completion using any provider
+   * Chat completion. 'ollama' is treated as Gemini (GEMINI_API_KEY).
    */
   async chat(
     provider: LLMProvider,
     messages: LLMMessage[],
     options: LLMOptions
   ): Promise<LLMResponse> {
-    switch (provider) {
+    const effectiveProvider = provider === 'ollama' ? 'gemini' : provider;
+    const apiKey = options.apiKey || (effectiveProvider === 'gemini' ? process.env.GEMINI_API_KEY : undefined);
+    switch (effectiveProvider) {
       case 'openai':
         return this.chatOpenAI(messages, options);
       case 'claude':
         return this.chatClaude(messages, options);
       case 'gemini':
-        return this.chatGemini(messages, options);
-      case 'ollama':
-        return this.chatOllama(messages, options);
+        return this.chatGemini(messages, { ...options, apiKey: apiKey || options.apiKey });
       default:
         throw new Error(`Unsupported provider: ${provider}`);
     }
   }
 
-  /**
-   * Generate embeddings
-   */
   async embed(
     provider: 'openai' | 'gemini' | 'ollama',
     text: string,
     apiKey?: string
   ): Promise<EmbeddingResponse> {
+    if (provider === 'ollama') {
+      throw new Error('Ollama removed. Use Gemini for embeddings (or OpenAI).');
+    }
     switch (provider) {
       case 'openai':
         return this.embedOpenAI(text, apiKey);
       case 'gemini':
         return this.embedGemini(text, apiKey);
-      case 'ollama':
-        return this.embedOllama(text);
       default:
         throw new Error(`Embedding not supported for provider: ${provider}`);
-    }
-  }
-
-  /**
-   * Ollama Chat Completion
-   */
-  private async chatOllama(
-    messages: LLMMessage[],
-    options: LLMOptions
-  ): Promise<LLMResponse> {
-    if (!this.ollama) {
-      throw new Error('Ollama client not initialized. Set OLLAMA_BASE_URL environment variable.');
-    }
-
-    const model = options.model || 'qwen2.5:14b-instruct-q4_K_M';
-    
-    try {
-      // Convert messages to Ollama format
-      const ollamaMessages = messages.map(msg => ({
-        role: msg.role,
-        content: msg.content,
-      }));
-
-      // Handle streaming vs non-streaming
-      if (options.stream === true) {
-        // For streaming, collect all chunks
-        const stream = await this.ollama.chat({
-          model,
-          messages: ollamaMessages,
-          options: {
-            temperature: options.temperature ?? 0.7,
-            num_predict: options.maxTokens,
-          },
-          stream: true,
-        });
-        
-        let fullContent = '';
-        for await (const chunk of stream) {
-          fullContent += chunk.message?.content || '';
-        }
-        
-        return {
-          content: fullContent,
-          model,
-          usage: {
-            promptTokens: 0,
-            completionTokens: 0,
-            totalTokens: 0,
-          },
-        };
-      } else {
-        // Non-streaming request
-        const response = await this.ollama.chat({
-          model,
-          messages: ollamaMessages,
-          options: {
-            temperature: options.temperature ?? 0.7,
-            num_predict: options.maxTokens,
-          },
-        });
-
-        return {
-          content: response.message.content,
-          model: response.model,
-          usage: {
-            promptTokens: response.prompt_eval_count || 0,
-            completionTokens: response.eval_count || 0,
-            totalTokens: (response.prompt_eval_count || 0) + (response.eval_count || 0),
-          },
-          finishReason: response.done ? 'stop' : undefined,
-        };
-      }
-    } catch (error) {
-      if (error instanceof Error) {
-        throw new Error(`Ollama API error: ${error.message}`);
-      }
-      throw new Error(`Ollama API request failed: ${String(error)}`);
-    }
-  }
-
-  /**
-   * Ollama Embeddings
-   */
-  private async embedOllama(text: string): Promise<EmbeddingResponse> {
-    if (!this.ollama) {
-      throw new Error('Ollama client not initialized. Set OLLAMA_BASE_URL environment variable.');
-    }
-
-    try {
-      const response = await this.ollama.embeddings({
-        model: 'qwen2.5:14b-instruct-q4_K_M', // Default embedding model
-        prompt: text,
-      });
-
-      return {
-        embedding: response.embedding,
-        model: 'qwen2.5:14b-instruct-q4_K_M',  // Production model for embeddings
-      };
-    } catch (error) {
-      if (error instanceof Error) {
-        throw new Error(`Ollama embeddings error: ${error.message}`);
-      }
-      throw new Error(`Ollama embeddings request failed: ${String(error)}`);
     }
   }
 
@@ -428,7 +278,10 @@ export class LLMAdapter {
 
     // Map model names to Gemini format
     const modelMap: Record<string, string> = {
-      'gemini-1.5-flash': 'gemini-1.5-flash',
+      // Legacy aliases → modern defaults
+      'gemini-1.5-flash': 'gemini-2.5-flash',
+      'gemini-2.0-flash-lite': 'gemini-2.5-flash',
+      // Supported models
       'gemini-1.5-pro': 'gemini-1.5-pro',
       'gemini-2.5-flash': 'gemini-2.5-flash',
       'gemini-2.5-pro': 'gemini-2.5-pro',
@@ -436,7 +289,8 @@ export class LLMAdapter {
       'gemini-pro': 'gemini-pro',
     };
 
-    const model = modelMap[options.model] || options.model || 'gemini-1.5-flash';
+    // Default to gemini-2.5-flash, which ModelManager exposes and Gemini API supports
+    const model = modelMap[options.model] || options.model || 'gemini-2.5-flash';
 
     // Convert messages to Gemini format
     const systemInstruction = messages.find(m => m.role === 'system')?.content;
@@ -580,67 +434,25 @@ export class LLMAdapter {
     throw new Error('Gemini embeddings not yet implemented. Use OpenAI or Ollama for embeddings.');
   }
 
-  /**
-   * Detect provider from model name
-   */
   static detectProvider(model: string): LLMProvider {
-    if (model.startsWith('gpt-') || model.includes('openai')) {
-      return 'openai';
-    }
-    // Check for Ollama production models first
-    if (model.includes('llama3.1') || model.includes('qwen2.5-coder') || model.includes('ollama')) {
-      return 'ollama';
-    }
-    if (model.startsWith('claude-') || model.includes('anthropic')) {
-      return 'claude';
-    }
-    if (model.startsWith('gemini-') || model.includes('gemini')) {
-      return 'gemini';
-    }
-    if (model.includes('llama') || model.includes('ollama') || model.includes('qwen2.5-coder')) {
-      return 'ollama';
-    }
-    // Default to Ollama for production (instead of OpenAI)
-    return 'ollama';
+    if (model.startsWith('gpt-') || model.includes('openai')) return 'openai';
+    if (model.startsWith('claude-') || model.includes('anthropic')) return 'claude';
+    if (model.startsWith('gemini-') || model.includes('gemini')) return 'gemini';
+    return 'gemini';
   }
 
-  /**
-   * Get available models for a provider
-   */
   static getAvailableModels(provider: LLMProvider): string[] {
+    const geminiModels = ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite', 'gemini-pro', 'gemini-1.5-pro'];
     switch (provider) {
       case 'openai':
-        return [
-          'gpt-4o',
-          'gpt-4o-mini',
-          'gpt-4-turbo',
-          'gpt-4',
-          'gpt-3.5-turbo',
-        ];
+        return ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-4', 'gpt-3.5-turbo'];
       case 'claude':
-        return [
-          'claude-3-5-sonnet',
-          'claude-3-5-haiku',
-          'claude-3-opus',
-          'claude-3-sonnet',
-          'claude-3-haiku',
-        ];
+        return ['claude-3-5-sonnet', 'claude-3-5-haiku', 'claude-3-opus', 'claude-3-sonnet', 'claude-3-haiku'];
       case 'gemini':
-        return [
-          'gemini-2.5-flash',
-          'gemini-2.5-pro',
-          'gemini-2.5-flash-lite',
-          'gemini-pro',
-          'gemini-1.5-pro',
-        ];
       case 'ollama':
-        return [
-          'qwen2.5:14b-instruct-q4_K_M',
-          'qwen2.5:7b-instruct-q4_K_M',
-          'qwen2.5-coder:7b-instruct-q4_K_M',
-        ];
+        return geminiModels;
       default:
-        return [];
+        return geminiModels;
     }
   }
 }

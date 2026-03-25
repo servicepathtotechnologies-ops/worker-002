@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from '@jest/globals';
 import { createExecutionContext, setNodeOutput } from '../typed-execution-context';
-import { resolveTypedValue, resolveWithSchema } from '../typed-value-resolver';
+import { resolveTypedValue, resolveWithSchema, isBareFieldPathString } from '../typed-value-resolver';
 import { evaluateCondition } from '../typed-condition-evaluator';
 import { normalizeNodeOutput, getNodeOutputType } from '../node-output-contract';
 
@@ -53,6 +53,18 @@ describe('Typed Execution Engine', () => {
       const resolved = resolveTypedValue('{{$json.age}}', context);
       expect(typeof resolved).toBe('number');
       expect(resolved).toBe(25);
+    });
+
+    it('resolves bare field paths without templates (structured If/Else)', () => {
+      const context = createExecutionContext({ age: 17, data: { qty: 3 } });
+      expect(resolveTypedValue('age', context)).toBe(17);
+      expect(resolveTypedValue('data.qty', context)).toBe(3);
+    });
+
+    it('leaves non-path bare strings unchanged', () => {
+      const context = createExecutionContext({ age: 1 });
+      expect(resolveTypedValue('hello world', context)).toBe('hello world');
+      expect(isBareFieldPathString('hello world')).toBe(false);
     });
   });
 
@@ -123,15 +135,13 @@ describe('Typed Execution Engine', () => {
       expect(result).toBe(true);
     });
 
-    it('should NOT compare strings as numbers (type safety)', () => {
-      const context = createExecutionContext({ value: '20', target: '10' });
+    it('should return false for ordering ops when both resolved values are non-numeric strings', () => {
+      const context = createExecutionContext({ value: 'm', target: 'n' });
       const result = evaluateCondition({
         leftValue: '{{value}}',
         operation: 'greater_than',
         rightValue: '{{target}}',
       }, context);
-      // String comparison: "20" > "10" is false (lexicographic)
-      // This is correct behavior - strings should not be compared as numbers
       expect(result).toBe(false);
     });
 
@@ -143,6 +153,32 @@ describe('Typed Execution Engine', () => {
         operation: 'greater_than',
         rightValue: '{{target}}',
       }, context);
+      expect(result).toBe(true);
+    });
+
+    it('structured If/Else: bare field name compares numeric string age to threshold', () => {
+      const context = createExecutionContext({ age: '17' });
+      const result = evaluateCondition(
+        {
+          leftValue: 'age',
+          operation: 'greater_than_or_equal',
+          rightValue: 18,
+        },
+        context
+      );
+      expect(result).toBe(false);
+    });
+
+    it('structured If/Else: bare field name is true when age meets threshold', () => {
+      const context = createExecutionContext({ age: 19 });
+      const result = evaluateCondition(
+        {
+          leftValue: 'age',
+          operation: 'greater_than_or_equal',
+          rightValue: 18,
+        },
+        context
+      );
       expect(result).toBe(true);
     });
   });
@@ -169,8 +205,8 @@ describe('Typed Execution Engine', () => {
       expect(normalized).toBe(true);
     });
 
-    it('should get correct output type for log node', () => {
-      const type = getNodeOutputType('log');
+    it('should get correct output type for log_output node', () => {
+      const type = getNodeOutputType('log_output');
       expect(type).toBe('string');
     });
 

@@ -17,7 +17,7 @@
  * - If prompt is vague → set "clarification_required": true
  */
 
-import { ollamaOrchestrator } from './ollama-orchestrator';
+import { geminiOrchestrator } from './gemini-orchestrator';
 import { intentClassifier } from './intent-classifier';
 
 export interface StructuredIntent {
@@ -193,8 +193,8 @@ Convert the user prompt into a deterministic JSON structure.
 
 Return the JSON now:`;
 
-    // Use central Ollama orchestrator with the workflow-generation capability
-    const aiRaw = await ollamaOrchestrator.processRequest(
+    // Use central Gemini orchestrator with the workflow-generation capability
+    const aiRaw = await geminiOrchestrator.processRequest(
       'workflow-generation',
       {
         prompt,

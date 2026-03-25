@@ -8,7 +8,7 @@
  * Intent → ReAct Planning → Tool Selection → Dependency Resolution → Plan Steps
  */
 
-import { ollamaOrchestrator } from './ollama-orchestrator';
+import { geminiOrchestrator } from './gemini-orchestrator';
 import { nodeLibrary } from '../nodes/node-library';
 import type { IntentObject } from './intent-engine';
 
@@ -108,7 +108,7 @@ export class PlannerEngine {
     const planningPrompt = this.buildPlanningPrompt(intent, availableNodes);
 
     try {
-      const result = await ollamaOrchestrator.processRequest('workflow-generation', {
+      const result = await geminiOrchestrator.processRequest('workflow-generation', {
         prompt: planningPrompt,
         temperature: 0.2,  // Low temperature for deterministic planning
         maxTokens: 2000,

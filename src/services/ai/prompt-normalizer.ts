@@ -2,7 +2,7 @@
 // Auto-rewrites user prompt into structured format: Trigger, Action, Output
 // Prevents vague prompts from entering the pipeline
 
-import { ollamaOrchestrator } from './ollama-orchestrator';
+import { geminiOrchestrator } from './gemini-orchestrator';
 
 export interface NormalizedPrompt {
   originalPrompt: string;
@@ -71,7 +71,7 @@ export class PromptNormalizer {
         
         // CRITICAL: Pass prompt correctly - processRequest expects input as second param, options as third
         // Add system prompt to enforce JSON output
-        const response = await ollamaOrchestrator.processRequest('workflow-generation', {
+        const response = await geminiOrchestrator.processRequest('workflow-generation', {
           prompt: normalizationPrompt,
           system: `You are a JSON-only response generator. You MUST respond with ONLY valid JSON. No explanations, no markdown, no code blocks, no prose. Your response must start with { and end with }. If you include any text before or after the JSON, the system will fail.`,
         }, {
@@ -80,7 +80,7 @@ export class PromptNormalizer {
         });
 
         // Extract content from response
-        // Response from ollamaManager.generate is { content: string, model: string, usage?: {...} }
+        // Response from AI (Gemini) is string or { content, ... }
         rawResponse = typeof response === 'string' 
           ? response 
           : (response?.content || (typeof response === 'object' && response !== null ? JSON.stringify(response) : String(response)));
@@ -127,13 +127,11 @@ export class PromptNormalizer {
           continue;
         }
         
-        // Check if error is due to missing Ollama models (reuse errorMessage from above)
-        const isModelUnavailable = errorMessage.includes('not found') || 
-                                  errorMessage.includes('ollama models not available') ||
-                                  errorMessage.includes('404') && errorMessage.includes('model');
-        
+        const isModelUnavailable = errorMessage.includes('not found') ||
+                                  errorMessage.includes('models not available') ||
+                                  (errorMessage.includes('404') && errorMessage.includes('model'));
         if (isModelUnavailable) {
-          console.warn('⚠️  [PromptNormalizer] Ollama models not available, using rule-based fallback');
+          console.warn('⚠️  [PromptNormalizer] AI models unavailable, using rule-based fallback');
           return this.fallbackNormalization(userPrompt);
         }
         

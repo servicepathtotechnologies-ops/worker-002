@@ -12,12 +12,13 @@
  * This is the SINGLE SOURCE OF TRUTH for all graph operations in the system.
  */
 
-import { Workflow, WorkflowNode } from '../types/ai-types';
+import { Workflow, WorkflowEdge, WorkflowNode } from '../types/ai-types';
 import { ExecutionOrder, executionOrderManager } from './execution-order-manager';
 import { edgeReconciliationEngine } from './edge-reconciliation-engine';
 import { nodeInjectionCoordinator, InjectionContext } from './node-injection-coordinator';
 import { unifiedNodeRegistry } from '../registry/unified-node-registry';
 import { unifiedNormalizeNodeTypeString } from '../utils/unified-node-type-normalizer';
+import { validateIfElseConditionsAgainstUpstreamForm } from './form-ifelse-binding';
 
 export interface WorkflowValidationResult {
   valid: boolean;
@@ -59,6 +60,21 @@ export interface UnifiedGraphOrchestrator {
     warnings: string[];
   }>;
   
+  /**
+   * Remove edges matching a predicate, then recompute execution order and reconcile.
+   * Use instead of mutating workflow.edges in feature code.
+   */
+  removeEdges(
+    workflow: Workflow,
+    shouldRemove: (edge: WorkflowEdge) => boolean
+  ): {
+    workflow: Workflow;
+    executionOrder: ExecutionOrder;
+    errors: string[];
+    warnings: string[];
+    removedNodeTypes: string[];
+  };
+
   /**
    * Remove node with automatic orchestration
    * Updates execution order, reconciles edges
@@ -170,6 +186,47 @@ class UnifiedGraphOrchestratorImpl implements UnifiedGraphOrchestrator {
     };
   }
   
+  /**
+   * Remove edges matching a predicate, then reconcile.
+   */
+  removeEdges(
+    workflow: Workflow,
+    shouldRemove: (edge: WorkflowEdge) => boolean
+  ): {
+    workflow: Workflow;
+    executionOrder: ExecutionOrder;
+    errors: string[];
+    warnings: string[];
+    removedNodeTypes: string[];
+  } {
+    const errors: string[] = [];
+    const warnings: string[] = [];
+    const filteredEdges = workflow.edges.filter(e => !shouldRemove(e));
+    const updatedWorkflow: Workflow = {
+      ...workflow,
+      edges: filteredEdges,
+    };
+    const executionOrder = executionOrderManager.initialize(updatedWorkflow);
+    const reconciliationResult = edgeReconciliationEngine.reconcileEdges(
+      updatedWorkflow,
+      executionOrder
+    );
+    if (reconciliationResult.errors.length > 0) {
+      errors.push(...reconciliationResult.errors);
+    }
+    if (reconciliationResult.warnings.length > 0) {
+      warnings.push(...reconciliationResult.warnings);
+    }
+    const validation = this.validateWorkflow(reconciliationResult.workflow, executionOrder);
+    return {
+      workflow: reconciliationResult.workflow,
+      executionOrder,
+      errors: [...errors, ...validation.errors],
+      warnings: [...warnings, ...validation.warnings],
+      removedNodeTypes: reconciliationResult.removedNodeTypes || [],
+    };
+  }
+
   /**
    * Remove node with automatic orchestration
    */
@@ -380,7 +437,54 @@ class UnifiedGraphOrchestratorImpl implements UnifiedGraphOrchestrator {
         );
       }
     }
-    
+
+    // Gmail + Sheets hybrid: warn when extract_from_sheet has neither upstream google_sheets nor inline spreadsheetId
+    const reverseAdj = new Map<string, string[]>();
+    for (const e of currentWorkflow.edges) {
+      if (!reverseAdj.has(e.target)) reverseAdj.set(e.target, []);
+      reverseAdj.get(e.target)!.push(e.source);
+    }
+    const ancestorsOf = (nodeId: string): Set<string> => {
+      const seen = new Set<string>();
+      const stack = [...(reverseAdj.get(nodeId) || [])];
+      while (stack.length) {
+        const id = stack.pop()!;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        for (const p of reverseAdj.get(id) || []) stack.push(p);
+      }
+      return seen;
+    };
+
+    for (const n of currentWorkflow.nodes) {
+      const nodeType = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
+      if (nodeType !== 'google_gmail') continue;
+      const cfg = (n.data as { config?: Record<string, unknown> })?.config || {};
+      const op = typeof cfg.operation === 'string' ? cfg.operation : 'send';
+      if (op !== 'send') continue;
+      if (cfg.recipientSource !== 'extract_from_sheet') continue;
+      const inlineId = typeof cfg.spreadsheetId === 'string' ? cfg.spreadsheetId.trim() : '';
+      const ancestors = ancestorsOf(n.id);
+      let hasSheetsUpstream = false;
+      for (const aid of ancestors) {
+        const an = currentWorkflow.nodes.find((x) => x.id === aid);
+        if (!an) continue;
+        const at = unifiedNormalizeNodeTypeString(an.type || an.data?.type || '');
+        if (at === 'google_sheets') {
+          hasSheetsUpstream = true;
+          break;
+        }
+      }
+      if (!hasSheetsUpstream && !inlineId) {
+        warnings.push(
+          `Gmail node "${n.id}": recipientSource is extract_from_sheet but there is no upstream Google Sheets node and no inline Spreadsheet ID. Add a Sheets node before Gmail or set optional Spreadsheet ID + sheet on Gmail for API fallback.`
+        );
+      }
+    }
+
+    const ifElseFormBinding = validateIfElseConditionsAgainstUpstreamForm(currentWorkflow);
+    errors.push(...ifElseFormBinding.errors);
+
     return {
       valid: errors.length === 0,
       errors,

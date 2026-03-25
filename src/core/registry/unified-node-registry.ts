@@ -24,12 +24,22 @@ import {
   NodeCredentialSchema,
   NodeOutputSchema,
   NodeInputSchema,
+  NodeInputField,
   NodeMigration,
-  NodeExecutionContext
+  NodeExecutionContext,
+  EffectiveOutputSchema,
+  FieldFillMode,
 } from '../types/unified-node-contract';
 import { nodeLibrary, CANONICAL_NODE_TYPES, isValidCanonicalNodeType } from '../../services/nodes/node-library';
 import { applyNodeDefinitionOverrides } from './unified-node-registry-overrides';
 import { executeViaLegacyExecutor } from './unified-node-registry-legacy-adapter';
+import { resolveEffectiveFieldFillMode } from '../utils/fill-mode-resolver';
+import { getBranchOutgoingPortsForNode } from '../utils/branching-node-ports';
+import { unifiedNormalizeNodeTypeString } from '../utils/unified-node-type-normalizer';
+import {
+  inferFieldHelpMetadata,
+} from '../utils/field-help-metadata';
+import { classifyFieldOwnership, isCredentialOwnership } from '../utils/field-ownership';
 
 export class UnifiedNodeRegistry implements INodeRegistry {
   private static instance: UnifiedNodeRegistry;
@@ -155,18 +165,160 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     const inputSchema: NodeInputSchema = {};
     const requiredInputs: string[] = [];
     
+    // Helper to derive universal, registry-driven default fill mode metadata
+    const getDefaultFillMode = (fieldName: string, fieldType: string): {
+      default: FieldFillMode;
+      supportsRuntimeAI?: boolean;
+      supportsBuildtimeAI?: boolean;
+    } => {
+      const normalizedType = (fieldType || 'string').toLowerCase();
+      const field = (fieldName || '').toLowerCase();
+      // Must align with inferRole title_like / long_body: subject & titles are filled by AI or upstream,
+      // not fixed at design time like spreadsheet IDs.
+      const isRuntimeSemanticText =
+        field.includes('subject') ||
+        field.includes('title') ||
+        field.includes('heading') ||
+        field.includes('prompt') ||
+        field.includes('message') ||
+        field.includes('body') ||
+        field.includes('content') ||
+        field.includes('text') ||
+        field.includes('summary') ||
+        field.includes('description');
+      const isStructureSemanticField =
+        field === 'fields' ||
+        field.includes('condition') ||
+        field.includes('case') ||
+        field.includes('rule') ||
+        field.includes('schema') ||
+        field.includes('layout') ||
+        field.includes('template') ||
+        field.includes('formtitle') ||
+        field.includes('formdescription') ||
+        field.includes('submitbutton') ||
+        field.includes('successmessage') ||
+        field.includes('placeholder') ||
+        field.includes('label') ||
+        field.includes('options');
+      const isDeterministicConfig =
+        field.includes('id') ||
+        field.includes('key') ||
+        field.includes('token') ||
+        field.includes('secret') ||
+        field.includes('credential') ||
+        field.includes('sheetname') ||
+        field.includes('spreadsheet') ||
+        field.includes('range') ||
+        field.includes('url') ||
+        field.includes('endpoint') ||
+        field.includes('method');
+
+      // Structural shape fields are finalized before runtime; runtime_ai must not own schema keys.
+      if (isStructureSemanticField) {
+        return {
+          default: 'buildtime_ai_once',
+          supportsRuntimeAI: false,
+          supportsBuildtimeAI: true,
+        };
+      }
+      // Text-like fields can support all strategies.
+      if (normalizedType === 'string' || normalizedType === 'expression') {
+        return {
+          default: isRuntimeSemanticText && !isDeterministicConfig ? 'runtime_ai' : 'manual_static',
+          supportsRuntimeAI: true,
+          supportsBuildtimeAI: true,
+        };
+      }
+      // JSON / object / array fields: can be mapped from upstream at runtime,
+      // but build-time AI should not fabricate structures.
+      if (normalizedType === 'object' || normalizedType === 'array' || normalizedType === 'json') {
+        return {
+          default: 'manual_static',
+          supportsRuntimeAI: true,
+          supportsBuildtimeAI: true,
+        };
+      }
+      // Scalars: generally manual configuration only.
+      return {
+        default: 'manual_static',
+        supportsRuntimeAI: false,
+        supportsBuildtimeAI: false,
+      };
+    };
+
+    const inferRole = (fieldName: string, fieldType: string): 'title_like' | 'long_body' | 'short_summary' | 'raw_json' | 'id' | 'config' | 'prompt' | 'recipient' | 'content' => {
+      const f = (fieldName || '').toLowerCase();
+      const t = (fieldType || '').toLowerCase();
+      if (f.includes('subject') || f.includes('title') || f.includes('heading')) return 'title_like';
+      if (f.includes('body') || f.includes('message') || f.includes('content')) return 'long_body';
+      if (f.includes('summary')) return 'short_summary';
+      if (f.includes('prompt') || f.includes('query')) return 'prompt';
+      if (f.includes('recipient') || f === 'to' || f.includes('email')) return 'recipient';
+      if (f.endsWith('id') || f.includes('id')) return 'id';
+      if (t === 'object' || t === 'array' || t === 'json') return 'raw_json';
+      if (t === 'string') return 'content';
+      return 'config';
+    };
+
+    const inferEssentialForExecution = (required: boolean, fieldName: string): boolean => {
+      if (required) return true;
+      const f = (fieldName || '').toLowerCase();
+      return (
+        f.includes('text') ||
+        f.includes('subject') ||
+        f.includes('body') ||
+        f.includes('message') ||
+        f.includes('prompt') ||
+        f.includes('input')
+      );
+    };
+
+    /** Maps NodeLibrary optional/required field defs to Properties panel / API `ui` metadata. */
+    const libraryFieldUi = (fieldName: string, raw: Record<string, unknown> | undefined): NodeInputField['ui'] | undefined => {
+      if (!raw || typeof raw !== 'object') return undefined;
+      const fd = raw as Record<string, unknown>;
+      const out: NonNullable<NodeInputField['ui']> = {};
+      const opts = fd.options;
+      if (Array.isArray(opts) && opts.length > 0) {
+        out.options = opts as NonNullable<NodeInputField['ui']>['options'];
+      }
+      const reqIf = fd.requiredIf;
+      if (reqIf && typeof reqIf === 'object' && reqIf !== null && 'field' in (reqIf as object)) {
+        out.requiredIf = reqIf as NonNullable<NodeInputField['ui']>['requiredIf'];
+      }
+      const visIf = fd.visibleIf;
+      if (visIf && typeof visIf === 'object' && visIf !== null && 'field' in (visIf as object)) {
+        out.visibleIf = visIf as NonNullable<NodeInputField['ui']>['visibleIf'];
+      }
+      if (fieldName.toLowerCase() === 'recipientemails') {
+        out.widget = 'multi_email';
+      }
+      const ctxHints = fd.contextHints;
+      if (Array.isArray(ctxHints) && ctxHints.length > 0) {
+        out.contextHints = ctxHints as NonNullable<NodeInputField['ui']>['contextHints'];
+      }
+      return Object.keys(out).length > 0 ? out : undefined;
+    };
+    
     // Process required fields
     if (schema.configSchema?.required) {
       for (const fieldName of schema.configSchema.required) {
         requiredInputs.push(fieldName);
         const optionalField = schema.configSchema.optional?.[fieldName];
+        const type = optionalField?.type || 'string';
+        const ui = libraryFieldUi(fieldName, optionalField as Record<string, unknown> | undefined);
         inputSchema[fieldName] = {
-          type: optionalField?.type || 'string',
+          type,
           description: optionalField?.description || `${fieldName} field`,
           required: true,
           default: optionalField?.default,
           examples: optionalField?.examples,
           validation: optionalField?.validation,
+          fillMode: getDefaultFillMode(fieldName, type),
+          role: inferRole(fieldName, type),
+          essentialForExecution: inferEssentialForExecution(true, fieldName),
+          ...(ui ? { ui } : {}),
         };
       }
     }
@@ -175,14 +327,38 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     if (schema.configSchema?.optional) {
       for (const [fieldName, fieldDef] of Object.entries(schema.configSchema.optional)) {
         if (!inputSchema[fieldName]) {
+          const type = (fieldDef as any).type || 'string';
+          const ui = libraryFieldUi(fieldName, fieldDef as Record<string, unknown>);
           inputSchema[fieldName] = {
-            type: (fieldDef as any).type || 'string',
+            type,
             description: (fieldDef as any).description || `${fieldName} field`,
             required: false,
             default: (fieldDef as any).default,
             examples: (fieldDef as any).examples,
             validation: (fieldDef as any).validation,
+            fillMode: getDefaultFillMode(fieldName, type),
+            role: inferRole(fieldName, type),
+            essentialForExecution: inferEssentialForExecution(false, fieldName),
+            ...(ui ? { ui } : {}),
           };
+        }
+      }
+    }
+
+    // Registry-wide "how to get it" / credential UX metadata (single inference path)
+    for (const fieldName of Object.keys(inputSchema)) {
+      const fd = inputSchema[fieldName];
+      const meta = inferFieldHelpMetadata(schema.type, fieldName, fd.type);
+      fd.helpCategory = meta.helpCategory;
+      fd.ownership = classifyFieldOwnership(fieldName, fd);
+      if (meta.docsUrl) {
+        fd.docsUrl = meta.docsUrl;
+      }
+      const ex = fd.examples;
+      if (!fd.exampleValue && Array.isArray(ex) && ex.length > 0) {
+        const first = ex[0];
+        if (typeof first === 'string' && first.length > 0 && first.length <= 200) {
+          fd.exampleValue = first;
         }
       }
     }
@@ -199,8 +375,8 @@ export class UnifiedNodeRegistry implements INodeRegistry {
       },
     };
     
-    // Extract credential schema
-    const credentialSchema = this.extractCredentialSchema(schema);
+    // Extract credential schema (merged with helpCategory-driven fields)
+    const credentialSchema = this.extractCredentialSchema(schema, inputSchema);
     
     // Create default config factory
     const defaultConfig = () => {
@@ -220,6 +396,10 @@ export class UnifiedNodeRegistry implements INodeRegistry {
       
       // Validate required fields
       for (const fieldName of requiredInputs) {
+        const effectiveMode = resolveEffectiveFieldFillMode(fieldName, inputSchema, config);
+        if (effectiveMode === 'runtime_ai') {
+          continue;
+        }
         if (config[fieldName] === undefined || config[fieldName] === null || 
             (typeof config[fieldName] === 'string' && config[fieldName].trim() === '')) {
           errors.push(`Required field '${fieldName}' is missing or empty`);
@@ -653,35 +833,29 @@ export class UnifiedNodeRegistry implements INodeRegistry {
   }
   
   /**
-   * Extract credential schema from NodeLibrary schema
+   * Extract credential schema from NodeLibrary schema + unified inputSchema help metadata
    */
-  private extractCredentialSchema(schema: any): NodeCredentialSchema | undefined {
+  private extractCredentialSchema(schema: any, inputSchema: NodeInputSchema): NodeCredentialSchema | undefined {
     const requirements: NodeCredentialRequirement[] = [];
-    const credentialFields: string[] = [];
-    
-    // Check configSchema for credential fields
-    if (schema.configSchema?.optional) {
-      for (const [fieldName, fieldDef] of Object.entries(schema.configSchema.optional)) {
-        const field = fieldDef as any;
-        if (fieldName.toLowerCase().includes('credential') || 
-            fieldName.toLowerCase().includes('api_key') ||
-            fieldName.toLowerCase().includes('token')) {
-          credentialFields.push(fieldName);
-          
-          // Infer provider from node type
-          const provider = this.inferProviderFromNodeType(schema.type);
-          if (provider) {
-            requirements.push({
-              provider,
-              category: this.inferCredentialCategory(fieldName),
-              required: schema.configSchema.required?.includes(fieldName) || false,
-              description: field.description || `${fieldName} credential`,
-            });
-          }
-        }
+    const credentialFieldsSet = new Set<string>();
+    const provider = this.inferProviderFromNodeType(schema.type);
+
+    // Credential schema is ownership-driven only.
+    for (const [fieldName, fd] of Object.entries(inputSchema)) {
+      if (!isCredentialOwnership(fieldName, fd)) continue;
+      if (credentialFieldsSet.has(fieldName)) continue;
+      credentialFieldsSet.add(fieldName);
+      if (provider) {
+        requirements.push({
+          provider,
+          category: this.inferCredentialCategory(fieldName),
+          required: schema.configSchema?.required?.includes(fieldName) || false,
+          description: fd.description || `${fieldName} credential`,
+        });
       }
     }
     
+    const credentialFields = Array.from(credentialFieldsSet);
     if (requirements.length === 0 && credentialFields.length === 0) {
       return undefined;
     }
@@ -823,6 +997,110 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     
     return definition.credentialSchema.requirements.filter(req => req.required);
   }
+
+  /**
+   * Single source for credential preflight: registry schema + minimal provider inference
+   * when NodeLibrary has not yet emitted credentialSchema rows for a node.
+   */
+  getCredentialPreflightDescriptor(nodeType: string): {
+    requiresCheck: boolean;
+    credentialType: 'OAuth' | 'API_KEY' | 'UNKNOWN';
+    requiredScopes: string[];
+    lookupKeys: string[];
+  } {
+    const def = this.get(nodeType);
+    const reqs = def?.credentialSchema?.requirements ?? [];
+    const scopesFromSchema = reqs.flatMap((r) => r.scopes || []);
+    const hasSchemaCreds =
+      reqs.length > 0 || (def?.credentialSchema?.credentialFields?.length ?? 0) > 0;
+
+    const provider = this.inferCredentialProviderForPreflight(nodeType);
+    const requiresCheck = hasSchemaCreds || provider !== undefined;
+
+    if (!requiresCheck) {
+      return {
+        requiresCheck: false,
+        credentialType: 'UNKNOWN',
+        requiredScopes: [],
+        lookupKeys: [],
+      };
+    }
+
+    let requiredScopes = [...scopesFromSchema];
+    if (requiredScopes.length === 0) {
+      requiredScopes = this.inferDefaultOAuthScopes(nodeType, provider);
+    }
+
+    const oauthish =
+      reqs.some((r) => (r.category || '').toLowerCase() === 'oauth') ||
+      (provider &&
+        ['google', 'linkedin', 'twitter', 'facebook', 'instagram'].includes(provider));
+
+    const credentialType: 'OAuth' | 'API_KEY' | 'UNKNOWN' = oauthish ? 'OAuth' : 'API_KEY';
+
+    const lookupKeys = this.buildCredentialLookupKeys(nodeType, provider, def?.credentialSchema?.credentialFields);
+
+    return {
+      requiresCheck: true,
+      credentialType,
+      requiredScopes,
+      lookupKeys,
+    };
+  }
+
+  /** Provider hint for preflight when credentialSchema is empty or incomplete. */
+  private inferCredentialProviderForPreflight(nodeType: string): string | undefined {
+    const t = nodeType.toLowerCase();
+    const fromBase = this.inferProviderFromNodeType(nodeType);
+    if (fromBase) return fromBase;
+    if (t === 'http_request' || t === 'http_post' || t === 'graphql' || t === 'webhook_response') return 'http';
+    if (t === 'email') return 'email';
+    if (t.includes('database_') || t === 'postgresql' || t === 'supabase' || t === 'mysql' || t === 'mongodb' || t === 'redis')
+      return 'database';
+    if (t === 'linkedin' || t === 'twitter' || t === 'instagram' || t === 'facebook') return t.split('_')[0];
+    return undefined;
+  }
+
+  private inferDefaultOAuthScopes(nodeType: string, provider?: string): string[] {
+    const t = nodeType.toLowerCase();
+    if (provider === 'google' || t.includes('google')) {
+      if (t.includes('gmail')) return ['https://www.googleapis.com/auth/gmail.send'];
+      if (t.includes('sheet')) return ['https://www.googleapis.com/auth/spreadsheets'];
+      if (t.includes('drive')) return ['https://www.googleapis.com/auth/drive'];
+      if (t.includes('calendar')) return ['https://www.googleapis.com/auth/calendar'];
+      return [];
+    }
+    if (t === 'linkedin') return ['r_liteprofile', 'r_emailaddress'];
+    return [];
+  }
+
+  private buildCredentialLookupKeys(
+    nodeType: string,
+    provider: string | undefined,
+    credentialFields?: string[]
+  ): string[] {
+    const keys = new Set<string>([nodeType]);
+    if (provider) keys.add(provider);
+    if (nodeType.includes('google')) {
+      keys.add('google');
+      keys.add('google_sheets');
+      keys.add('google_drive');
+      keys.add('gmail');
+    }
+    if (nodeType === 'slack_message' || nodeType === 'slack_webhook') {
+      keys.add('slack');
+    }
+    if (nodeType === 'openai_gpt' || nodeType === 'chat_model') keys.add('openai');
+    if (nodeType === 'anthropic_claude') keys.add('anthropic');
+    if (nodeType === 'google_gemini') {
+      keys.add('gemini');
+      keys.add('google');
+    }
+    if (credentialFields) {
+      for (const f of credentialFields) keys.add(f);
+    }
+    return [...keys];
+  }
   
   getOutputSchema(nodeType: string): NodeOutputSchema | undefined {
     const definition = this.get(nodeType);
@@ -833,11 +1111,77 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     const definition = this.get(nodeType);
     return definition?.inputSchema;
   }
+
+  /**
+   * Get effective output schema for a node given its config.
+   * For form: derives properties from config.fields. For code/javascript: returns dynamic object.
+   * Used by intent→config to generate downstream config/code from upstream JSON shape.
+   */
+  getEffectiveOutputSchema(nodeType: string, config?: Record<string, any>): EffectiveOutputSchema | undefined {
+    const def = this.get(nodeType);
+    if (!def?.outputSchema?.default) {
+      return undefined;
+    }
+    const port = def.outputSchema.default;
+    const baseType = (port.schema?.type as EffectiveOutputSchema['type']) || 'object';
+    const baseProperties = port.schema?.properties as Record<string, { type: string }> | undefined;
+
+    // Form / form_trigger: output shape = { [field.name]: field.type } from config.fields
+    if (
+      (nodeType === 'form' || nodeType === 'form_trigger') &&
+      config?.fields &&
+      Array.isArray(config.fields)
+    ) {
+      const properties: Record<string, { type: string; description?: string }> = {};
+      for (const f of config.fields) {
+        const name = f.name ?? f.key ?? f.id ?? 'field';
+        const type = (f.type || 'string') as string;
+        properties[name] = { type, description: f.description || f.label };
+      }
+      return {
+        type: 'object',
+        properties: Object.keys(properties).length ? properties : undefined,
+        dynamic: Object.keys(properties).length === 0,
+      };
+    }
+
+    // Code / javascript: output is whatever the code returns; schema is dynamic
+    if (nodeType === 'javascript' || nodeType === 'code') {
+      return { type: 'object', dynamic: true };
+    }
+
+    // Static: use registry output schema properties when available
+    if (baseProperties && typeof baseProperties === 'object' && Object.keys(baseProperties).length > 0) {
+      const properties: Record<string, { type: string; description?: string }> = {};
+      for (const [k, v] of Object.entries(baseProperties)) {
+        properties[k] = typeof v === 'object' && v !== null && 'type' in v
+          ? { type: (v as any).type, description: (v as any).description }
+          : { type: typeof v === 'string' ? v : 'string' };
+      }
+      return { type: baseType, properties };
+    }
+
+    return { type: baseType, dynamic: false };
+  }
   
   /**
    * ✅ PHASE 1 FIX: Helper method to check if node allows branching
    * Uses registry as single source of truth
    */
+  /**
+   * Effective outgoing ports for a concrete workflow node (branching: if_else, switch with cases).
+   */
+  getOutgoingPortsForWorkflowNode(node: {
+    type?: string;
+    data?: { type?: string; config?: Record<string, any> };
+  }): string[] {
+    const nodeType = unifiedNormalizeNodeTypeString(node.type || node.data?.type || '');
+    const def = this.get(nodeType);
+    const raw = (node.data?.config || {}) as Record<string, any>;
+    const config = this.migrateConfig(nodeType, raw);
+    return getBranchOutgoingPortsForNode(nodeType, config, def?.outgoingPorts || ['output']);
+  }
+
   allowsBranching(nodeType: string): boolean {
     const definition = this.get(nodeType);
     return definition?.isBranching || false;

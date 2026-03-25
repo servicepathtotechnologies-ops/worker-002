@@ -144,13 +144,10 @@ class AgentExecutor {
 
         // Detect provider from model name
         const detectProvider = (model: string): 'openai' | 'claude' | 'gemini' | 'ollama' => {
-          // Check for Ollama production models first
-          if (model.includes('llama3.1') || model.includes('qwen2.5-coder') || model.includes('ollama')) return 'ollama';
           if (model.startsWith('gpt-') || model.includes('openai')) return 'openai';
           if (model.startsWith('claude-') || model.includes('anthropic')) return 'claude';
           if (model.startsWith('gemini-') || model.includes('gemini')) return 'gemini';
-          // Default to Ollama for production
-          return 'ollama';
+          return 'gemini';
         };
 
         // Reason about next action

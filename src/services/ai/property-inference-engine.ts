@@ -8,7 +8,7 @@
  * Node + Prompt + Context → Extract Context → Complete Schema → Score Confidence → Inference Result
  */
 
-import { ollamaOrchestrator } from './ollama-orchestrator';
+import { geminiOrchestrator } from './gemini-orchestrator';
 import { nodeLibrary } from '../nodes/node-library';
 import type { PlanStep } from './planner-engine';
 import type { IntentObject } from './intent-engine';
@@ -150,7 +150,7 @@ Return ONLY valid JSON:
 Return ONLY JSON, no markdown, no code blocks.`;
 
     try {
-      const result = await ollamaOrchestrator.processRequest('workflow-generation', {
+      const result = await geminiOrchestrator.processRequest('workflow-generation', {
         prompt: contextPrompt,
         temperature: 0.2,
         maxTokens: 300,
@@ -202,7 +202,7 @@ Return ONLY JSON, no markdown, no code blocks.`;
     );
 
     try {
-      const result = await ollamaOrchestrator.processRequest('workflow-generation', {
+      const result = await geminiOrchestrator.processRequest('workflow-generation', {
         prompt: inferencePrompt,
         temperature: 0.2,
         maxTokens: 1000,

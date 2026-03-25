@@ -49,6 +49,7 @@ import { universalHandleResolver } from '../../core/error-prevention';
 // ✅ UNIFIED ORCHESTRATION: Import orchestrator for edge-safe operations
 import { unifiedGraphOrchestrator } from '../../core/orchestration';
 import { executionOrderManager } from '../../core/orchestration/execution-order-manager';
+import { planSwitchCasesFromPrompt } from './switch-case-plan';
 
 export interface ProductionBuildResult {
   success: boolean;
@@ -70,7 +71,10 @@ export interface BuildOptions {
   strictMode?: boolean;
   allowRegeneration?: boolean;
   aiSpecifiedNodesContext?: import('../../core/utils/ai-specified-nodes-context').AISpecifiedNodesContext; // ✅ UNIVERSAL: AI-specified nodes context
-  tagsFromVariation?: string[]; // ✅ PHASE 4: Tags from selected variation (format: ["nodeType"] or ["nodeType:capability"])
+  /** Tags from confirmed structured plan (same format as legacy variation tags) */
+  tagsFromPlan?: string[];
+  /** @deprecated Prefer tagsFromPlan — from older multi-variant summarize UI */
+  tagsFromVariation?: string[];
   explicitNodeTypes?: Set<string>; // ✅ PHASE 1: Explicit nodes from selected variation
   blockedNodeTypes?: Set<string>;  // ✅ PHASE 1: Blocked conflicting nodes
   selectedStructuredPrompt?: string; // ✅ CRITICAL: Selected variation prompt (used instead of originalPrompt for node detection)
@@ -241,9 +245,12 @@ export class ProductionWorkflowBuilder {
     const { createAISpecifiedNodesContext } = await import('../../core/utils/ai-specified-nodes-context');
     const aiSpecifiedNodesContext = createAISpecifiedNodesContext(intent, originalPrompt);
     
-    // ✅ PHASE 4: Extract tags from selected variation (if available)
-    // Tags are the source of truth - nodes in tags must be preserved
-    const tagsFromVariation = options.tagsFromVariation || (intent as any)?._selectedVariation?.keywords || [];
+    // ✅ PHASE 4: Extract tags from confirmed plan / legacy variation (if available)
+    const tagsFromVariation =
+      options.tagsFromPlan ||
+      options.tagsFromVariation ||
+      (intent as any)?._selectedVariation?.keywords ||
+      [];
     if (tagsFromVariation.length > 0) {
       console.log(`[ProductionWorkflowBuilder] ✅ PHASE 4: Extracted ${tagsFromVariation.length} tag(s) from selected variation: ${tagsFromVariation.join(', ')}`);
     }
@@ -2105,76 +2112,68 @@ export class ProductionWorkflowBuilder {
         }
         
         // ✅ ROOT-LEVEL FIX: Special handling for SWITCH nodes
-        // SWITCH nodes need: cases extracted from prompt, multiple output ports (one per case), multiple edges
-        const isSwitchNode = resolvedNodeType === 'switch' || 
-                            (nodeDef && nodeDef.isBranching && nodeDef.outgoingPorts && nodeDef.outgoingPorts.length > 2);
-        
+        const isSwitchNode = resolvedNodeType === 'switch';
+
         if (isSwitchNode) {
-          // ✅ REAL FUNCTIONALITY: Extract cases from user prompt
-          // Pattern: "active statuses send notifications via slack_message, pending statuses trigger email alerts through google_gmail, completed statuses log their details"
-          // Extract: cases = ["active", "pending", "completed"], mappings = {active: "slack_message", pending: "google_gmail", completed: "log_output"}
-          
-          const switchCases: Array<{ value: string; label: string }> = [];
+          const sourceNode =
+            this.findLastAppropriateNode(workflow, 'transformation', resolvedNodeType) ||
+            workflow.nodes.find(n => isTriggerNode(n));
+          const upstreamType = sourceNode
+            ? unifiedNormalizeNodeTypeString(sourceNode.type || sourceNode.data?.type || '')
+            : undefined;
+
+          const plan = planSwitchCasesFromPrompt(originalPrompt, upstreamType, intent);
+          const switchCases: Array<{ value: string; label: string }> = plan.cases.map(c => ({ ...c }));
           const caseToNodeMapping: Map<string, string> = new Map();
-          
-          // Extract cases and mappings from prompt
-          const promptLower = originalPrompt.toLowerCase();
-          
-          // Pattern 1: "X statuses send Y via Z" or "X statuses trigger Y through Z"
-          const casePattern = /(\w+)\s+statuses?\s+(?:send|trigger|route|go to|use)\s+(?:notifications?|alerts?|messages?|emails?|logs?)?\s*(?:via|through|to|using)\s+(\w+)/gi;
-          let match;
+
+          const casePattern =
+            /(\w+)\s+statuses?\s+(?:send|trigger|route|go to|use)\s+(?:notifications?|alerts?|messages?|emails?|logs?)?\s*(?:via|through|to|using)\s+(\w+)/gi;
+          let match: RegExpExecArray | null;
           while ((match = casePattern.exec(originalPrompt)) !== null) {
             const caseValue = match[1].toLowerCase();
             const targetNodeType = match[2].toLowerCase();
-            
-            // Normalize node type (slack_message, google_gmail, log_output, etc.)
             let normalizedNodeType = targetNodeType;
             if (targetNodeType.includes('slack')) normalizedNodeType = 'slack_message';
             else if (targetNodeType.includes('gmail') || targetNodeType.includes('email')) normalizedNodeType = 'google_gmail';
             else if (targetNodeType.includes('log')) normalizedNodeType = 'log_output';
-            
-            switchCases.push({ value: caseValue, label: caseValue.charAt(0).toUpperCase() + caseValue.slice(1) });
+            if (!switchCases.some(c => c.value === caseValue)) {
+              switchCases.push({
+                value: caseValue,
+                label: caseValue.charAt(0).toUpperCase() + caseValue.slice(1),
+              });
+            }
             caseToNodeMapping.set(caseValue, normalizedNodeType);
           }
-          
-          // Pattern 2: "if status is X route to Y, if status is Z route to W"
+
           if (switchCases.length === 0) {
-            const ifPattern = /(?:if|when)\s+(?:\w+\s+)?(?:is|equals|==)\s+["']?(\w+)["']?\s+(?:route|send|go|use)\s+(?:to|via|through)\s+(\w+)/gi;
+            const ifPattern =
+              /(?:if|when)\s+(?:\w+\s+)?(?:is|equals|==)\s+["']?(\w+)["']?\s+(?:route|send|go|use)\s+(?:to|via|through)\s+(\w+)/gi;
             while ((match = ifPattern.exec(originalPrompt)) !== null) {
               const caseValue = match[1].toLowerCase();
               const targetNodeType = match[2].toLowerCase();
-              
               let normalizedNodeType = targetNodeType;
               if (targetNodeType.includes('slack')) normalizedNodeType = 'slack_message';
               else if (targetNodeType.includes('gmail') || targetNodeType.includes('email')) normalizedNodeType = 'google_gmail';
               else if (targetNodeType.includes('log')) normalizedNodeType = 'log_output';
-              
-              switchCases.push({ value: caseValue, label: caseValue.charAt(0).toUpperCase() + caseValue.slice(1) });
+              switchCases.push({
+                value: caseValue,
+                label: caseValue.charAt(0).toUpperCase() + caseValue.slice(1),
+              });
               caseToNodeMapping.set(caseValue, normalizedNodeType);
             }
           }
-          
-          // Pattern 3: Extract from intent actions if available
+
           if (switchCases.length === 0 && intent.actions) {
-            // Try to infer cases from action types and config
+            const statusKeywords = ['active', 'pending', 'completed', 'success', 'failed', 'error', 'new', 'old'];
             for (const action of intent.actions) {
               const actionType = action.type.toLowerCase();
               const actionConfig = action.config || {};
-              
-              // Look for case keywords in action type or config
-              const statusKeywords = ['active', 'pending', 'completed', 'success', 'failed', 'error', 'new', 'old'];
-              
-              // Check action type for keywords
               for (const keyword of statusKeywords) {
-                if (actionType.includes(keyword)) {
-                  if (!switchCases.some(c => c.value === keyword)) {
-                    switchCases.push({ value: keyword, label: keyword.charAt(0).toUpperCase() + keyword.slice(1) });
-                    caseToNodeMapping.set(keyword, actionType);
-                  }
+                if (actionType.includes(keyword) && !switchCases.some(c => c.value === keyword)) {
+                  switchCases.push({ value: keyword, label: keyword.charAt(0).toUpperCase() + keyword.slice(1) });
+                  caseToNodeMapping.set(keyword, actionType);
                 }
               }
-              
-              // Check config for case-related values
               const configStr = JSON.stringify(actionConfig).toLowerCase();
               for (const keyword of statusKeywords) {
                 if (configStr.includes(keyword) && !switchCases.some(c => c.value === keyword)) {
@@ -2184,16 +2183,14 @@ export class ProductionWorkflowBuilder {
               }
             }
           }
-          
-          // ✅ CRITICAL: If no cases found, create default cases from output nodes
+
           if (switchCases.length === 0) {
             const outputNodes = workflow.nodes.filter(n => {
               const nodeType = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
-              return nodeCapabilityRegistryDSL.isOutput(nodeType) || 
-                     nodeCapabilityRegistryDSL.canWriteData(nodeType);
+              return (
+                nodeCapabilityRegistryDSL.isOutput(nodeType) || nodeCapabilityRegistryDSL.canWriteData(nodeType)
+              );
             });
-            
-            // Create cases from output nodes (case_1, case_2, etc.)
             outputNodes.forEach((outputNode, index) => {
               const caseValue = `case_${index + 1}`;
               const nodeType = unifiedNormalizeNodeTypeString(outputNode.type || outputNode.data?.type || '');
@@ -2201,44 +2198,29 @@ export class ProductionWorkflowBuilder {
               caseToNodeMapping.set(caseValue, nodeType);
             });
           }
-          
-          // ✅ REAL FUNCTIONALITY: Extract expression field from prompt
-          // Pattern: "route by status", "switch on priority", "based on type"
-          let expressionField = 'status'; // Default
+
+          let expressionTemplate = plan.expressionTemplate;
           const expressionPatterns = [
             /(?:route|switch|based|by|on)\s+(?:by|on)?\s+(\w+)/i,
             /(\w+)\s+(?:status|field|value|type|category)/i,
           ];
-          
           for (const pattern of expressionPatterns) {
-            const match = originalPrompt.match(pattern);
-            if (match && match[1]) {
-              expressionField = match[1].toLowerCase();
+            const m = originalPrompt.match(pattern);
+            if (m && m[1]) {
+              expressionTemplate = `{{$json.${m[1].toLowerCase()}}}`;
               break;
             }
           }
-          
-          // ✅ REAL FUNCTIONALITY: Set cases in switch node config
+
           if (switchCases.length > 0) {
             newNode.data.config.cases = switchCases;
-            newNode.data.config.expression = `{{$json.${expressionField}}}`; // ✅ REAL FUNCTIONALITY: Expression from prompt analysis
-            
-            // Update outgoingPorts dynamically - each case gets its own output port
-            const caseValues = switchCases.map(c => c.value);
-            if (nodeDef) {
-              nodeDef.outgoingPorts = caseValues; // ✅ REAL FUNCTIONALITY: Dynamic ports based on cases
-            }
-            
-            console.log(`[ProductionWorkflowBuilder]   ✅ Switch node configured with ${switchCases.length} cases:`, caseValues);
-            console.log(`[ProductionWorkflowBuilder]   ✅ Switch expression: {{$json.${expressionField}}}`);
+            newNode.data.config.expression = expressionTemplate;
+            console.log(
+              `[ProductionWorkflowBuilder]   ✅ Switch node configured with ${switchCases.length} cases; expression: ${expressionTemplate}`
+            );
           }
-          
-          // ✅ UNIVERSAL: Find source node using registry-based detection
-          const sourceNode = this.findLastAppropriateNode(workflow, 'transformation', resolvedNodeType) ||
-                           workflow.nodes.find(n => isTriggerNode(n));
-          
+
           if (sourceNode && switchCases.length > 0) {
-            // ✅ UNIFIED ORCHESTRATION: Inject SWITCH node via orchestrator (creates edges automatically)
             try {
               const injectionResult = await unifiedGraphOrchestrator.injectNode(workflow, newNode, {
                 type: 'user_requested',
@@ -2248,11 +2230,14 @@ export class ProductionWorkflowBuilder {
               });
               workflow = injectionResult.workflow;
               if (injectionResult.errors.length > 0) {
-                console.warn(`[ProductionWorkflowBuilder] ⚠️  SWITCH node injection errors: ${injectionResult.errors.join(', ')}`);
+                console.warn(
+                  `[ProductionWorkflowBuilder] ⚠️  SWITCH node injection errors: ${injectionResult.errors.join(', ')}`
+                );
               }
             } catch (error: any) {
-              console.error(`[ProductionWorkflowBuilder] ❌ Failed to inject SWITCH node: ${error?.message || 'Unknown error'}`);
-              // Fallback: add node manually but still need to reconcile
+              console.error(
+                `[ProductionWorkflowBuilder] ❌ Failed to inject SWITCH node: ${error?.message || 'Unknown error'}`
+              );
               workflow = {
                 ...workflow,
                 nodes: [...workflow.nodes, newNode],
@@ -2260,111 +2245,125 @@ export class ProductionWorkflowBuilder {
               const reconciliationResult = unifiedGraphOrchestrator.reconcileWorkflow(workflow);
               workflow = reconciliationResult.workflow;
             }
-            
-            // ✅ UNIVERSAL: Connect source → SWITCH using universal service
+
             const { universalEdgeCreationService } = require('../edges/universal-edge-creation-service');
-            const allNodesForEdges = [...workflow.nodes, newNode];
-            
+            const logsByCase = new Map<string, WorkflowNode>();
+
+            const resolveTargetForCase = (index: number, sc: { value: string; label: string }): WorkflowNode | undefined => {
+              const mapped = caseToNodeMapping.get(sc.value);
+              if (mapped) {
+                const t = workflow.nodes.find(
+                  n =>
+                    unifiedNormalizeNodeTypeString(n.type || n.data?.type || '') ===
+                    unifiedNormalizeNodeTypeString(mapped)
+                );
+                if (t) {
+                  return t;
+                }
+              }
+              const outputNodes = workflow.nodes.filter(n => {
+                const nodeType = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
+                return nodeCapabilityRegistryDSL.isOutput(nodeType) || nodeCapabilityRegistryDSL.canWriteData(nodeType);
+              });
+              return outputNodes[index] || outputNodes[0];
+            };
+
+            for (let i = switchCases.length - 1; i >= 0; i--) {
+              const sc = switchCases[i];
+              if (resolveTargetForCase(i, sc)) {
+                continue;
+              }
+              const logStub = this.createSwitchBranchLogStub(sc.label || sc.value);
+              const stubInj = await unifiedGraphOrchestrator.injectNode(workflow, logStub, {
+                type: 'user_requested',
+                position: 'after',
+                referenceNodeId: newNode.id,
+                reason: 'switch_branch_terminal',
+              });
+              workflow = stubInj.workflow;
+              logsByCase.set(sc.value, logStub);
+              injectedNodes.push(logStub);
+            }
+
+            const allNodesForEdges = [...workflow.nodes];
+
             const edgeToSwitchResult = universalEdgeCreationService.createEdge({
               sourceNode,
               targetNode: newNode,
               existingEdges: [...workflow.edges, ...injectedEdges],
               allNodes: allNodesForEdges,
             });
-            
+
             if (edgeToSwitchResult.success && edgeToSwitchResult.edge) {
               injectedEdges.push(edgeToSwitchResult.edge);
               const sourceType = unifiedNormalizeNodeTypeString(sourceNode.type || sourceNode.data?.type || '');
               console.log(`[ProductionWorkflowBuilder]   ✅ Connected ${sourceType} → switch`);
             }
-            
-            // ✅ UNIVERSAL: Create ONE edge per case (one plug per case) using universal service
-            // Each case gets its own output port and edge to target node
-            for (const switchCase of switchCases) {
+
+            for (let idx = 0; idx < switchCases.length; idx++) {
+              const switchCase = switchCases[idx];
               const caseValue = switchCase.value;
-              const targetNodeType = caseToNodeMapping.get(caseValue);
-              
-              if (targetNodeType) {
-                // Find target node by type
-                let targetNode = workflow.nodes.find(n => {
-                  const nodeType = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
-                  return unifiedNormalizeNodeTypeString(targetNodeType) === nodeType;
+              let targetNode = resolveTargetForCase(idx, switchCase) || logsByCase.get(caseValue);
+              if (targetNode) {
+                const caseEdgeResult = universalEdgeCreationService.createEdge({
+                  sourceNode: newNode,
+                  targetNode,
+                  sourceHandle: caseValue,
+                  edgeType: caseValue,
+                  existingEdges: [...workflow.edges, ...injectedEdges],
+                  allNodes: allNodesForEdges,
                 });
-                
-                // If target node not found, use first available output node
-                if (!targetNode) {
-                  const outputNodes = workflow.nodes.filter(n => {
-                    const nodeType = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
-                    return nodeCapabilityRegistryDSL.isOutput(nodeType) || 
-                           nodeCapabilityRegistryDSL.canWriteData(nodeType);
-                  });
-                  targetNode = outputNodes[switchCases.indexOf(switchCase)] || outputNodes[0];
-                }
-                
-                if (targetNode) {
-                  // ✅ UNIVERSAL: Create edge with sourceHandle = case value using universal service
-                  const caseEdgeResult = universalEdgeCreationService.createEdge({
-                    sourceNode: newNode,
-                    targetNode,
-                    sourceHandle: caseValue,
-                    edgeType: caseValue,
-                    existingEdges: [...workflow.edges, ...injectedEdges],
-                    allNodes: allNodesForEdges,
-                  });
-                  
-                  if (caseEdgeResult.success && caseEdgeResult.edge) {
-                    injectedEdges.push(caseEdgeResult.edge);
-                    const targetNodeTypeName = unifiedNormalizeNodeTypeString(targetNode.type || targetNode.data?.type || '');
-                    console.log(`[ProductionWorkflowBuilder]   ✅ Connected switch (${caseValue}) → ${targetNodeTypeName}`);
-                  }
+
+                if (caseEdgeResult.success && caseEdgeResult.edge) {
+                  injectedEdges.push(caseEdgeResult.edge);
+                  const targetNodeTypeName = unifiedNormalizeNodeTypeString(targetNode.type || targetNode.data?.type || '');
+                  console.log(`[ProductionWorkflowBuilder]   ✅ Connected switch (${caseValue}) → ${targetNodeTypeName}`);
                 }
               }
             }
-            
-            // Remove existing edges that would create cycles (edges from source to case target nodes)
+
+            const mappedTypes = new Set(
+              Array.from(caseToNodeMapping.values()).map(t => unifiedNormalizeNodeTypeString(t))
+            );
             const edgesToRemove: WorkflowEdge[] = [];
             for (const edge of workflow.edges) {
               if (edge.source === sourceNode.id) {
-                // Check if target is one of the case target nodes
-                const isCaseTarget = Array.from(caseToNodeMapping.values()).some(targetType => {
-                  const targetNode = workflow.nodes.find(n => {
+                const isCaseTarget = Array.from(mappedTypes).some(mtt => {
+                  const tn = workflow.nodes.find(n => {
                     const nodeType = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
-                    return unifiedNormalizeNodeTypeString(targetType) === nodeType && n.id === edge.target;
+                    return unifiedNormalizeNodeTypeString(mtt) === nodeType && n.id === edge.target;
                   });
-                  return targetNode !== undefined;
+                  return tn !== undefined;
                 });
-                
                 if (isCaseTarget) {
                   edgesToRemove.push(edge);
                 }
               }
             }
-            
-            // ✅ UNIFIED ORCHESTRATION: Remove edges that would create cycles, then reconcile
-            const edgesToKeep = workflow.edges.filter(edge => 
-              !edgesToRemove.some(toRemove => toRemove.id === edge.id)
+
+            const removeResult = unifiedGraphOrchestrator.removeEdges(
+              workflow,
+              edge => edgesToRemove.some(toRemove => toRemove.id === edge.id)
             );
-            workflow.edges = edgesToKeep;
-            
-            // Log removed edges
+            workflow = removeResult.workflow;
             for (const edgeToRemove of edgesToRemove) {
-              console.log(`[ProductionWorkflowBuilder]   🔧 Removed edge ${edgeToRemove.source} → ${edgeToRemove.target} (replaced by SWITCH branching)`);
+              console.log(
+                `[ProductionWorkflowBuilder]   🔧 Removed edge ${edgeToRemove.source} → ${edgeToRemove.target} (replaced by SWITCH branching)`
+              );
             }
-            
-            // ✅ CRITICAL: Reconcile workflow to rebuild edges based on execution order
+
             const reconciliationResult = unifiedGraphOrchestrator.reconcileWorkflow(workflow);
             workflow = reconciliationResult.workflow;
             if (reconciliationResult.errors.length > 0) {
               console.warn(`[ProductionWorkflowBuilder] ⚠️  Reconciliation errors: ${reconciliationResult.errors.join(', ')}`);
             }
-            
+
             console.log(`[ProductionWorkflowBuilder]   ✅ SWITCH node injected with ${switchCases.length} case branches`);
-            continue; // Skip normal connection logic for SWITCH
-          } else {
-            warnings.push(`Could not find appropriate source or cases for SWITCH node - needs manual connection`);
-            console.warn(`[ProductionWorkflowBuilder]   ⚠️  Could not find source or cases for SWITCH node`);
             continue;
           }
+          warnings.push(`Could not find appropriate source or cases for SWITCH node - needs manual connection`);
+          console.warn(`[ProductionWorkflowBuilder]   ⚠️  Could not find source or cases for SWITCH node`);
+          continue;
         }
         
         // ✅ WORLD-CLASS ROOT-LEVEL FIX: Universal branching prevention for ALL node types
@@ -2541,6 +2540,25 @@ export class ProductionWorkflowBuilder {
       success: false,
       errors: errors.length > 0 ? errors : ['No nodes were injected'],
       warnings,
+    };
+  }
+
+  /**
+   * Switch-only: minimal registry-driven log terminal for each branch when no output node exists.
+   */
+  private createSwitchBranchLogStub(labelSuffix: string): WorkflowNode {
+    const logOutputDef = unifiedNodeRegistry.get('log_output');
+    const id = randomUUID();
+    return {
+      id,
+      type: 'log_output',
+      position: { x: 900, y: 220 },
+      data: {
+        type: 'log_output',
+        label: `Log: ${labelSuffix}`.slice(0, 80),
+        category: logOutputDef?.category || 'utility',
+        config: logOutputDef ? logOutputDef.defaultConfig() : {},
+      },
     };
   }
 

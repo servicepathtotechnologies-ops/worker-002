@@ -355,6 +355,30 @@ export class SemanticNodeEquivalenceRegistry {
       // Only equivalent if same base service (e.g., slack_message ↔ slack)
       return base1 !== base2;
     }
+
+    // ✅ ROOT-LEVEL FIX: Trigger vs logic/transformation are never equivalent
+    // Use unified node registry categories so this applies to ALL nodes.
+    try {
+      const def1 = unifiedNodeRegistry.get(unifiedNormalizeNodeTypeString(nodeType1));
+      const def2 = unifiedNodeRegistry.get(unifiedNormalizeNodeTypeString(nodeType2));
+
+      const cat1 = (def1?.category || '').toLowerCase();
+      const cat2 = (def2?.category || '').toLowerCase();
+
+      const isTrigger1 = cat1 === 'trigger';
+      const isTrigger2 = cat2 === 'trigger';
+      const isLogicOrTransform1 = cat1 === 'logic' || cat1 === 'transformation';
+      const isLogicOrTransform2 = cat2 === 'logic' || cat2 === 'transformation';
+
+      if (
+        (isTrigger1 && isLogicOrTransform2) ||
+        (isTrigger2 && isLogicOrTransform1)
+      ) {
+        return true;
+      }
+    } catch {
+      // If registry lookup fails for any reason, fall through to default behavior
+    }
     
     return false;
   }

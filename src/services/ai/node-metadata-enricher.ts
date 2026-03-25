@@ -272,6 +272,25 @@ export class NodeMetadataEnricher {
   }
 
   /**
+   * Format registry as compact list for Gemini node selection (one line per node).
+   * Keeps payload small for token limits. Optional maxChars to cap length.
+   */
+  formatRegistryForNodeSelection(nodes: NodeMetadata[], maxChars?: number): string {
+    if (!nodes || nodes.length === 0) {
+      return 'No nodes available.';
+    }
+    const lines = nodes.map((node) => {
+      const desc = (node.description || '').slice(0, 80);
+      return `${node.type} | ${node.category} | ${desc}`;
+    });
+    let out = `Available node types (type | category | description):\n\n${lines.join('\n')}`;
+    if (maxChars != null && out.length > maxChars) {
+      out = out.slice(0, maxChars) + '\n...(truncated)';
+    }
+    return out;
+  }
+
+  /**
    * Clear cache (useful for testing or when node library updates)
    */
   clearCache(): void {

@@ -26,6 +26,12 @@ import { unifiedNormalizeNodeType } from '../../core/utils/unified-node-type-nor
 import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 import { getQuestionConfig, getOrderedQuestions } from './node-question-order';
 import { isEmptyValue } from '../../core/utils/is-empty-value';
+import { resolveEffectiveFieldFillMode } from '../../core/utils/fill-mode-resolver';
+import { isCredentialOwnership, isStructuralOwnership } from '../../core/utils/field-ownership';
+import {
+  isFieldUserProvidedText,
+  shouldUseSelectForExplicitOptions,
+} from '../../core/utils/schema-field-control';
 
 export interface ComprehensiveNodeQuestion {
   id: string;
@@ -35,7 +41,7 @@ export interface ComprehensiveNodeQuestion {
   nodeType: string;
   nodeLabel: string;
   fieldName: string;
-  category: 'credential' | 'operation' | 'configuration';
+  category: 'credential' | 'operation' | 'configuration' | 'resource';
   required: boolean;
   options?: Array<{ label: string; value: string }>;
   askOrder: number;
@@ -45,6 +51,35 @@ export interface ComprehensiveNodeQuestion {
   // ✅ Optional: Skip checkbox for conditional questions
   skipIfManualEmailProvided?: boolean;
   skipLabel?: string;
+  /**
+   * Registry-driven fill mode metadata for this field, surfaced to the UI so the
+   * user can choose between manual vs AI-filled strategies without any
+   * node-specific hardcoding in the frontend.
+   */
+  fillModeDefault?: 'manual_static' | 'runtime_ai' | 'buildtime_ai_once';
+  supportsRuntimeAI?: boolean;
+  supportsBuildtimeAI?: boolean;
+  role?: string;
+  ownershipClass?: 'structural' | 'value' | 'credential';
+  /**
+   * Field Ownership wizard: whether the user can change User vs AI runtime for this row.
+   * - selectable: both toggles enabled (attach-inputs may coerce invalid runtime_ai per policy)
+   * - user_only: legacy; prefer selectable
+   * - locked: vault/OAuth credential rows only (handled on Credentials step)
+   */
+  ownershipUiMode?: 'selectable' | 'user_only' | 'locked';
+  /** When ownershipUiMode is locked or user_only, explains why (for UI helper text). */
+  ownershipLockReason?:
+    | 'structural'
+    | 'runtime_ai_default'
+    | 'ai_filled'
+    | 'vault_or_oauth'
+    | 'manual_only'
+    | 'no_runtime_ai';
+  /** True when the field was populated by build-time AI (snapshot shown; row usually remains selectable). */
+  aiFilledAtBuildTime?: boolean;
+  /** Current value from node.data.config (stringified for objects/arrays); for wizard pre-fill. */
+  defaultValue?: string;
 }
 
 export interface NodeQuestionsResult {
@@ -52,9 +87,164 @@ export interface NodeQuestionsResult {
   nodeQuestionsMap: Map<string, ComprehensiveNodeQuestion[]>; // nodeId -> questions
 }
 
+/**
+ * Ensures every registry inputSchema field has a row for Field Ownership (merge pass).
+ */
+function addMissingInputSchemaQuestionsForOwnership(
+  workflow: Workflow,
+  existing: ComprehensiveNodeQuestion[]
+): ComprehensiveNodeQuestion[] {
+  const byKey = new Set(existing.map((q) => `${q.nodeId}_${q.fieldName}`));
+  const added: ComprehensiveNodeQuestion[] = [...existing];
+  for (const node of workflow.nodes) {
+    const nodeType = unifiedNormalizeNodeType(node);
+    const def = unifiedNodeRegistry.get(nodeType);
+    const inputSchema = def?.inputSchema;
+    if (!inputSchema) continue;
+    const nodeLabel = node.data?.label || nodeType;
+    for (const fieldName of Object.keys(inputSchema)) {
+      const key = `${node.id}_${fieldName}`;
+      if (byKey.has(key)) continue;
+      byKey.add(key);
+      const fieldDef = inputSchema[fieldName] as any;
+      added.push({
+        id: `ownership_${node.id}_${fieldName}`,
+        text: `${fieldName}`,
+        type: 'text',
+        nodeId: node.id,
+        nodeType,
+        nodeLabel,
+        fieldName,
+        category: 'configuration',
+        required: false,
+        askOrder: 99,
+        description: `Input field ${fieldName}`,
+        fillModeDefault: fieldDef?.fillMode?.default,
+        supportsRuntimeAI: fieldDef?.fillMode?.supportsRuntimeAI !== false,
+        supportsBuildtimeAI: fieldDef?.fillMode?.supportsBuildtimeAI !== false,
+        role: fieldDef?.role,
+        ownershipClass: fieldDef?.ownership,
+      });
+    }
+  }
+  return added;
+}
+
+/**
+ * Field Ownership: keep all questions and annotate UI mode instead of dropping rows.
+ * Vault/OAuth credential questions stay in the array but are locked (handled in Credentials step).
+ */
+/** Stringify config field for question defaultValue / wizard pre-fill (objects and arrays as JSON). */
+export function snapshotConfigFieldToString(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (typeof value === 'object') {
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return String(value);
+    }
+  }
+  return String(value);
+}
+
+function attachDefaultValuesFromConfig(
+  questions: ComprehensiveNodeQuestion[],
+  workflow: Workflow
+): ComprehensiveNodeQuestion[] {
+  return questions.map((q) => {
+    const node = workflow.nodes.find((n) => n.id === q.nodeId);
+    if (!node) return q;
+    const config = (node.data?.config || {}) as Record<string, any>;
+    if (!(q.fieldName in config)) return q;
+    const raw = config[q.fieldName];
+    if (isEmptyValue(raw)) return q;
+    const str = snapshotConfigFieldToString(raw);
+    if (str === undefined || str === '') return q;
+    return { ...q, defaultValue: str };
+  });
+}
+
+function annotateQuestionsForOwnershipUi(
+  questions: ComprehensiveNodeQuestion[],
+  workflow: Workflow
+): ComprehensiveNodeQuestion[] {
+  return questions.map((q) => {
+    const node = workflow.nodes.find((n) => n.id === q.nodeId);
+    const next: ComprehensiveNodeQuestion = { ...q };
+
+    if (q.category === 'credential') {
+      next.ownershipUiMode = 'locked';
+      next.ownershipLockReason = 'vault_or_oauth';
+      return next;
+    }
+
+    if (!node) {
+      next.ownershipUiMode = 'selectable';
+      return next;
+    }
+
+    const nodeType = unifiedNormalizeNodeType(node);
+    const def = unifiedNodeRegistry.get(nodeType);
+    const inputSchema = def?.inputSchema;
+    const config = (node.data?.config || {}) as Record<string, any>;
+
+    if (!inputSchema || !(q.fieldName in inputSchema)) {
+      next.ownershipUiMode = 'selectable';
+      return next;
+    }
+
+    const fieldDef = inputSchema[q.fieldName];
+    if (fieldDef?.ownership) {
+      next.ownershipClass = fieldDef.ownership;
+    }
+    if (fieldDef?.role) {
+      next.role = fieldDef.role;
+    }
+    const fillMeta = fieldDef?.fillMode;
+    if (fillMeta) {
+      next.fillModeDefault = fillMeta.default;
+      next.supportsRuntimeAI = fillMeta.supportsRuntimeAI !== false;
+      next.supportsBuildtimeAI = fillMeta.supportsBuildtimeAI !== false;
+    }
+
+    // Structural fields still need ownership choice (User vs AI); attach-inputs coerces invalid modes.
+    if (fieldDef && isStructuralOwnership(q.fieldName, fieldDef)) {
+      next.ownershipUiMode = 'selectable';
+      next.ownershipLockReason = undefined;
+    }
+
+    const mode = resolveEffectiveFieldFillMode(q.fieldName, inputSchema, config);
+    // runtime_ai in config is a recommendation, not a lock: user may switch to manual_static and edit.
+    if (mode === 'runtime_ai') {
+      next.ownershipUiMode = 'selectable';
+      next.ownershipLockReason = undefined;
+      return next;
+    }
+
+    const fillModePerField = (config._fillMode || {}) as Record<string, string>;
+    const buildTimeAi = fillModePerField[q.fieldName] === 'buildtime_ai_once';
+    const val = config[q.fieldName];
+    if (buildTimeAi && !isEmptyValue(val)) {
+      next.aiFilledAtBuildTime = true;
+      // Still selectable: user may adopt snapshot as manual_static in the wizard.
+    }
+
+    next.ownershipUiMode = 'selectable';
+    next.ownershipLockReason = undefined;
+    return next;
+  });
+}
+
 export interface GenerateQuestionsOptions {
   /** Only generate questions for these categories. If empty, generates all categories. */
   categories?: Array<'credential' | 'operation' | 'configuration' | 'resource'>;
+  /**
+   * credentials_only: current lightweight mode
+   * full_configuration: ask all essential fields for every node
+   */
+  mode?: 'credentials_only' | 'full_configuration';
 }
 
 /**
@@ -71,6 +261,7 @@ export function generateComprehensiveNodeQuestions(
 ): NodeQuestionsResult {
   const allQuestions: ComprehensiveNodeQuestion[] = [];
   const nodeQuestionsMap = new Map<string, ComprehensiveNodeQuestion[]>();
+  const isFullConfigurationMode = options.mode === 'full_configuration';
 
   console.log(`[ComprehensiveQuestions] 🚀 START: Generating questions for ${workflow.nodes.length} nodes`);
   console.log(`[ComprehensiveQuestions] Workflow nodes:`, workflow.nodes.map(n => ({ id: n.id, type: unifiedNormalizeNodeType(n), label: n.data?.label })));
@@ -98,10 +289,11 @@ export function generateComprehensiveNodeQuestions(
     const optionalFields = Object.keys(schema.configSchema.optional || {});
     console.log(`[ComprehensiveQuestions] ${nodeType} schema - Required: [${requiredFields.join(', ')}], Optional: [${optionalFields.join(', ')}]`);
 
-    // ✅ ARCHITECTURAL FIX: Default to credential-only mode
-    // Only credentials (API keys, OAuth) should be asked - everything else is AI-generated
-    // If categories are explicitly provided, use them (for backward compatibility)
-    const requestedCategories = options.categories || ['credential'];
+    // In full_configuration mode we ask all categories.
+    // Otherwise keep legacy credential-focused behavior.
+    const requestedCategories = options.categories || (isFullConfigurationMode
+      ? ['credential', 'resource', 'operation', 'configuration']
+      : ['credential']);
     
     // STEP 1: Generate credential questions (askOrder: 0)
     if (requestedCategories.includes('credential')) {
@@ -123,8 +315,39 @@ export function generateComprehensiveNodeQuestions(
 
     // STEP 4: Generate other required field questions using node-question-order system
     if (requestedCategories.includes('configuration')) {
-      const configQuestions = generateConfigurationQuestions(node, nodeType, nodeId, nodeLabel, config, schema, answeredFields);
+      const configQuestions = generateConfigurationQuestions(
+        node,
+        nodeType,
+        nodeId,
+        nodeLabel,
+        config,
+        schema,
+        answeredFields,
+        isFullConfigurationMode
+      );
       nodeQuestions.push(...configQuestions);
+    }
+
+    // Attach registry-driven fill mode metadata to each question so the UI can
+    // expose AI/manual toggles without any node-specific logic.
+    const unifiedDef = unifiedNodeRegistry.get(nodeType);
+    const inputSchema = unifiedDef?.inputSchema;
+    if (inputSchema) {
+      for (const q of nodeQuestions) {
+        const fieldDef = (inputSchema as any)[q.fieldName];
+        const fillMeta = fieldDef?.fillMode;
+        if (fillMeta) {
+          q.fillModeDefault = fillMeta.default;
+          q.supportsRuntimeAI = fillMeta.supportsRuntimeAI !== false;
+          q.supportsBuildtimeAI = fillMeta.supportsBuildtimeAI !== false;
+        }
+        if (fieldDef?.role) {
+          q.role = fieldDef.role;
+        }
+        if (fieldDef?.ownership) {
+          q.ownershipClass = fieldDef.ownership;
+        }
+      }
     }
 
     // Sort questions by askOrder
@@ -177,17 +400,19 @@ export function generateComprehensiveNodeQuestions(
   for (const question of allQuestions) {
     const key = `${question.nodeId}_${question.fieldName}`;
     
-    // If we've seen this field before for this node, keep the one with higher priority
-    // Priority: credential (0) > resource (1) > operation (2) > configuration (3)
+    // Prefer question category aligned with canonical ownership (registry-driven).
+    const ownershipPriority: Record<string, number> = { credential: 0, structural: 1, value: 2 };
     const categoryPriority: Record<string, number> = { credential: 0, resource: 1, operation: 2, configuration: 3 };
     
     if (seenQuestionKeys.has(key)) {
       const existingQuestion = seenQuestionKeys.get(key)!;
+      const existingOwnerPriority = ownershipPriority[existingQuestion.ownershipClass || 'value'] ?? 999;
+      const newOwnerPriority = ownershipPriority[question.ownershipClass || 'value'] ?? 999;
       const existingPriority = categoryPriority[existingQuestion.category] ?? 999;
       const newPriority = categoryPriority[question.category] ?? 999;
       
-      // Keep the question with higher priority (lower number = higher priority)
-      if (newPriority < existingPriority) {
+      // Keep ownership-consistent question first, then fallback to category priority.
+      if (newOwnerPriority < existingOwnerPriority || (newOwnerPriority === existingOwnerPriority && newPriority < existingPriority)) {
         console.log(`[ComprehensiveQuestions] 🔄 Replacing duplicate question for ${question.nodeId}.${question.fieldName}: ${existingQuestion.category} -> ${question.category} (higher priority)`);
         seenQuestionKeys.set(key, question);
       } else {
@@ -198,14 +423,19 @@ export function generateComprehensiveNodeQuestions(
     }
   }
   
-  // Rebuild the deduplicated questions array
+  // Rebuild the deduplicated questions array; merge registry fields; annotate Field Ownership (no row drops)
   const deduplicatedQuestions = Array.from(seenQuestionKeys.values());
+  const mergedForOwnership = isFullConfigurationMode
+    ? addMissingInputSchemaQuestionsForOwnership(workflow, deduplicatedQuestions)
+    : deduplicatedQuestions;
+  const ownershipAnnotated = annotateQuestionsForOwnershipUi(mergedForOwnership, workflow);
+  const ownershipFilteredQuestions = attachDefaultValuesFromConfig(ownershipAnnotated, workflow);
   allQuestions.length = 0;
-  allQuestions.push(...deduplicatedQuestions);
+  allQuestions.push(...ownershipFilteredQuestions);
   
   // ✅ CRITICAL: Update nodeQuestionsMap with deduplicated questions
   const deduplicatedNodeQuestionsMap = new Map<string, ComprehensiveNodeQuestion[]>();
-  for (const question of deduplicatedQuestions) {
+  for (const question of ownershipFilteredQuestions) {
     if (!deduplicatedNodeQuestionsMap.has(question.nodeId)) {
       deduplicatedNodeQuestionsMap.set(question.nodeId, []);
     }
@@ -288,6 +518,12 @@ function generateCredentialQuestions(
   const requiredFields = schema.configSchema.required || [];
   const optionalFields = Object.keys(schema.configSchema.optional || {});
   const allFields = [...requiredFields, ...optionalFields];
+  const unifiedDef = unifiedNodeRegistry.get(nodeType);
+  const fieldIsCredentialOwned = (fieldName: string): boolean => {
+    const fd = unifiedDef?.inputSchema?.[fieldName];
+    if (!fd) return false;
+    return isCredentialOwnership(fieldName, fd);
+  };
 
   // ✅ ENHANCED: Check if node supports multiple credential types (API Key + OAuth)
   const hasApiKey = allFields.some(f => f.toLowerCase() === 'apikey' || f.toLowerCase() === 'api_key');
@@ -344,8 +580,8 @@ function generateCredentialQuestions(
     return fLower === 'operation' || fLower === 'action' || fLower === 'method';
   });
   
-  // ✅ ROOT-LEVEL: Add resource/operation to credential questions if missing and required
-  if (resourceField && isEmptyValue(config[resourceField])) {
+  // Resource/operation are not credentials; keep them outside credential ownership.
+  if (resourceField && fieldIsCredentialOwned(resourceField) && isEmptyValue(config[resourceField])) {
     const fieldSchema = optionalSchema[resourceField] || {};
     // ✅ WORLD-CLASS: Only use explicit options, NOT examples
     const fieldOptions = fieldSchema.options || []; // ✅ CRITICAL: Don't use examples as options
@@ -360,7 +596,7 @@ function generateCredentialQuestions(
         nodeType,
         nodeLabel,
         fieldName: resourceField,
-        category: 'credential', // ✅ ROOT-LEVEL: Resource is part of credentials
+        category: 'resource',
         required: requiredFields.includes(resourceField),
         askOrder: 0.6, // After API keys/OAuth
         description: `${resourceField} for ${nodeLabel} node`,
@@ -371,11 +607,11 @@ function generateCredentialQuestions(
       };
       questions.push(question);
       seenFieldNames.add(resourceField);
-      console.log(`[ComprehensiveQuestions] ✅ Added resource question to credentials for ${nodeType}.${resourceField} (dropdown: ${hasOptions})`);
+      console.log(`[ComprehensiveQuestions] ✅ Added resource question for ${nodeType}.${resourceField} (dropdown: ${hasOptions})`);
     }
   }
   
-  if (operationField && isEmptyValue(config[operationField])) {
+  if (operationField && fieldIsCredentialOwned(operationField) && isEmptyValue(config[operationField])) {
     const fieldSchema = optionalSchema[operationField] || {};
     // ✅ WORLD-CLASS: Only use explicit options, NOT examples
     // Examples are just hints, not selectable dropdown options
@@ -391,7 +627,7 @@ function generateCredentialQuestions(
         nodeType,
         nodeLabel,
         fieldName: operationField,
-        category: 'credential', // ✅ ROOT-LEVEL: Operation is part of credentials
+        category: 'operation',
         required: requiredFields.includes(operationField),
         askOrder: 0.7, // After resources
         description: `Operation for ${nodeLabel} node`,
@@ -402,7 +638,7 @@ function generateCredentialQuestions(
       };
       questions.push(question);
       seenFieldNames.add(operationField);
-      console.log(`[ComprehensiveQuestions] ✅ Added operation question to credentials for ${nodeType}.${operationField} (dropdown: ${hasExplicitOptions})`);
+      console.log(`[ComprehensiveQuestions] ✅ Added operation question for ${nodeType}.${operationField} (dropdown: ${hasExplicitOptions})`);
     }
   }
 
@@ -447,68 +683,8 @@ function generateCredentialQuestions(
       continue; // Skip configuration fields - they should be asked as configuration questions, not credentials
     }
 
-    // ✅ STRICT: Only detect ACTUAL credential fields
-    // APIs, OAuths, Secrets, Passwords, Tokens, Keys, URLs (base URLs, API URLs, endpoints)
-    // ✅ ENHANCED: Also detect resource identifiers (spreadsheetId, documentId, etc.) and user-provided fields (recipientEmails, to, from)
-    const isCredentialField = 
-      // Credential IDs (stored credentials)
-      fieldLower.includes('credentialid') || fieldLower.includes('credential_id') ||
-      // API Keys
-      fieldLower === 'apikey' || fieldLower === 'api_key' ||
-      fieldLower === 'apitoken' || fieldLower === 'api_token' ||
-      fieldLower === 'apisecret' || fieldLower === 'api_secret' ||
-      // OAuth tokens and credentials
-      fieldLower === 'accesstoken' || fieldLower === 'access_token' ||
-      fieldLower === 'refreshtoken' || fieldLower === 'refresh_token' ||
-      fieldLower === 'clientid' || fieldLower === 'client_id' ||
-      fieldLower === 'clientsecret' || fieldLower === 'client_secret' ||
-      fieldLower === 'oauth' || fieldLower.includes('oauth_token') ||
-      // Bot tokens
-      fieldLower === 'bottoken' || fieldLower === 'bot_token' ||
-      // Keys (private/public keys for authentication)
-      fieldLower === 'privatekey' || fieldLower === 'private_key' ||
-      fieldLower === 'publickey' || fieldLower === 'public_key' ||
-      // Secrets and passwords
-      (fieldLower.includes('secret') && !fieldLower.includes('webhook') && !fieldLower.includes('url')) ||
-      fieldLower.includes('password') ||
-      // Consumer keys (OAuth 1.0)
-      fieldLower === 'consumerkey' || fieldLower === 'consumer_key' ||
-      fieldLower === 'consumersecret' || fieldLower === 'consumer_secret' ||
-      // Bearer tokens
-      fieldLower === 'bearer' || fieldLower === 'bearertoken' || fieldLower === 'bearer_token' ||
-      // Authorization headers
-      fieldLower === 'authorization' || fieldLower === 'authorizationheader' ||
-      // Secret tokens (for webhook verification, not webhook URLs)
-      (fieldLower.includes('secrettoken') || fieldLower.includes('secret_token')) ||
-      // Generic token (but exclude message tokens, webhook tokens that are URLs)
-      (fieldLower.includes('token') && 
-       !fieldLower.includes('message') && 
-       !fieldLower.includes('messagetype') &&
-       !fieldLower.includes('webhook') &&
-       !fieldLower.includes('url')) ||
-      // ✅ URLs are now credentials (base URLs, API URLs, endpoints)
-      // Exclude: webhook_url, callback_url, redirect_url (handled above as configuration)
-      (fieldLower.includes('url') && 
-       !fieldLower.includes('webhook') && 
-       !fieldLower.includes('callback') && 
-       !fieldLower.includes('redirect')) ||
-      fieldLower === 'baseurl' || fieldLower === 'base_url' ||
-      fieldLower === 'apiurl' || fieldLower === 'api_url' ||
-      fieldLower.includes('endpoint') ||
-      fieldLower === 'host' || fieldLower === 'hostname' ||
-      fieldLower === 'server' || fieldLower === 'serverurl' || fieldLower === 'server_url' ||
-      // ✅ NEW: Resource identifiers (user-provided IDs for external resources)
-      fieldLower === 'spreadsheetid' || fieldLower === 'spreadsheet_id' ||
-      fieldLower === 'documentid' || fieldLower === 'document_id' ||
-      fieldLower === 'sheetname' || fieldLower === 'sheet_name' ||
-      fieldLower === 'tableid' || fieldLower === 'table_id' ||
-      fieldLower === 'baseid' || fieldLower === 'base_id' ||
-      // ✅ NEW: User-provided email addresses (not AI-generated)
-      // ✅ SIMPLIFIED: Gmail recipient fields - manual email and URL
-      fieldLower === 'recipientemails' || fieldLower === 'recipient_emails' ||
-      fieldLower === 'recipienturl' || fieldLower === 'recipient_url' || // Gmail URL field for extracting emails
-      (fieldLower === 'to' && nodeType === 'google_gmail') || // Gmail "to" field
-      (fieldLower === 'from' && (nodeType.includes('gmail') || nodeType.includes('email')));
+    const unifiedField = unifiedNodeRegistry.get(nodeType)?.inputSchema?.[fieldName];
+    const isCredentialField = !!unifiedField && isCredentialOwnership(fieldName, unifiedField);
 
     if (isCredentialField) {
       // ✅ CRITICAL: Skip if we've already seen this field (prevent duplicates)
@@ -517,10 +693,19 @@ function generateCredentialQuestions(
         continue;
       }
       
-      // ✅ FIX: Skip recipientEmails for Gmail nodes - handled via special "to" field case
-      if (nodeType === 'google_gmail' && (fieldLower === 'recipientemails' || fieldLower === 'recipient_emails')) {
-        console.log(`[ComprehensiveQuestions] Skipping recipientEmails for Gmail - handled via special "to" field case`);
-        continue;
+      // ✅ ENHANCED: Skip OAuth credentials - these should be handled via credential connection UI, not text questions
+      // Check if node requires OAuth by checking unified node registry
+      if (fieldLower.includes('credentialid') || fieldLower.includes('credential_id')) {
+        const nodeDef = unifiedNodeRegistry.get(nodeType);
+        if (nodeDef?.credentialSchema?.requirements) {
+          const hasOAuthRequirement = nodeDef.credentialSchema.requirements.some(
+            (req: any) => req.category === 'oauth' || req.type === 'oauth'
+          );
+          if (hasOAuthRequirement) {
+            console.log(`[ComprehensiveQuestions] Skipping OAuth credentialId for ${nodeType} - handled via credential connection UI`);
+            continue; // Skip OAuth credentials - handled via UI connection, not questions
+          }
+        }
       }
       
       const fieldValue = config[fieldName];
@@ -564,62 +749,8 @@ function generateCredentialQuestions(
           placeholder = 'Select credential';
         }
         
-        // ✅ SIMPLIFIED: Gmail recipient - two separate input fields (no dropdown)
-        if (nodeType === 'google_gmail' && fieldLower === 'to') {
-          // Field 1: Enter email manually
-          const manualEmailQuestion: ComprehensiveNodeQuestion = {
-            id: `cred_${nodeId}_recipientEmails`,
-            text: `Enter recipient email address(es) manually for "${nodeLabel}"?`,
-            type: 'text',
-            nodeId,
-            nodeType,
-            nodeLabel,
-            fieldName: 'recipientEmails',
-            category: 'credential',
-            required: false, // Optional - user can leave empty for AI to handle
-            askOrder: 0.5,
-            description: `Enter recipient email address(es) manually (comma-separated for multiple). Leave empty if you want AI to handle it or if using URL option.`,
-            placeholder: 'user@example.com, another@example.com',
-          };
-          questions.push(manualEmailQuestion);
-          
-          // Field 2: Enter URL to extract email from (with skip option if manual email already provided)
-          // Check if manual email was already provided (from config or previous answers)
-          const manualEmailQuestionId = `cred_${nodeId}_recipientEmails`;
-          const manualEmailValue = config.recipientEmails || 
-                                   answeredFields[`${nodeId}_recipientEmails`] || 
-                                   answeredFields[manualEmailQuestionId] ||
-                                   answeredFields[`cred_${nodeId}_recipientEmails_manual`]; // Legacy format
-          const hasManualEmail = manualEmailValue && typeof manualEmailValue === 'string' && manualEmailValue.trim() !== '';
-          
-          const urlQuestion: ComprehensiveNodeQuestion = {
-            id: `cred_${nodeId}_recipientUrl`,
-            text: `Enter URL to extract recipient email for "${nodeLabel}"?`,
-            type: 'text',
-            nodeId,
-            nodeType,
-            nodeLabel,
-            fieldName: 'recipientUrl',
-            category: 'credential',
-            required: false, // Optional - user can leave empty for AI to handle
-            askOrder: 0.6,
-            description: hasManualEmail 
-              ? `✅ You've already entered an email manually (${manualEmailValue.substring(0, 30)}${manualEmailValue.length > 30 ? '...' : ''}). You can skip this by checking the box below, or enter a URL to extract additional emails.`
-              : `Enter URL (Google Sheet, Word doc, PowerPoint, Slack, screenshot, image, etc.) to extract email from. Leave empty if entering email manually or if you want AI to handle it.`,
-            placeholder: hasManualEmail 
-              ? 'Leave empty if you already entered email manually, or enter URL here'
-              : 'https://docs.google.com/spreadsheets/d/...',
-            // ✅ Add skip option metadata for frontend - checkbox will appear if manual email was provided
-            skipIfManualEmailProvided: true,
-            skipLabel: 'I already filled email manually - skip this step',
-          };
-          questions.push(urlQuestion);
-          console.log(`[ComprehensiveQuestions] Added Gmail recipient fields (manual email + URL) for ${nodeType}`);
-          // ✅ CRITICAL: Skip normal question generation for "to" field - we've handled it specially
-          continue;
-        } 
         // ✅ SIMPLIFIED: Google Sheets spreadsheetId - single input field (no dropdown)
-        else if ((nodeType === 'google_sheets' || nodeType === 'google_sheets_read' || nodeType === 'google_sheets_write') && fieldLower === 'spreadsheetid') {
+        if ((nodeType === 'google_sheets' || nodeType === 'google_sheets_read' || nodeType === 'google_sheets_write') && fieldLower === 'spreadsheetid') {
           const spreadsheetIdQuestion: ComprehensiveNodeQuestion = {
             id: `cred_${nodeId}_${fieldName}`,
             text: `Enter Google Sheets spreadsheet ID or URL for "${nodeLabel}"?`,
@@ -670,38 +801,19 @@ function generateCredentialQuestions(
           const fieldOptions = fieldSchema.options || []; // ✅ CRITICAL: Don't use examples as options
           const hasExplicitOptions = Array.isArray(fieldOptions) && fieldOptions.length > 0;
           
-          // ✅ WORLD-CLASS: Identify fields that MUST be text input (user-provided values)
-          // These should NEVER be dropdowns, even if they have examples
-          const isUserProvidedTextField = 
-            fieldLower.includes('url') || // webhookUrl, apiUrl, baseUrl, endpoint, etc.
-            fieldLower.includes('api') && (fieldLower.includes('key') || fieldLower.includes('token')) || // apiKey, api_key, apiToken
-            fieldLower.includes('spreadsheet') || // spreadsheetId
-            fieldLower.includes('table') && fieldLower.includes('name') || // tableName
-            fieldLower.includes('file') && fieldLower.includes('name') || // fileName
-            fieldLower.includes('database') && fieldLower.includes('name') || // databaseName
-            fieldLower.includes('id') && !fieldLower.includes('credential'); // Any ID field (but not credentialId)
-          
-          // ✅ WORLD-CLASS: Identify fields that SHOULD be dropdowns (predefined options)
-          // Operations and resources have explicit options from schema
-          const isOperationOrResourceField = 
-            fieldLower.includes('operation') || // operation field
-            fieldLower.includes('resource') || // resource field
-            fieldLower.includes('action'); // action field
-          
-          // ✅ ROOT-LEVEL: If field has options in schema → use dropdown (same as node properties)
-          // This ensures resources/operations are dropdowns in credentials too
+          const isUserProvidedTextField = isFieldUserProvidedText(fieldName);
+
+          // ✅ Schema-driven: any field with explicit `options` in node library → select (same as Properties panel),
+          // except URL/key/id-style fields (see schema-field-control).
           let questionType: string;
           let questionOptions: Array<{ label: string; value: string }> | undefined;
-          
+
           if (hasCredentialId && fieldLower.includes('credentialid')) {
             questionType = 'credential';
           } else if (isUserProvidedTextField) {
-            // ✅ WORLD-CLASS: Force text input for user-provided fields (URLs, API keys, IDs, etc.)
-            // These should NEVER be dropdowns, even if they have examples
             questionType = 'text';
             console.log(`[ComprehensiveQuestions] ✅ Using text input for ${nodeType}.${fieldName} (user-provided field: URL/API key/ID)`);
-          } else if (hasExplicitOptions && isOperationOrResourceField) {
-            // ✅ WORLD-CLASS: Only use dropdown for operations/resources with explicit options
+          } else if (hasExplicitOptions && shouldUseSelectForExplicitOptions(fieldName, fieldSchema)) {
             questionType = 'select';
             questionOptions = fieldOptions.map((opt: any) => {
               if (typeof opt === 'string') {
@@ -712,7 +824,7 @@ function generateCredentialQuestions(
                 return { label: String(opt), value: String(opt) };
               }
             });
-            console.log(`[ComprehensiveQuestions] ✅ Using dropdown for ${nodeType}.${fieldName} (${questionOptions.length} explicit options from schema)`);
+            console.log(`[ComprehensiveQuestions] ✅ Using dropdown for ${nodeType}.${fieldName} (${questionOptions?.length ?? 0} explicit options from schema)`);
           } else {
             // ✅ ROOT-LEVEL: Text fields → use text input (same as node properties)
             questionType = mapQuestionType(fieldType);
@@ -1145,7 +1257,8 @@ function generateConfigurationQuestions(
   nodeLabel: string,
   config: Record<string, any>,
   schema: any,
-  answeredFields: Record<string, any>
+  answeredFields: Record<string, any>,
+  includeFilledFields: boolean = false
 ): ComprehensiveNodeQuestion[] {
   const questions: ComprehensiveNodeQuestion[] = [];
 
@@ -1168,7 +1281,7 @@ function generateConfigurationQuestions(
       // ✅ ARCHITECTURAL FIX: Configuration fields should NOT be asked - they're AI-generated
       // Only credentials are asked. This check should never be reached if categories=['credential'] is used
       // But keeping for backward compatibility if someone explicitly requests configuration questions
-      const shouldAsk = isEmpty && (qDef.required || qDef.askOrder >= 2);
+      const shouldAsk = (includeFilledFields || isEmpty) && (qDef.required || qDef.askOrder >= 2 || includeFilledFields);
       
       if (shouldAsk) {
         // ✅ ARCHITECTURAL REFACTOR: Filter out JSON template expression options
@@ -1221,8 +1334,12 @@ function generateConfigurationQuestions(
   } else {
     // Fallback: Generate questions from schema
     const requiredFields = schema.configSchema.required || [];
+    const optionalFieldNames = Object.keys(schema.configSchema.optional || {});
+    const fieldsToProcess = includeFilledFields
+      ? Array.from(new Set([...requiredFields, ...optionalFieldNames]))
+      : requiredFields;
     
-    for (const fieldName of requiredFields) {
+    for (const fieldName of fieldsToProcess) {
       // Skip credential and operation fields (already handled)
       const fieldLower = fieldName.toLowerCase();
       if (fieldLower.includes('credential') || 
@@ -1234,7 +1351,7 @@ function generateConfigurationQuestions(
 
       const fieldValue = config[fieldName];
       // ✅ FIX: Use universal isEmpty check
-      if (isEmptyValue(fieldValue)) {
+      if (includeFilledFields || isEmptyValue(fieldValue)) {
         const fieldInfo = schema.configSchema.optional?.[fieldName];
         
         // ✅ ENHANCED: Generate context-aware question text based on field name and node type
@@ -1311,7 +1428,7 @@ function generateConfigurationQuestions(
           nodeLabel,
           fieldName,
           category: 'configuration',
-          required: true,
+          required: requiredFields.includes(fieldName),
           askOrder: 3, // Configuration fields come after operations
           description: fieldInfo?.description,
           placeholder: fieldInfo?.placeholder || (fieldLower.includes('id') ? `Enter ${fieldName}` : undefined),
@@ -1447,7 +1564,7 @@ function mapQuestionType(type: string): string {
  * ✅ WORLD-CLASS: Only use explicit options for dropdowns, not examples
  * URLs, API keys, spreadsheet IDs, etc. should ALWAYS be text inputs
  */
-function determineInputType(fieldName: string, fieldInfo?: any): string {
+export function determineInputType(fieldName: string, fieldInfo?: any): string {
   // If schema explicitly marks this as array/object, use JSON editor rather than select
   // (e.g. loop.items, fields configs, generic data payloads)
   if (fieldInfo?.type === 'array' || fieldInfo?.type === 'object') {
@@ -1455,36 +1572,14 @@ function determineInputType(fieldName: string, fieldInfo?: any): string {
   }
 
   const fieldLower = fieldName.toLowerCase();
-  
-  // ✅ WORLD-CLASS: Identify fields that MUST be text input (user-provided values)
-  // These should NEVER be dropdowns, even if they have examples or options
-  const isUserProvidedTextField = 
-    fieldLower.includes('url') || // webhookUrl, apiUrl, baseUrl, endpoint, etc.
-    fieldLower.includes('endpoint') ||
-    (fieldLower.includes('api') && (fieldLower.includes('key') || fieldLower.includes('token'))) || // apiKey, api_key, apiToken
-    fieldLower.includes('spreadsheet') || // spreadsheetId
-    fieldLower.includes('table') && fieldLower.includes('name') || // tableName
-    fieldLower.includes('file') && fieldLower.includes('name') || // fileName
-    fieldLower.includes('database') && fieldLower.includes('name') || // databaseName
-    (fieldLower.includes('id') && !fieldLower.includes('credential')); // Any ID field (but not credentialId)
-  
-  if (isUserProvidedTextField) {
-    return 'text'; // ✅ Force text input for user-provided fields
+
+  if (isFieldUserProvidedText(fieldName)) {
+    return 'text';
   }
 
-  // ✅ WORLD-CLASS: Only use explicit options (not examples) for dropdowns
-  // Examples are just hints for users, not selectable dropdown options
-  // Only operations/resources with explicit options should be dropdowns
-  if (fieldInfo?.options && Array.isArray(fieldInfo.options) && fieldInfo.options.length > 0) {
-    // Check if this is an operation/resource field (should be dropdown)
-    const isOperationOrResourceField = 
-      fieldLower.includes('operation') ||
-      fieldLower.includes('resource') ||
-      fieldLower.includes('action');
-    
-    if (isOperationOrResourceField) {
-      return 'select'; // ✅ Use dropdown for operations/resources with explicit options
-    }
+  // ✅ Any schema-defined enumeration (`options` in node library) → select (e.g. Gmail recipientSource)
+  if (shouldUseSelectForExplicitOptions(fieldName, fieldInfo)) {
+    return 'select';
   }
 
   // Default to text for everything else

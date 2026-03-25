@@ -1,7 +1,7 @@
 // AI-Based Workflow Validator
 // Uses AI to validate that generated workflow structure matches user prompt intent
 
-import { ollamaOrchestrator } from './ollama-orchestrator';
+import { geminiOrchestrator } from './gemini-orchestrator';
 import type { WorkflowGenerationStructure, WorkflowNode, WorkflowEdge } from '../../core/types/ai-types';
 import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 
@@ -33,7 +33,7 @@ export class AIWorkflowValidator {
       const validationPrompt = this.createValidationPrompt(userPrompt, workflowSummary);
       
       // Call AI for validation
-      const aiResponse = await ollamaOrchestrator.processRequest('workflow-generation', {
+      const aiResponse = await geminiOrchestrator.processRequest('workflow-generation', {
         prompt: validationPrompt,
         temperature: 0.1, // Low temperature for consistent validation
       });
@@ -426,7 +426,7 @@ Return JSON:
 
     let response: string = '';
     try {
-      response = await ollamaOrchestrator.processRequest('workflow-generation', {
+      response = await geminiOrchestrator.processRequest('workflow-generation', {
         prompt,
         temperature: 0.1,
       });

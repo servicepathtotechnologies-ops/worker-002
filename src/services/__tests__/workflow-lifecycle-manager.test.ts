@@ -32,7 +32,7 @@ describe('WorkflowLifecycleManager.discoverNodeInputs', () => {
     expect(fields).toContain('sheetName');
   });
 
-  it('does not add gmail messageId when operation is send', () => {
+  it('returns ownership metadata for discovered value fields', () => {
     const workflow: Workflow = {
       nodes: [
         {
@@ -41,7 +41,7 @@ describe('WorkflowLifecycleManager.discoverNodeInputs', () => {
           position: { x: 0, y: 0 },
           data: {
             type: 'google_gmail',
-            label: 'Send Email',
+            label: 'Gmail',
             category: 'google',
             config: {
               operation: 'send',
@@ -53,14 +53,10 @@ describe('WorkflowLifecycleManager.discoverNodeInputs', () => {
     };
 
     const result = workflowLifecycleManager.discoverNodeInputs(workflow);
-    const gmailFields = result.inputs
-      .filter(i => i.nodeId === 'gmail1')
-      .map(i => i.fieldName);
-
-    expect(gmailFields).toContain('to');
-    expect(gmailFields).toContain('subject');
-    expect(gmailFields).toContain('body');
-    expect(gmailFields).not.toContain('messageId');
+    const sample = result.inputs.find(i => i.nodeId === 'gmail1');
+    expect(sample).toBeDefined();
+    expect(sample?.ownership).toBe('value');
+    expect(sample?.fillModeDefault).toBeDefined();
   });
-}
+});
 

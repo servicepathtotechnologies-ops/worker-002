@@ -18,8 +18,20 @@
 import { unifiedNodeRegistry } from '../registry/unified-node-registry';
 import { unifiedNormalizeNodeTypeString } from './unified-node-type-normalizer';
 import { nodeCapabilityRegistryDSL } from '../../services/ai/node-capability-registry-dsl';
+import type { WorkflowNode } from '../types/ai-types';
 
 export type DSLCategory = 'dataSource' | 'transformation' | 'output';
+
+/**
+ * Raw metadata type that includes AI-determined properties
+ * These are set directly on node.data.metadata by workflow-builder
+ */
+interface RawNodeMetadata {
+  aiDeterminedCategory?: DSLCategory;
+  aiRole?: string;
+  intendedCapability?: string;
+  [key: string]: unknown;
+}
 
 export class UniversalCategoryResolver {
   private static instance: UniversalCategoryResolver;
@@ -33,6 +45,69 @@ export class UniversalCategoryResolver {
     return UniversalCategoryResolver.instance;
   }
   
+  /**
+   * ✅ AI-FIRST: Get node category with context-aware resolution.
+   * Uses AI-determined category as Priority 1, then falls back to standard resolution.
+   * 
+   * Priority Order:
+   * 1. AI-determined category from node metadata (Gemini's role mapping)
+   * 2. intendedCapability from metadata (DSL flows)
+   * 3. Operation-aware category mapping (for multi-capability nodes)
+   * 4. Standard category resolution (capability registry → registry → semantic)
+   * 
+   * @param node - WorkflowNode with metadata
+   * @param userPrompt - Optional user prompt for context
+   * @returns DSL category (dataSource, transformation, or output)
+   */
+  getNodeCategoryWithContext(node: WorkflowNode, userPrompt?: string): DSLCategory {
+    const nodeType = unifiedNormalizeNodeTypeString(node.type || node.data?.type || '');
+    const metadata = (node.data?.metadata || {}) as RawNodeMetadata;
+    const config = (node.data?.config || {}) as Record<string, unknown>;
+
+    // ✅ PRIORITY 1: AI-determined category from Gemini's role mapping
+    if (metadata.aiDeterminedCategory) {
+      const aiCategory = metadata.aiDeterminedCategory as DSLCategory;
+      console.log(`[CategoryResolver] Using AI-determined category for ${nodeType}: ${aiCategory} (from role: ${metadata.aiRole})`);
+      return aiCategory;
+    }
+
+    // ✅ PRIORITY 2: intendedCapability from metadata (DSL flows)
+    if (metadata.intendedCapability) {
+      const intendedCap = metadata.intendedCapability.toLowerCase();
+      if (intendedCap === 'data_source' || intendedCap === 'datasource') {
+        return 'dataSource';
+      }
+      if (intendedCap === 'transformation') {
+        return 'transformation';
+      }
+      if (intendedCap === 'output') {
+        return 'output';
+      }
+    }
+
+    // ✅ PRIORITY 3: Operation-aware category mapping (for multi-capability nodes)
+    // This enables context-aware categorization: same node type can be data_source or output based on operation
+    const operation = (typeof config?.operation === 'string' ? config.operation.toLowerCase() : '') || '';
+    const nodeDef = unifiedNodeRegistry.get(nodeType);
+    
+    if (operation && nodeDef) {
+      // Multi-capability nodes: Gmail, Sheets, etc.
+      // Reading operations → dataSource
+      if (operation === 'read' || operation === 'get' || operation === 'list' || operation === 'search' || operation === 'fetch') {
+        console.log(`[CategoryResolver] Operation-aware: ${nodeType} with operation '${operation}' → dataSource`);
+        return 'dataSource';
+      }
+      // Writing/sending operations → output
+      if (operation === 'send' || operation === 'write' || operation === 'create' || operation === 'update' || operation === 'delete' || operation === 'append') {
+        console.log(`[CategoryResolver] Operation-aware: ${nodeType} with operation '${operation}' → output`);
+        return 'output';
+      }
+    }
+
+    // ✅ PRIORITY 4: Fall back to standard category resolution
+    return this.getNodeCategory(nodeType);
+  }
+
   /**
    * Get node category using multi-step resolution
    * NO hardcoded mappings - works for all categories

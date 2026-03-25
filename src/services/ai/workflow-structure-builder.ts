@@ -27,10 +27,11 @@ import { StructuredIntent } from './intent-structurer';
 import { workflowTrainingService } from './workflow-training-service';
 import { nodeLibrary } from '../nodes/node-library';
 import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
-import { ollamaOrchestrator } from './ollama-orchestrator';
+import { geminiOrchestrator } from './gemini-orchestrator';
 import type { WorkflowGenerationStructure, WorkflowStepDefinition } from '../../core/types/ai-types';
 import { getEmbeddingGenerator } from '../../memory/utils/embeddings';
 import { dagValidator } from '../../core/validation/dag-validator';
+import { universalCategoryResolver } from '../../core/utils/universal-category-resolver';
 
 export interface WorkflowStructure {
   trigger: string;
@@ -766,7 +767,7 @@ Return ONLY a JSON object with this exact structure:
 
 Return ONLY valid JSON, no markdown, no explanations.`;
 
-      const response = await ollamaOrchestrator.processRequest('workflow-generation', {
+      const response = await geminiOrchestrator.processRequest('workflow-generation', {
         prompt,
         temperature: 0.1, // Low temperature for consistent scoring
         stream: false,
@@ -1055,8 +1056,13 @@ Return ONLY valid JSON, no markdown, no explanations.`;
   }
 
   /**
-   * Categorize nodes into data sources, processors, outputs, and other
+   * ✅ AI-FIRST: Categorize nodes into data sources, processors, outputs, and other
+   * Uses context-aware category resolution instead of hardcoded node type sets
    * Enables smart connection logic: trigger → data source → processor → output
+   * 
+   * For multi-capability nodes (Gmail, Sheets, etc.), uses operation-aware categorization:
+   * - operation: 'read'/'get' → dataSource
+   * - operation: 'send'/'write' → output
    */
   private categorizeNodes(actions: StructuredIntent['actions']): {
     dataSources: StructuredIntent['actions'];
@@ -1069,66 +1075,35 @@ Return ONLY valid JSON, no markdown, no explanations.`;
     const outputs: StructuredIntent['actions'] = [];
     const other: StructuredIntent['actions'] = [];
 
-    // Data source node types
-    const dataSourceTypes = new Set([
-      'google_sheets',
-      'google_sheets_read',
-      'google_sheets_write',
-      'database',
-      'postgres',
-      'mysql',
-      'mongodb',
-      'storage',
-      's3',
-      'google_drive',
-      'dropbox',
-      'airtable',
-      'notion',
-      'csv',
-      'excel',
-    ]);
-
-    // Processor node types (AI, transformation, logic)
-    // Note: ai_service is a capability, not a node type - it resolves to ollama/openai/etc.
-    const processorTypes = new Set([
-      'text_summarizer',
-      'ollama',
-      'openai_gpt',
-      'anthropic_claude',
-      'google_gemini',
-      'transform',
-      'set_variable',
-      'if_else',
-      'loop',
-      'filter',
-      'map',
-      'reduce',
-      'format',
-      'parse',
-    ]);
-
-    // Output node types
-    const outputTypes = new Set([
-      'google_gmail',
-      'gmail',
-      'slack',
-      'discord',
-      'notification',
-      'webhook_response',
-      'http_request',
-      'email',
-      'sms',
-      'telegram',
-    ]);
-
     actions.forEach(action => {
       const normalizedType = unifiedNormalizeNodeTypeString(action.type);
+      const operation = action.operation?.toLowerCase() || '';
       
-      if (dataSourceTypes.has(normalizedType)) {
+      // ✅ AI-FIRST: Create a temporary node-like object for context-aware categorization
+      // This enables operation-aware categorization for multi-capability nodes
+      const tempNode = {
+        id: 'temp',
+        type: normalizedType,
+        data: {
+          type: normalizedType,
+          config: action.config || {},
+          metadata: {},
+        },
+      } as any;
+      
+      // Set operation in config for operation-aware resolution
+      if (operation) {
+        tempNode.data.config.operation = operation;
+      }
+      
+      // ✅ AI-FIRST: Use context-aware category resolver
+      const category = universalCategoryResolver.getNodeCategoryWithContext(tempNode);
+      
+      if (category === 'dataSource') {
         dataSources.push(action);
-      } else if (processorTypes.has(normalizedType)) {
+      } else if (category === 'transformation') {
         processors.push(action);
-      } else if (outputTypes.has(normalizedType)) {
+      } else if (category === 'output') {
         outputs.push(action);
       } else {
         other.push(action);

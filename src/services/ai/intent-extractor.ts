@@ -15,7 +15,7 @@
  * - This reduces LLM dependency by 70-80%
  */
 
-import { ollamaOrchestrator } from './ollama-orchestrator';
+import { geminiOrchestrator } from './gemini-orchestrator';
 import { SimpleIntent, SimpleIntentResult } from './simple-intent';
 import { fallbackIntentGenerator } from './fallback-intent-generator';
 
@@ -371,7 +371,7 @@ Extract ONLY basic entities from the user prompt. Do NOT design infrastructure.
 Return the JSON now:`;
 
     try {
-      const aiRaw = await ollamaOrchestrator.processRequest(
+      const aiRaw = await geminiOrchestrator.processRequest(
         'workflow-generation',
         {
           prompt,

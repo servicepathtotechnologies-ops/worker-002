@@ -14,7 +14,7 @@
  */
 
 import { StructuredIntent } from './intent-structurer';
-import { ollamaOrchestrator } from './ollama-orchestrator';
+import { geminiOrchestrator } from './gemini-orchestrator';
 import { nodeLibrary } from '../nodes/node-library';
 import { AliasKeywordCollector } from './summarize-layer';
 
@@ -212,7 +212,7 @@ CRITICAL:
 
     try {
       // Use processRequest with prompt object (system + user prompt)
-      const response = await ollamaOrchestrator.processRequest(
+      const response = await geminiOrchestrator.processRequest(
         'workflow-generation',
         {
           prompt: prompt,

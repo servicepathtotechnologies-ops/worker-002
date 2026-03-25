@@ -91,6 +91,55 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
     for (let i = 0; i < orderedNodeIds.length - 1; i++) {
       const sourceId = orderedNodeIds[i];
       const targetId = orderedNodeIds[i + 1];
+
+      const sourceNodeForLinear = workflow.nodes.find(n => n.id === sourceId);
+      if (sourceNodeForLinear) {
+        const linearSourceType = unifiedNormalizeNodeTypeString(
+          sourceNodeForLinear.type || sourceNodeForLinear.data?.type || ''
+        );
+        // Branching nodes (if_else, switch, …): do not create a single "next hop" edge here —
+        // Step 4 assigns explicit branch ports (true/false/case_*). A linear edge would duplicate
+        // branch edges and collide on source→target.
+        if (unifiedNodeRegistry.get(linearSourceType)?.isBranching === true) {
+          continue;
+        }
+      }
+
+      const targetNodeForLinear = workflow.nodes.find((n) => n.id === targetId);
+      if (sourceNodeForLinear && targetNodeForLinear) {
+        const targetLinearType = unifiedNormalizeNodeTypeString(
+          targetNodeForLinear.type || targetNodeForLinear.data?.type || '',
+        );
+        const sourceLinearType = unifiedNormalizeNodeTypeString(
+          sourceNodeForLinear.type || sourceNodeForLinear.data?.type || '',
+        );
+        if (sourceLinearType === 'log_output' && targetLinearType === 'log_output') {
+          continue;
+        }
+      }
+
+      // Branch-aware: do not chain consecutive execution-order pairs that live in different
+      // exclusive fork regions (e.g. Gmail true-branch → Slack false-branch).
+      // 1) Graph-based (after branch edges exist). 2) Order-based — Step 3 runs *before* Step 4
+      // fan-out, so we mirror Step 4's port→target assignment using execution order + registry ports.
+      if (sourceNodeForLinear && targetNodeForLinear) {
+        if (
+          this.areExclusiveForkDescendantsInDifferentRegions(
+            workflow.nodes,
+            edgesToKeep,
+            sourceId,
+            targetId
+          ) ||
+          this.areConsecutivePairExclusiveBranchHeadsByOrder(
+            workflow.nodes,
+            orderedNodeIds,
+            sourceId,
+            targetId
+          )
+        ) {
+          continue;
+        }
+      }
       
       // Check if edge already exists
       const edgeExists = edgesToKeep.some(
@@ -130,54 +179,64 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
       // Find nodes that should connect from this branching node
       const potentialTargets = orderedNodeIds.slice(nodeIndex + 1);
       
-      // Use registry to determine valid outputs for branching node
-      const nodeType = unifiedNormalizeNodeTypeString(branchingNode.type || branchingNode.data?.type || '');
-      const nodeDef = unifiedNodeRegistry.get(nodeType);
-      const outgoingPorts = nodeDef?.outgoingPorts || [];
+      // Use registry + persisted node config for branch ports (switch cases live in config)
+      const outgoingPorts = unifiedNodeRegistry.getOutgoingPortsForWorkflowNode(branchingNode);
       
-      // For if_else: create 'true' and 'false' edges
-      if (nodeType === 'if_else') {
-        // Find first node after if_else for 'true' path
-        if (potentialTargets.length > 0) {
-          const trueTarget = potentialTargets[0];
-          const trueEdgeExists = edgesToKeep.some(
-            e => e.source === branchingNode.id && e.target === trueTarget && (e.type === 'true' || e.sourceHandle === 'true')
-          );
-          
-          if (!trueEdgeExists) {
-            const trueEdge = this.createEdgeFromOrder(
-              workflow,
-              branchingNode.id,
-              trueTarget,
-              executionOrder,
-              'true'
+      // Registry-driven branch fanout: map each outgoing branch port to a unique
+      // downstream target in execution order when an explicit edge for that port
+      // does not already exist.
+      if (outgoingPorts.length > 1 && potentialTargets.length > 0) {
+        const usedTargets = new Set<string>([
+          ...edgesToKeep
+            .filter(e => e.source === branchingNode.id)
+            .map(e => e.target),
+          ...edgesToAdd
+            .filter(e => e.source === branchingNode.id)
+            .map(e => e.target),
+        ]);
+
+        const branchPorts = outgoingPorts.filter(p => p !== 'output');
+        branchPorts.forEach((portName, index) => {
+          const edgeForPortExists =
+            edgesToKeep.some(
+              e =>
+                e.source === branchingNode.id &&
+                (e.type === portName || e.sourceHandle === portName)
+            ) ||
+            edgesToAdd.some(
+              e =>
+                e.source === branchingNode.id &&
+                (e.type === portName || e.sourceHandle === portName)
             );
-            if (trueEdge) edgesToAdd.push(trueEdge);
+          if (edgeForPortExists) return;
+
+          const targetCandidate = potentialTargets.find(t => !usedTargets.has(t));
+          if (!targetCandidate) return;
+
+          const newEdge = this.createEdgeFromOrder(
+            workflow,
+            branchingNode.id,
+            targetCandidate,
+            executionOrder,
+            portName
+          );
+          if (newEdge) {
+            edgesToAdd.push(newEdge);
+            usedTargets.add(targetCandidate);
+          } else {
+            // Fallback for branch completeness: keep port topology complete even when
+            // handle inference fails for a branch edge.
+            edgesToAdd.push({
+              id: `edge_${randomUUID()}`,
+              source: branchingNode.id,
+              target: targetCandidate,
+              type: portName,
+              sourceHandle: portName,
+              targetHandle: 'input',
+            });
+            usedTargets.add(targetCandidate);
           }
-        }
-        
-        // Find stop_and_error or error handling node for 'false' path
-        const falseTarget = workflow.nodes.find(n => {
-          const t = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
-          return t === 'stop_and_error' || t === 'error_trigger';
         });
-        
-        if (falseTarget) {
-          const falseEdgeExists = edgesToKeep.some(
-            e => e.source === branchingNode.id && e.target === falseTarget.id && (e.type === 'false' || e.sourceHandle === 'false')
-          );
-          
-          if (!falseEdgeExists) {
-            const falseEdge = this.createEdgeFromOrder(
-              workflow,
-              branchingNode.id,
-              falseTarget.id,
-              executionOrder,
-              'false'
-            );
-            if (falseEdge) edgesToAdd.push(falseEdge);
-          }
-        }
       }
     }
     
@@ -220,6 +279,7 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
     // ✅ STEP 6: Ensure ALL output nodes (HubSpot, Gmail, CRM, Communication, etc.) are connected from last transformation node
     // ✅ UNIVERSAL FIX: Use isOutputNode() function instead of hardcoded list
     // This ensures ANY node that acts as an output is properly connected, regardless of type
+    // Branch outputs (e.g. if_else → slack on false) already have hasIncoming — skip to avoid cross-branch wiring.
     const outputNodes = workflow.nodes.filter(n => {
       return isOutputNode(n);
     });
@@ -228,9 +288,11 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
       const outputIndex = orderedNodeIds.indexOf(outputNode.id);
       if (outputIndex < 0) continue;
       
-      // Check if output node already has incoming edges
-      const hasIncoming = edgesToKeep.some(e => e.target === outputNode.id);
-      if (hasIncoming) continue; // Already connected
+      // Check if output node already has incoming edges (include edges queued earlier this pass)
+      const hasIncoming =
+        edgesToKeep.some(e => e.target === outputNode.id) ||
+        edgesToAdd.some(e => e.target === outputNode.id);
+      if (hasIncoming) continue; // Already connected (includes branch edges from if_else / switch)
       
       // Find the last transformation node before this output node
       let lastTransformationNodeId: string | null = null;
@@ -253,9 +315,13 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
       }
       
       if (lastTransformationNodeId) {
-        const edgeExists = edgesToKeep.some(
-          e => e.source === lastTransformationNodeId && e.target === outputNode.id
-        );
+        const edgeExists =
+          edgesToKeep.some(
+            e => e.source === lastTransformationNodeId && e.target === outputNode.id
+          ) ||
+          edgesToAdd.some(
+            e => e.source === lastTransformationNodeId && e.target === outputNode.id
+          );
         
         if (!edgeExists) {
           const edge = this.createEdgeFromOrder(
@@ -406,38 +472,59 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
         );
         
         if (!edgeExists) {
-          // Create edge from last non-terminal node to log_output
-          console.log(
-            `[EdgeReconciliationEngine] 🔍 DEBUG Attempting to create edge: ` +
-            `${sourceType}(${lastNonTerminalNodeId.substring(0, 8)}) → log_output(${logOutputNode.id.substring(0, 8)})`
-          );
-          
-          const edge = this.createEdgeFromOrder(
-            workflow,
-            lastNonTerminalNodeId,
-            logOutputNode.id,
-            executionOrder
-          );
-          
-          if (edge) {
-            edgesToAdd.push(edge);
+          const structuralEdgesSnapshot = [...edgesToKeep, ...edgesToAdd];
+          const crossExclusiveFork =
+            this.areExclusiveForkDescendantsInDifferentRegions(
+              workflow.nodes,
+              structuralEdgesSnapshot,
+              lastNonTerminalNodeId,
+              logOutputNode.id
+            ) ||
+            this.areConsecutivePairExclusiveBranchHeadsByOrder(
+              workflow.nodes,
+              orderedNodeIds,
+              lastNonTerminalNodeId,
+              logOutputNode.id
+            );
+          if (crossExclusiveFork) {
             console.log(
-              `[EdgeReconciliationEngine] ✅ Connected last non-terminal node (${lastNonTerminalNodeId}) → log_output (${logOutputNode.id})`
+              `[EdgeReconciliationEngine] 🔍 Skip log_output wiring: exclusive fork regions ` +
+                `(${lastNonTerminalNodeId.substring(0, 8)} → ${logOutputNode.id.substring(0, 8)})`
             );
           } else {
-            const sourceNodeDef = unifiedNodeRegistry.get(sourceType);
-            const logOutputNodeDef = unifiedNodeRegistry.get('log_output');
-            console.error(
-              `[EdgeReconciliationEngine] ❌ FAILED to create edge: ` +
-              `${sourceType}(${lastNonTerminalNodeId.substring(0, 8)}) → log_output(${logOutputNode.id.substring(0, 8)})\n` +
-              `  Source node: type=${sourceType}, outgoingPorts=[${(sourceNodeDef?.outgoingPorts || []).join(', ')}], ` +
-              `incomingPorts=[${(sourceNodeDef?.incomingPorts || []).join(', ')}]\n` +
-              `  Target node: type=log_output, outgoingPorts=[${(logOutputNodeDef?.outgoingPorts || []).join(', ')}], ` +
-              `incomingPorts=[${(logOutputNodeDef?.incomingPorts || []).join(', ')}]`
+            // Create edge from last non-terminal node to log_output
+            console.log(
+              `[EdgeReconciliationEngine] 🔍 DEBUG Attempting to create edge: ` +
+                `${sourceType}(${lastNonTerminalNodeId.substring(0, 8)}) → log_output(${logOutputNode.id.substring(0, 8)})`
             );
-            warnings.push(
-              `Could not create edge from ${lastNonTerminalNodeId} to log_output (${logOutputNode.id}) - handle resolution failed`
+
+            const edge = this.createEdgeFromOrder(
+              workflow,
+              lastNonTerminalNodeId,
+              logOutputNode.id,
+              executionOrder
             );
+
+            if (edge) {
+              edgesToAdd.push(edge);
+              console.log(
+                `[EdgeReconciliationEngine] ✅ Connected last non-terminal node (${lastNonTerminalNodeId}) → log_output (${logOutputNode.id})`
+              );
+            } else {
+              const sourceNodeDef = unifiedNodeRegistry.get(sourceType);
+              const logOutputNodeDef = unifiedNodeRegistry.get('log_output');
+              console.error(
+                `[EdgeReconciliationEngine] ❌ FAILED to create edge: ` +
+                  `${sourceType}(${lastNonTerminalNodeId.substring(0, 8)}) → log_output(${logOutputNode.id.substring(0, 8)})\n` +
+                  `  Source node: type=${sourceType}, outgoingPorts=[${(sourceNodeDef?.outgoingPorts || []).join(', ')}], ` +
+                  `incomingPorts=[${(sourceNodeDef?.incomingPorts || []).join(', ')}]\n` +
+                  `  Target node: type=log_output, outgoingPorts=[${(logOutputNodeDef?.outgoingPorts || []).join(', ')}], ` +
+                  `incomingPorts=[${(logOutputNodeDef?.incomingPorts || []).join(', ')}]`
+              );
+              warnings.push(
+                `Could not create edge from ${lastNonTerminalNodeId} to log_output (${logOutputNode.id}) - handle resolution failed`
+              );
+            }
           }
         } else {
           console.log(`[EdgeReconciliationEngine] 🔍 DEBUG Edge already exists, skipping creation`);
@@ -451,13 +538,25 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
     }
     
     // Combine all edges
-    const finalEdges = [...edgesToKeep, ...edgesToAdd];
+    let workingNodes = [...workflow.nodes];
+    let finalEdges = [...edgesToKeep, ...edgesToAdd];
+
+    // ✅ STEP 7b: log_output is a single-input terminal — multiple incoming edges (e.g. if_else false
+    // + sequential gmail → same log) violate that contract. Split into one log_output per incoming edge.
+    const splitResult = this.splitMultiInputLogOutputs(workingNodes, finalEdges);
+    workingNodes = splitResult.nodes;
+    finalEdges = splitResult.edges;
+    if (splitResult.splitCount > 0) {
+      warnings.push(
+        `Split ${splitResult.splitCount} multi-input log_output node(s) into separate terminals (one edge each).`
+      );
+    }
     
     // ✅ STEP 8: Auto-remove orphaned nodes that are not required
     // This implements the user's insight: orphaned nodes = unnecessary nodes = should be removed
     // ✅ PHASE 4: Pass tagsFromVariation to preserve nodes in tags
     const { nodes: finalNodes, nodesRemoved, removedNodeTypes } = this.removeUnrequiredOrphanedNodes(
-      workflow,
+      { ...workflow, nodes: workingNodes },
       finalEdges,
       orderedNodeIds,
       tagsFromVariation
@@ -487,6 +586,83 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
       warnings: [...warnings, ...validation.violations],
       removedNodeTypes, // ✅ Return removed node types
     };
+  }
+
+  /**
+   * Prefer keeping direct branch edges (false, true, case_*) on the original log node;
+   * sequential / main hops to log get cloned terminals.
+   */
+  private branchEdgeIncomingPriority(e: WorkflowEdge): number {
+    const t = String(e.type || e.sourceHandle || '').toLowerCase();
+    if (t === 'false') return 0;
+    if (t === 'true') return 1;
+    if (t.startsWith('case_')) return 2;
+    return 10;
+  }
+
+  private cloneLogOutputForSplit(sourceLog: WorkflowNode, splitIndex: number): WorkflowNode {
+    const newId = `${sourceLog.id}_split_${splitIndex}_${randomUUID().slice(0, 8)}`;
+    const baseLabel =
+      (sourceLog.data && (sourceLog.data as any).label) ||
+      (sourceLog as any).label ||
+      'Log';
+    const data = sourceLog.data
+      ? {
+          ...(sourceLog.data as object),
+          label: `${baseLabel} (branch ${splitIndex + 1})`,
+        }
+      : { type: 'log_output', label: `${baseLabel} (branch ${splitIndex + 1})` };
+    return {
+      ...sourceLog,
+      id: newId,
+      data: data as any,
+    };
+  }
+
+  /**
+   * Universal: log_output must not fan-in from multiple sources without an explicit merge node.
+   * Duplicate the log node so each incoming edge targets its own terminal.
+   */
+  private splitMultiInputLogOutputs(
+    nodes: WorkflowNode[],
+    edges: WorkflowEdge[]
+  ): { nodes: WorkflowNode[]; edges: WorkflowEdge[]; splitCount: number } {
+    const outNodes = [...nodes];
+    let outEdges = [...edges];
+    let splitCount = 0;
+
+    const logNodes = outNodes.filter(n => {
+      const t = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
+      return t === 'log_output';
+    });
+
+    for (const log of logNodes) {
+      const incoming = outEdges.filter(e => e.target === log.id);
+      if (incoming.length <= 1) continue;
+
+      splitCount++;
+      const sorted = [...incoming].sort(
+        (a, b) => this.branchEdgeIncomingPriority(a) - this.branchEdgeIncomingPriority(b)
+      );
+
+      for (let i = 1; i < sorted.length; i++) {
+        const edgeToRewire = sorted[i];
+        const newLog = this.cloneLogOutputForSplit(log, i);
+        outNodes.push(newLog);
+
+        const idx = outEdges.findIndex(e =>
+          edgeToRewire.id ? e.id === edgeToRewire.id
+            : e.source === edgeToRewire.source && e.target === edgeToRewire.target
+        );
+        if (idx >= 0) {
+          const next = [...outEdges];
+          next[idx] = { ...next[idx], target: newLog.id };
+          outEdges = next;
+        }
+      }
+    }
+
+    return { nodes: outNodes, edges: outEdges, splitCount };
   }
   
   /**
@@ -713,6 +889,138 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
   }
   
   /**
+   * Forward reachability (directed) along current edge list — used for exclusive fork regions.
+   */
+  private reachableNodeIdsFrom(edges: WorkflowEdge[], startId: string): Set<string> {
+    const visited = new Set<string>();
+    const queue: string[] = [startId];
+    while (queue.length > 0) {
+      const n = queue.shift()!;
+      if (visited.has(n)) continue;
+      visited.add(n);
+      for (const e of edges) {
+        if (e.source === n) queue.push(e.target);
+      }
+    }
+    return visited;
+  }
+
+  /**
+   * Branch port id for exclusive outputs from a fork (not `main`).
+   */
+  private getExclusiveBranchPortFromEdge(edge: WorkflowEdge, forkId: string): string | null {
+    if (edge.source !== forkId) return null;
+    const t = String(edge.type || edge.sourceHandle || '').toLowerCase();
+    if (t === 'main' || t === '') return null;
+    if (t === 'true' || t === 'false') return t;
+    if (t.startsWith('case_')) return t;
+    return null;
+  }
+
+  /**
+   * True when `u` and `v` lie in different exclusive subtrees of the same registry branching node,
+   * with no mutual reachability between those subtrees (merge/rejoin would allow overlap).
+   * Prevents spurious linear edges between sibling branch paths from flat execution order.
+   */
+  private areExclusiveForkDescendantsInDifferentRegions(
+    nodes: WorkflowNode[],
+    edges: WorkflowEdge[],
+    u: string,
+    v: string
+  ): boolean {
+    if (u === v) return false;
+    for (const node of nodes) {
+      const nodeType = unifiedNormalizeNodeTypeString(node.type || node.data?.type || '');
+      const nodeDef = unifiedNodeRegistry.get(nodeType);
+      if (!nodeDef?.isBranching) continue;
+
+      const forkId = node.id;
+      const outs = edges.filter(e => this.getExclusiveBranchPortFromEdge(e, forkId) !== null);
+      if (outs.length < 2) continue;
+
+      for (let i = 0; i < outs.length; i++) {
+        for (let j = i + 1; j < outs.length; j++) {
+          const e1 = outs[i];
+          const e2 = outs[j];
+          const p1 = this.getExclusiveBranchPortFromEdge(e1, forkId);
+          const p2 = this.getExclusiveBranchPortFromEdge(e2, forkId);
+          if (!p1 || !p2 || p1 === p2) continue;
+
+          const R1 = this.reachableNodeIdsFrom(edges, e1.target);
+          const R2 = this.reachableNodeIdsFrom(edges, e2.target);
+
+          const uInR1Only = R1.has(u) && !R2.has(u);
+          const vInR2Only = R2.has(v) && !R1.has(v);
+          const uInR2Only = R2.has(u) && !R1.has(u);
+          const vInR1Only = R1.has(v) && !R2.has(v);
+
+          if (uInR1Only && vInR2Only) return true;
+          if (uInR2Only && vInR1Only) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Hypothetical mapping of branch ports → first downstream node in execution order (same as Step 4
+   * when each port takes the next unused node in potentialTargets). Used when branch edges are
+   * not materialized yet (Step 3 runs before Step 4).
+   */
+  private getHypotheticalBranchPortTargetsForFork(
+    forkNode: WorkflowNode,
+    orderedNodeIds: string[]
+  ): Map<string, string> | null {
+    const forkIndex = orderedNodeIds.indexOf(forkNode.id);
+    if (forkIndex < 0) return null;
+    const potentialTargets = orderedNodeIds.slice(forkIndex + 1);
+    const outgoingPorts = unifiedNodeRegistry.getOutgoingPortsForWorkflowNode(forkNode);
+    const branchPorts = outgoingPorts.filter(p => p !== 'output');
+    if (branchPorts.length < 2) return null;
+
+    const map = new Map<string, string>();
+    for (let i = 0; i < branchPorts.length && i < potentialTargets.length; i++) {
+      map.set(branchPorts[i], potentialTargets[i]);
+    }
+    return map.size >= 2 ? map : null;
+  }
+
+  /**
+   * True when source/target are consecutive in execution order and match two distinct branch head
+   * targets under the same registry branching node (if_else true/false, switch case_*, …).
+   */
+  private areConsecutivePairExclusiveBranchHeadsByOrder(
+    workflowNodes: WorkflowNode[],
+    orderedNodeIds: string[],
+    sourceId: string,
+    targetId: string
+  ): boolean {
+    const si = orderedNodeIds.indexOf(sourceId);
+    const ti = orderedNodeIds.indexOf(targetId);
+    if (si < 0 || ti !== si + 1) return false;
+
+    for (const node of workflowNodes) {
+      const nodeType = unifiedNormalizeNodeTypeString(node.type || node.data?.type || '');
+      if (!unifiedNodeRegistry.get(nodeType)?.isBranching) continue;
+
+      const portMap = this.getHypotheticalBranchPortTargetsForFork(node, orderedNodeIds);
+      if (!portMap) continue;
+
+      const targets = [...portMap.values()];
+      for (let i = 0; i < targets.length; i++) {
+        for (let j = i + 1; j < targets.length; j++) {
+          const a = targets[i];
+          const b = targets[j];
+          if (a && b && ((sourceId === a && targetId === b) || (sourceId === b && targetId === a))) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
    * Validate edges against execution order
    */
   validateEdges(
@@ -750,6 +1058,10 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
       
       // Edge is valid
     });
+
+    const effectiveEdges = workflow.edges.filter(
+      e => !edgesToRemove.some(er => er.id === e.id)
+    );
     
     // Determine missing edges based on execution order
     for (let i = 0; i < orderedNodeIds.length - 1; i++) {
@@ -760,10 +1072,35 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
       const targetNode = workflow.nodes.find(n => n.id === targetId);
       
       if (!sourceNode || !targetNode) continue;
+
+      const validateSourceType = unifiedNormalizeNodeTypeString(
+        sourceNode.type || sourceNode.data?.type || ''
+      );
+      // Same rule as reconcileEdges Step 3: branching sources are wired via branch fan-out, not linear i→i+1.
+      if (unifiedNodeRegistry.get(validateSourceType)?.isBranching === true) {
+        continue;
+      }
+
+      if (
+        this.areExclusiveForkDescendantsInDifferentRegions(
+          workflow.nodes,
+          effectiveEdges,
+          sourceId,
+          targetId
+        ) ||
+        this.areConsecutivePairExclusiveBranchHeadsByOrder(
+          workflow.nodes,
+          orderedNodeIds,
+          sourceId,
+          targetId
+        )
+      ) {
+        continue;
+      }
       
       // Check if edge should exist (registry-based)
       if (this.shouldHaveEdge(sourceNode, targetNode)) {
-        const edgeExists = workflow.edges.some(
+        const edgeExists = effectiveEdges.some(
           e => e.source === sourceId && e.target === targetId
         );
         
@@ -902,6 +1239,11 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
     const targetDef = unifiedNodeRegistry.get(targetType);
     
     if (!sourceDef || !targetDef) return false;
+
+    // Parallel branch terminals (e.g. true/false both logging) must not be linearly chained by order repair
+    if (sourceType === 'log_output' && targetType === 'log_output') {
+      return false;
+    }
     
     // ✅ UNIVERSAL: Prioritize intendedCapability from metadata (AI-determined, context-aware)
     // This is the PRIMARY source of truth for multi-capability nodes

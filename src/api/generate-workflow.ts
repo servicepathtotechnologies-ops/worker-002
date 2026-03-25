@@ -18,13 +18,28 @@ import { WorkflowNode } from '../core/types/ai-types';
 import { config } from '../core/config';
 import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../core/utils/unified-node-type-normalizer';
 import { resolveNodeType } from '../core/utils/node-type-resolver-util';
+import {
+  autoRepairCanonicalChainForIntent,
+  canonicalizePlanChainStrict,
+  validateCanonicalChainCompleteness,
+} from './plan-chain-guards';
 import { getMemoryManager, getReferenceBuilder } from '../memory';
 import { getSupabaseClient } from '../core/database/supabase-compat';
 import { ComprehensiveCredentialScanner } from '../services/ai/comprehensive-credential-scanner';
 import { CredentialResolver } from '../services/ai/credential-resolver';
 import { workflowLifecycleManager } from '../services/workflow-lifecycle-manager';
 import { generateComprehensiveNodeQuestions } from '../services/ai/comprehensive-node-questions-generator';
-import { summarizeLayerService, AliasKeywordCollector } from '../services/ai/summarize-layer';
+import {
+  summarizeLayerService,
+  AliasKeywordCollector,
+  type WorkflowIntentPlan,
+} from '../services/ai/summarize-layer';
+import { unifiedNodeRegistry } from '../core/registry/unified-node-registry';
+import { resolveEffectiveFieldFillMode } from '../core/utils/fill-mode-resolver';
+import { validateStructuralReadiness } from '../core/validation/workflow-save-validator';
+import { materializeStructuralFields } from '../services/ai/structure-materializer';
+import { buildStructuralBlueprint } from '../services/ai/structural-blueprint-builder';
+import { buildUnifiedReadiness } from '../services/ai/unified-readiness';
 
 /**
  * ✅ PHASE 4: Extract nodes from selected variation's matchedKeywords
@@ -63,6 +78,214 @@ function extractNodesFromVariationKeywords(
   const result = Array.from(nodeTypes);
   console.log(`[GenerateWorkflow] ✅ PHASE 4: Extracted ${result.length} node type(s) from selected variation: ${result.join(', ')}`);
   return result;
+}
+
+/**
+ * When Gemini summarize fails or returns no plan, still return phase "summarize" so the wizard
+ * always shows the structured plan card (not the legacy "Summary" clarification step).
+ */
+function buildFallbackWorkflowIntentPlanForAnalyze(finalPrompt: string): {
+  workflowIntentPlan: WorkflowIntentPlan;
+  matchedKeywords: string[];
+  mandatoryNodeTypes: string[];
+  registryTags: string[];
+} {
+  const fa = enhancedWorkflowAnalyzer.fastAnalyzePromptWithNodeOptions(finalPrompt, {});
+  const proposed = new Set<string>();
+  proposed.add('manual_trigger');
+  for (const group of fa.nodeOptionsDetected || []) {
+    for (const opt of group.options || []) {
+      const nt = opt.nodeType;
+      if (nt && nodeLibrary.isNodeTypeRegistered(nt)) {
+        proposed.add(nt);
+      }
+    }
+  }
+  proposed.add('log_output');
+  const middle = Array.from(proposed).filter((n) => n !== 'manual_trigger' && n !== 'log_output');
+  const ordered = ['manual_trigger', ...middle, 'log_output'];
+  const unique: string[] = [];
+  const seen = new Set<string>();
+  for (const n of ordered) {
+    if (!seen.has(n)) {
+      seen.add(n);
+      unique.push(n);
+    }
+  }
+  const summaryText = (fa.summary && String(fa.summary).trim()) || finalPrompt;
+  const plan: WorkflowIntentPlan = {
+    structuredSummary: summaryText,
+    proposedNodeChain: unique,
+    mandatoryNodeTypes: unique,
+    registryTags: [],
+    branchingOverview: '',
+    originalPrompt: finalPrompt,
+  };
+  return {
+    workflowIntentPlan: plan,
+    matchedKeywords: unique,
+    mandatoryNodeTypes: unique,
+    registryTags: [],
+  };
+}
+
+type CredentialStatus = 'required_missing' | 'resolved_connected' | 'not_required';
+
+function buildCredentialStatuses(
+  workflow: { nodes?: any[] },
+  resolution: {
+    required?: Array<{ credentialId?: string; displayName?: string; nodeIds?: string[] }>;
+    missing?: Array<{ credentialId?: string; displayName?: string; nodeIds?: string[] }>;
+    satisfied?: Array<{ credentialId?: string; displayName?: string; nodeIds?: string[] }>;
+  }
+): Array<{
+  nodeId: string;
+  nodeType: string;
+  nodeLabel: string;
+  credentialId: string;
+  displayName: string;
+  status: CredentialStatus;
+}> {
+  const nodes = Array.isArray(workflow?.nodes) ? workflow.nodes : [];
+  const nodeById = new Map<string, any>(nodes.map((n: any) => [String(n.id || ''), n]));
+  const out: Array<{
+    nodeId: string;
+    nodeType: string;
+    nodeLabel: string;
+    credentialId: string;
+    displayName: string;
+    status: CredentialStatus;
+  }> = [];
+
+  const pushRows = (
+    arr: Array<{ credentialId?: string; displayName?: string; nodeIds?: string[] }> | undefined,
+    status: CredentialStatus
+  ) => {
+    for (const item of arr || []) {
+      const nodeIds = Array.isArray(item.nodeIds) ? item.nodeIds : [];
+      for (const id of nodeIds) {
+        const node = nodeById.get(id);
+        out.push({
+          nodeId: id,
+          nodeType: String(node?.data?.type || node?.type || 'unknown'),
+          nodeLabel: String(node?.data?.label || node?.label || id),
+          credentialId: String(item.credentialId || 'credential'),
+          displayName: String(item.displayName || item.credentialId || 'Credential'),
+          status,
+        });
+      }
+    }
+  };
+
+  pushRows(resolution.missing, 'required_missing');
+  pushRows(resolution.satisfied, 'resolved_connected');
+
+  // Add "not_required" rows for nodes that have no credential requirements.
+  const requiredNodeIds = new Set(
+    [...(resolution.required || []), ...(resolution.missing || []), ...(resolution.satisfied || [])]
+      .flatMap((r) => (Array.isArray(r.nodeIds) ? r.nodeIds : []))
+  );
+  for (const n of nodes) {
+    if (!requiredNodeIds.has(String(n.id || ''))) {
+      out.push({
+        nodeId: String(n.id || ''),
+        nodeType: String(n?.data?.type || n?.type || 'unknown'),
+        nodeLabel: String(n?.data?.label || n?.label || n?.id || 'Node'),
+        credentialId: 'none',
+        displayName: 'No credential required',
+        status: 'not_required',
+      });
+    }
+  }
+
+  return out;
+}
+
+function getStructuralGate(workflow: { nodes?: any[] }): {
+  ok: boolean;
+  errors: string[];
+  warnings: string[];
+} {
+  const nodes = Array.isArray(workflow?.nodes) ? workflow.nodes : [];
+  const readiness = validateStructuralReadiness(nodes as any, { strict: true });
+  return {
+    ok: readiness.errors.length === 0,
+    errors: readiness.errors,
+    warnings: readiness.warnings,
+  };
+}
+
+/**
+ * Enforce empty-until-runtime for unified runtime inputs.
+ * Any field in registry inputSchema that is unresolved should remain empty in
+ * stored/generated workflows; runtime resolver will populate it later.
+ */
+function sanitizeRuntimeInputsForResponse(workflow: any): any {
+  if (!workflow?.nodes || !Array.isArray(workflow.nodes)) return workflow;
+  const sanitizedNodes = workflow.nodes.map((node: any) => {
+    const nodeType = unifiedNormalizeNodeType(node);
+    const def = unifiedNodeRegistry.get(nodeType);
+    if (!def?.inputSchema) return node;
+    const config = { ...(node?.data?.config || {}) };
+    for (const [fieldName, fieldDef] of Object.entries(def.inputSchema)) {
+      const val = config[fieldName];
+      const mode = resolveEffectiveFieldFillMode(fieldName, def.inputSchema, config);
+      // Respect explicit manual/build-time values. Runtime fields must stay blank.
+      const shouldKeep = mode === 'manual_static' || mode === 'buildtime_ai_once';
+      if (shouldKeep) continue;
+      if (typeof val === 'string' && (val.includes('{{$json.') || val.includes('{{') || val.trim() === '')) {
+        config[fieldName] = '';
+        continue;
+      }
+      if (mode === 'runtime_ai' && (val === undefined || val === null || (typeof val === 'string' && val.trim() !== ''))) {
+        // Keep deterministic invariant for runtime_ai defaults in generated flows.
+        config[fieldName] = '';
+      }
+    }
+    return {
+      ...node,
+      data: {
+        ...node.data,
+        config,
+      },
+    };
+  });
+  return {
+    ...workflow,
+    nodes: sanitizedNodes,
+  };
+}
+
+/**
+ * Structural materialization must run **after** FixAgent / validation and **before**
+ * `getStructuralGate` so intent-derived form / if_else / switch fields are present
+ * when we evaluate structural readiness. Sanitization runs after materialization so
+ * empty-until-runtime invariants still apply.
+ */
+function materializeThenSanitizeForClientResponse(
+  workflow: any,
+  intentHint?: string,
+  originalUserPromptHint?: string
+): any {
+  if (!workflow?.nodes) return workflow;
+  const meta = (workflow as any)?.metadata || {};
+  const withIntent = {
+    ...(workflow as any),
+    metadata: {
+      ...meta,
+      generatedFrom:
+        (meta.generatedFrom as string | undefined) ||
+        intentHint ||
+        (meta.prompt as string | undefined) ||
+        '',
+      originalUserPrompt:
+        (meta.originalUserPrompt && String(meta.originalUserPrompt).trim()) ||
+        (originalUserPromptHint && String(originalUserPromptHint).trim()) ||
+        undefined,
+    },
+  };
+  const materialized = materializeStructuralFields(withIntent as any);
+  return sanitizeRuntimeInputsForResponse(materialized);
 }
 
 /**
@@ -424,56 +647,66 @@ async function handlePhasedRefine(
     if (!answers || Object.keys(answers).length === 0) {
       console.log('[PhasedRefine] No answers provided - processing through summarize layer...');
       
-      // Check if user has selected a prompt variation
-      const selectedPromptVariation = (req.body as any).selectedPromptVariation;
-      
-      if (!selectedPromptVariation) {
-        // User hasn't selected a variation yet - generate variations
-        console.log('[PhasedRefine] No prompt variation selected - generating variations...');
-        
+      // Single structured plan: confirmedStructuredPrompt (new) or legacy selectedPromptVariation
+      const body = req.body as Record<string, unknown>;
+      const confirmedStructuredPrompt =
+        typeof body.confirmedStructuredPrompt === 'string' ? body.confirmedStructuredPrompt.trim() : '';
+      const selectedPromptVariation =
+        typeof body.selectedPromptVariation === 'string' ? body.selectedPromptVariation.trim() : '';
+      const effectiveSelectedPlan = confirmedStructuredPrompt || selectedPromptVariation;
+
+      if (!effectiveSelectedPlan) {
+        console.log('[PhasedRefine] No confirmed plan yet — running single-plan summarize layer...');
+
         try {
           const summarizeResult = await summarizeLayerService.processPrompt(finalPrompt);
-          
-          // ✅ NEW: Store mandatory nodes in request for later use
+
           (req as any).mandatoryNodeTypes = summarizeResult.mandatoryNodeTypes || [];
           (req as any).mandatoryNodesWithOperations = summarizeResult.mandatoryNodesWithOperations || [];
+          (req as any).registryTags = summarizeResult.registryTags || [];
           if (summarizeResult.mandatoryNodeTypes && summarizeResult.mandatoryNodeTypes.length > 0) {
-            console.log(`[PhasedRefine] ✅ Extracted ${summarizeResult.mandatoryNodeTypes.length} mandatory node type(s): ${summarizeResult.mandatoryNodeTypes.join(', ')}`);
+            console.log(
+              `[PhasedRefine] ✅ Extracted ${summarizeResult.mandatoryNodeTypes.length} mandatory node type(s): ${summarizeResult.mandatoryNodeTypes.join(', ')}`
+            );
             if (summarizeResult.mandatoryNodesWithOperations && summarizeResult.mandatoryNodesWithOperations.length > 0) {
-              console.log(`[PhasedRefine] ✅ Extracted operation hints for ${summarizeResult.mandatoryNodesWithOperations.length} node(s)`);
+              console.log(
+                `[PhasedRefine] ✅ Extracted operation hints for ${summarizeResult.mandatoryNodesWithOperations.length} node(s)`
+              );
             }
           }
-          
-          // ✅ ALWAYS show summarize layer if we have variations (even if only 1)
-          // This ensures user sees the refined prompt before proceeding
-          if (summarizeResult.promptVariations && summarizeResult.promptVariations.length > 0) {
-            console.log(`[PhasedRefine] ✅ Generated ${summarizeResult.promptVariations.length} prompt variations`);
-            
+
+          const hasPlan = !!summarizeResult.workflowIntentPlan;
+          if (hasPlan) {
+            console.log('[PhasedRefine] ✅ Returning single structured plan (summarize phase)');
             return res.json({
               phase: 'summarize',
-              promptVariations: summarizeResult.promptVariations,
+              workflowIntentPlan: summarizeResult.workflowIntentPlan,
+              promptVariations: summarizeResult.promptVariations || [],
               originalPrompt: summarizeResult.originalPrompt,
               clarifiedIntent: summarizeResult.clarifiedIntent,
               matchedKeywords: summarizeResult.matchedKeywords,
-              mandatoryNodeTypes: summarizeResult.mandatoryNodeTypes, // ✅ NEW: Include in response
-              allKeywords: summarizeResult.allKeywords.slice(0, 100), // Limit for response size
+              mandatoryNodeTypes: summarizeResult.mandatoryNodeTypes,
+              registryTags: summarizeResult.registryTags,
+              allKeywords: summarizeResult.allKeywords.slice(0, 100),
             });
           }
-          
-          // Fallback: If no variations generated, use clarified intent or original
+
           const promptToUse = summarizeResult.clarifiedIntent || finalPrompt;
-          console.log('[PhasedRefine] No variations generated, using clarified/original prompt, continuing to analysis...');
-          
-          // Continue to analysis with clarified prompt
+          console.log('[PhasedRefine] No plan payload, using clarified/original prompt, continuing to analysis...');
           finalPrompt = promptToUse;
         } catch (error) {
           console.error('[PhasedRefine] ⚠️ Error in summarize layer, continuing with original prompt:', error);
-          // Continue with original prompt if summarize layer fails
         }
       } else {
-        // ✅ PHASE 4: User has selected a variation - extract nodes from matchedKeywords
-        console.log('[PhasedRefine] ✅ PHASE 4: User selected a variation - extracting nodes from matchedKeywords...');
-        finalPrompt = selectedPromptVariation;
+        console.log('[PhasedRefine] ✅ User confirmed structured plan — proceeding with selected text');
+        finalPrompt = effectiveSelectedPlan;
+        if (Array.isArray(body.planMandatoryNodeTypes) && (body.planMandatoryNodeTypes as unknown[]).filter((x) => typeof x === 'string').length > 0) {
+          (req as any).mandatoryNodeTypes = body.planMandatoryNodeTypes as string[];
+        }
+        if (Array.isArray(body.planRegistryTags) && (body.planRegistryTags as unknown[]).length > 0) {
+          (req as any).registryTags = body.planRegistryTags as string[];
+        }
+
         
         // Extract matchedKeywords from selected variation
         const selectedVariationId = (req.body as any).selectedVariationId;
@@ -567,40 +800,21 @@ async function handlePhasedRefine(
       // Re-validate workflow after credential injection
       const validation = await workflowValidator.validateAndFix(workflowWithCredentials);
       let finalWorkflow = validation.fixedWorkflow || workflowWithCredentials;
-      
-      // ✅ MASK LAYER: Apply Data Flow Contract Layer AFTER credentials/inputs are provided
-      // This executes nodes to get REAL JSON, then intelligently maps properties based on user intent
-      try {
-        console.log('[PHASE] DATA_FLOW_CONTRACT - Applying mask layer with real JSON execution...');
-        const { DataFlowContractLayer } = await import('../services/data-flow-contract-layer');
-        const dataFlowLayer = new DataFlowContractLayer();
-        
-        // Get user ID from request if available
-        const supabase = getSupabaseClient();
-        let userId: string | undefined;
-        try {
-          const { data: { user } } = await supabase.auth.getUser();
-          userId = user?.id;
-        } catch (error) {
-          console.warn('[DataFlowContractLayer] Could not get user ID:', error);
-        }
-        
-        const contractResult = await dataFlowLayer.applyDataFlowContract(
-          finalWorkflow,
-          finalPrompt,
-          userId
-        );
-        
-        finalWorkflow = contractResult.workflow;
-        console.log(`[PHASE] DATA_FLOW_CONTRACT - ✅ Applied ${contractResult.mappings.length} property mappings`);
-        console.log(`[PHASE] DATA_FLOW_CONTRACT - Mappings:`, contractResult.mappings.map(m => 
-          `${m.targetNodeId}.${m.targetField} = ${m.templateExpression}`
-        ).join(', '));
-      } catch (error: any) {
-        console.error('[PHASE] DATA_FLOW_CONTRACT - ⚠️  Failed to apply mask layer:', error.message);
-        console.error('[PHASE] DATA_FLOW_CONTRACT - Continuing with workflow as-is (schema-based fallback)');
-        // Don't fail the entire workflow - continue with existing configs
-      }
+      finalWorkflow = materializeThenSanitizeForClientResponse(
+        finalWorkflow,
+        finalPrompt,
+        (req.body as any).originalPrompt || finalPrompt
+      );
+
+      // UNIVERSAL FIX: do NOT apply DataFlowContractLayer during generation.
+      // DataFlowContractLayer executes upstream nodes and writes {{$json...}} template bindings
+      // into downstream node configs before the user runs the workflow.
+      // This violates the invariant: input field values must be empty until runtime, and only
+      // filled by the runtime executor (AI Input Resolver + guarantee layer).
+      //
+      // The runtime executor is responsible for mapping inputs after previous nodes have produced
+      // real output.
+      console.log('[PHASE] DATA_FLOW_CONTRACT - Skipped (empty-until-runtime invariant)');
       
       // Extract final credentials list
       const finalCredentialsFromNodes = extractCredentialsFromNodes(finalWorkflow);
@@ -612,6 +826,30 @@ async function handlePhasedRefine(
       // Frontend MUST show blocking modal for ALL credentials before allowing Run
       const discoveredCredentialNames = credentialDiscovery.requiredCredentials.map(c => c.vaultKey);
       const allRequiredCredentials = Array.from(new Set([...allFinalCredentials, ...discoveredCredentialNames]));
+      const structuralGate = getStructuralGate(finalWorkflow);
+      const credentialStatuses = buildCredentialStatuses(finalWorkflow, {
+        required: credentialDiscovery.requiredCredentials as any,
+        missing: credentialDiscovery.missingCredentials as any,
+        satisfied: credentialDiscovery.satisfiedCredentials as any,
+      });
+      const structuralBlueprint = buildStructuralBlueprint(finalWorkflow as any);
+
+      if (!structuralGate.ok) {
+        return res.json({
+          phase: 'configuring_inputs',
+          success: false,
+          workflow: finalWorkflow,
+          nodes: finalWorkflow.nodes,
+          edges: finalWorkflow.edges,
+          structuralDiagnostics: {
+            errors: structuralGate.errors,
+            warnings: structuralGate.warnings,
+          },
+          structuralBlueprint,
+          credentialStatuses,
+          message: 'Structural fields must be completed before workflow can be ready.',
+        });
+      }
       
       return res.json({
         phase: 'ready',
@@ -626,6 +864,12 @@ async function handlePhasedRefine(
         requirements: (req.body as any).requirements || {},
         requiredCredentials: allRequiredCredentials,
         discoveredCredentials: credentialDiscovery.requiredCredentials, // 🔒 NEW: Complete credential discovery result
+        credentialStatuses,
+        structuralDiagnostics: {
+          errors: [],
+          warnings: structuralGate.warnings,
+        },
+        structuralBlueprint,
         validation: {
           valid: validation.valid,
           errors: validation.errors,
@@ -668,12 +912,14 @@ async function handlePhasedRefine(
       const selectedStructuredPrompt = (req.body as any).selectedStructuredPrompt || finalEnhancedPrompt;
       const originalPrompt = (req.body as any).originalPrompt || finalPrompt;
       const mandatoryNodeTypes = (req as any).mandatoryNodeTypes || []; // ✅ PHASE 5: Get mandatory nodes from request
+      const registryTags = (req.body as any).registryTags ?? (req as any).registryTags;
       
       const lifecycleResult = await workflowLifecycleManager.generateWorkflowGraph(finalEnhancedPrompt, {
         answers: filteredAnswers, // Only pass non-credential answers
         selectedStructuredPrompt, // ✅ NEW: Pass selected structured prompt
         originalPrompt, // ✅ NEW: Pass original prompt for reference
         mandatoryNodeTypes, // ✅ PHASE 5: Pass mandatory nodes from selected variation
+        registryTags,
         explicitNodeTypes: (req as any).explicitNodeTypes, // ✅ PHASE 1: Explicit nodes from variation
         blockedNodeTypes: (req as any).blockedNodeTypes,   // ✅ PHASE 1: Blocked conflicting nodes
       });
@@ -705,9 +951,7 @@ async function handlePhasedRefine(
           workflowResult = await generateChatbotWorkflowFallback(finalEnhancedPrompt);
         } else {
           // For other workflows, return error with helpful message
-          // Use config.ollamaHost which reads from environment variables
-          const ollamaHost = config.ollamaHost || 'http://localhost:11434';
-          throw new Error(`Ollama service is not available. Please ensure Ollama is running on ${ollamaHost}. For chatbot workflows, the system can generate them automatically.`);
+          throw new Error(`AI (Gemini) is not available. Set GEMINI_API_KEY in your environment. For chatbot workflows, the system can generate them automatically.`);
         }
       } else {
         // Re-throw if it's a different error
@@ -1163,7 +1407,13 @@ async function handlePhasedRefine(
     
     // Discover node inputs (separate from credentials) - AFTER generation completes
     const { workflowLifecycleManager } = await import('../services/workflow-lifecycle-manager');
-    const nodeInputs = workflowLifecycleManager.discoverNodeInputs(validatedWorkflow);
+    const preparedWorkflow = materializeThenSanitizeForClientResponse(
+      validatedWorkflow,
+      finalEnhancedPrompt || finalPrompt,
+      (req.body as any).originalPrompt || finalPrompt
+    );
+    const nodeInputs = workflowLifecycleManager.discoverNodeInputs(preparedWorkflow);
+    const structuralGate = getStructuralGate(preparedWorkflow);
     console.log(`[PHASE] READY_RESPONSE - Node inputs: ${nodeInputs.inputs.length}, Credentials: ${credentialResolution.summary.missingCount}`);
     
     // Format node inputs for frontend
@@ -1183,16 +1433,84 @@ async function handlePhasedRefine(
       category: 'configuration',
     }));
 
-    // ✅ CRITICAL: Only generate CREDENTIAL questions - user should only fill authentication, not all config
-    // Configuration fields are handled separately via discoveredInputs
-    const comprehensiveQuestions = generateComprehensiveNodeQuestions(validatedWorkflow, {}, { categories: ['credential'] }).questions;
+    // Include non-credential configuration questions for ownership contract alignment.
+    const comprehensiveQuestions = generateComprehensiveNodeQuestions(
+      preparedWorkflow,
+      {},
+      { mode: 'full_configuration' }
+    ).questions;
+    const credentialStatuses = buildCredentialStatuses(preparedWorkflow, {
+      required: credentialResolution.required as any,
+      missing: credentialResolution.missing as any,
+      satisfied: credentialResolution.satisfied as any,
+    });
+    const structuralBlueprint = buildStructuralBlueprint(preparedWorkflow as any);
+    const structuralDiagnostics = {
+      errors: structuralGate.errors,
+      warnings: structuralGate.warnings,
+    };
+
+    const discoveredCredentialsForModal = credentialResolution.missing
+      .filter((c: any) => {
+        const isGoogleOAuth =
+          (c.provider?.toLowerCase() === 'google' && c.type === 'oauth') ||
+          (c.vaultKey?.toLowerCase() === 'google' && c.type === 'oauth') ||
+          (c.credentialId?.toLowerCase().includes('google') && c.type === 'oauth');
+        if (isGoogleOAuth) {
+          console.log(
+            `[GenerateWorkflow] ✅ Filtering out Google OAuth from configuration: ${c.displayName || c.credentialId}`
+          );
+          return false;
+        }
+        return true;
+      })
+      .map((c: any) => ({
+        credentialId: c.credentialId,
+        displayName: c.displayName,
+        provider: c.provider,
+        type: c.type,
+        resolved: false,
+        required: c.required,
+        vaultKey: c.vaultKey,
+        nodeIds: c.nodeIds || [],
+      }));
+
+    const unifiedReadiness = buildUnifiedReadiness({
+      phase: structuralGate.ok ? 'ready' : 'configuring_inputs',
+      structuralDiagnostics,
+      comprehensiveQuestions,
+      discoveredCredentials: discoveredCredentialsForModal,
+      credentialStatuses,
+    });
+
+    if (!structuralGate.ok) {
+      return res.json({
+        phase: 'configuring_inputs',
+        success: false,
+        status: 'completed',
+        workflow: preparedWorkflow,
+        nodes: preparedWorkflow.nodes,
+        edges: preparedWorkflow.edges,
+        discoveredInputs: formattedInputs,
+        requiredInputs: formattedInputs.filter((i: any) => i.required),
+        discoveredCredentials: discoveredCredentialsForModal,
+        requiredCredentials: discoveredCredentialsForModal.map((c: any) => c.credentialId),
+        comprehensiveQuestions,
+        credentialStatuses,
+        structuralDiagnostics,
+        unifiedReadiness,
+        phaseBlockingReasons: unifiedReadiness.blockingReasons,
+        structuralBlueprint,
+        message: 'Structural fields are incomplete. Complete structural inputs before proceeding.',
+      });
+    }
   
     return res.json({
       phase: 'ready', // ✅ CRITICAL: Must be "ready" for frontend to show unified modal
       success: true,
-      workflow: validatedWorkflow,
-      nodes: validatedWorkflow.nodes,
-      edges: validatedWorkflow.edges,
+      workflow: preparedWorkflow,
+      nodes: preparedWorkflow.nodes,
+      edges: preparedWorkflow.edges,
       systemPrompt: finalEnhancedPrompt,
       prompt: finalPrompt,
       enhancedPrompt: finalEnhancedPrompt,
@@ -1205,33 +1523,14 @@ async function handlePhasedRefine(
       discoveredInputs: formattedInputs,
       requiredInputs: formattedInputs.filter((i: any) => i.required),
       comprehensiveQuestions,
-      // ✅ Discovered credentials (separate from inputs)
-      // ✅ CRITICAL: Only return MISSING credentials - exclude already resolved OAuth
-      // ✅ STRICT: NEVER ask for Google OAuth in configuration - user connects via header bar
-      // OAuth credentials that are already connected (via header bar) should NOT appear here
-      // Google OAuth should NEVER appear in configuration modal - workflow will error if not connected
-      discoveredCredentials: credentialResolution.missing
-        .filter((c: any) => {
-          // ✅ STRICT FILTER: Exclude ALL Google OAuth credentials from configuration modal
-          const isGoogleOAuth = (c.provider?.toLowerCase() === 'google' && c.type === 'oauth') ||
-                                (c.vaultKey?.toLowerCase() === 'google' && c.type === 'oauth') ||
-                                (c.credentialId?.toLowerCase().includes('google') && c.type === 'oauth');
-          if (isGoogleOAuth) {
-            console.log(`[GenerateWorkflow] ✅ Filtering out Google OAuth from configuration: ${c.displayName || c.credentialId}`);
-            return false; // Exclude Google OAuth
-          }
-          return true; // Include all other credentials
-        })
-        .map((c: any) => ({
-          credentialId: c.credentialId,
-          displayName: c.displayName,
-          provider: c.provider,
-          type: c.type,
-          resolved: false, // All missing credentials are unresolved
-          required: c.required,
-          vaultKey: c.vaultKey,
-          nodeIds: c.nodeIds || [],
-        })),
+      credentialStatuses,
+      structuralDiagnostics,
+      unifiedReadiness,
+      phaseBlockingReasons: unifiedReadiness.blockingReasons,
+      structuralBlueprint,
+      diagnostics: createUnifiedDiagnostics(),
+      // ✅ Discovered credentials (separate from inputs) — same filter as configuring_inputs path
+      discoveredCredentials: discoveredCredentialsForModal,
       requiredCredentials: credentialResolution.missing.map((c: any) => ({
         credentialId: c.credentialId,
         displayName: c.displayName,
@@ -1332,12 +1631,14 @@ async function handlePhasedRefine(
       const selectedStructuredPrompt = (req.body as any).selectedStructuredPrompt || finalPrompt;
       const originalPrompt = (req.body as any).originalPrompt || finalPrompt;
       const mandatoryNodeTypes = (req as any).mandatoryNodeTypes || []; // ✅ PHASE 5: Get mandatory nodes from request
+      const registryTags = (req.body as any).registryTags ?? (req as any).registryTags;
       
       const lifecycleResult = await workflowLifecycleManager.generateWorkflowGraph(finalPrompt, {
         answers: answers || {},
         selectedStructuredPrompt, // ✅ NEW: Pass selected structured prompt
         originalPrompt, // ✅ NEW: Pass original prompt for reference
         mandatoryNodeTypes, // ✅ PHASE 5: Pass mandatory nodes from selected variation
+        registryTags,
         explicitNodeTypes: (req as any).explicitNodeTypes, // ✅ PHASE 1: Explicit nodes from variation
         blockedNodeTypes: (req as any).blockedNodeTypes,   // ✅ PHASE 1: Blocked conflicting nodes
       });
@@ -2069,9 +2370,128 @@ function getFieldOptions(fieldInfo?: any, examples?: any[]): Array<{ label: stri
   return options;
 }
 
+async function resolveVaultUserIdFromRequest(req: Request): Promise<string | undefined> {
+  const authHeader = req.headers.authorization;
+  const authToken =
+    authHeader && authHeader.startsWith('Bearer ') ? authHeader.replace('Bearer ', '').trim() : undefined;
+  if (!authToken) return undefined;
+  try {
+    const supabase = getSupabaseClient();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser(authToken);
+    if (!authError && user) {
+      return user.id;
+    }
+  } catch (e) {
+    console.warn('[GenerateWorkflow] Could not resolve vault user id:', e);
+  }
+  return undefined;
+}
+
+/** Same filter as create response: Google OAuth is connected via header, not config modal */
+function excludeGoogleOAuthCredentialsForConfigUi(creds: any[] | undefined): any[] {
+  if (!Array.isArray(creds)) return [];
+  return creds.filter((cred: any) => {
+    const isGoogleOAuth =
+      (cred.provider?.toLowerCase?.() === 'google' && cred.type === 'oauth') ||
+      (String(cred.vaultKey || '').toLowerCase() === 'google' && cred.type === 'oauth');
+    return !isGoogleOAuth;
+  });
+}
+
+function isPlanDrivenCreateRequest(req: Request): boolean {
+  const body = req.body as Record<string, unknown>;
+  const chain = body.planProposedNodeChain;
+  const confirmed =
+    typeof body.confirmedStructuredPrompt === 'string' ? body.confirmedStructuredPrompt.trim() : '';
+  return (
+    Array.isArray(chain) &&
+    chain.filter((x) => typeof x === 'string').length > 0 &&
+    confirmed.length > 0
+  );
+}
+
+function createUnifiedDiagnostics(overrides?: Partial<Record<string, unknown>>) {
+  return {
+    runtimeOwnedFields: [],
+    runtimeResolvedFields: [],
+    runtimeResolutionErrors: [],
+    schemaValidationFailures: [],
+    canonicalizationIssues: [],
+    ...(overrides || {}),
+  };
+}
+
 export default async function generateWorkflow(req: Request, res: Response) {
   try {
     const { prompt, refinedPrompt, mode = 'create', currentWorkflow, executionHistory, answers } = req.body;
+
+    // Plan-based credential preflight (no full workflow generation)
+    if (mode === 'plan_credentials') {
+      const body = req.body as Record<string, unknown>;
+      const chain = body.planProposedNodeChain;
+      const confirmed =
+        typeof body.confirmedStructuredPrompt === 'string' ? body.confirmedStructuredPrompt.trim() : '';
+      const canonicalization = canonicalizePlanChainStrict(chain);
+      if (!Array.isArray(chain) || chain.filter((x) => typeof x === 'string').length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'planProposedNodeChain must be a non-empty array of strings',
+        });
+      }
+      if (canonicalization.issues.length > 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'planProposedNodeChain contains non-canonical node types',
+          canonicalizationIssues: canonicalization.issues,
+        });
+      }
+      const repaired = autoRepairCanonicalChainForIntent(canonicalization.canonical, confirmed);
+      const completenessIssues = validateCanonicalChainCompleteness(repaired.canonical, { userPrompt: confirmed });
+      if (completenessIssues.length > 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'planProposedNodeChain failed structural completeness checks',
+          canonicalizationIssues: completenessIssues,
+        });
+      }
+      if (!confirmed) {
+        return res.status(400).json({
+          success: false,
+          error: 'confirmedStructuredPrompt is required',
+        });
+      }
+      const { buildWorkflowFromPlanChain } = await import('../services/ai/plan-driven-workflow-builder');
+      const built = buildWorkflowFromPlanChain(repaired.canonical);
+      if (!built.success || !built.workflow) {
+        return res.status(400).json({
+          success: false,
+          errors: built.errors,
+          warnings: built.warnings,
+          resolvedChain: built.resolvedChain,
+          diagnostics: built.diagnostics,
+        });
+      }
+      const vaultUserId = await resolveVaultUserIdFromRequest(req);
+      const lifecycleResult = await workflowLifecycleManager.finalizePlanDrivenWorkflow(built.workflow, vaultUserId);
+      const missingRaw = lifecycleResult.requiredCredentials.missingCredentials || [];
+      const missingForUi = excludeGoogleOAuthCredentialsForConfigUi(missingRaw);
+      return res.json({
+        success: true,
+        resolvedChain: built.resolvedChain,
+        diagnostics: built.diagnostics,
+        requiredCredentials: lifecycleResult.requiredCredentials.requiredCredentials,
+        satisfiedCredentials: lifecycleResult.requiredCredentials.satisfiedCredentials,
+        missingCredentials: missingForUi,
+        missingCredentialsRaw: missingRaw,
+        allCredentialsSatisfiedForUi: missingForUi.length === 0,
+        discoveryErrors: lifecycleResult.requiredCredentials.errors,
+        discoveryWarnings: lifecycleResult.requiredCredentials.warnings,
+        allDiscovered: lifecycleResult.requiredCredentials.allDiscovered,
+      });
+    }
 
     // Use refinedPrompt if prompt is not provided (for create mode from frontend)
     let finalPrompt = prompt || refinedPrompt;
@@ -2086,97 +2506,134 @@ export default async function generateWorkflow(req: Request, res: Response) {
     // Handle analyze mode - STEP 1: Summarize Layer FIRST, then analysis
     if (mode === 'analyze') {
       try {
-        // Check if user has selected a prompt variation
-        const selectedPromptVariation = (req.body as any).selectedPromptVariation;
-        
-        if (!selectedPromptVariation) {
-          // ✅ STEP 1: Summarize Layer - Generate prompt variations FIRST
-          console.log('[Analyze Mode] No prompt variation selected - running summarize layer...');
-          
+        const analyzeBody = req.body as Record<string, unknown>;
+        const confirmedStructuredPrompt =
+          typeof analyzeBody.confirmedStructuredPrompt === 'string'
+            ? analyzeBody.confirmedStructuredPrompt.trim()
+            : '';
+        const selectedPromptVariation =
+          typeof analyzeBody.selectedPromptVariation === 'string'
+            ? analyzeBody.selectedPromptVariation.trim()
+            : '';
+        const effectiveAnalyzePlan = confirmedStructuredPrompt || selectedPromptVariation;
+
+        if (!effectiveAnalyzePlan) {
+          console.log('[Analyze Mode] No confirmed plan — running single-plan summarize layer...');
+
           try {
             const summarizeResult = await summarizeLayerService.processPrompt(finalPrompt);
-            
-            // ✅ ALWAYS return variations if generated
-            // Prefer 3-4 variations, but accept any number >= 1
-            if (summarizeResult.promptVariations && summarizeResult.promptVariations.length > 0) {
-              console.log(`[Analyze Mode] ✅ Generated ${summarizeResult.promptVariations.length} prompt variations`);
-              
-              // If we only have 1 variation, still show it (but log warning)
-              if (summarizeResult.promptVariations.length === 1) {
-                console.warn(`[Analyze Mode] ⚠️ Only 1 variation generated (expected 3-4). AI may need better prompting.`);
-              }
-              
+
+            const hasPlan = !!summarizeResult.workflowIntentPlan;
+            if (hasPlan) {
+              console.log('[Analyze Mode] ✅ Returning structured workflow plan (summarize phase)');
               return res.json({
                 phase: 'summarize',
-                promptVariations: summarizeResult.promptVariations,
+                workflowIntentPlan: summarizeResult.workflowIntentPlan,
+                promptVariations: summarizeResult.promptVariations || [],
                 originalPrompt: summarizeResult.originalPrompt,
                 clarifiedIntent: summarizeResult.clarifiedIntent,
                 matchedKeywords: summarizeResult.matchedKeywords,
+                mandatoryNodeTypes: summarizeResult.mandatoryNodeTypes,
+                registryTags: summarizeResult.registryTags,
                 allKeywords: summarizeResult.allKeywords.slice(0, 100),
               });
             }
-            
-            // Fallback: Use clarified intent if no variations
-            const promptToUse = summarizeResult.clarifiedIntent || finalPrompt;
-            console.log('[Analyze Mode] No variations generated, using clarified prompt for analysis...');
-            finalPrompt = promptToUse;
+
+            console.warn('[Analyze Mode] Summarize returned no workflowIntentPlan — using fast-analysis fallback');
+            const fb = buildFallbackWorkflowIntentPlanForAnalyze(finalPrompt);
+            return res.json({
+              phase: 'summarize',
+              workflowIntentPlan: fb.workflowIntentPlan,
+              promptVariations: [],
+              originalPrompt: finalPrompt,
+              clarifiedIntent: fb.workflowIntentPlan.structuredSummary,
+              matchedKeywords: fb.matchedKeywords,
+              mandatoryNodeTypes: fb.mandatoryNodeTypes,
+              registryTags: fb.registryTags,
+              allKeywords: [],
+            });
           } catch (error) {
-            console.error('[Analyze Mode] ⚠️ Error in summarize layer, continuing with original prompt:', error);
-            // Continue with original prompt if summarize layer fails
+            console.error('[Analyze Mode] ⚠️ Error in summarize layer — using fast-analysis fallback:', error);
+            const fb = buildFallbackWorkflowIntentPlanForAnalyze(finalPrompt);
+            return res.json({
+              phase: 'summarize',
+              workflowIntentPlan: fb.workflowIntentPlan,
+              promptVariations: [],
+              originalPrompt: finalPrompt,
+              clarifiedIntent: fb.workflowIntentPlan.structuredSummary,
+              matchedKeywords: fb.matchedKeywords,
+              mandatoryNodeTypes: fb.mandatoryNodeTypes,
+              registryTags: fb.registryTags,
+              allKeywords: [],
+            });
           }
         } else {
-          // ✅ PHASE 1: User has selected a variation - extract explicit nodes IMMEDIATELY
-          console.log('[Analyze Mode] ✅ PHASE 1: User selected a variation - extracting explicit nodes from variation text...');
-          finalPrompt = selectedPromptVariation;
-          
-          // ✅ CRITICAL: Extract explicit nodes from variation text BEFORE any other processing
-          // This ensures explicit intent is known before node detection or DSL generation
+          console.log('[Analyze Mode] ✅ User confirmed plan — running analysis on structured prompt');
+          finalPrompt = effectiveAnalyzePlan;
+          if (
+            Array.isArray(analyzeBody.planMandatoryNodeTypes) &&
+            (analyzeBody.planMandatoryNodeTypes as unknown[]).filter((x) => typeof x === 'string').length > 0
+          ) {
+            (req as any).mandatoryNodeTypes = analyzeBody.planMandatoryNodeTypes as string[];
+          }
+          if (Array.isArray(analyzeBody.planRegistryTags) && (analyzeBody.planRegistryTags as unknown[]).length > 0) {
+            (req as any).registryTags = analyzeBody.planRegistryTags as string[];
+          }
+
+          // ✅ PHASE 1: Extract explicit nodes from confirmed plan text
           try {
-            const { extractExplicitNodeTypesFromVariation, getBlockedNodeTypes } = await import('../core/utils/explicit-intent-extractor');
+            const { extractExplicitNodeTypesFromVariation, getBlockedNodeTypes } = await import(
+              '../core/utils/explicit-intent-extractor'
+            );
             const keywordCollector = new AliasKeywordCollector();
             const allKeywordData = keywordCollector.getAllAliasKeywords();
-            
-            // Extract explicit nodes using service-specific keyword matching
-            const explicitNodeTypes = extractExplicitNodeTypesFromVariation(
-              selectedPromptVariation,
-              allKeywordData
-            );
-            
-            // Derive blocked nodes (e.g., if Slack is explicit, block Discord)
+
+            const explicitNodeTypes = extractExplicitNodeTypesFromVariation(finalPrompt, allKeywordData);
+
             const blockedNodeTypes = getBlockedNodeTypes(explicitNodeTypes);
-            
-            // ✅ CRITICAL: Store explicit and blocked nodes in request context
-            // These will be used throughout the pipeline to enforce user intent
+
             (req as any).explicitNodeTypes = explicitNodeTypes;
             (req as any).blockedNodeTypes = blockedNodeTypes;
-            
+
             if (explicitNodeTypes.size > 0) {
-              console.log(`[Analyze Mode] ✅ PHASE 1: Extracted ${explicitNodeTypes.size} explicit node(s): ${Array.from(explicitNodeTypes).join(', ')}`);
+              console.log(
+                `[Analyze Mode] ✅ PHASE 1: Extracted ${explicitNodeTypes.size} explicit node(s): ${Array.from(explicitNodeTypes).join(', ')}`
+              );
             }
             if (blockedNodeTypes.size > 0) {
-              console.log(`[Analyze Mode] ✅ PHASE 1: Blocked ${blockedNodeTypes.size} conflicting node(s): ${Array.from(blockedNodeTypes).join(', ')}`);
+              console.log(
+                `[Analyze Mode] ✅ PHASE 1: Blocked ${blockedNodeTypes.size} conflicting node(s): ${Array.from(blockedNodeTypes).join(', ')}`
+              );
             }
           } catch (error) {
             console.error('[Analyze Mode] ⚠️ Failed to extract explicit nodes (non-fatal):', error);
           }
-          
-          // ✅ PHASE 4: Also extract nodes from matchedKeywords (for backward compatibility)
-          const selectedVariationId = (req.body as any).selectedVariationId;
-          const selectedVariationMatchedKeywords = (req.body as any).selectedVariationMatchedKeywords;
-          
-          if (selectedVariationMatchedKeywords && Array.isArray(selectedVariationMatchedKeywords)) {
-            // ✅ PHASE 4: Extract nodes from selected variation's matchedKeywords
-            const keywordCollector = new AliasKeywordCollector();
-            const nodesFromVariation = extractNodesFromVariationKeywords(
-              selectedVariationMatchedKeywords,
-              keywordCollector
+
+          // ✅ PHASE 4: Optional node chain from plan (new) or matchedKeywords (legacy)
+          const planProposedNodeChain = analyzeBody.planProposedNodeChain;
+          if (Array.isArray(planProposedNodeChain) && planProposedNodeChain.filter((x) => typeof x === 'string').length > 0) {
+            (req as any).mandatoryNodeTypes = (planProposedNodeChain as string[]).filter((x) => typeof x === 'string');
+            console.log(
+              `[Analyze Mode] ✅ Using planProposedNodeChain (${(req as any).mandatoryNodeTypes.length} types)`
             );
-            
-            // ✅ PHASE 4: Store nodes from selected variation for later use
-            // Note: Explicit nodes take priority over matchedKeywords
-            if (nodesFromVariation.length > 0) {
-              (req as any).mandatoryNodeTypes = nodesFromVariation;
-              console.log(`[Analyze Mode] ✅ PHASE 4: Extracted ${nodesFromVariation.length} node(s) from matchedKeywords: ${nodesFromVariation.join(', ')}`);
+          }
+
+          const selectedVariationMatchedKeywords = (req.body as any).selectedVariationMatchedKeywords;
+
+          if (selectedVariationMatchedKeywords && Array.isArray(selectedVariationMatchedKeywords)) {
+            const existingMandatory = (req as any).mandatoryNodeTypes as string[] | undefined;
+            if (!existingMandatory || existingMandatory.length === 0) {
+              const keywordCollector = new AliasKeywordCollector();
+              const nodesFromVariation = extractNodesFromVariationKeywords(
+                selectedVariationMatchedKeywords,
+                keywordCollector
+              );
+              if (nodesFromVariation.length > 0) {
+                (req as any).mandatoryNodeTypes = nodesFromVariation;
+                console.log(
+                  `[Analyze Mode] ✅ PHASE 4: Extracted ${nodesFromVariation.length} node(s) from matchedKeywords: ${nodesFromVariation.join(', ')}`
+                );
+              }
             }
           }
         }
@@ -2352,18 +2809,117 @@ export default async function generateWorkflow(req: Request, res: Response) {
           sendProgress({ step: 5, stepName: 'Generating Workflow Graph', progress: 60, details: { message: 'Creating workflow structure...' } });
           
           try {
-            const mandatoryNodeTypes = (req as any).mandatoryNodeTypes || []; // ✅ PHASE 5: Get mandatory nodes from request
-            lifecycleResult = await workflowLifecycleManager.generateWorkflowGraph(
-              enhancedPrompt,
-              {
-                currentWorkflow,
-                executionHistory,
-                answers,
-                memoryContext,
-                mandatoryNodeTypes, // ✅ PHASE 5: Pass mandatory nodes from selected variation
-                ...req.body.config,
+            const selectedVariant = (req.body as any).selectedVariant as { strategy?: string; nodes?: string[]; requiredNodeTypes?: string[] } | undefined;
+            const bodyRecord = req.body as Record<string, unknown>;
+            const planChainRaw = Array.isArray(bodyRecord.planProposedNodeChain)
+              ? (bodyRecord.planProposedNodeChain as unknown[]).filter((x) => typeof x === 'string') as string[]
+              : [];
+            const planMandatoryRaw = Array.isArray(bodyRecord.planMandatoryNodeTypes)
+              ? (bodyRecord.planMandatoryNodeTypes as unknown[]).filter((x) => typeof x === 'string') as string[]
+              : [];
+            const mandatoryNodeTypes =
+              (planChainRaw.length > 0 ? planChainRaw : planMandatoryRaw).length > 0
+                ? [...new Set((planChainRaw.length > 0 ? planChainRaw : planMandatoryRaw))]
+                : (req as any).mandatoryNodeTypes || selectedVariant?.nodes || selectedVariant?.requiredNodeTypes || [];
+            const originalPrompt = (req.body as any).originalPrompt || enhancedPrompt; // Preserve user's raw prompt for resolution when user selected a variation
+            const registryTags = (req.body as any).registryTags ?? (req as any).registryTags;
+            const selectedStructuredPrompt =
+              (req.body as any).selectedStructuredPrompt ||
+              (req.body as any).confirmedStructuredPrompt ||
+              enhancedPrompt;
+
+            // ✅ CRITICAL: Resolve userId from Bearer token BEFORE lifecycle so vault checks can't stall
+            const authHeader = req.headers.authorization;
+            const authToken = authHeader && authHeader.startsWith('Bearer ')
+              ? authHeader.replace('Bearer ', '').trim()
+              : undefined;
+            let vaultUserId: string | undefined;
+            if (authToken) {
+              try {
+                const supabase = getSupabaseClient();
+                const { data: { user }, error: authError } = await supabase.auth.getUser(authToken);
+                if (!authError && user) {
+                  vaultUserId = user.id;
+                }
+              } catch (e) {
+                console.warn('[GenerateWorkflow] Could not resolve vaultUserId before lifecycle:', e);
               }
-            );
+            }
+
+            const usePlanDriven = isPlanDrivenCreateRequest(req);
+            const bodyProbe = req.body as Record<string, unknown>;
+            const chainProbe = bodyProbe.planProposedNodeChain;
+            const confirmedProbe =
+              typeof bodyProbe.confirmedStructuredPrompt === 'string'
+                ? bodyProbe.confirmedStructuredPrompt.trim()
+                : '';
+            console.log('[GenerateWorkflow] create_mode_path', {
+              planDriven: usePlanDriven,
+              proposedChainLength: Array.isArray(chainProbe)
+                ? chainProbe.filter((x: unknown) => typeof x === 'string').length
+                : 0,
+              hasConfirmedStructuredPrompt: confirmedProbe.length > 0,
+            });
+            let planBuildDiagnostics: any = null;
+            if (usePlanDriven) {
+              const chain = (req.body as Record<string, unknown>).planProposedNodeChain as string[];
+              const canonicalization = canonicalizePlanChainStrict(chain);
+              if (canonicalization.issues.length > 0) {
+                throw new Error(
+                  `Non-canonical node types in plan chain: ${canonicalization.issues.map((i) => i.input).join(', ')}`
+                );
+              }
+              const planPrompt =
+                typeof (req.body as Record<string, unknown>).confirmedStructuredPrompt === 'string'
+                  ? String((req.body as Record<string, unknown>).confirmedStructuredPrompt)
+                  : finalPrompt;
+              const repaired = autoRepairCanonicalChainForIntent(canonicalization.canonical, planPrompt);
+              const completenessIssues = validateCanonicalChainCompleteness(repaired.canonical, {
+                userPrompt: planPrompt,
+              });
+              if (completenessIssues.length > 0) {
+                throw new Error(
+                  `Incomplete canonical plan chain: ${completenessIssues.map((i) => i.reason).join(', ')}`
+                );
+              }
+              const { buildWorkflowFromPlanChain } = await import('../services/ai/plan-driven-workflow-builder');
+              const built = buildWorkflowFromPlanChain(repaired.canonical);
+              planBuildDiagnostics = built.diagnostics;
+              if (!built.success || !built.workflow) {
+                throw new Error(
+                  built.errors.join('; ') || 'Plan-driven workflow build failed: graph does not match plan chain'
+                );
+              }
+              console.log(
+                '[GenerateWorkflow] Plan-driven create: using proposedNodeChain only:',
+                built.resolvedChain.join(' → ')
+              );
+              lifecycleResult = await workflowLifecycleManager.finalizePlanDrivenWorkflow(
+                built.workflow,
+                vaultUserId
+              );
+              (lifecycleResult as any).__planBuildDiagnostics = planBuildDiagnostics;
+            } else {
+              lifecycleResult = await workflowLifecycleManager.generateWorkflowGraph(
+                enhancedPrompt,
+                {
+                  currentWorkflow,
+                  executionHistory,
+                  answers,
+                  memoryContext,
+                  mandatoryNodeTypes, // ✅ PHASE 5: Pass mandatory nodes from selected variation
+                  originalPrompt, // For node resolution merge (selected variation + original intent)
+                  registryTags, // Tags from registry for selected nodes (from summarize layer / Gemini-first)
+                  selectedStructuredPrompt, // ✅ Variant: chosen prompt text for registry/keyword build
+                  selectedVariantStrategy: selectedVariant?.strategy as any,
+                  variantNodes: selectedVariant?.nodes,
+                  requiredNodeTypes: selectedVariant?.requiredNodeTypes ?? mandatoryNodeTypes,
+                  vaultUserId,
+                  authToken,
+                  ...req.body.config,
+                }
+              );
+            }
           } catch (lifecycleError: any) {
             // ✅ Preserve pipeline result from error for fallback detection
             if (lifecycleError?.pipelineResult) {
@@ -2414,7 +2970,11 @@ export default async function generateWorkflow(req: Request, res: Response) {
             },
           });
 
-          const finalWorkflow = fixResult.workflow;
+          const finalWorkflow = materializeThenSanitizeForClientResponse(
+            fixResult.workflow,
+            enhancedPrompt || finalPrompt,
+            (req.body as any).originalPrompt || enhancedPrompt
+          );
           const finalValidation = fixResult.validation;
           
           // ✅ PRODUCTION FLOW: Return workflow graph + discovered credentials
@@ -2468,8 +3028,52 @@ export default async function generateWorkflow(req: Request, res: Response) {
           
           // ✅ PRODUCTION FLOW: Return workflow graph + discovered inputs + missing credentials
           // Frontend will show credential modal ONLY when phase === "ready"
-          // ✅ CRITICAL: Only generate CREDENTIAL questions - user should only fill authentication
-          const comprehensiveQuestions = generateComprehensiveNodeQuestions(finalWorkflow, {}, { categories: ['credential'] }).questions;
+          // Include non-credential configuration questions for ownership contract alignment.
+          const comprehensiveQuestions = generateComprehensiveNodeQuestions(
+            finalWorkflow,
+            {},
+            { mode: 'full_configuration' }
+          ).questions;
+          const structuralGate = getStructuralGate(finalWorkflow);
+          const credentialStatuses = buildCredentialStatuses(finalWorkflow, {
+            required: lifecycleResult.requiredCredentials?.requiredCredentials as any,
+            missing: missingCredentials as any,
+            satisfied: lifecycleResult.requiredCredentials?.satisfiedCredentials as any,
+          });
+          const structuralBlueprint = buildStructuralBlueprint(finalWorkflow as any);
+          const structuralDiagnostics = {
+            errors: structuralGate.errors,
+            warnings: structuralGate.warnings,
+          };
+          const unifiedReadiness = buildUnifiedReadiness({
+            phase: structuralGate.ok ? 'ready' : 'configuring_inputs',
+            structuralDiagnostics,
+            comprehensiveQuestions,
+            discoveredCredentials,
+            credentialStatuses,
+          });
+          if (!structuralGate.ok) {
+            res.write(JSON.stringify({
+              success: false,
+              status: 'completed',
+              phase: 'configuring_inputs',
+              workflow: finalWorkflow,
+              nodes: finalWorkflow.nodes,
+              edges: finalWorkflow.edges,
+              discoveredInputs: formattedInputs,
+              discoveredCredentials,
+              requiredCredentials: discoveredCredentials.map((c: any) => c.vaultKey),
+              comprehensiveQuestions,
+              credentialStatuses,
+              structuralDiagnostics,
+              unifiedReadiness,
+              phaseBlockingReasons: unifiedReadiness.blockingReasons,
+              structuralBlueprint,
+              message: 'Structural fields are incomplete. Complete structural inputs before proceeding.',
+            }) + '\n');
+            res.end();
+            return;
+          }
           res.write(JSON.stringify({
             success: true,
             status: 'completed',
@@ -2481,6 +3085,16 @@ export default async function generateWorkflow(req: Request, res: Response) {
             discoveredCredentials: discoveredCredentials, // ✅ Only MISSING credentials
             requiredCredentials: discoveredCredentials.map((c: any) => c.vaultKey), // Legacy format
             comprehensiveQuestions,
+            credentialStatuses,
+            structuralDiagnostics,
+            unifiedReadiness,
+            phaseBlockingReasons: unifiedReadiness.blockingReasons,
+            structuralBlueprint,
+            diagnostics: createUnifiedDiagnostics({
+              canonicalizationIssues:
+                (((lifecycleResult as any)?.__planBuildDiagnostics?.canonicalization) || [])
+                  .filter((c: any) => c?.status === 'rejected'),
+            }),
             documentation: lifecycleResult.documentation,
             suggestions: lifecycleResult.suggestions || [],
             estimatedComplexity: lifecycleResult.estimatedComplexity,
@@ -2529,30 +3143,117 @@ export default async function generateWorkflow(req: Request, res: Response) {
           console.warn('⚠️  [Memory] Failed to get memory context, continuing without it:', memoryError instanceof Error ? memoryError.message : String(memoryError));
         }
 
-        // ✅ PRODUCTION FLOW: Use WorkflowLifecycleManager
+          // ✅ PRODUCTION FLOW: Use WorkflowLifecycleManager
         try {
-          // ✅ NEW: Extract mandatory nodes from request (stored from summarize layer)
-          const mandatoryNodeTypes = (req as any).mandatoryNodeTypes || [];
-          const mandatoryNodesWithOperations = (req as any).mandatoryNodesWithOperations || [];
+          const selectedVariant = (req.body as any).selectedVariant as { strategy?: string; nodes?: string[]; requiredNodeTypes?: string[] } | undefined;
+          const bodyRecord = req.body as Record<string, unknown>;
+          const planChainRaw = Array.isArray(bodyRecord.planProposedNodeChain)
+            ? (bodyRecord.planProposedNodeChain as unknown[]).filter((x) => typeof x === 'string') as string[]
+            : [];
+          const planMandatoryRaw = Array.isArray(bodyRecord.planMandatoryNodeTypes)
+            ? (bodyRecord.planMandatoryNodeTypes as unknown[]).filter((x) => typeof x === 'string') as string[]
+            : [];
+          const mandatoryNodeTypes =
+            (planChainRaw.length > 0 ? planChainRaw : planMandatoryRaw).length > 0
+              ? [...new Set((planChainRaw.length > 0 ? planChainRaw : planMandatoryRaw))]
+              : (req as any).mandatoryNodeTypes || selectedVariant?.nodes || selectedVariant?.requiredNodeTypes || [];
+          const mandatoryNodesWithOperations = ((req as any).mandatoryNodesWithOperations || []).filter(
+            (x: any) => mandatoryNodeTypes.includes(x?.nodeType)
+          );
+          const originalPrompt = (req.body as any).originalPrompt || enhancedPrompt;
+          const registryTags = (req.body as any).registryTags ?? (req as any).registryTags;
+          const selectedStructuredPrompt =
+            (req.body as any).selectedStructuredPrompt ||
+            (req.body as any).confirmedStructuredPrompt ||
+            enhancedPrompt;
           if (mandatoryNodeTypes.length > 0) {
             console.log(`[GenerateWorkflow] 🔒 Passing ${mandatoryNodeTypes.length} mandatory node type(s) to lifecycle manager: ${mandatoryNodeTypes.join(', ')}`);
             if (mandatoryNodesWithOperations.length > 0) {
               console.log(`[GenerateWorkflow] ✅ Passing operation hints for ${mandatoryNodesWithOperations.length} node(s)`);
             }
           }
-          
-          lifecycleResult = await workflowLifecycleManager.generateWorkflowGraph(
-            enhancedPrompt,
-            {
-              currentWorkflow,
-              executionHistory,
-              answers,
-              memoryContext,
-              mandatoryNodeTypes, // ✅ NEW: Pass mandatory nodes
-              mandatoryNodesWithOperations, // ✅ NEW: Pass operation hints
-              ...req.body.config,
+          if (selectedVariant?.strategy) {
+            console.log(`[GenerateWorkflow] 📋 Variant strategy: ${selectedVariant.strategy}, nodes: ${(selectedVariant.nodes || []).join(', ')}`);
+          }
+
+          const vaultUserIdNonStream = await resolveVaultUserIdFromRequest(req);
+          const authTokenNonStream =
+            req.headers.authorization && req.headers.authorization.startsWith('Bearer ')
+              ? req.headers.authorization.replace('Bearer ', '').trim()
+              : undefined;
+
+          const usePlanDrivenNonStream = isPlanDrivenCreateRequest(req);
+          const bodyProbeNs = req.body as Record<string, unknown>;
+          const chainProbeNs = bodyProbeNs.planProposedNodeChain;
+          const confirmedProbeNs =
+            typeof bodyProbeNs.confirmedStructuredPrompt === 'string'
+              ? bodyProbeNs.confirmedStructuredPrompt.trim()
+              : '';
+          console.log('[GenerateWorkflow] create_mode_path_non_stream', {
+            planDriven: usePlanDrivenNonStream,
+            proposedChainLength: Array.isArray(chainProbeNs)
+              ? chainProbeNs.filter((x: unknown) => typeof x === 'string').length
+              : 0,
+            hasConfirmedStructuredPrompt: confirmedProbeNs.length > 0,
+          });
+          if (usePlanDrivenNonStream) {
+            const chain = (req.body as Record<string, unknown>).planProposedNodeChain as string[];
+            const canonicalization = canonicalizePlanChainStrict(chain);
+            if (canonicalization.issues.length > 0) {
+              throw new Error(
+                `Non-canonical node types in plan chain: ${canonicalization.issues.map((i) => i.input).join(', ')}`
+              );
             }
-          );
+            const planPrompt =
+              typeof (req.body as Record<string, unknown>).confirmedStructuredPrompt === 'string'
+                ? String((req.body as Record<string, unknown>).confirmedStructuredPrompt)
+                : finalPrompt;
+            const repaired = autoRepairCanonicalChainForIntent(canonicalization.canonical, planPrompt);
+            const completenessIssues = validateCanonicalChainCompleteness(repaired.canonical, {
+              userPrompt: planPrompt,
+            });
+            if (completenessIssues.length > 0) {
+              throw new Error(
+                `Incomplete canonical plan chain: ${completenessIssues.map((i) => i.reason).join(', ')}`
+              );
+            }
+            const { buildWorkflowFromPlanChain } = await import('../services/ai/plan-driven-workflow-builder');
+            const built = buildWorkflowFromPlanChain(repaired.canonical);
+            if (!built.success || !built.workflow) {
+              throw new Error(
+                built.errors.join('; ') || 'Plan-driven workflow build failed: graph does not match plan chain'
+              );
+            }
+            console.log(
+              '[GenerateWorkflow] Plan-driven create (non-stream):',
+              built.resolvedChain.join(' → ')
+            );
+            lifecycleResult = await workflowLifecycleManager.finalizePlanDrivenWorkflow(
+              built.workflow,
+              vaultUserIdNonStream
+            );
+          } else {
+            lifecycleResult = await workflowLifecycleManager.generateWorkflowGraph(
+              enhancedPrompt,
+              {
+                currentWorkflow,
+                executionHistory,
+                answers,
+                memoryContext,
+                mandatoryNodeTypes, // ✅ NEW: Pass mandatory nodes
+                mandatoryNodesWithOperations, // ✅ NEW: Pass operation hints
+                originalPrompt, // For config filler (age/vote form fields) and node resolution
+                registryTags,
+                selectedStructuredPrompt,
+                selectedVariantStrategy: selectedVariant?.strategy as any,
+                variantNodes: selectedVariant?.nodes,
+                requiredNodeTypes: selectedVariant?.requiredNodeTypes ?? mandatoryNodeTypes,
+                vaultUserId: vaultUserIdNonStream,
+                authToken: authTokenNonStream,
+                ...req.body.config,
+              }
+            );
+          }
         } catch (lifecycleError: any) {
           // ✅ Preserve pipeline result from error for fallback detection
           if (lifecycleError?.pipelineResult) {
@@ -2574,7 +3275,11 @@ export default async function generateWorkflow(req: Request, res: Response) {
           },
         });
 
-        const finalWorkflow = fixResult.workflow;
+        const finalWorkflow = materializeThenSanitizeForClientResponse(
+          fixResult.workflow,
+          enhancedPrompt || finalPrompt,
+          (req.body as any).originalPrompt || enhancedPrompt
+        );
         const validation = fixResult.validation;
         
         // ✅ CRITICAL: Only return MISSING credentials - satisfied OAuth won't appear
@@ -2686,6 +3391,51 @@ export default async function generateWorkflow(req: Request, res: Response) {
           // Graceful degradation: continue even if storage fails
           console.warn('⚠️  [Memory] Failed to store workflow in memory system:', memoryError instanceof Error ? memoryError.message : String(memoryError));
         }
+
+        const structuralGate = getStructuralGate(finalWorkflow);
+        const credentialStatuses = buildCredentialStatuses(finalWorkflow, {
+          required: lifecycleResult.requiredCredentials?.requiredCredentials as any,
+          missing: missingCredentials as any,
+          satisfied: lifecycleResult.requiredCredentials?.satisfiedCredentials as any,
+        });
+        const comprehensiveQuestions = generateComprehensiveNodeQuestions(
+          finalWorkflow,
+          {},
+          { mode: 'full_configuration' }
+        ).questions;
+        const structuralBlueprint = buildStructuralBlueprint(finalWorkflow as any);
+        const structuralDiagnostics = {
+          errors: structuralGate.errors,
+          warnings: structuralGate.warnings,
+        };
+        const unifiedReadiness = buildUnifiedReadiness({
+          phase: structuralGate.ok ? 'ready' : 'configuring_inputs',
+          structuralDiagnostics,
+          comprehensiveQuestions,
+          discoveredCredentials,
+          credentialStatuses,
+        });
+
+        if (!structuralGate.ok) {
+          return res.json({
+            success: false,
+            status: 'completed',
+            phase: 'configuring_inputs',
+            workflow: finalWorkflow,
+            nodes: finalWorkflow.nodes,
+            edges: finalWorkflow.edges,
+            discoveredInputs: formattedInputs,
+            discoveredCredentials,
+            requiredCredentials: allFinalCredentialsArray,
+            comprehensiveQuestions,
+            credentialStatuses,
+            structuralDiagnostics,
+            unifiedReadiness,
+            phaseBlockingReasons: unifiedReadiness.blockingReasons,
+            structuralBlueprint,
+            message: 'Structural fields are incomplete. Complete structural inputs before proceeding.',
+          });
+        }
         
         return res.json({
           success: true,
@@ -2699,13 +3449,26 @@ export default async function generateWorkflow(req: Request, res: Response) {
           discoveredInputs: formattedInputs, // ✅ Node inputs (to, subject, body, etc.)
           discoveredCredentials: discoveredCredentials, // ✅ Only MISSING credentials
           requiredCredentials: allFinalCredentialsArray, // Legacy format for compatibility
-          // ✅ CRITICAL: Only generate CREDENTIAL questions - user should only fill authentication
-          comprehensiveQuestions: generateComprehensiveNodeQuestions(finalWorkflow, {}, { categories: ['credential'] }).questions,
+          // Include non-credential configuration questions for ownership contract alignment.
+          comprehensiveQuestions,
+          credentialStatuses,
+          structuralDiagnostics,
+          unifiedReadiness,
+          phaseBlockingReasons: unifiedReadiness.blockingReasons,
+          structuralBlueprint,
           validation: {
             valid: validation.valid,
             errors: validation.errors.map((e: any) => e.message),
             warnings: validation.warnings.map((w: any) => w.message),
             fixesApplied: validation.fixesApplied,
+          },
+          diagnostics: {
+            ...createUnifiedDiagnostics({
+              canonicalizationIssues:
+                ((lifecycleResult as any)?.__planBuildDiagnostics?.canonicalization || [])
+                  .filter((c: any) => c?.status === 'rejected'),
+            }),
+            planBuild: (lifecycleResult as any)?.__planBuildDiagnostics || null,
           },
           chatbotPage: chatbotPageInfo,
           memoryWorkflowId: storedWorkflowId, // Include memory system workflow ID

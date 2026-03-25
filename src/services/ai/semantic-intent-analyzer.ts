@@ -8,7 +8,7 @@
  * the semantic understanding that AI uses to match user intent to nodes.
  */
 
-import { ollamaOrchestrator } from './ollama-orchestrator';
+import { geminiOrchestrator } from './gemini-orchestrator';
 
 export interface SemanticIntent {
   // Extracted components
@@ -29,7 +29,7 @@ export interface SemanticIntent {
 }
 
 export class SemanticIntentAnalyzer {
-  // Uses ollamaOrchestrator singleton
+  // Uses geminiOrchestrator
 
   /**
    * Analyze user prompt and extract semantic intent
@@ -72,7 +72,7 @@ Output Format (JSON only, no markdown):
 }`;
 
     try {
-      const content = await ollamaOrchestrator.processRequest(
+      const content = await geminiOrchestrator.processRequest(
         'workflow-analysis',
         {
           system: systemPrompt,

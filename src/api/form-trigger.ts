@@ -6,6 +6,9 @@ import { Request, Response } from 'express';
 import { getSupabaseClient } from '../core/database/supabase-compat';
 import { config } from '../core/config';
 import multer from 'multer';
+import { coerceFormFields } from './form-field-coercion';
+
+export { coerceFormFields, type FormFieldConfig } from './form-field-coercion';
 
 // Configure multer for file uploads
 const upload = multer({
@@ -288,6 +291,8 @@ export async function submitForm(req: Request, res: Response) {
     if (!validationResult.valid) {
       return res.status(400).json({ error: "Validation failed", message: validationResult.errors.join(", ") });
     }
+
+    formData = coerceFormFields(formData, fields);
 
     // Extract metadata
     const clientIP = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.ip || "unknown";

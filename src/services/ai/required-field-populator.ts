@@ -15,6 +15,7 @@
 import { WorkflowNode } from '../../core/types/ai-types';
 import { inputFieldMapper, NodeOutputFields } from './input-field-mapper';
 import { nodeLibrary } from '../nodes/node-library';
+import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 import { convertToType, FieldType } from '../../core/utils/type-converter';
 import { LLMAdapter } from '../../shared/llm-adapter';
@@ -64,6 +65,13 @@ export async function populateRequiredFields(
   const notes: string[] = [];
   let confidence = 1.0;
   let source: 'upstream' | 'default' | 'inferred' | 'llm' = 'default';
+
+  // UNIVERSAL INVARIANT:
+  // Any field that exists in the unified node INPUT schema must remain empty at build time.
+  // Runtime (dynamic-node-executor) will populate it after previous node execution using
+  // AI Input Resolver + guarantee layer.
+  const unifiedDef = unifiedNodeRegistry.get(nodeType);
+  const runtimeInputKeys = new Set(Object.keys(unifiedDef?.inputSchema || {}));
   
   // Step 1: Check existing config for required fields
   for (const fieldName of requiredFields) {
@@ -72,6 +80,15 @@ export async function populateRequiredFields(
     // If field exists and is not empty, keep it
     if (existingValue !== undefined && existingValue !== null && existingValue !== '') {
       populated[fieldName] = existingValue;
+      continue;
+    }
+
+    // If this is a runtime-resolved input field, leave it empty (no upstream/default/LLM inference).
+    if (runtimeInputKeys.has(fieldName)) {
+      populated[fieldName] = '';
+      notes.push(`Left '${fieldName}' empty for runtime input resolution (unified inputSchema field)`);
+      source = 'inferred';
+      confidence = Math.min(confidence, 0.0);
       continue;
     }
     
@@ -118,10 +135,11 @@ export async function populateRequiredFields(
   
   // Step 5: If LLM available and confidence is low, try LLM inference
   if (llmAdapter && confidence < 0.7 && previousNode) {
+    const runtimeFieldSet = runtimeInputKeys;
     const llmResult = await inferWithLLM(
       node,
       previousNode,
-      requiredFields.filter(f => !populated[f] || populated[f] === ''),
+      requiredFields.filter((f) => !runtimeFieldSet.has(f) && (!populated[f] || populated[f] === '')),
       llmAdapter
     );
     

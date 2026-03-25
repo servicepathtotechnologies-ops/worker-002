@@ -221,3 +221,12 @@ export function applyNodeDefinitionOverrides(def: UnifiedNodeDefinition, schema:
   return fn(def, schema);
 }
 
+/** Node types that replace `execute` (or related) via registry overrides — used for compliance matrix / audits. */
+export function getNodeTypesWithExecuteOverrides(): string[] {
+  return Object.keys(overridesByType).sort();
+}
+
+export function hasRegistryExecuteOverride(nodeType: string): boolean {
+  return Object.prototype.hasOwnProperty.call(overridesByType, nodeType);
+}
+

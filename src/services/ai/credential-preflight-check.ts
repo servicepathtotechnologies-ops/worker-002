@@ -2,6 +2,7 @@
 // Validates credentials BEFORE building workflow
 // Prevents wasted builds
 
+import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 import { WorkflowNode } from '../../core/types/ai-types';
 
 export interface CredentialCheck {
@@ -26,12 +27,14 @@ export interface PreflightResult {
 
 /**
  * Credential Preflight Check - PHASE-2 Feature #4
- * 
+ *
  * STEP-4.5: Credential Readiness Check
  * Validates:
  * - Credential exists
  * - Permission scopes sufficient
  * - Stops early if invalid
+ *
+ * Credential policy is driven by unifiedNodeRegistry.getCredentialPreflightDescriptor().
  */
 export class CredentialPreflightChecker {
   /**
@@ -48,7 +51,6 @@ export class CredentialPreflightChecker {
     const invalid: CredentialCheck[] = [];
     const warnings: string[] = [];
 
-    // Check each node that requires credentials
     for (const node of nodes) {
       if (this.requiresCredentials(node.type)) {
         const check = await this.checkNodeCredentials(node, existingAuth);
@@ -60,7 +62,6 @@ export class CredentialPreflightChecker {
           invalid.push(check);
         }
 
-        // Check scope compatibility
         if (check.exists && check.missingScopes.length > 0) {
           warnings.push(
             `Node ${node.data?.label || node.id} (${node.type}) is missing scopes: ${check.missingScopes.join(', ')}`
@@ -87,6 +88,13 @@ export class CredentialPreflightChecker {
   }
 
   /**
+   * Registry-driven: true when UnifiedNodeRegistry says this node participates in preflight.
+   */
+  requiresCredentials(nodeType: string): boolean {
+    return unifiedNodeRegistry.getCredentialPreflightDescriptor(nodeType).requiresCheck;
+  }
+
+  /**
    * Check credentials for a single node
    */
   private async checkNodeCredentials(
@@ -94,33 +102,29 @@ export class CredentialPreflightChecker {
     existingAuth: Record<string, any>
   ): Promise<CredentialCheck> {
     const nodeType = node.type;
-    const credentialType = this.getCredentialType(nodeType);
-    const requiredScopes = this.getRequiredScopes(nodeType);
+    const desc = unifiedNodeRegistry.getCredentialPreflightDescriptor(nodeType);
+    const credentialTypeLabel =
+      desc.credentialType === 'OAuth' ? 'OAuth' : desc.credentialType === 'API_KEY' ? 'API_KEY' : 'API_KEY';
+    const requiredScopes = desc.requiredScopes;
 
-    // Check if credential exists
-    const credential = this.findCredential(nodeType, existingAuth);
+    const credential = this.findCredential(existingAuth, desc.lookupKeys);
     const exists = !!credential;
 
-    // Check if credential is valid
     let valid = false;
     let scopes: string[] = [];
     let missingScopes: string[] = [];
     let error: string | undefined;
 
     if (credential) {
-      // Validate credential format
-      valid = this.validateCredentialFormat(credential, credentialType);
-      
+      valid = this.validateCredentialFormat(credential, desc.credentialType);
       if (!valid) {
         error = 'Invalid credential format';
       } else {
-        // Check scopes
         scopes = this.extractScopes(credential);
-        missingScopes = requiredScopes.filter(scope => !scopes.includes(scope));
-        
-        // If OAuth, missing scopes might be acceptable (user can grant)
-        if (credentialType === 'OAuth' && missingScopes.length > 0) {
-          valid = true; // OAuth can be granted later
+        missingScopes = requiredScopes.filter((scope) => !scopes.includes(scope));
+
+        if (desc.credentialType === 'OAuth' && missingScopes.length > 0) {
+          valid = true;
         } else if (missingScopes.length > 0) {
           valid = false;
           error = `Missing required scopes: ${missingScopes.join(', ')}`;
@@ -131,7 +135,7 @@ export class CredentialPreflightChecker {
     return {
       nodeId: node.id,
       nodeType,
-      credentialType,
+      credentialType: credentialTypeLabel,
       exists,
       valid,
       scopes,
@@ -142,93 +146,35 @@ export class CredentialPreflightChecker {
   }
 
   /**
-   * Check if node type requires credentials
+   * Find credential in existing auth using registry-provided lookup keys (order preserved).
    */
-  private requiresCredentials(nodeType: string): boolean {
-    return [
-      'http_request',
-      'http_post',
-      'slack_message',
-      'email',
-      'google_sheets',
-      'google_drive',
-      'google_gmail',
-      'database_write',
-      'database_read',
-      'openai_gpt',
-      'anthropic_claude',
-      'google_gemini',
-      'linkedin',
-      'twitter',
-      'discord',
-    ].includes(nodeType);
-  }
-
-  /**
-   * Get credential type for node
-   */
-  private getCredentialType(nodeType: string): string {
-    const oauthNodes = ['google_sheets', 'google_drive', 'google_gmail', 'linkedin'];
-    if (oauthNodes.includes(nodeType)) {
-      return 'OAuth';
-    }
-    return 'API_KEY';
-  }
-
-  /**
-   * Get required scopes for node
-   */
-  private getRequiredScopes(nodeType: string): string[] {
-    const scopeMap: Record<string, string[]> = {
-      google_sheets: ['https://www.googleapis.com/auth/spreadsheets'],
-      google_drive: ['https://www.googleapis.com/auth/drive'],
-      google_gmail: ['https://www.googleapis.com/auth/gmail.send'],
-      linkedin: ['r_liteprofile', 'r_emailaddress'],
-    };
-
-    return scopeMap[nodeType] || [];
-  }
-
-  /**
-   * Find credential in existing auth
-   */
-  private findCredential(nodeType: string, existingAuth: Record<string, any>): any {
-    // Check for direct match
-    if (existingAuth[nodeType]) {
-      return existingAuth[nodeType];
-    }
-
-    // Check for service-based match
-    const serviceMap: Record<string, string[]> = {
-      google_sheets: ['google', 'google_sheets'],
-      google_drive: ['google', 'google_drive'],
-      google_gmail: ['google', 'gmail'],
-      slack_message: ['slack'],
-      openai_gpt: ['openai'],
-      anthropic_claude: ['anthropic'],
-      google_gemini: ['gemini', 'google'],
-    };
-
-    const services = serviceMap[nodeType] || [];
-    for (const service of services) {
-      if (existingAuth[service]) {
-        return existingAuth[service];
+  private findCredential(existingAuth: Record<string, any>, lookupKeys: string[]): any {
+    for (const key of lookupKeys) {
+      if (key && existingAuth[key]) {
+        return existingAuth[key];
       }
     }
-
     return null;
   }
 
   /**
    * Validate credential format
    */
-  private validateCredentialFormat(credential: any, type: string): boolean {
-    if (type === 'API_KEY') {
-      return typeof credential === 'string' && credential.length > 0;
+  private validateCredentialFormat(
+    credential: any,
+    credentialType: 'OAuth' | 'API_KEY' | 'UNKNOWN'
+  ): boolean {
+    if (credentialType === 'API_KEY' || credentialType === 'UNKNOWN') {
+      if (typeof credential === 'string' && credential.length > 0) return true;
+      return !!(
+        credential &&
+        typeof credential === 'object' &&
+        (credential.apiKey || credential.key || credential.access_token || credential.token)
+      );
     }
 
-    if (type === 'OAuth') {
-      return (
+    if (credentialType === 'OAuth') {
+      return !!(
         credential &&
         typeof credential === 'object' &&
         (credential.access_token || credential.token)

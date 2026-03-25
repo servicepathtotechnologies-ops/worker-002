@@ -1,7 +1,7 @@
 /**
  * Main Express.js Server for CtrlChecks Worker
  * Migrated from Supabase Edge Functions
- * Ollama-First AI Architecture
+ * Gemini AI (GEMINI_API_KEY)
  * 
  * 🚨 CRITICAL: Environment variables MUST be loaded FIRST
  * The env-loader module loads dotenv synchronously before any other imports.
@@ -156,10 +156,13 @@ import { config } from './core/config';
 import { corsMiddleware, getAllowedOrigins } from './core/middleware/cors';
 import { errorHandler, asyncHandler } from './core/middleware/error-handler';
 
-// Initialize Ollama AI Services
-import { ollamaManager } from './services/ai/ollama-manager';
+// AI: Gemini (GEMINI_API_KEY)
 import { modelManager } from './services/ai/model-manager';
 import { metricsTracker } from './services/ai/metrics-tracker';
+import { geminiOrchestrator } from './services/ai/gemini-orchestrator';
+import { LLMAdapter } from './shared/llm-adapter';
+
+const aiLlmAdapter = new LLMAdapter();
 
 // Import route handlers
 import executeWorkflowRoute from './api/execute-workflow';
@@ -182,6 +185,8 @@ import getCredentialsRoute from './api/get-credentials';
 import attachCredentialsRoute from './api/attach-credentials';
 import attachInputsRoute from './api/attach-inputs';
 import saveWorkflowRoute from './api/save-workflow';
+import getMissingItemsRoute from './api/workflows-missing-items';
+import configureWorkflowRoute from './api/workflows-configure';
 import { confirmWorkflow, rejectWorkflow } from './api/workflow-confirm';
 import { substituteTools, getAvailableSubstitutions } from './api/tool-substitute';
 import { serveChatbotPage } from './api/chatbot-page';
@@ -192,6 +197,7 @@ import * as workflowVersioningRoutes from './api/workflow-versioning';
 import memoryRoutes from './api/memory';
 import distributedExecuteWorkflow, { getExecutionStatus } from './api/distributed-execute-workflow';
 import nodeDefinitionsHandler from './api/node-definitions';
+import workflowFieldOwnershipCatalogHandler from './api/workflow-field-ownership-catalog';
 import { linkedinStatusHandler, linkedinTestHandler, linkedinRefreshNowHandler, linkedinDisconnectHandler } from './api/connections-linkedin';
 import { githubStatusHandler, githubDisconnectHandler } from './api/connections-github';
 import { zohoStatusHandler, zohoConnectHandler, zohoTestHandler, zohoDisconnectHandler } from './api/connections-zoho';
@@ -233,29 +239,17 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(corsMiddleware);
 console.log('[ServerStartup] ✅ Middleware registered');
 
-// Health check with Ollama status
-// ✅ CRITICAL: Register health endpoint BEFORE server.listen() to ensure it's available immediately
-// ✅ CRITICAL: Make health endpoint minimal and non-blocking for fast startup
+// Health check (Gemini AI status)
 console.log('[ServerStartup] 🔵 Registering /health endpoint...');
 app.get('/health', asyncHandler(async (req: Request, res: Response) => {
-  console.log('[HealthCheck] 🔵 Health check requested');
-  
-  // ✅ CRITICAL: Return immediately with basic status, don't block on Ollama
-  // This ensures health endpoint is always fast and doesn't prevent server startup
   try {
-    const ollamaHealth = await Promise.race([
-      ollamaManager.healthCheck(),
-      new Promise((resolve) => setTimeout(() => resolve({ healthy: false, endpoint: 'timeout' }), 1000))
-    ]) as any;
-    
     const stats = metricsTracker.getStats();
-    
+    const geminiConfigured = !!(config.geminiApiKey && config.geminiApiKey.trim().length > 0);
     res.json({
-      status: ollamaHealth.healthy ? 'healthy' : 'degraded',
+      status: geminiConfigured ? 'healthy' : 'degraded',
       backend: 'running',
-      ollama: ollamaHealth.healthy ? 'connected' : 'disconnected',
-      ollamaEndpoint: ollamaHealth.endpoint,
-      models: ollamaHealth.models || [],
+      ai: geminiConfigured ? 'gemini' : 'unconfigured',
+      geminiConfigured,
       aiMetrics: {
         totalRequests: stats.totalRequests,
         successRate: `${stats.successRate.toFixed(1)}%`,
@@ -291,12 +285,11 @@ app.get('/health', asyncHandler(async (req: Request, res: Response) => {
       ],
     });
   } catch (error) {
-    // ✅ CRITICAL: Health endpoint should never fail - return degraded status
     console.error('[HealthCheck] ⚠️  Health check error (non-fatal):', error);
     res.json({
       status: 'degraded',
       backend: 'running',
-      ollama: 'unknown',
+      ai: 'unknown',
       error: error instanceof Error ? error.message : String(error),
       timestamp: new Date().toISOString(),
       environment: process.env.NODE_ENV || 'development',
@@ -619,6 +612,98 @@ console.log('🔐 Attach Credentials API available at /api/workflows/:workflowId
 app.post('/api/workflows/:workflowId/attach-inputs', asyncHandler(attachInputsRoute));
 console.log('🔧 Attach Inputs API available at /api/workflows/:workflowId/attach-inputs');
 
+// Get Missing Items (Credentials + Sensitive Inputs)
+app.get('/api/workflows/:workflowId/missing-items', asyncHandler(getMissingItemsRoute));
+console.log('🔍 Missing Items API available at /api/workflows/:workflowId/missing-items');
+app.get('/api/workflows/:workflowId/field-ownership-catalog', asyncHandler(workflowFieldOwnershipCatalogHandler));
+console.log('🧭 Field Ownership Catalog API available at /api/workflows/:workflowId/field-ownership-catalog');
+
+// Get last runtime-resolved inputs for a workflow (read-only observability data)
+app.get('/api/workflows/:workflowId/last-resolved-inputs', asyncHandler(async (req: Request, res: Response) => {
+  const { workflowId } = req.params;
+  const authHeader = req.headers.authorization;
+  const token = authHeader?.startsWith('Bearer ') ? authHeader.replace('Bearer ', '').trim() : '';
+  if (!token) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  const { getSupabaseClient } = await import('./core/database/supabase-compat');
+  const supabase = getSupabaseClient();
+  const { data: authData, error: authError } = await supabase.auth.getUser(token);
+  if (authError || !authData?.user?.id) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  const userId = authData.user.id;
+  const { data: workflow, error: workflowError } = await supabase
+    .from('workflows')
+    .select('id, user_id')
+    .eq('id', workflowId)
+    .single();
+  if (workflowError || !workflow || workflow.user_id !== userId) {
+    return res.status(404).json({ error: 'Workflow not found' });
+  }
+
+  const { data: executions, error: executionsError } = await supabase
+    .from('executions')
+    .select('id, started_at, status, logs')
+    .eq('workflow_id', workflowId)
+    .in('status', ['success', 'failed', 'running', 'waiting'])
+    .order('started_at', { ascending: false })
+    .limit(50);
+
+  if (executionsError) {
+    return res.status(500).json({ error: 'Failed to load execution history' });
+  }
+
+  const values: Record<string, Record<string, {
+    value: unknown;
+    source?: 'runtime_ai' | 'static_config';
+    executionId: string;
+    startedAt: string;
+  }>> = {};
+
+  for (const execution of executions || []) {
+    const logs = Array.isArray(execution.logs) ? execution.logs : [];
+    for (const rawLog of logs) {
+      if (!rawLog || typeof rawLog !== 'object') continue;
+      const log = rawLog as any;
+      const nodeId = typeof log.nodeId === 'string' ? log.nodeId : undefined;
+      const resolvedInputs = log.resolvedInputs && typeof log.resolvedInputs === 'object'
+        ? log.resolvedInputs
+        : null;
+      const resolvedInputSources = log.resolvedInputSources && typeof log.resolvedInputSources === 'object'
+        ? log.resolvedInputSources
+        : {};
+      if (!nodeId || !resolvedInputs) continue;
+
+      if (!values[nodeId]) values[nodeId] = {};
+      for (const [fieldName, value] of Object.entries(resolvedInputs)) {
+        if (values[nodeId][fieldName] !== undefined) {
+          continue; // preserve newest value only (executions are DESC)
+        }
+        values[nodeId][fieldName] = {
+          value,
+          source: (resolvedInputSources as any)?.[fieldName],
+          executionId: execution.id,
+          startedAt: execution.started_at,
+        };
+      }
+    }
+  }
+
+  return res.json({
+    workflowId,
+    values,
+    executionCountScanned: (executions || []).length,
+  });
+}));
+console.log('🧾 Last Resolved Inputs API available at /api/workflows/:workflowId/last-resolved-inputs');
+
+// Configure Workflow (Inject Credentials + Inputs + Auto-config + Validate)
+app.post('/api/workflows/:workflowId/configure', asyncHandler(configureWorkflowRoute));
+console.log('⚙️  Configure Workflow API available at /api/workflows/:workflowId/configure');
+
 // Save Workflow (with validation and normalization)
 app.post('/api/save-workflow', asyncHandler(saveWorkflowRoute));
 console.log('💾 Save Workflow API available at /api/save-workflow');
@@ -793,53 +878,39 @@ app.get('/api/training/usage', asyncHandler(trainingStats.getTrainingUsage));
 app.post('/api/training/reload', asyncHandler(trainingStats.reloadTrainingDataset));
 console.log('📚 Training API available at /api/training/*');
 
-// AI Endpoints (Ollama-First)
+// AI Endpoints (Gemini - GEMINI_API_KEY)
 app.post('/api/ai/generate', asyncHandler(async (req: Request, res: Response) => {
   const { prompt, model, system, temperature, max_tokens } = req.body;
-  
-  if (!prompt) {
-    return res.status(400).json({ success: false, error: 'Prompt is required' });
-  }
-
-  const result = await ollamaManager.generate(prompt, {
-    model,
-    system,
+  if (!prompt) return res.status(400).json({ success: false, error: 'Prompt is required' });
+  if (!config.geminiApiKey) return res.status(503).json({ success: false, error: 'GEMINI_API_KEY not configured' });
+  const result = await geminiOrchestrator.processRequest('chat-generation', prompt, {
+    model: model || 'gemini-2.5-flash',
     temperature,
     max_tokens,
-    stream: false,
+    cache: false,
   });
-
-  res.json({ success: true, result });
+  res.json({ success: true, result: typeof result === 'string' ? { content: result } : result });
 }));
 
 app.post('/api/ai/chat', asyncHandler(async (req: Request, res: Response) => {
   const { messages, model, temperature } = req.body;
-  
-  if (!messages || !Array.isArray(messages)) {
-    return res.status(400).json({ success: false, error: 'Messages array is required' });
-  }
-
-  const result = await ollamaManager.chat(messages, {
-    model,
-    temperature,
-    stream: false,
+  if (!messages || !Array.isArray(messages)) return res.status(400).json({ success: false, error: 'Messages array is required' });
+  if (!config.geminiApiKey) return res.status(503).json({ success: false, error: 'GEMINI_API_KEY not configured' });
+  const response = await aiLlmAdapter.chat('gemini', messages, {
+    model: model || 'gemini-2.5-flash',
+    apiKey: config.geminiApiKey,
+    temperature: temperature ?? 0.7,
   });
-
-  res.json({ success: true, result });
+  res.json({ success: true, result: { content: response.content, usage: response.usage } });
 }));
 
 app.post('/api/ai/analyze-image', asyncHandler(async (req: Request, res: Response) => {
-  // Multimodal functionality has been removed
-  res.status(501).json({ 
-    success: false, 
-    error: 'Image analysis functionality has been removed. Multimodal features are no longer supported.' 
-  });
+  res.status(501).json({ success: false, error: 'Image analysis has been removed.' });
 }));
 
 app.get('/api/ai/models', asyncHandler(async (req: Request, res: Response) => {
-  const models = await ollamaManager.getAvailableModels();
+  const models = modelManager.getRecommendedModels().map(name => ({ name }));
   const stats = modelManager.getUsageStats();
-  
   res.json({
     success: true,
     models,
@@ -905,19 +976,15 @@ async function startServer() {
   console.log('[ServerStartup] 🔵 Starting server initialization...');
   
   try {
-    // Initialize Ollama Manager
-    console.log('[ServerStartup] 🤖 Initializing Ollama AI services...');
-    await ollamaManager.initialize();
-    
-    // Initialize Model Manager
+    console.log('[ServerStartup] 🤖 AI: Gemini (GEMINI_API_KEY)');
     await modelManager.initialize();
-    
-    console.log('[ServerStartup] ✅ Ollama AI services initialized');
-    console.log(`[ServerStartup] 📦 Recommended models: ${modelManager.getRecommendedModels().join(', ')}`);
+    if (config.geminiApiKey) {
+      console.log('[ServerStartup] ✅ Gemini AI ready. Models:', modelManager.getRecommendedModels().join(', '));
+    } else {
+      console.log('[ServerStartup] ⚠️  GEMINI_API_KEY not set. AI features unavailable.');
+    }
   } catch (error) {
-    console.error('[ServerStartup] ⚠️  Ollama initialization failed:', error);
-    console.log('[ServerStartup] ⚠️  Server will start but AI features may be unavailable');
-    console.log('[ServerStartup] 💡 Make sure Ollama is running at:', config.ollamaHost);
+    console.warn('[ServerStartup] ⚠️  Model manager init warning:', error);
   }
 
   // Start server
@@ -996,7 +1063,9 @@ async function startServer() {
         console.log(`   Custom origin: ${config.corsOrigin}`);
       }
       
-      console.log(`\n🤖 Ollama endpoint: ${config.ollamaHost}`);
+      if (config.geminiApiKey) {
+        console.log(`\n🤖 AI: Gemini (GEMINI_API_KEY configured)`);
+      }
       
       console.log('\n📋 All Available Endpoints:');
       console.log(`  POST /api/execute-workflow`);
@@ -1033,7 +1102,7 @@ async function startServer() {
       console.log(`  POST /api/ai/chatbot/message - Chichu chatbot`);
       console.log(`  POST /api/ai/editor/suggest-improvements - Workflow node suggestions`);
       console.log(`  POST /api/ai/builder/generate-from-prompt - Generate workflow from prompt`);
-      console.log(`  POST /api/ai/ollama/generate - Direct Ollama generation`);
+      console.log(`  POST /api/ai/ollama/generate - Direct Gemini generation (legacy path)`);
       console.log(`  GET  /api/ai/metrics - Performance metrics`);
       
       console.log('\n' + '='.repeat(60));

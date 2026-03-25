@@ -122,6 +122,27 @@ function detectEmailsInArrayOfObjects(rows: unknown[], maxRows: number): Detecte
   return { emails: dedupe(emails), fieldNames: dedupe(fieldNames) };
 }
 
+/** Scan every cell value (not only email-like column names) — for messy spreadsheets when enabled via config. */
+function detectEmailsInAllCellsOfRows(rows: unknown[], maxRows: number): DetectedEmails {
+  const emails: string[] = [];
+  const fieldNames: string[] = [];
+  const limited = rows.slice(0, Math.max(0, maxRows));
+
+  for (const row of limited) {
+    if (!isPlainObject(row)) continue;
+    for (const [k, v] of Object.entries(row)) {
+      if (k === 'row_number') continue;
+      const found = extractEmailsFromText(String(v ?? ''));
+      if (found.length > 0) {
+        emails.push(...found);
+        fieldNames.push(k);
+      }
+    }
+  }
+
+  return { emails: dedupe(emails), fieldNames: dedupe(fieldNames) };
+}
+
 function extractCandidateDatasets(upstream: unknown): unknown[] {
   if (!upstream) return [];
 
@@ -142,13 +163,15 @@ function extractCandidateDatasets(upstream: unknown): unknown[] {
 
 export function resolveRecipients(params: {
   credentialInputRecipientEmails?: unknown;
-  explicitTo?: unknown;
   recipientSource?: unknown;
   userIntent?: string;
   upstreamOutputs?: unknown[];
   maxRecipients?: number;
+  /** When true, after normal column-name heuristics fail, scan all cell values for emails (messy headers). */
+  useAggressiveRowScan?: boolean;
 }): RecipientResolutionResult {
   const maxRecipients = params.maxRecipients ?? 100;
+  const aggressive = params.useAggressiveRowScan === true;
   const recipientSource = typeof params.recipientSource === 'string' ? params.recipientSource : '';
 
   // 1) Extract from intent (highest priority)
@@ -160,15 +183,10 @@ export function resolveRecipients(params: {
 
   // 2) Explicit user input (manual entry / config)
   // Always check for manual recipient emails first (highest priority after intent)
-  // This handles cases where recipientEmails or 'to' field is provided regardless of recipientSource value
+  // This handles cases where recipientEmails is provided regardless of recipientSource value
   const explicitFromInputs = parseRecipientEmails(params.credentialInputRecipientEmails);
   if (explicitFromInputs.length > 0) {
     return { recipientList: explicitFromInputs.slice(0, maxRecipients), source: 'explicit_user_input' };
-  }
-
-  const explicitTo = parseRecipientEmails(params.explicitTo);
-  if (explicitTo.length > 0) {
-    return { recipientList: explicitTo.slice(0, maxRecipients), source: 'explicit_user_input' };
   }
 
   // If recipientSource is explicitly 'manual_entry' and no emails found, return missing
@@ -185,17 +203,21 @@ export function resolveRecipients(params: {
   let allEmails: string[] = [];
   let allFields: string[] = [];
 
-  for (const out of upstreamOutputs) {
-    const datasets = extractCandidateDatasets(out);
-    for (const ds of datasets) {
-      if (!Array.isArray(ds)) continue;
-      const detected = detectEmailsInArrayOfObjects(ds, 500);
-      if (detected.emails.length > 0) {
-        allEmails.push(...detected.emails);
-        allFields.push(...detected.fieldNames);
+  const runDetection = (detector: (rows: unknown[], max: number) => DetectedEmails) => {
+    for (const out of upstreamOutputs) {
+      const datasets = extractCandidateDatasets(out);
+      for (const ds of datasets) {
+        if (!Array.isArray(ds)) continue;
+        const detected = detector(ds, 500);
+        if (detected.emails.length > 0) {
+          allEmails.push(...detected.emails);
+          allFields.push(...detected.fieldNames);
+        }
       }
     }
-  }
+  };
+
+  runDetection(detectEmailsInArrayOfObjects);
 
   allEmails = dedupe(allEmails).slice(0, maxRecipients);
   allFields = dedupe(allFields);
@@ -206,6 +228,21 @@ export function resolveRecipients(params: {
       source: 'upstream_detected_email',
       detectedFieldNames: allFields,
     };
+  }
+
+  if (aggressive) {
+    allEmails = [];
+    allFields = [];
+    runDetection(detectEmailsInAllCellsOfRows);
+    allEmails = dedupe(allEmails).slice(0, maxRecipients);
+    allFields = dedupe(allFields);
+    if (allEmails.length > 0) {
+      return {
+        recipientList: allEmails,
+        source: 'upstream_detected_email',
+        detectedFieldNames: allFields,
+      };
+    }
   }
 
   return { recipientList: [], source: 'missing' };

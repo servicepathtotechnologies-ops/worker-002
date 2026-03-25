@@ -19,8 +19,21 @@ export interface NodeInputSchema {
     ui?: {
       options?: Array<{ label: string; value: string }>;
       requiredIf?: { field: string; equals: any };
+      visibleIf?: { field: string; equals: unknown };
       widget?: 'text' | 'textarea' | 'json' | 'multi_email';
+      contextHints?: Array<{ whenValue: string; message: string }>;
     };
+    /** Serialized from UnifiedNodeRegistry for "how to get it" UX */
+    helpCategory?: string;
+    docsUrl?: string;
+    exampleValue?: string;
+    fillMode?: {
+      default: 'manual_static' | 'runtime_ai' | 'buildtime_ai_once';
+      supportsRuntimeAI?: boolean;
+      supportsBuildtimeAI?: boolean;
+    };
+    role?: string;
+    essentialForExecution?: boolean;
   };
 }
 
@@ -64,6 +77,8 @@ export interface NodeDefinition {
     // Config fields that are credentials (API keys, tokens) when applicable
     required?: string[];
     optional?: string[];
+    /** Field names that hold credentials or user-supplied connection values (from registry) */
+    credentialFields?: string[];
   };
 
   // Migrations (for backward compatibility)
@@ -115,6 +130,13 @@ export class NodeDefinitionRegistry {
         required: !!v.required,
         default: v.default,
         examples: v.examples,
+        helpCategory: v.helpCategory,
+        docsUrl: v.docsUrl,
+        exampleValue: v.exampleValue,
+        fillMode: v.fillMode,
+        role: v.role,
+        essentialForExecution: v.essentialForExecution,
+        ...(v.ui ? { ui: v.ui } : {}),
       };
     }
 
@@ -146,8 +168,15 @@ export class NodeDefinitionRegistry {
       defaultInputs: () => def.defaultConfig(),
       credentialSchema: def.credentialSchema
         ? {
-            providers: Array.from(new Set(def.credentialSchema.requirements.map((r) => r.provider))),
+            providers: Array.from(
+              new Set(
+                def.credentialSchema.requirements
+                  .map((r) => r.provider)
+                  .filter((p): p is string => typeof p === 'string' && p.length > 0)
+              )
+            ),
             required: def.credentialSchema.requirements.filter((r) => r.required).map((r) => r.category),
+            credentialFields: def.credentialSchema.credentialFields,
           }
         : undefined,
       migrations: undefined,

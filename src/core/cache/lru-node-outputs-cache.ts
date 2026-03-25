@@ -189,20 +189,34 @@ export class LRUNodeOutputsCache {
    * deterministic "most recent" selection based on timestamps.
    */
   getMostRecentOutput(excludeKeys: string[] = []): unknown | undefined {
+    return this.getMostRecentOutputEntry(excludeKeys)?.value;
+  }
+
+  /**
+   * Same recency rules as {@link getMostRecentOutput}, but returns the cache key (workflow node id)
+   * so callers can resolve the upstream node's type from execution context.
+   */
+  getMostRecentOutputEntry(
+    excludeKeys: string[] = []
+  ): { key: string; value: unknown } | undefined {
     const exclude = new Set(excludeKeys);
     let newestTs = -1;
-    let newestValue: unknown | undefined = undefined;
+    let newestKey: string | undefined;
+    let newestValue: unknown | undefined;
 
     for (const [key, entry] of this.cache.entries()) {
       if (exclude.has(key)) continue;
       const ts = entry.setTimestamp ?? entry.timestamp;
-      if (ts > newestTs) {
+      // Use >= so equal timestamps break ties by Map insertion order (last set wins).
+      if (ts >= newestTs) {
         newestTs = ts;
+        newestKey = key;
         newestValue = entry.value;
       }
     }
 
-    return newestValue;
+    if (newestKey === undefined) return undefined;
+    return { key: newestKey, value: newestValue };
   }
 
   /**

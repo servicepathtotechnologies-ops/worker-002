@@ -20,8 +20,24 @@
  */
 
 import { WorkflowNode } from '../types/ai-types';
-import { nodeTypeNormalizationService } from '../../services/ai/node-type-normalization-service';
 import { normalizeNodeType as semanticNormalizeNodeType } from '../../services/ai/node-type-normalizer';
+type ServiceNormalizeResult = { normalized: string; valid: boolean; method: string };
+
+function normalizeViaServiceSafely(nodeType: string): ServiceNormalizeResult {
+  try {
+    // Lazy-load to avoid startup circular initialization between core utils and AI services.
+    const svc = require('../../services/ai/node-type-normalization-service') as {
+      nodeTypeNormalizationService?: { normalizeNodeType: (t: string) => ServiceNormalizeResult };
+    };
+    const res = svc?.nodeTypeNormalizationService?.normalizeNodeType(nodeType);
+    if (res && typeof res.normalized === 'string') {
+      return res;
+    }
+  } catch {
+    // Fall through to semantic + raw fallback.
+  }
+  return { normalized: nodeType, valid: false, method: 'service_unavailable' };
+}
 
 /**
  * ✅ UNIFIED: Normalize node type from node object OR type string
@@ -89,7 +105,7 @@ export function unifiedNormalizeNodeTypeString(nodeType: string): string {
   }
   
   // Step 1: Try NodeTypeNormalizationService (comprehensive - handles capabilities, categories, etc.)
-  const serviceResult = nodeTypeNormalizationService.normalizeNodeType(nodeType);
+  const serviceResult = normalizeViaServiceSafely(nodeType);
   
   if (serviceResult.valid) {
     return serviceResult.normalized;
@@ -129,7 +145,7 @@ export function unifiedNormalizeNodeTypeWithInfo(nodeType: string): {
   }
   
   // Try NodeTypeNormalizationService first
-  const serviceResult = nodeTypeNormalizationService.normalizeNodeType(nodeType);
+  const serviceResult = normalizeViaServiceSafely(nodeType);
   
   if (serviceResult.valid) {
     return serviceResult;

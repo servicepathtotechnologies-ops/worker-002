@@ -2,9 +2,34 @@
 // Prompt-to-workflow generation with iterative improvement
 
 import { randomUUID } from 'crypto';
+
+function sanitizeRuntimeInputConfigForNodes(nodes: WorkflowNode[]): WorkflowNode[] {
+  return (nodes || []).map((node) => {
+    const nodeType = unifiedNormalizeNodeType(node) || node.type;
+    const def = unifiedNodeRegistry.get(nodeType);
+    if (!def?.inputSchema) return node;
+    const cfg = { ...(node.data?.config || {}) } as Record<string, any>;
+    for (const fieldName of Object.keys(def.inputSchema)) {
+      const mode = cfg?._fillMode?.[fieldName];
+      if (mode === 'manual_static' || mode === 'buildtime_ai_once') continue;
+      const current = cfg[fieldName];
+      if (current === undefined || current === null) continue;
+      if (typeof current === 'string' && (current.includes('{{') || current.includes('{{$json.') || current.trim() === '')) {
+        cfg[fieldName] = '';
+      }
+    }
+    return {
+      ...node,
+      data: {
+        ...node.data,
+        config: cfg,
+      },
+    };
+  });
+}
 import * as fs from 'fs';
 import * as path from 'path';
-import { ollamaOrchestrator } from './ollama-orchestrator';
+import { geminiOrchestrator } from './gemini-orchestrator';
 import { requirementsExtractor } from './requirements-extractor';
 import { workflowValidator } from './workflow-validator';
 import { nodeEquivalenceMapper } from './node-equivalence-mapper';
@@ -48,6 +73,7 @@ import {
   extractServiceName,
   isProductionReady,
 } from './workflow-builder-utils';
+import { isPlaceholderValue } from '../../core/utils/placeholder-filter';
 import {
   isTransformationNode,
   getTransformationTemplate,
@@ -96,6 +122,13 @@ import { generateTemplates } from './schema-aware-template-generator';
 import { validateMappings } from './template-validation-gate';
 import { AliasKeywordCollector } from './summarize-layer';
 import { nodeCapabilityRegistryDSL } from './node-capability-registry-dsl';
+import { buildNodeCatalog } from './node-catalog-builder';
+import { PlannedWorkflow, PlannedStep } from '../../core/types/ai-types';
+import { unifiedGraphOrchestrator } from '../../core/orchestration/unified-graph-orchestrator';
+import type { ExecutionOrder } from '../../core/orchestration/execution-order-manager';
+import { detectBranchingIntentFromPrompt } from '../../core/utils/branching-intent-from-prompt';
+import type { WorkflowPlan as GraphWorkflowPlan } from '../../core/types/workflow-plan';
+import { validateAndMaterializeWorkflowPlan } from '../../core/validation/workflow-plan-validator';
 
 export class AgenticWorkflowBuilder {
   private nodeLibrary: Map<string, any> = new Map();
@@ -106,6 +139,604 @@ export class AgenticWorkflowBuilder {
     this.constructionLogic = new WorkflowConstructionLogic();
     // ✅ NODE LIBRARY INITIALIZATION CHECK: Verify all integrations are registered
     this.verifyNodeLibraryInitialization();
+  }
+
+  /**
+   * Gemini-based planning: call workflow-planning mode with node catalog + planning prompt.
+   * Returns a high-level PlannedWorkflow (summary + ordered steps, no edges).
+   */
+  private async planWorkflowWithGemini(userPrompt: string): Promise<PlannedWorkflow> {
+    const nodeCatalog = buildNodeCatalog();
+
+    // Load planning system prompt from file to keep it editable without code changes
+    const promptPath = path.join(__dirname, 'WORKFLOW_PLANNING_SYSTEM_PROMPT.md');
+    const systemPrompt = fs.readFileSync(promptPath, 'utf-8');
+
+    const input = {
+      system: systemPrompt.replace('NODE_CATALOG', JSON.stringify(nodeCatalog, null, 2)),
+      message: `USER_REQUEST:\n${userPrompt}\n\nNODE_CATALOG:\n${JSON.stringify(nodeCatalog)}`,
+    };
+
+    const raw = await geminiOrchestrator.processRequest('workflow-generation', input, {
+      model: 'gemini-2.5-flash',
+      temperature: 0.2,
+      cache: false,
+    });
+
+    const text = typeof raw === 'string' ? raw : JSON.stringify(raw);
+    const jsonStart = text.indexOf('{');
+    const jsonEnd = text.lastIndexOf('}');
+    if (jsonStart === -1 || jsonEnd === -1 || jsonEnd <= jsonStart) {
+      throw new Error('Failed to parse PlannedWorkflow JSON from Gemini response');
+    }
+
+    const json = text.substring(jsonStart, jsonEnd + 1);
+    const planned = JSON.parse(json) as PlannedWorkflow;
+
+    if (!planned || !Array.isArray(planned.steps)) {
+      throw new Error('Invalid PlannedWorkflow structure from Gemini');
+    }
+
+    return planned;
+  }
+
+  /**
+   * Normalize a config fragment proposed by Gemini against the node's input schema and defaults.
+   * - Drops unknown keys
+   * - Fills missing values from defaultConfig
+   * - ✅ ENHANCED: Filters placeholder values from defaultConfig before merging
+   */
+  private normalizePlannedConfig(nodeType: string, aiConfig: Record<string, any> | undefined): Record<string, any> {
+    const def = unifiedNodeRegistry.get(nodeType);
+    if (!def) {
+      throw new Error(`Unknown node type in PlannedWorkflow: ${nodeType}`);
+    }
+
+    const baseConfigRaw = typeof def.defaultConfig === 'function' ? def.defaultConfig() || {} : {};
+    const inputSchema = def.inputSchema || {};
+    
+    // ✅ ENHANCED: Filter placeholder values from defaultConfig before merging
+    // This ensures placeholders like "YOUR_SPREADSHEET_ID" are not included in final config
+    const baseConfig: Record<string, any> = {};
+    for (const [key, value] of Object.entries(baseConfigRaw)) {
+      if (!isPlaceholderValue(value)) {
+        baseConfig[key] = value;
+      } else {
+        console.log(`[WorkflowBuilder] Filtering placeholder from defaultConfig for ${nodeType}.${key}: ${value}`);
+      }
+    }
+    
+    const result: Record<string, any> = { ...baseConfig };
+
+    if (aiConfig && typeof aiConfig === 'object') {
+      for (const [key, value] of Object.entries(aiConfig)) {
+        if (Object.prototype.hasOwnProperty.call(inputSchema, key)) {
+          // ✅ ENHANCED: Also filter placeholder values from AI config
+          if (!isPlaceholderValue(value)) {
+            result[key] = value;
+          } else {
+            console.log(`[WorkflowBuilder] Filtering placeholder from AI config for ${nodeType}.${key}: ${value}`);
+          }
+        }
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Map Gemini's role field to DSL category for context-aware node categorization.
+   * This enables multi-capability nodes (Gmail, Sheets) to have correct roles based on user intent.
+   */
+  private mapRoleToDSLCategory(role: string | undefined, nodeType: string, config: Record<string, any>): 'dataSource' | 'transformation' | 'output' | null {
+    if (!role) {
+      return null; // No role provided, will use fallback resolution
+    }
+
+    const roleLower = role.toLowerCase();
+    const nodeDef = unifiedNodeRegistry.get(nodeType);
+    const operation = config?.operation?.toLowerCase() || '';
+
+    // ✅ AI-FIRST: Map Gemini's role to DSL category
+    switch (roleLower) {
+      case 'trigger':
+        return 'dataSource'; // Triggers are data sources
+
+      case 'action':
+        // For multi-capability nodes, check operation to determine category
+        if (operation === 'read' || operation === 'get' || operation === 'list' || operation === 'search' || operation === 'fetch') {
+          return 'dataSource'; // Reading/fetching → data source
+        }
+        if (operation === 'send' || operation === 'write' || operation === 'create' || operation === 'update' || operation === 'delete') {
+          return 'output'; // Writing/sending → output
+        }
+        // Default: check node capabilities
+        if (nodeDef) {
+          const capabilities = (nodeDef.tags || []).map(t => t.toLowerCase());
+          if (capabilities.includes('read') || capabilities.includes('data_source')) {
+            return 'dataSource';
+          }
+          if (capabilities.includes('write') || capabilities.includes('output') || capabilities.includes('send')) {
+            return 'output';
+          }
+        }
+        return 'dataSource'; // Default action → data source
+
+      case 'logic':
+        return 'transformation'; // Logic nodes are transformations
+
+      case 'output':
+        return 'output'; // Explicit output role
+
+      case 'utility':
+        // Utility nodes can be transformation or output based on operation
+        if (operation === 'read' || operation === 'get') {
+          return 'dataSource';
+        }
+        if (operation === 'write' || operation === 'send') {
+          return 'output';
+        }
+        return 'transformation'; // Default utility → transformation
+
+      default:
+        return null; // Unknown role, use fallback
+    }
+  }
+
+  /**
+   * Hydrate a PlannedWorkflow (summary + steps) into a concrete Workflow:
+   * - Creates WorkflowNode instances using Unified Node Registry
+   * - Maps Gemini's role field to DSL category for context-aware categorization
+   * - Delegates to Unified Graph Orchestrator to create edges and execution order
+   */
+  private hydratePlannedWorkflow(planned: PlannedWorkflow): { workflow: Workflow; validation: any } {
+    const nodes: WorkflowNode[] = planned.steps.map((step, index) => {
+      const def = unifiedNodeRegistry.get(step.type);
+      if (!def) {
+        throw new Error(`Planned step references unknown node type: ${step.type}`);
+      }
+
+      const id = step.id || `step_${index + 1}`;
+      const config = this.normalizePlannedConfig(step.type, step.config || {});
+
+      // ✅ AI-FIRST: Map Gemini's role to DSL category
+      const aiDeterminedCategory = this.mapRoleToDSLCategory(step.role, step.type, config);
+
+      return {
+        id,
+        type: step.type,
+        data: {
+          label: def.label || id,
+          type: step.type,
+          category: def.category || 'action',
+          config,
+          stepRef: step.id,
+          stepType: step.role,
+          // ✅ AI-FIRST: Store AI-determined category in metadata for context-aware resolution
+          metadata: {
+            aiRole: step.role,
+            aiDeterminedCategory,
+            ...(aiDeterminedCategory && {
+              intendedCapability: aiDeterminedCategory === 'dataSource' ? 'data_source' :
+                                  aiDeterminedCategory === 'transformation' ? 'transformation' :
+                                  'output'
+            }),
+          },
+        },
+      };
+    });
+
+    const { workflow, executionOrder } = unifiedGraphOrchestrator.initializeWorkflow(nodes);
+    const validation = unifiedGraphOrchestrator.validateWorkflow(workflow, executionOrder);
+
+    if (!validation.valid) {
+      logger.warn('[WorkflowBuilder] hydratePlannedWorkflow: structural validation failed', {
+        errors: validation.errors,
+        nodeIds: workflow.nodes.map((n) => n.id),
+        nodeTypes: workflow.nodes.map((n) => unifiedNormalizeNodeType(n) || n.type),
+        edgeCount: workflow.edges?.length ?? 0,
+        edges: (workflow.edges || []).map((e) => ({
+          source: e.source,
+          target: e.target,
+          type: (e as { type?: string }).type,
+        })),
+      });
+    }
+
+    // Attach summary into metadata for downstream usage
+    const hydratedWorkflow: Workflow = {
+      ...workflow,
+      metadata: {
+        ...(workflow.metadata || {}),
+        summary: planned.summary,
+      },
+    };
+
+    return { workflow: hydratedWorkflow, validation };
+  }
+
+  /**
+   * Public entrypoint: generate a workflow using Gemini planning + registry + graph orchestrator.
+   */
+  async generateWorkflowWithGeminiPlanner(userPrompt: string): Promise<Workflow> {
+    const planned = await this.planWorkflowWithGemini(userPrompt);
+    const { workflow, validation } = this.hydratePlannedWorkflow(planned);
+
+    if (!validation?.valid) {
+      const errorMessage = (validation?.errors || []).join('; ') || 'Unknown validation error';
+      throw new Error(`Planned workflow failed structural validation: ${errorMessage}`);
+    }
+
+    return workflow;
+  }
+
+  /**
+   * Minimal rule-based fallback generator.
+   * Produces a simple, always-linear workflow: manual_trigger -> ai_chat_model -> log_output
+   * using canonical node types from the registry.
+   */
+  private generateMinimalFallbackWorkflow(userPrompt: string): { workflow: Workflow; executionOrder: ExecutionOrder } {
+    const triggerType = unifiedNodeRegistry.get('manual_trigger') ? 'manual_trigger' : 'manual';
+    const aiType = unifiedNodeRegistry.get('ai_chat_model') ? 'ai_chat_model' : 'ai_service';
+    const logType = unifiedNodeRegistry.get('log_output') ? 'log_output' : 'log';
+
+    const nodes: WorkflowNode[] = [
+      {
+        id: 'trigger_1',
+        type: triggerType,
+        data: {
+          label: 'Manual Trigger',
+          type: triggerType,
+          category: 'trigger',
+          config: this.normalizePlannedConfig(triggerType, {}),
+        },
+      },
+      {
+        id: 'ai_1',
+        type: aiType,
+        data: {
+          label: 'AI Step',
+          type: aiType,
+          category: 'action',
+          config: this.normalizePlannedConfig(aiType, {
+            prompt: `User request: ${userPrompt}`,
+          }),
+        },
+      },
+      {
+        id: 'log_1',
+        type: logType,
+        data: {
+          label: 'Log Result',
+          type: logType,
+          category: 'output',
+          config: this.normalizePlannedConfig(logType, {}),
+        },
+      },
+    ];
+
+    const { workflow, executionOrder } = unifiedGraphOrchestrator.initializeWorkflow(nodes);
+    return {
+      workflow: {
+        ...workflow,
+        metadata: {
+          ...(workflow.metadata || {}),
+          summary: `Minimal fallback workflow for: ${userPrompt}`,
+          fallback: true,
+        },
+      },
+      executionOrder,
+    };
+  }
+
+  /**
+   * Branching fallback when Gemini planning fails but the user prompt implies conditions
+   * (eligibility, validation, if/then). Uses orchestrator-only graph construction.
+   */
+  private generateConditionalBranchingFallbackWorkflow(userPrompt: string): {
+    workflow: Workflow;
+    executionOrder: ExecutionOrder;
+  } {
+    const triggerType = unifiedNodeRegistry.get('manual_trigger') ? 'manual_trigger' : 'manual';
+    const ifType = 'if_else';
+    const logType = unifiedNodeRegistry.get('log_output') ? 'log_output' : 'log';
+
+    const ifConfig = {
+      ...this.normalizePlannedConfig(ifType, {}),
+      conditions: [],
+      _fillMode: { conditions: 'runtime_ai' },
+    } as Record<string, unknown>;
+
+    const nodes: WorkflowNode[] = [
+      {
+        id: 'trigger_1',
+        type: triggerType,
+        data: {
+          label: 'Manual Trigger',
+          type: triggerType,
+          category: 'trigger',
+          config: this.normalizePlannedConfig(triggerType, {}),
+        },
+      },
+      {
+        id: 'if_else_1',
+        type: ifType,
+        data: {
+          label: 'Condition',
+          type: ifType,
+          category: 'logic',
+          config: ifConfig,
+        },
+      },
+      {
+        id: 'log_true_1',
+        type: logType,
+        data: {
+          label: 'True branch',
+          type: logType,
+          category: 'output',
+          config: this.normalizePlannedConfig(logType, {}),
+        },
+      },
+      {
+        id: 'log_false_1',
+        type: logType,
+        data: {
+          label: 'False branch',
+          type: logType,
+          category: 'output',
+          config: this.normalizePlannedConfig(logType, {}),
+        },
+      },
+    ];
+
+    const explicitExecutionOrder: ExecutionOrder = {
+      nodeIds: ['trigger_1', 'if_else_1', 'log_true_1', 'log_false_1'],
+      dependencies: new Map(),
+      metadata: {
+        triggerNodeId: 'trigger_1',
+        terminalNodeIds: ['log_true_1', 'log_false_1'],
+        branchingNodeIds: ['if_else_1'],
+        mergeNodeIds: [],
+      },
+    };
+
+    const { workflow, executionOrder } = unifiedGraphOrchestrator.initializeWorkflow(nodes, explicitExecutionOrder);
+    return {
+      workflow: {
+        ...workflow,
+        metadata: {
+          ...(workflow.metadata || {}),
+          summary: `Conditional fallback workflow for: ${userPrompt}`,
+          fallback: true,
+          branchingFallback: true,
+        },
+      },
+      executionOrder,
+    };
+  }
+
+  /**
+   * Robust planner entrypoint with retry + rule-based fallback.
+   * - First attempt: Gemini planning
+   * - Second attempt: retry Gemini planning on failure
+   * - Final fallback: minimal rule-based linear workflow
+   */
+  async generateWorkflowWithGeminiPlannerRobust(userPrompt: string): Promise<Workflow> {
+    // First attempt
+    try {
+      return await this.generateWorkflowWithGeminiPlanner(userPrompt);
+    } catch (firstError) {
+      logger.warn('[WorkflowBuilder] First Gemini planning attempt failed, retrying...', {
+        error: firstError instanceof Error ? firstError.message : String(firstError),
+      });
+    }
+
+    // Second attempt
+    try {
+      return await this.generateWorkflowWithGeminiPlanner(userPrompt);
+    } catch (secondError) {
+      logger.warn('[WorkflowBuilder] Second Gemini planning attempt failed, using minimal fallback workflow', {
+        error: secondError instanceof Error ? secondError.message : String(secondError),
+      });
+    }
+
+    // Fallback: preserve branching intent when Gemini fails (avoid always-linear AI fallback)
+    const { workflow: fallbackWorkflow, executionOrder } = detectBranchingIntentFromPrompt(userPrompt)
+      ? this.generateConditionalBranchingFallbackWorkflow(userPrompt)
+      : this.generateMinimalFallbackWorkflow(userPrompt);
+    const validation = unifiedGraphOrchestrator.validateWorkflow(fallbackWorkflow, executionOrder);
+    if (!validation.valid) {
+      const message = (validation.errors || []).join('; ') || 'Unknown validation error in fallback workflow';
+      throw new Error(`Fallback workflow failed structural validation: ${message}`);
+    }
+
+    return fallbackWorkflow;
+  }
+
+  /**
+   * NEW: Materialize a Workflow directly from a universal WorkflowPlan (nodes + edges)
+   * using the central WorkflowPlan validator + unified graph orchestrator.
+   */
+  async generateWorkflowFromPlan(plan: GraphWorkflowPlan): Promise<Workflow> {
+    const result = await validateAndMaterializeWorkflowPlan(plan);
+    if (!result.valid || !result.workflow) {
+      const messages = result.issues.map((i) => i.message).join('; ');
+      throw new Error(
+        messages
+          ? `WorkflowPlan validation failed: ${messages}`
+          : 'WorkflowPlan validation failed with unknown error',
+      );
+    }
+    return result.workflow;
+  }
+
+  /**
+   * NEW: Use the graph-level planner (WorkflowPlan JSON) and validator
+   * to build a Workflow in one step.
+   */
+  async generateWorkflowWithGraphPlanner(
+    userPrompt: string,
+    constraints?: { mandatoryNodeTypes?: string[]; suggestedNodes?: string[] },
+  ): Promise<Workflow> {
+    const mandatoryNodes =
+      constraints?.mandatoryNodeTypes && constraints.mandatoryNodeTypes.length > 0
+        ? constraints.mandatoryNodeTypes
+        : [];
+
+    if (mandatoryNodes.length > 0) {
+      logger.info('[WorkflowBuilder] [GraphPlanner] Mandatory nodes passed to planner', {
+        mandatoryNodes,
+      });
+    }
+
+    const graphPlan: GraphWorkflowPlan = await workflowPlanner.planWorkflowGraph(userPrompt, {
+      mandatoryNodes,
+      suggestedNodes: constraints?.suggestedNodes || [],
+    });
+
+    return this.generateWorkflowFromPlan(graphPlan);
+  }
+
+  /**
+   * Build a workflow from an ordered list of node types (registry-only).
+   * Used for registry_minimal and registry_extended strategies.
+   * All node types must exist in unifiedNodeRegistry; edges come from orchestrator.
+   */
+  private buildWorkflowFromNodeTypes(
+    nodeTypes: string[],
+    userPrompt?: string,
+  ): Workflow {
+    const seen = new Set<string>();
+    const nodes: WorkflowNode[] = nodeTypes
+      .map((type) => unifiedNodeRegistry.get(type) ? type : null)
+      .filter((t): t is string => t != null)
+      .filter((type) => {
+        if (seen.has(type)) return false;
+        seen.add(type);
+        return true;
+      })
+      .map((type, index) => {
+        const def = unifiedNodeRegistry.get(type);
+        const id = `${type}_${index + 1}`;
+        const label = (def as any)?.label ?? type.replace(/_/g, ' ');
+        const category = (def as any)?.category ?? 'action';
+        return {
+          id,
+          type,
+          data: {
+            label,
+            type,
+            category,
+            config: this.normalizePlannedConfig(type, userPrompt ? { prompt: userPrompt } : {}),
+          },
+        } as WorkflowNode;
+      });
+
+    if (nodes.length === 0) {
+      throw new Error('Variant node list produced no valid registry nodes');
+    }
+
+    const { workflow } = unifiedGraphOrchestrator.initializeWorkflow(nodes);
+    return workflow;
+  }
+
+  /**
+   * Validate that a built workflow satisfies the variant contract:
+   * - requiredNodeTypes must all appear (by type)
+   * - For registry_* strategies, no extra node types beyond fixedNodeTypes (plus allowed extensions for extended)
+   */
+  private validateVariantContract(
+    workflow: Workflow,
+    strategy: string,
+    requiredNodeTypes: string[],
+    fixedNodeTypes?: string[],
+  ): { valid: boolean; errors: string[] } {
+    const errors: string[] = [];
+    const actualTypes = new Set(workflow.nodes.map((n) => n.type));
+
+    for (const req of requiredNodeTypes) {
+      if (!actualTypes.has(req)) {
+        errors.push(`Required node type missing: ${req}`);
+      }
+    }
+
+    const isRegistry = strategy === 'registry_minimal' || strategy === 'registry_extended';
+    if (isRegistry && fixedNodeTypes && fixedNodeTypes.length > 0) {
+      const allowed = new Set(fixedNodeTypes);
+      if (strategy === 'registry_extended') {
+        allowed.add('log_output');
+        allowed.add('log');
+      }
+      for (const node of workflow.nodes) {
+        if (!allowed.has(node.type)) {
+          errors.push(`Registry variant contains disallowed node type: ${node.type}`);
+        }
+      }
+    }
+
+    return { valid: errors.length === 0, errors };
+  }
+
+  /**
+   * Planner entry point that accepts a chosen summarize-layer variant.
+   *
+   * - Variants 1–2 (registry_minimal, registry_extended): build from fixed node list (registry reference only).
+   * - Variants 3–4 (keyword_minimal, keyword_extended): constrain planner to required + keyword-derived nodes.
+   * Edges and validation are always handled by the unified graph orchestrator.
+   */
+  async generateWorkflowFromVariant(
+    selectedStructuredPrompt: string,
+    options?: {
+      mandatoryNodeTypes?: string[];
+      registryTags?: string[];
+      strategy?: 'registry_minimal' | 'registry_extended' | 'keyword_minimal' | 'keyword_extended';
+      variantNodes?: string[];
+      requiredNodeTypes?: string[];
+    },
+  ): Promise<Workflow> {
+    const strategy = options?.strategy ?? 'registry_minimal';
+    const variantNodes = options?.variantNodes ?? options?.mandatoryNodeTypes ?? [];
+    const requiredNodeTypes = options?.requiredNodeTypes ?? variantNodes;
+
+    const isRegistry = strategy === 'registry_minimal' || strategy === 'registry_extended';
+    if (isRegistry && variantNodes.length > 0) {
+      const nodeTypes = [...variantNodes];
+      if (strategy === 'registry_extended' && !nodeTypes.some((t) => t === 'log_output' || t === 'log')) {
+        if (unifiedNodeRegistry.get('log_output')) nodeTypes.push('log_output');
+      }
+      const workflow = this.buildWorkflowFromNodeTypes(nodeTypes, selectedStructuredPrompt);
+      const validation = unifiedGraphOrchestrator.validateWorkflow(workflow);
+      if (!validation.valid) {
+        const msg = (validation.errors || []).join('; ') || 'Unknown validation error';
+        throw new Error(`Variant workflow failed structural validation: ${msg}`);
+      }
+      const contract = this.validateVariantContract(workflow, strategy, requiredNodeTypes, variantNodes);
+      if (!contract.valid) {
+        throw new Error(`Variant contract violated: ${contract.errors.join('; ')}`);
+      }
+      return {
+        ...workflow,
+        metadata: { ...workflow.metadata, variantStrategy: strategy, fromVariant: true },
+      };
+    }
+
+    // Keyword strategies: use planner with mandatory node set; orchestrator still builds edges.
+    const promptForPlanner = selectedStructuredPrompt;
+    const workflow = await this.generateWorkflowWithGeminiPlannerRobust(promptForPlanner);
+
+    const validation = unifiedGraphOrchestrator.validateWorkflow(workflow);
+    if (!validation.valid) {
+      const message = (validation.errors || []).join('; ') || 'Unknown validation error in variant-based workflow';
+      throw new Error(`Variant-based workflow failed structural validation: ${message}`);
+    }
+
+    const contract = this.validateVariantContract(workflow, strategy, requiredNodeTypes, variantNodes.length > 0 ? variantNodes : undefined);
+    if (!contract.valid) {
+      logger.warn('[WorkflowBuilder] Variant contract check (keyword path):', contract.errors);
+    }
+
+    return { ...workflow, metadata: { ...workflow.metadata, variantStrategy: strategy, fromVariant: true } };
   }
 
   /**
@@ -826,15 +1457,10 @@ You are a workflow execution engine, not a diagram generator.`;
                               promptLower.includes('assistant') ||
                               promptLower.includes('chatbot');
     
-    // If chatbot workflow, check Ollama availability first (quick check without full connection)
-    if (isChatbotWorkflow) {
-      const ollamaAvailable = await this.quickCheckOllamaAvailability();
-      if (!ollamaAvailable) {
-        // Throw special error to signal fallback should be used
-        const error: any = new Error('Ollama unavailable - use chatbot fallback');
-        error.useChatbotFallback = true;
-        throw error;
-      }
+    if (isChatbotWorkflow && !config.geminiApiKey?.trim()) {
+      const error: any = new Error('Gemini API key not set - use chatbot fallback');
+      error.useChatbotFallback = true;
+      throw error;
     }
     
     // PHASE-2: Prompt Normalization (Feature #1) - BEFORE STEP-1
@@ -2056,6 +2682,7 @@ You are a workflow execution engine, not a diagram generator.`;
         edges: finalEdges,
         metadata: {
           generatedFrom: userPrompt,
+          originalUserPrompt: (constraints as any)?.originalPrompt?.trim?.() || undefined,
           systemPrompt,
           requirements,
           validation: validationResult,
@@ -2078,44 +2705,6 @@ You are a workflow execution engine, not a diagram generator.`;
       requirements,
       requiredCredentials,
     };
-  }
-
-  /**
-   * Check if Ollama is configured and available
-   * If Ollama is available, we don't need external API keys like GEMINI_API_KEY
-   */
-  private isOllamaConfigured(): boolean {
-    return !!(config.ollamaHost && config.ollamaHost.trim().length > 0);
-  }
-
-  /**
-   * Quick check if Ollama is available (without full connection test)
-   * Returns false immediately if connection would fail
-   */
-  private async quickCheckOllamaAvailability(): Promise<boolean> {
-    try {
-      const ollamaHost = config.ollamaHost || 'http://localhost:11434';
-      console.log(`🔍 [QuickCheck] Checking Ollama availability at: ${ollamaHost}`);
-      
-      // Quick health check - just try to see if endpoint is reachable
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 2000); // 2 second timeout
-      
-      const response = await fetch(`${ollamaHost}/api/tags`, {
-        method: 'GET',
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-      
-      const isAvailable = response.ok;
-      console.log(`✅ [QuickCheck] Ollama ${isAvailable ? 'available' : 'unavailable'} at ${ollamaHost} (status: ${response.status})`);
-      return isAvailable;
-    } catch (error) {
-      // Connection failed - Ollama not available
-      const ollamaHost = config.ollamaHost || 'http://localhost:11434';
-      console.log(`⚠️  [QuickCheck] Ollama not available at ${ollamaHost}:`, error instanceof Error ? error.message : String(error));
-      return false;
-    }
   }
 
   /**
@@ -2834,10 +3423,10 @@ Generate a clear, concise system prompt (20-30 words) that captures the core int
     const fullPrompt = fewShotPrompt || basePrompt;
 
     try {
-      // Pass the full prompt directly - ollama-orchestrator will use it as-is if it's a full prompt
+      // Pass the full prompt directly - Gemini orchestrator uses it as-is
       let result;
       try {
-        result = await ollamaOrchestrator.processRequest('workflow-generation', {
+        result = await geminiOrchestrator.processRequest('workflow-generation', {
           prompt: fullPrompt,
           temperature: 0.2,
           maxTokens: 100,
@@ -2945,7 +3534,7 @@ Use only nodes from the library above.`;
     
     try {
       // Pass the full prompt directly
-      const result = await ollamaOrchestrator.processRequest('workflow-generation', {
+      const result = await geminiOrchestrator.processRequest('workflow-generation', {
         prompt: extractionPrompt,
         temperature: 0.3,
       });
@@ -4037,11 +4626,11 @@ IMPORTANT: Return ONLY valid JSON, no explanations, no markdown, no code blocks.
 
 CRITICAL INSTRUCTIONS FOR STRUCTURE GENERATION:
 
-**WORKFLOW FLOW PATTERN - LINEAR IS REQUIRED:**
-- ALWAYS create LINEAR workflows: trigger → step1 → step2 → step3 (sequential chain)
-- NEVER create TREE structures: trigger → step1, trigger → step2, trigger → step3 (parallel connections)
-- Data MUST flow sequentially: each step receives data from the previous step
-- ONLY exception: log_output nodes can be added at the end for debugging (but don't connect everything to trigger)
+**WORKFLOW FLOW PATTERN - LINEAR BY DEFAULT, BRANCH WHEN INTENT REQUIRES:**
+- Default to LINEAR workflows: trigger → step1 → step2 → step3 (sequential chain).
+- If user intent includes conditions/routing (if/else/switch), create explicit branching from the logic node only.
+- NEVER burst from trigger into many unrelated branches.
+- Data MUST flow through valid DAG edges; use merge when branch reconvergence is needed.
 
 **CORRECT LINEAR FLOW EXAMPLES:**
 ✅ "get data from sheets and send to slack" → trigger → google_sheets → slack_message
@@ -4066,6 +4655,11 @@ CRITICAL INSTRUCTIONS FOR STRUCTURE GENERATION:
 4. Use "trigger" as the source ID when connecting from the trigger node.
 5. Connect steps sequentially: step1 → step2 → step3 (NOT trigger → step1, trigger → step2)
 6. The LAST step in the chain should be the final output/action node
+
+**CONDITIONAL IF_ELSE / SWITCH (branching; still no burst from trigger):**
+- For if_else: place the node in the main spine after upstream data; wire two downstream paths using connection sourceOutput "true" and "false" (or equivalent) to their first step IDs — never omit the if_else node itself.
+- For switch: set expression (e.g. discriminant) and cases in configuration; wire one outgoing connection per case value using sourceOutput equal to each case value.
+- Keep a valid topological order in the steps list (all nodes reachable from trigger); use merge when two branches must reconverge.
 
 **🚨 CRITICAL NODE TYPE SELECTION RULES - FOLLOW EXACTLY:**
 
@@ -4158,7 +4752,7 @@ Return JSON:
     try {
       let result;
       try {
-        result = await ollamaOrchestrator.processRequest('workflow-generation', {
+        result = await geminiOrchestrator.processRequest('workflow-generation', {
           prompt: structurePrompt,
           temperature: 0.2, // Lower temperature for more consistent JSON
         });
@@ -7290,6 +7884,13 @@ Return JSON:
     
     const requiredFields = nodeSchema.configSchema.required || [];
     const optionalFields = nodeSchema.configSchema.optional || {};
+
+    // UNIVERSAL INVARIANT:
+    // Any field that exists in the unified node INPUT schema is a runtime input.
+    // Build-time must NOT infer/template these values into node.data.config.
+    // They must remain empty until dynamic-node-executor fills them after runtime.
+    const unifiedDef = unifiedNodeRegistry.get(actualNodeType);
+    const runtimeInputKeys = new Set(Object.keys(unifiedDef?.inputSchema || {}));
     
     // STEP 2: Build data contract table (input source resolution)
     const dataContract: Map<string, { sourceNode: string; sourceField: string; type: string }> = new Map();
@@ -7319,6 +7920,18 @@ Return JSON:
         } else {
           continue; // Non-template value, assume valid
         }
+      }
+
+      // If this is a runtime input field (unified inputSchema key), keep it empty at build time.
+      // Runtime executor will fill it after previous nodes produce real output.
+      if (runtimeInputKeys.has(fieldName)) {
+        config[fieldName] = '';
+        dataContract.set(fieldName, {
+          sourceNode: previousNode?.id || 'trigger',
+          sourceField: 'runtime-input',
+          type: 'ai-resolved',
+        });
+        continue;
       }
       
       // STEP 4: Resolve input source with priority rules (includes user intent analysis)
@@ -7406,26 +8019,26 @@ Return JSON:
           if (previousOutputs.length > 0) {
             // Use intelligent property selection: analyzes user intent to select best JSON property
             const bestMatch = this.findBestOutputMatch(fieldName, previousOutputs, previousNode.type, requirements, node.type);
-            config[fieldName] = `{{$json.${bestMatch}}}`;
+            config[fieldName] = '';
             dataContract.set(fieldName, {
               sourceNode: previousNode.id,
               sourceField: bestMatch,
-              type: this.inferFieldType(bestMatch, previousNode.type)
+              type: 'ai-resolved'
             });
-            console.log(`✅ [Property Selection] ${node.type}.${fieldName} = {{$json.${bestMatch}}} (intelligent selection from ${previousNode.type})`);
+            console.log(`✅ [Property Selection] ${node.type}.${fieldName} deferred to runtime AI (candidate: ${bestMatch} from ${previousNode.type})`);
             console.log(`   └─ Available outputs: ${previousOutputs.join(', ')}`);
             console.log(`   └─ Selected: ${bestMatch} (based on user intent: "${requirements.primaryGoal?.substring(0, 50)}...")`);
           } else {
             // Fallback: Use intelligent property selection with common outputs
             const commonOutputs = ['items', 'data', 'output', 'result', 'rows'];
             const bestMatch = this.findBestOutputMatch(fieldName, commonOutputs, previousNode.type, requirements, node.type);
-            config[fieldName] = `{{$json.${bestMatch}}}`;
+            config[fieldName] = '';
             dataContract.set(fieldName, {
               sourceNode: previousNode.id,
               sourceField: bestMatch,
-              type: 'object'
+              type: 'ai-resolved'
             });
-            console.log(`✅ [Data Flow] ${node.type}.${fieldName} = {{$json.${bestMatch}}} (intelligent fallback from ${previousNode.type})`);
+            console.log(`✅ [Data Flow] ${node.type}.${fieldName} deferred to runtime AI (fallback candidate: ${bestMatch} from ${previousNode.type})`);
           }
         } else {
           // Only use defaults if no previous node exists (e.g., trigger node)
@@ -7442,6 +8055,13 @@ Return JSON:
     // STEP 7: Process critical optional fields for data flow
     const criticalOptionalFields = ['input', 'data', 'value', 'message', 'text', 'content', 'body', 'userInput', 'context'];
     for (const fieldName of Object.keys(optionalFields)) {
+      // If this is a runtime input field, keep it empty at build time.
+      if (runtimeInputKeys.has(fieldName)) {
+        if (config[fieldName] === undefined || config[fieldName] === null || config[fieldName] === '') {
+          config[fieldName] = '';
+        }
+        continue;
+      }
       if (criticalOptionalFields.includes(fieldName.toLowerCase()) && 
           (config[fieldName] === undefined || config[fieldName] === null || config[fieldName] === '')) {
         const resolution = this.resolveInputSource(
@@ -7473,32 +8093,14 @@ Return JSON:
     if (requiresUserInput) {
       const hasUserInput = config.userInput && typeof config.userInput === 'string' && config.userInput.trim() !== '';
       if (!hasUserInput) {
-        // Try to get from upstream nodes first
-        const userMessageSource = this.findUpstreamField(upstreamNodes, ['message', 'user_message', 'text', 'input', 'body', 'inputData', 'data']);
-        if (userMessageSource) {
-          config.userInput = userMessageSource.value;
-          dataContract.set('userInput', {
-            sourceNode: userMessageSource.sourceNode,
-            sourceField: userMessageSource.sourceField,
-            type: 'string'
-          });
-        } else {
-          // Guaranteed default (registry defaults first, then workflow defaults system)
-          const registryDefaults = unifiedNodeRegistry.getDefaultConfig(nodeActualType) || {};
-          config.userInput =
-            typeof registryDefaults.userInput === 'string'
-              ? registryDefaults.userInput
-              : nodeDefaults.getDefaultValue(nodeActualType, 'userInput', {
-                  requirements,
-                  previousNode,
-                  workflowGoal: requirements.primaryGoal,
-                });
-          dataContract.set('userInput', {
-            sourceNode: 'trigger',
-            sourceField: 'inputData',
-            type: 'string'
-          });
-        }
+        // UNIVERSAL INVARIANT: keep runtime input userInput empty at build time.
+        // Runtime executor will generate it from previous output + workflow intent.
+        config.userInput = '';
+        dataContract.set('userInput', {
+          sourceNode: previousNode?.id || 'trigger',
+          sourceField: 'runtime-input',
+          type: 'ai-resolved',
+        });
       }
     }
     
@@ -7515,6 +8117,10 @@ Return JSON:
       // Apply validated mappings to config
       // CRITICAL: Preserve existing intelligent property selection - don't overwrite if already set
       for (const mapping of fieldMappingValidation.mappings) {
+        // UNIVERSAL INVARIANT: do not apply build-time template mappings for unified runtime input fields.
+        if (runtimeInputKeys.has(mapping.field)) {
+          continue;
+        }
         const existingValue = config[mapping.field];
         const hasIntelligentSelection = typeof existingValue === 'string' && 
                                        existingValue.includes('{{$json.') && 
@@ -7595,31 +8201,42 @@ Return JSON:
                      (Array.isArray(value) && value.length === 0);
       
       if (isEmpty) {
+        // UNIVERSAL INVARIANT: keep unified runtime input fields empty until runtime.
+        // Do not inject {{$json...}} templates or defaults pre-execution.
+        if (runtimeInputKeys.has(fieldName)) {
+          config[fieldName] = '';
+          dataContract.set(fieldName, {
+            sourceNode: previousNode?.id || 'trigger',
+            sourceField: 'runtime-input',
+            type: 'ai-resolved',
+          });
+          continue;
+        }
         // CRITICAL FIX: If previous node exists, ALWAYS use its output instead of defaults
         if (previousNode) {
           const previousOutputs = this.getPreviousNodeOutputFields(previousNode);
           if (previousOutputs.length > 0) {
             const bestMatch = this.findBestOutputMatch(fieldName, previousOutputs, previousNode.type, requirements, node.type);
-            config[fieldName] = `{{$json.${bestMatch}}}`;
+            config[fieldName] = '';
             dataContract.set(fieldName, {
               sourceNode: previousNode.id,
               sourceField: bestMatch,
-              type: this.inferFieldType(bestMatch, previousNode.type)
+              type: 'ai-resolved'
             });
-            console.log(`✅ [Final Validation] ${node.type}.${fieldName} = {{$json.${bestMatch}}} (from previous node ${previousNode.type})`);
+            console.log(`✅ [Final Validation] ${node.type}.${fieldName} deferred to runtime AI (candidate: ${bestMatch})`);
             continue;
           } else {
             // Fallback: Use intelligent property selection based on user intent
             // Even if no specific outputs, try to select best property from common outputs
             const commonOutputs = ['items', 'data', 'output', 'result', 'rows'];
             const bestMatch = this.findBestOutputMatch(fieldName, commonOutputs, previousNode.type, requirements, node.type);
-            config[fieldName] = `{{$json.${bestMatch}}}`;
+            config[fieldName] = '';
             dataContract.set(fieldName, {
               sourceNode: previousNode.id,
               sourceField: bestMatch,
-              type: 'object'
+              type: 'ai-resolved'
             });
-            console.log(`✅ [Final Validation] ${node.type}.${fieldName} = {{$json.${bestMatch}}} (intelligent selection from ${previousNode.type})`);
+            console.log(`✅ [Final Validation] ${node.type}.${fieldName} deferred to runtime AI (fallback candidate: ${bestMatch})`);
             continue;
           }
         }
@@ -7661,6 +8278,17 @@ Return JSON:
     // STEP 10: Store data contract in node metadata for validation
     if (dataContract.size > 0) {
       config._dataContract = Object.fromEntries(dataContract);
+    }
+
+    // UNIVERSAL INVARIANT:
+    // Never leave runtime-input fields pre-filled (including {{$json...}} templates)
+    // inside node.data.config at build/save time.
+    // The dynamic runtime executor will fill them after previous nodes have produced
+    // real outputs via AI Input Resolver + guarantee.
+    for (const runtimeKey of runtimeInputKeys) {
+      if (runtimeKey in config) {
+        config[runtimeKey] = '';
+      }
     }
     
     return config;
@@ -10643,7 +11271,7 @@ return {
             label: 'Ollama (qwen2.5:14b-instruct-q4_K_M)',
             category: 'ai',
             config: {
-              provider: 'ollama',
+              provider: 'gemini',
               model: 'qwen2.5:14b-instruct-q4_K_M',
               // No API key needed - Ollama is configured via OLLAMA_HOST environment variable
               prompt: 'You are a helpful AI assistant that provides accurate and useful responses.',
@@ -10709,7 +11337,7 @@ return {
     
     if (triggerNodes.length === 0) {
       console.warn('⚠️  No trigger node found, cannot create connections');
-      return { nodes: finalNodes, edges };
+      return { nodes: sanitizeRuntimeInputConfigForNodes(finalNodes), edges };
     }
 
     // Define allNonTriggerNodes outside if/else for orphan node handling (used in both branches)
@@ -11833,7 +12461,7 @@ return {
     // ✅ ARCHITECTURAL FIX: Global safety guard - validate all edges before returning
     this.validateAllEdgeHandles(finalNodes, validatedEdgesWithTypes);
 
-    return { nodes: finalNodes, edges: validatedEdgesWithTypes };
+    return { nodes: sanitizeRuntimeInputConfigForNodes(finalNodes), edges: validatedEdgesWithTypes };
   }
   
   /**
@@ -11858,7 +12486,7 @@ return {
     const terminalNonTriggerNodes = terminalNodes.filter(node => !isTriggerNode(node));
 
     if (terminalNonTriggerNodes.length === 0) {
-      return { nodes, edges };
+      return { nodes: sanitizeRuntimeInputConfigForNodes(nodes), edges };
     }
 
     // ✅ UNIVERSAL FIX: Check for explicit output nodes using registry (not hardcoded list)
@@ -11885,7 +12513,7 @@ return {
       if (hasExplicitOutputs) {
         console.log(`[ensureOutputNode] ✅ Explicit output nodes detected, skipping log_output auto-injection`);
       }
-      return { nodes, edges };
+      return { nodes: sanitizeRuntimeInputConfigForNodes(nodes), edges };
     }
 
     const newNodes: WorkflowNode[] = [...nodes];
@@ -11984,7 +12612,7 @@ return {
 
     console.log(`✅ [ensureOutputNode] log_output is connected from ${terminalNonTriggerNodes.length} terminal node(s)`);
 
-    return { nodes: newNodes, edges: newEdges };
+    return { nodes: sanitizeRuntimeInputConfigForNodes(newNodes), edges: newEdges };
   }
   
   /**
@@ -12674,7 +13302,7 @@ Identify what needs to be changed. Respond with JSON:
 }`;
     
     try {
-      const result = await ollamaOrchestrator.processRequest('workflow-analysis', {
+      const result = await geminiOrchestrator.processRequest('workflow-analysis', {
         prompt,
         temperature: 0.3,
       });

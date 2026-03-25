@@ -6,7 +6,7 @@ import { Request, Response } from 'express';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { config } from '../core/config';
-import { ollamaManager } from '../services/ai/ollama-manager';
+import { LLMAdapter } from '../shared/llm-adapter';
 
 interface KnowledgeBase {
   product: {
@@ -338,14 +338,16 @@ export default async function chatbotHandler(req: Request, res: Response) {
       });
     }
 
-    // Use Ollama for AI responses
+    // Use Gemini for AI responses
     const fullPrompt = buildPrompt(userMessage, knowledge);
-    console.log("Calling Ollama for chatbot response...");
+    console.log("Calling Gemini for chatbot response...");
 
     try {
-      // Use Ollama chat - the buildPrompt function already includes all context
+      // Use Gemini chat - the buildPrompt function already includes all context
       // We'll use it as a single user message with all the context
-      const ollamaResponse = await ollamaManager.chat(
+      const llmAdapter = new LLMAdapter();
+      const geminiResponse = await llmAdapter.chat(
+        'gemini',
         [
           {
             role: 'user',
@@ -353,15 +355,16 @@ export default async function chatbotHandler(req: Request, res: Response) {
           },
         ],
         {
-          model: 'qwen2.5:14b-instruct-q4_K_M', // Use general-purpose model for chatbot
+          model: 'gemini-2.5-flash', // Use Flash for fast chatbot responses
+          apiKey: config.geminiApiKey,
           temperature: 0.7,
           stream: false,
         }
       );
 
-      console.log("Ollama response received");
+      console.log("Gemini response received");
       
-      const content = ollamaResponse.content?.trim() || knowledge.personality.fallback;
+      const content = geminiResponse.content?.trim() || knowledge.personality.fallback;
       const suggestions = getSuggestions(userMessage, knowledge);
 
       return res.json({

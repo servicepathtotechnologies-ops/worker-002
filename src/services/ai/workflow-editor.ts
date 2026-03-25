@@ -1,7 +1,7 @@
 // AI Workflow Editor
 // In-workflow intelligence with node suggestions and code assist
 
-import { ollamaOrchestrator } from './ollama-orchestrator';
+import { geminiOrchestrator } from './gemini-orchestrator';
 import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 
@@ -120,7 +120,7 @@ export class AIWorkflowEditor {
     };
     
     try {
-      const result = await ollamaOrchestrator.processRequest('code-assistance', {
+      const result = await geminiOrchestrator.processRequest('code-assistance', {
         prompt: `Provide code assistance for ${language} in this context: ${JSON.stringify(context, null, 2)}`,
         model: 'qwen2.5-coder:7b',
         temperature: 0.2,
@@ -194,7 +194,7 @@ Suggest 3-5 improvements or alternative approaches. Respond with JSON:
 }`;
     
     try {
-      const result = await ollamaOrchestrator.processRequest('node-suggestion', {
+      const result = await geminiOrchestrator.processRequest('node-suggestion', {
         prompt,
         temperature: 0.5,
       });
@@ -329,7 +329,7 @@ Context: ${JSON.stringify(context, null, 2)}
 Provide a JSON configuration object with appropriate fields for this node type.`;
     
     try {
-      const result = await ollamaOrchestrator.processRequest('code-generation', {
+      const result = await geminiOrchestrator.processRequest('code-generation', {
         prompt,
         temperature: 0.3,
       });

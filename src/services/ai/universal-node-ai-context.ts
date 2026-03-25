@@ -9,7 +9,7 @@ import { WorkflowNode, Workflow } from '../../core/types/ai-types';
 import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 import { nodeLibrary } from '../nodes/node-library';
 import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
-import { ollamaOrchestrator } from './ollama-orchestrator';
+import { geminiOrchestrator } from './gemini-orchestrator';
 import { aiFieldDetector } from './ai-field-detector';
 
 export interface NodeAIContext {
@@ -98,7 +98,7 @@ Return JSON object with field names as keys and generated values as strings.
 Example: { "message": "Generated message text", "subject": "Generated subject" }`;
 
     try {
-      const response = await ollamaOrchestrator.processRequest(
+      const response = await geminiOrchestrator.processRequest(
         'workflow-generation',
         {
           system: systemPrompt,

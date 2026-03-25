@@ -26,6 +26,7 @@ import { createExecutionContext, setNodeOutput } from '../core/execution/typed-e
 import { evaluateCondition, Condition } from '../core/execution/typed-condition-evaluator';
 import { normalizeNodeOutput as normalizeNodeOutputContract } from '../core/execution/node-output-contract';
 import { resolveTypedValue, resolveWithSchema } from '../core/execution/typed-value-resolver';
+import { evaluateSwitchRoutingExpression } from '../core/utils/switch-expression-eval';
 import { getNestedValue } from '../core/utils/object-utils';
 import { executeClickUpNode } from '../executors/clickup.executor';
 import Airtable from 'airtable';
@@ -38,6 +39,9 @@ import { getTwitterAccessToken } from '../shared/twitter-token-manager';
 import { getInstagramAccessToken, getInstagramBusinessAccountId } from '../shared/instagram-token-manager';
 import { getWhatsAppAccessToken, getWhatsAppBusinessAccountId } from '../shared/whatsapp-token-manager';
 import { executeDatabaseNode } from '../services/database/database-node-handler';
+import { EXECUTION_OBSERVABILITY_KEYS } from '../core/execution/dynamic-node-executor';
+
+const EXECUTION_RUNTIME_MARKER = 'runtime-marker-2026-03-20-v1';
 
 interface WorkflowNode {
   id: string;
@@ -67,6 +71,8 @@ interface ExecutionLog {
   input?: unknown;
   output?: unknown;
   error?: string;
+  resolvedInputs?: Record<string, unknown>;
+  resolvedInputSources?: Record<string, 'runtime_ai' | 'static_config'>;
 }
 
 /**
@@ -387,8 +393,13 @@ export async function executeNode(
       currentUserId,
     });
     
-    // If dynamic executor succeeded (no _error), return result
-    if (dynamicResult && typeof dynamicResult === 'object' && !('_error' in dynamicResult)) {
+    // If dynamic executor succeeded, return result.
+    // Success output can be primitive OR object; only _error object means failure.
+    if (
+      dynamicResult !== undefined &&
+      dynamicResult !== null &&
+      !(typeof dynamicResult === 'object' && '_error' in dynamicResult)
+    ) {
       console.log(`[ExecuteNode] ✅ Executed ${node.data?.label || node.id} using dynamic executor`);
       return dynamicResult;
     }
@@ -3327,10 +3338,11 @@ export async function executeNodeLegacy(
     }
 
     case 'ai_chat_model': {
-      // Direct AI chat model call (defaults to Ollama Qwen 2.5 14B)
+      // ✅ MIGRATED: Direct AI chat model call (defaults to Gemini 2.5 Flash)
+      // Uses GEMINI_API_KEY from config - no provider/model selection needed
       const prompt = getStringProperty(config, 'prompt', '');
-      const provider = getStringProperty(config, 'provider', 'ollama') as any;
-      const model = getStringProperty(config, 'model', 'qwen2.5:14b-instruct-q4_K_M');
+      const provider = 'gemini' as any; // Always use Gemini
+      const model = 'gemini-2.5-flash'; // Default to Gemini 2.5 Flash
       const systemPrompt = getStringProperty(config, 'systemPrompt', '');
       const responseFormat = getStringProperty(config, 'responseFormat', 'text');
       const temperatureRaw = getStringProperty(config, 'temperature', '0.7');
@@ -3378,7 +3390,13 @@ export async function executeNodeLegacy(
       }
       messages.push({ role: 'user', content: resolvedPrompt });
 
-      const response = await llmAdapter.chat(provider, messages, { model, temperature });
+      // ✅ Use Gemini with GEMINI_API_KEY from config
+      const { config: appConfig } = await import('../core/config');
+      const response = await llmAdapter.chat(provider, messages, { 
+        model, 
+        temperature,
+        apiKey: appConfig.geminiApiKey,
+      });
 
       if (responseFormat === 'json') {
         // Best-effort JSON parse; fall back to raw text if invalid
@@ -3394,14 +3412,15 @@ export async function executeNodeLegacy(
     }
 
     case 'ollama': {
-      // Alias: provider-specific wrapper for ai_chat_model
-      const model = getStringProperty(config, 'model', 'qwen2.5:14b-instruct-q4_K_M');
+      // Ollama removed: route to Gemini (GEMINI_API_KEY)
       const prompt = getStringProperty(config, 'prompt', '');
+      const temperature = getStringProperty(config, 'temperature', '0.7');
       const nextConfig = {
         ...config,
-        provider: 'ollama',
-        model,
+        provider: 'gemini',
+        model: 'gemini-2.5-flash',
         prompt,
+        temperature,
       };
       // ✅ CRITICAL: avoid re-entering dynamic executor (prevents infinite/log spam loop)
       // Calling executeNode() from inside executeNodeLegacy() causes:
@@ -3426,13 +3445,14 @@ export async function executeNodeLegacy(
     }
 
     case 'text_summarizer': {
-      // Alias: convenience wrapper over ai_chat_model
+      // ✅ MIGRATED: Alias now uses Gemini 2.5 Flash
       const text = getStringProperty(config, 'text', '');
       const maxLength = getStringProperty(config, 'maxLength', '');
       const prompt = `Summarize the following text${maxLength ? ` in <= ${maxLength} words` : ''}:\n\n${text}`;
       const nextConfig = {
         ...config,
-        provider: 'ollama',
+        provider: 'gemini', // Changed to Gemini
+        model: 'gemini-2.5-flash', // Default to Gemini 2.5 Flash
         prompt,
       };
       const nextNode = {
@@ -3452,10 +3472,16 @@ export async function executeNodeLegacy(
     }
 
     case 'sentiment_analyzer': {
-      // Minimal sentiment analyzer via ai_chat_model
+      // ✅ MIGRATED: Minimal sentiment analyzer via ai_chat_model (uses Gemini 2.5 Flash)
       const text = getStringProperty(config, 'text', '');
       const prompt = `Analyze the sentiment of the following text. Return JSON with keys: sentiment (positive|neutral|negative), score (0-1), summary.\n\nText:\n${text}`;
-      const nextConfig = { ...config, provider: 'ollama', prompt, responseFormat: 'json' };
+      const nextConfig = { 
+        ...config, 
+        provider: 'gemini', // Changed to Gemini
+        model: 'gemini-2.5-flash', // Default to Gemini 2.5 Flash
+        prompt, 
+        responseFormat: 'json' 
+      };
       const nextNode = {
         ...node,
         type: 'ai_chat_model',
@@ -3473,19 +3499,18 @@ export async function executeNodeLegacy(
     }
 
     case 'ai_service': {
-      // Generic AI Service wrapper → ai_chat_model
+      // ✅ MIGRATED: Generic AI Service wrapper → ai_chat_model (uses Gemini 2.5 Flash)
+      // Provider/model selection removed - always uses Gemini 2.5 Flash
       const prompt = getStringProperty(config, 'prompt', '');
       const inputData = getStringProperty(config, 'inputData', '');
       const serviceType = getStringProperty(config, 'serviceType', 'summarize');
-      const provider = getStringProperty(config, 'provider', 'ollama') as any;
-      const model = getStringProperty(config, 'model', '');
       const temperature = getStringProperty(config, 'temperature', '0.7');
       const maxTokens = getStringProperty(config, 'maxTokens', '500');
       const effectivePrompt = prompt || (inputData ? `${serviceType.toUpperCase()}:\n${inputData}` : '');
       const nextConfig = {
         ...config,
-        provider,
-        ...(model ? { model } : {}),
+        provider: 'gemini', // Always use Gemini
+        model: 'gemini-2.5-flash', // Default to Gemini 2.5 Flash
         temperature,
         maxTokens,
         prompt: effectivePrompt,
@@ -3954,25 +3979,17 @@ export async function executeNodeLegacy(
         userInput = typeof userInput === 'object' ? JSON.stringify(userInput) : String(userInput);
       }
       
-      // Determine provider and model from chat_model connection or config
-      // Default to Ollama for production (Qwen 2.5 14B)
-      let provider: 'openai' | 'claude' | 'gemini' | 'ollama' = 'ollama';
-      let model = 'qwen2.5:14b-instruct-q4_K_M';
+      // Default to Gemini (GEMINI_API_KEY)
+      let provider: 'openai' | 'claude' | 'gemini' | 'ollama' = 'gemini';
+      let model = 'gemini-2.5-flash';
       let apiKey: string | undefined;
-      
       if (chatModelConfig.provider) {
         provider = chatModelConfig.provider as any;
       } else if (chatModelConfig.model) {
         provider = LLMAdapter.detectProvider(chatModelConfig.model);
       }
-      
-      // Default to Ollama production model if not specified
-      model = chatModelConfig.model || getStringProperty(config, 'model', 'qwen2.5:14b-instruct-q4_K_M');
-      
-      // Only get API key if using external providers (not Ollama)
-      if (provider !== 'ollama') {
+      model = chatModelConfig.model || getStringProperty(config, 'model', 'gemini-2.5-flash');
       apiKey = chatModelConfig.apiKey || process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY || process.env.GEMINI_API_KEY;
-      }
       
       // Build messages array
       const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
@@ -4565,13 +4582,31 @@ export async function executeNodeLegacy(
     case 'javascript': {
       // JavaScript code execution node
       // SECURITY FIX: Replaced eval() with vm2 sandbox for secure execution
-      const code = getStringProperty(config, 'code', '');
+      let code = getStringProperty(config, 'code', '');
       
       if (!code) {
         return {
           ...inputObj,
           _error: 'JavaScript node: Code is required',
         };
+      }
+
+      // Resolve {{$json.xxx}} / {{input.xxx}} in code before execution so VM gets valid JS
+      // (Config may already be resolved by legacy adapter; this ensures it always is.)
+      if (code.includes('{{')) {
+        try {
+          const { resolveUniversalTemplate } = require('../core/utils/universal-template-resolver');
+          // Ensure $json is available for resolution (adapter sets it; direct callers may not)
+          if (nodeOutputs.get('$json') === undefined && nodeOutputs.get('json') === undefined) {
+            nodeOutputs.set('$json', inputObj, true);
+            nodeOutputs.set('json', inputObj, true);
+            nodeOutputs.set('input', inputObj, true);
+          }
+          code = resolveUniversalTemplate(code, nodeOutputs);
+          if (typeof code !== 'string') code = String(code ?? '');
+        } catch (resolveErr) {
+          console.warn('[ExecuteNodeLegacy] Template resolution in JavaScript code failed (non-fatal):', resolveErr);
+        }
       }
 
       // Security: Check if JavaScript execution is enabled
@@ -10371,10 +10406,11 @@ export async function executeNodeLegacy(
     }
 
     case 'chat_model': {
-      // Chat Model node - returns model configuration for AI Agent nodes
+      // ✅ MIGRATED: Chat Model node - returns model configuration for AI Agent nodes (uses Gemini 2.5 Flash)
       // This node is typically connected to AI Agent nodes via the chat_model port
-      const provider = getStringProperty(config, 'provider', 'ollama');
-      const model = getStringProperty(config, 'model', 'qwen2.5:14b-instruct-q4_K_M');
+      // Provider/model selection removed - always uses Gemini 2.5 Flash
+      const provider = 'gemini'; // Always use Gemini
+      const model = 'gemini-2.5-flash'; // Default to Gemini 2.5 Flash
       const temperature = parseFloat(getStringProperty(config, 'temperature', '0.7')) || 0.7;
       
       return {
@@ -10404,10 +10440,16 @@ export async function executeNodeLegacy(
 
       const execContext = createTypedContext();
 
+      // Ensure $json/json aliases resolve for template expressions (merged upstream payload)
+      if (originalInputObj && typeof originalInputObj === 'object' && !Array.isArray(originalInputObj)) {
+        execContext.variables.$json = originalInputObj;
+        execContext.variables.json = originalInputObj;
+      }
+
+      // Do not fall back to routingType (e.g. "string") — that is a type discriminator, not a routing expression.
       const expression =
         getStringProperty(config, 'expression', '') ||
-        getStringProperty(config, 'routingExpression', '') ||
-        getStringProperty(config, 'routingType', '');
+        getStringProperty(config, 'routingExpression', '');
 
       // Accept either `cases` (frontend) or `rules` (node-library schema)
       const casesRaw = (config as any).cases ?? (config as any).rules ?? [];
@@ -10434,11 +10476,16 @@ export async function executeNodeLegacy(
         };
       }
 
-      const expressionValue = resolveTypedValue(expression, execContext);
-      const expressionValueStr = expressionValue == null ? '' : String(expressionValue);
+      const expressionValue = evaluateSwitchRoutingExpression(expression, execContext);
+      const expressionValueStr = expressionValue == null ? '' : String(expressionValue).trim();
 
-      // Match by string equality (most deterministic given React handle IDs are strings)
-      const matched = cases.find(c => c.value === expressionValueStr);
+      // Match by string equality; fallback to case-insensitive (LLM may return different casing)
+      const matched =
+        cases.find(c => c.value === expressionValueStr) ??
+        cases.find(
+          c =>
+            c.value.toLowerCase() === expressionValueStr.toLowerCase() && expressionValueStr.length > 0
+        );
 
       const matchedCase = matched ? matched.value : null;
 
@@ -10565,27 +10612,32 @@ export async function executeNodeLegacy(
       }
       
       // ✅ FIX: Handle both formats - normalize condition/conditions before extraction
+      // Runtime-first contract: consume resolved runtime inputs before falling back to static config.
       // Support: condition (string), conditions (array), or conditions (string - needs conversion)
       let condition: Condition | string | null = null;
+      const runtimeConditions = (inputObj as any)?.conditions ?? (mergedInput as any)?.conditions;
+      const runtimeCondition = (inputObj as any)?.condition ?? (mergedInput as any)?.condition;
+      const sourceConditions = runtimeConditions ?? config.conditions;
+      const sourceCondition = runtimeCondition ?? config.condition;
       
       // Normalize: Convert condition (string) to conditions (array) format
       let normalizedConditions: any[] | null = null;
-      if (config.conditions) {
-        if (Array.isArray(config.conditions)) {
-          normalizedConditions = config.conditions;
-        } else if (typeof config.conditions === 'string') {
+      if (sourceConditions) {
+        if (Array.isArray(sourceConditions)) {
+          normalizedConditions = sourceConditions;
+        } else if (typeof sourceConditions === 'string') {
           // Frontend sometimes sends conditions as string - convert to array
-          normalizedConditions = [{ expression: config.conditions }];
-        } else if (typeof config.conditions === 'object' && config.conditions !== null) {
-          const conditionsObj = config.conditions as Record<string, unknown>;
+          normalizedConditions = [{ expression: sourceConditions }];
+        } else if (typeof sourceConditions === 'object' && sourceConditions !== null) {
+          const conditionsObj = sourceConditions as Record<string, unknown>;
           if (conditionsObj.expression) {
             // Single condition object - wrap in array
-            normalizedConditions = [config.conditions];
+            normalizedConditions = [sourceConditions];
           }
         }
-      } else if (config.condition) {
+      } else if (sourceCondition) {
         // Old format: condition (string) -> convert to conditions array
-        const conditionStr = typeof config.condition === 'string' ? config.condition : String(config.condition);
+        const conditionStr = typeof sourceCondition === 'string' ? sourceCondition : String(sourceCondition);
         if (conditionStr.trim()) {
           normalizedConditions = [{ expression: conditionStr.trim() }];
         }
@@ -10814,6 +10866,7 @@ export async function executeNodeLegacy(
       // ✅ Gmail Node Execution - Complete implementation with credential resolution
       const operation = getStringProperty(config, 'operation', 'send');
       const to = getStringProperty(config, 'to', '');
+      const recipientEmails = getStringProperty(config, 'recipientEmails', '');
       const subject = getStringProperty(config, 'subject', '');
       const body = getStringProperty(config, 'body', '');
       const messageId = getStringProperty(config, 'messageId', '');
@@ -10825,6 +10878,9 @@ export async function executeNodeLegacy(
       const resolvedTo = typeof resolveWithSchema(to, execContext, 'string') === 'string'
         ? resolveWithSchema(to, execContext, 'string') as string
         : String(resolveTypedValue(to, execContext));
+      const resolvedRecipientEmails = typeof resolveWithSchema(recipientEmails, execContext, 'string') === 'string'
+        ? resolveWithSchema(recipientEmails, execContext, 'string') as string
+        : String(resolveTypedValue(recipientEmails, execContext));
       const resolvedSubject = typeof resolveWithSchema(subject, execContext, 'string') === 'string'
         ? resolveWithSchema(subject, execContext, 'string') as string
         : String(resolveTypedValue(subject, execContext));
@@ -10886,10 +10942,15 @@ export async function executeNodeLegacy(
         // Execute operation
         if (operation === 'send') {
           // ✅ CRITICAL: Validate required fields
-          if (!resolvedTo || !resolvedTo.trim()) {
+          const recipientTokens = String(resolvedRecipientEmails || '')
+            .split(/[,\n;]+/g)
+            .map((s) => s.trim())
+            .filter(Boolean);
+          const sendTo = recipientTokens[0] || resolvedTo;
+          if (!sendTo || !sendTo.trim()) {
             return {
               ...inputObj,
-              _error: 'Gmail: "to" field is required for send operation',
+              _error: 'Gmail: recipient email is required for send operation ("recipientEmails" or legacy "to")',
             };
           }
           
@@ -10908,7 +10969,7 @@ export async function executeNodeLegacy(
           }
           
           const sendResult = await sendGmailEmail(credential, {
-            to: resolvedTo,
+            to: sendTo,
             subject: resolvedSubject,
             body: resolvedBody,
           });
@@ -10923,7 +10984,7 @@ export async function executeNodeLegacy(
           return {
             ...inputObj,
             messageId: sendResult.messageId,
-            to: resolvedTo,
+            to: sendTo,
             subject: resolvedSubject,
             success: true,
           };
@@ -12543,6 +12604,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
     providedExecutionId,
     hasInput: !!input && Object.keys(input).length > 0,
     useQueue: useQueue !== undefined ? useQueue : 'auto',
+    runtimeMarker: EXECUTION_RUNTIME_MARKER,
     timestamp: new Date().toISOString(),
   }, null, 2));
 
@@ -12836,6 +12898,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
       workflowForValidation,
       currentUserId
     );
+    (global as any).__expectedExecutionRuntimeMarker = EXECUTION_RUNTIME_MARKER;
     
     // ✅ CRITICAL: Check workflow phase/status
     // Use phase field for execution readiness (TEXT), status field for lifecycle (enum)
@@ -12853,6 +12916,8 @@ export default async function executeWorkflowHandler(req: Request, res: Response
     
     // ✅ CRITICAL: Check if inputs are attached
     const nodeInputs = workflowLifecycleManager.discoverNodeInputs({ nodes, edges });
+    const { unifiedNodeRegistry } = await import('../core/registry/unified-node-registry');
+    const { resolveEffectiveFieldFillMode } = await import('../core/utils/fill-mode-resolver');
     
     // ✅ FIX: Also check for type mismatches in required fields
     // discoverNodeInputs only adds fields that are missing, but we need to check
@@ -12874,6 +12939,15 @@ export default async function executeWorkflowHandler(req: Request, res: Response
       
       // Check all required inputs for type mismatches
       for (const requiredField of definition.requiredInputs) {
+        const unifiedDefinition = unifiedNodeRegistry.get(nodeType);
+        const effectiveMode = resolveEffectiveFieldFillMode(
+          requiredField,
+          unifiedDefinition?.inputSchema as any,
+          normalizedConfig as Record<string, any>
+        );
+        if (effectiveMode === 'runtime_ai') {
+          continue;
+        }
         const value = normalizedConfig[requiredField];
         
         // Skip if value is missing (handled by discoverNodeInputs)
@@ -12925,6 +12999,16 @@ export default async function executeWorkflowHandler(req: Request, res: Response
       const node = nodes.find(n => n.id === input.nodeId);
       if (!node) return true;
       const config = node.data?.config || {};
+      const nodeType = node.data?.type || node.type;
+      const unifiedDefinition = unifiedNodeRegistry.get(nodeType);
+      const effectiveMode = resolveEffectiveFieldFillMode(
+        input.fieldName,
+        unifiedDefinition?.inputSchema as any,
+        config
+      );
+      if (effectiveMode === 'runtime_ai') {
+        return false;
+      }
       
       // ✅ FIX: Normalize If/Else conditions before validation
       // Frontend may send conditions as string, but backend expects array
@@ -12944,6 +13028,15 @@ export default async function executeWorkflowHandler(req: Request, res: Response
     
     // Combine missing inputs and type mismatch inputs
     const allMissingInputs = [...missingInputs, ...typeMismatchInputs];
+    const discoveryManualRequiredMissingCount = nodeInputs.inputs.filter((i) => i.required).length;
+    const blockingMissingCount = allMissingInputs.filter((i) => i.required).length;
+    if (discoveryManualRequiredMissingCount !== blockingMissingCount) {
+      console.warn('[ExecuteWorkflow] ⚠️ READINESS_DISCOVERY_MISMATCH', {
+        workflowId,
+        discoveryManualRequiredMissingCount,
+        blockingMissingCount,
+      });
+    }
     
     // ✅ CRITICAL: Structured logging before rejection
     const readinessCheck = {
@@ -12952,6 +13045,9 @@ export default async function executeWorkflowHandler(req: Request, res: Response
       requiredCredentialsCount,
       missingCredentialsCount,
       missingInputsCount: allMissingInputs.length,
+      discoveryMissingInputsCount: nodeInputs.inputs.length,
+      discoveryManualRequiredMissingCount,
+      blockingMissingCount,
       executionValidationReady: executionValidation.ready,
       executionValidationErrors: executionValidation.errors,
       executionValidationMissingCredentials: executionValidation.missingCredentials,
@@ -13433,6 +13529,14 @@ export default async function executeWorkflowHandler(req: Request, res: Response
     
     const executionOrder = executionPlan.executionOrder.filter(n => n.data.type !== 'error_trigger');
     const errorTriggerNodes = executionPlan.executionOrder.filter(n => n.data.type === 'error_trigger');
+
+    // Runtime map for AI input resolution / template helpers: node id → canonical type (no hardcoded per-node logic downstream).
+    const __executionNodeTypeById: Record<string, string> = {};
+    for (const n of executionOrder) {
+      __executionNodeTypeById[n.id] =
+        unifiedNormalizeNodeType(n) || String(n.data?.type || n.type || '');
+    }
+    (global as any).__executionNodeTypeById = __executionNodeTypeById;
     
     // ✅ DEBUG: Log workflow structure
     console.log('[ExecuteWorkflow] 📊 Workflow structure:', {
@@ -13617,22 +13721,42 @@ export default async function executeWorkflowHandler(req: Request, res: Response
         (workflowData.data as any)?.name ||
         '';
 
+      const fromWorkflowRow =
+        (workflow as any)?.user_prompt ||
+        (workflow as any)?.description ||
+        (workflow as any)?.name ||
+        '';
+
       const fromInput =
         (executionInput as any)?.inputData?.workflowIntent ||
         (executionInput as any)?.inputData?.description ||
         (executionInput as any)?.description ||
+        (executionInput as any)?.workflowIntent ||
+        (executionInput as any)?.userIntent ||
+        (executionInput as any)?.user_prompt ||
+        (executionInput as any)?.prompt ||
         '';
 
-      const userIntent = String(fromDb || fromInput || 'Process workflow data').trim();
+      const userIntent = String(fromDb || fromWorkflowRow || fromInput || 'Process workflow data').trim();
+      // Single source of user intent for this run; set before the execution loop so every node sees the same intent (used by AI Input Resolver).
         (global as any).currentWorkflowIntent = userIntent;
         console.log(`[ExecuteWorkflow] ✅ Stored user intent for AI Input Resolver: "${userIntent.substring(0, 100)}..."`);
     } catch (error) {
+      const fromWorkflowRow =
+        (workflow as any)?.user_prompt ||
+        (workflow as any)?.description ||
+        (workflow as any)?.name ||
+        '';
       const fromInput =
         (executionInput as any)?.inputData?.workflowIntent ||
         (executionInput as any)?.inputData?.description ||
         (executionInput as any)?.description ||
+        (executionInput as any)?.workflowIntent ||
+        (executionInput as any)?.userIntent ||
+        (executionInput as any)?.user_prompt ||
+        (executionInput as any)?.prompt ||
         '';
-      const userIntent = String(fromInput || 'Process workflow data').trim();
+      const userIntent = String(fromWorkflowRow || fromInput || 'Process workflow data').trim();
       console.warn('[ExecuteWorkflow] ⚠️  Could not retrieve user intent from DB, using fallback');
       (global as any).currentWorkflowIntent = userIntent;
     }
@@ -14685,6 +14809,21 @@ export default async function executeWorkflowHandler(req: Request, res: Response
       console.log(`[Memory] Workflow ${workflowId} memory: ${startMemory.toFixed(2)}MB → ${endMemory.toFixed(2)}MB (Δ${memoryDelta.toFixed(2)}MB)`);
     }
     
+    // Attach captured resolved-input metadata to logs before cache is cleared.
+    logs = logs.map((log) => {
+      const captured = nodeOutputs.get(EXECUTION_OBSERVABILITY_KEYS.resolvedInputs(log.nodeId)) as
+        | { fields?: Record<string, unknown>; sources?: Record<string, 'runtime_ai' | 'static_config'> }
+        | undefined;
+      if (!captured || typeof captured !== 'object') {
+        return log;
+      }
+      return {
+        ...log,
+        resolvedInputs: captured.fields || {},
+        resolvedInputSources: captured.sources || {},
+      };
+    });
+
     // Clear cache when workflow completes (success or failure)
     // This prevents memory leaks from long-running processes
     nodeOutputs.clear();

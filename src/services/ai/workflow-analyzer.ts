@@ -2,7 +2,7 @@
 // Step 2: Question Generation using Llama 3.1:8B
 // Enhanced prompts based on comprehensive guide
 
-import { ollamaOrchestrator } from './ollama-orchestrator';
+import { geminiOrchestrator } from './gemini-orchestrator';
 import { workflowTrainingService } from './workflow-training-service';
 
 export interface AnalysisResult {
@@ -104,7 +104,7 @@ export class WorkflowAnalyzer {
     const analysisPrompt = this.buildAnalysisPrompt(userPrompt, context);
 
     try {
-      const response = await ollamaOrchestrator.processRequest(
+      const response = await geminiOrchestrator.processRequest(
         'workflow-analysis',
         {
           system: systemPrompt,

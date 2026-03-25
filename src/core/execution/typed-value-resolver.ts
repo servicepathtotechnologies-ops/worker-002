@@ -13,6 +13,18 @@ import { ExecutionContext, getContextValue, getAllNodeOutputs } from './typed-ex
 import { getNestedValue } from '../utils/object-utils';
 
 /**
+ * Bare field paths (no {{ }}) used by structured If/Else conditions, e.g. `age`, `data.qty`, `$json.status`.
+ * Excludes spaces and arbitrary prose so literal strings still pass through unchanged.
+ */
+const BARE_FIELD_PATH_RE =
+  /^(?:\$json\.|json\.)?(?:[a-zA-Z_$][\w$]*)(?:\.[a-zA-Z_$][\w$]*)*$/;
+
+export function isBareFieldPathString(s: string): boolean {
+  const t = s.trim();
+  return t.length > 0 && BARE_FIELD_PATH_RE.test(t);
+}
+
+/**
  * Resolve a template expression with type preservation
  * 
  * Examples:
@@ -25,8 +37,15 @@ export function resolveTypedValue(
   template: string,
   context: ExecutionContext
 ): unknown {
-  // If no template syntax, return as-is
+  // If no template syntax, try resolving as a bare field path (structured If/Else: field / leftValue)
   if (!template.includes('{{')) {
+    if (typeof template === 'string' && isBareFieldPathString(template)) {
+      const path = template.trim();
+      const resolved = getContextValue(context, path);
+      if (resolved !== undefined) {
+        return resolved;
+      }
+    }
     return template;
   }
   

@@ -188,6 +188,58 @@ export class NodeResolver {
         }
       }
     }
+
+    // ✅ Merge intents from contextPrompt (e.g. original user prompt) so logic/validation nodes from original intent are included
+    if (contextPrompt && contextLower.length > 0 && contextLower !== promptLower) {
+      const contextWords = contextLower
+        .split(/[\s_\-.,;:!?()\[\]{}'"]+/)
+        .filter(word => word.length > 0);
+      const contextPositionOffset = 10000; // So primary prompt matches keep earlier position
+      for (const [keyword, nodeTypes] of this.keywordIndex) {
+        const keywordWords = keyword
+          .toLowerCase()
+          .split(/[\s_\-.,;:!?()\[\]{}'"]+/)
+          .filter(w => w.length > 0);
+        if (keywordWords.length === 0) continue;
+        const stopWords = new Set(['a', 'an', 'the', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from']);
+        const importantKeywordWords = keywordWords.filter(w => !stopWords.has(w) || w.length > 2);
+        const allWordsFound = importantKeywordWords.length === 0
+          ? keywordWords.some(kw => contextWords.some(pw => pw === kw || pw.includes(kw) || kw.includes(pw)))
+          : importantKeywordWords.every(kw => contextWords.some(pw => pw === kw || pw.includes(kw) || kw.includes(pw)));
+        if (!allWordsFound) continue;
+        const firstKeywordWord = keywordWords[0];
+        const position = contextWords.findIndex(pw =>
+          pw === firstKeywordWord || pw.includes(firstKeywordWord) || firstKeywordWord.includes(pw)
+        ) * 10 + contextPositionOffset;
+        for (const nodeType of nodeTypes) {
+          if (this.nodeLibrary.isNodeTypeRegistered(nodeType)) {
+            const existing = detectedNodes.get(nodeType);
+            if (!existing) {
+              detectedNodes.set(nodeType, { nodeType, keyword, position: position >= 0 ? position : contextPositionOffset });
+            }
+          }
+        }
+      }
+      console.log(`[NodeResolver] ✅ Merged context prompt: ${detectedNodes.size} node type(s) total: ${Array.from(detectedNodes.keys()).join(', ')}`);
+    }
+
+    // ✅ Post-filter: drop communication nodes matched only by generic keyword when prompt specifies another channel (e.g. "sending via Gmail" should not add instagram)
+    const genericSingleWords = new Set(['send', 'post', 'message', 'notify', 'email', 'sending', 'posting']);
+    const communicationNodeTypes = new Set(['google_gmail', 'slack_message', 'instagram', 'outlook', 'telegram', 'linkedin', 'discord', 'twilio']);
+    const nodeTypeToSpecificWord: Record<string, string> = { google_gmail: 'gmail', slack_message: 'slack', instagram: 'instagram', outlook: 'outlook', telegram: 'telegram', linkedin: 'linkedin', discord: 'discord', twilio: 'twilio' };
+    for (const [nodeType, detection] of [...detectedNodes.entries()]) {
+      const kw = detection.keyword.toLowerCase().trim();
+      const isGenericMatch = kw.length <= 8 && (genericSingleWords.has(kw) || genericSingleWords.has(kw.replace(/ing$/, '')));
+      if (!isGenericMatch || !communicationNodeTypes.has(nodeType)) continue;
+      const specificWord = nodeTypeToSpecificWord[nodeType];
+      const promptHasThisSpecific = specificWord && promptLower.includes(specificWord);
+      if (promptHasThisSpecific) continue;
+      const promptHasOtherSpecific = [...Object.entries(nodeTypeToSpecificWord)].some(([n, w]) => n !== nodeType && promptLower.includes(w));
+      if (promptHasOtherSpecific) {
+        detectedNodes.delete(nodeType);
+        console.log(`[NodeResolver] ✅ Post-filter: removed ${nodeType} (matched only by generic "${detection.keyword}", prompt specifies other channel)`);
+      }
+    }
     
     console.log(`[NodeResolver] ✅ UNIVERSAL: Detected ${detectedNodes.size} node type(s) from prompt: ${Array.from(detectedNodes.keys()).join(', ')}`);
     
@@ -474,8 +526,13 @@ export class NodeResolver {
       for (const example of modernExamples) {
         const selectedNodes = example.phase1.step5?.selectedNodes || [];
         
+        // ✅ ROOT-LEVEL FIX: Ignore example node types that are not registered in the node library
+        const registeredSelectedNodes = selectedNodes.filter((nodeType: string) =>
+          this.nodeLibrary.isNodeTypeRegistered(nodeType),
+        );
+
         // Check if any selected node matches the intent
-        for (const nodeType of selectedNodes) {
+        for (const nodeType of registeredSelectedNodes) {
           const schema = this.nodeLibrary.getSchema(nodeType);
           if (schema && this.nodeMatchesIntent(nodeType, intent, schema)) {
             console.log(`[NodeResolver] ✅ Pattern match from modern example: "${example.goal}" → ${nodeType}`);

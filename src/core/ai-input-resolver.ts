@@ -1,14 +1,20 @@
 /**
  * AI INPUT RESOLVER
- * 
+ *
  * This is the CORE ARCHITECTURAL COMPONENT that replaces static JSON dropdowns.
- * 
+ *
+ * Contract: Input resolution MUST combine three inputs and MUST filter:
+ * (1) User prompt intent – what the user wants the workflow to do.
+ * (2) Previous node JSON – actual output from the upstream node (not hardcoded).
+ * (3) Node responsibility – from registry: inputSchema and requiredInputs (what this node needs and does).
+ * Filter: From the previous JSON, extract only keys/values relevant to user intent and this node's responsibility; do not pass through the entire payload blindly.
+ *
  * Architecture:
  * - Dynamically generates node inputs using AI
  * - Analyzes previous node outputs
  * - Understands user intent
  * - Formats inputs according to node inputSchema
- * 
+ *
  * This ensures:
  * - NO manual JSON dropdowns
  * - NO static field mapping
@@ -20,15 +26,20 @@ import { NodeInputSchema } from './types/unified-node-contract';
 import { LLMAdapter } from '../shared/llm-adapter';
 
 export interface InputResolutionContext {
-  previousOutput?: any; // Output from previous node
-  nodeInputSchema: NodeInputSchema; // Target node's input schema
-  userIntent: string; // Original user prompt
-  nodeType: string; // Target node type
-  nodeLabel?: string; // Human-readable node label
+  /** (2) Previous node JSON – actual output from upstream node. */
+  previousOutput?: any;
+  /** (3) Node responsibility – target node's input schema from registry. */
+  nodeInputSchema: NodeInputSchema;
+  /** (1) User prompt intent – from currentWorkflowIntent set at execution start. */
+  userIntent: string;
+  nodeType: string;
+  nodeLabel?: string;
   workflowContext?: {
     nodes: Array<{ type: string; label: string }>;
     edges: Array<{ source: string; target: string }>;
   };
+  /** When set, this is a retry after validation failure; prompt will include required fields that must be present. */
+  retryRequiredFields?: string[];
 }
 
 export interface ResolvedInput {
@@ -68,8 +79,8 @@ export class AIInputResolver {
     // Step 2: Build AI prompt for input resolution
     const prompt = this.buildResolutionPrompt(context, mode);
     
-    // Step 3: Call AI to generate input
-    const aiResponse = await this.callAIForInputResolution(prompt, mode);
+    // Step 3: Call AI to generate input (inputSchema passed for future structured-output use)
+    const aiResponse = await this.callAIForInputResolution(prompt, mode, nodeInputSchema);
     
     // Step 4: Validate and normalize AI response against schema
     const validatedInput = this.validateAndNormalize(aiResponse, nodeInputSchema, mode);
@@ -82,68 +93,33 @@ export class AIInputResolver {
   }
   
   /**
-   * Determine resolution mode based on node input schema
+   * Determine resolution mode from node input schema only (no node-type hardcoding).
+   * Universal: message vs json is derived from schema field names and types, not from node type.
    */
-  private previousOutput: any; // Store previous output for mode determination
-  
   private determineResolutionMode(
     inputSchema: NodeInputSchema,
-    nodeType: string,
+    _nodeType: string,
     previousOutput?: any
   ): 'message' | 'message+json' | 'json' {
     const schemaFields = Object.keys(inputSchema);
     const fieldTypes = schemaFields.map(field => inputSchema[field].type);
-    
-    // Communication nodes (Gmail, Slack, etc.) typically need message
-    if (nodeType.includes('gmail') || nodeType.includes('email') || 
-        nodeType.includes('slack') || nodeType.includes('discord')) {
-      // Check if they also need structured data
-      const hasStructuredFields = fieldTypes.some(type => 
-        type === 'object' || type === 'array' || type === 'json'
-      );
-      
-      if (hasStructuredFields && previousOutput) {
-        return 'message+json';
-      }
-      return 'message';
-    }
-    
-    // API/Data nodes typically need structured JSON
-    // ✅ CRITICAL: Explicitly handle HTTP Request nodes
-    if (nodeType === 'http_request' || nodeType.includes('http_request') || 
-        nodeType.includes('api') || nodeType.includes('database') || 
-        nodeType.includes('sheets') || nodeType.includes('airtable')) {
-      return 'json';
-    }
-    
-    // AI nodes can accept either
-    if (nodeType.includes('ai') || nodeType.includes('llm') || nodeType.includes('chat')) {
-      // If previous output is structured, use message+json
-      if (previousOutput && typeof previousOutput === 'object' && !Array.isArray(previousOutput)) {
-        return 'message+json';
-      }
-      return 'message';
-    }
-    
-    // Default: analyze schema to determine
-    const hasMessageField = schemaFields.some(field => 
-      field.toLowerCase().includes('message') || 
-      field.toLowerCase().includes('text') ||
-      field.toLowerCase().includes('content') ||
-      field.toLowerCase().includes('body')
-    );
-    
-    const hasStructuredFields = fieldTypes.some(type => 
+
+    const hasMessageField = schemaFields.some(field => {
+      const fl = field.toLowerCase();
+      return fl.includes('message') || fl.includes('text') || fl.includes('content') || fl.includes('body');
+    });
+
+    const hasStructuredFields = fieldTypes.some(type =>
       type === 'object' || type === 'array' || type === 'json'
     );
-    
-    if (hasMessageField && hasStructuredFields) {
+
+    if (hasMessageField && hasStructuredFields && previousOutput && typeof previousOutput === 'object' && !Array.isArray(previousOutput)) {
       return 'message+json';
-    } else if (hasMessageField) {
-      return 'message';
-    } else {
-      return 'json';
     }
+    if (hasMessageField) {
+      return 'message';
+    }
+    return 'json';
   }
   
   /**
@@ -180,9 +156,11 @@ MODE: Generate a message PLUS structured JSON data.
       case 'json':
         modeInstructions = `
 MODE: Generate ONLY structured JSON data.
-- Extract relevant fields from previous output
-- Format according to target node input schema
-- No text message needed, just structured data`;
+- Using the user intent and the target node's input schema (its responsibility), determine which keys and values from the previous output are relevant.
+- Do NOT pass through the entire previous output. SELECT only the keys that are needed for this node's input schema and that are relevant to the user intent.
+- Map those selected keys/values to the target node's input schema field names. Your output must be a filtered subset: only what this node needs for the user's intent.
+- No text message needed, just the mapped JSON object.
+- If the schema defines multiple string fields (e.g. subject and body, title and content), you MUST include every such field in your JSON object. Do not omit subject/title lines: derive a short subject or title from user intent or from the first line of the main body text when the previous output has no explicit subject.`;
         break;
     }
     
@@ -198,36 +176,59 @@ SPECIAL INSTRUCTIONS FOR HTTP REQUEST NODE:
 - The "headers" field should include Content-Type: application/json if body is present
 - Example: If previous output is {"response": "Hello"}, body should be {"message": "Hello"} or {"text": "Hello"} depending on API needs`;
     }
+
+    const schemaKeys = Object.keys(nodeInputSchema || {});
+    const hasBodyField = schemaKeys.some((k) => k.toLowerCase() === 'body');
+    const hasSubjectField = schemaKeys.some((k) => k.toLowerCase() === 'subject');
+    if (hasBodyField && hasSubjectField) {
+      specialInstructions += `
+
+DELIVERABLE CONTENT (email / message nodes — schema has subject + body):
+- "body" MUST be the actual text to deliver: the previous step's summary, analysis, or the string in previous output "response" when present. Copy that substantive text; do NOT output instructions like "The node has been configured to send" or "Please provide recipients".
+- "subject" MUST be a short subject line (ideally under 100 characters), not the entire first paragraph of the body. Derive a concise title from user intent or from the first short phrase of the content, not a full multi-sentence summary.`;
+    }
     
     return `You are an AI Input Resolver for a workflow automation system.
 
-TASK: Generate the correct input for a node based on previous output and user intent.
+FILTER RULE: Using the user intent and the target node's input schema (its responsibility), determine which keys and values from the previous output are relevant. Your output must contain only those: a filtered subset that matches the node's responsibility and the user's intent. Do not blindly forward all keys from the previous output.
+
+TASK: Analyze the KEY NAMES and values in the previous node's output, then produce a JSON object that maps to the CURRENT node's required input fields. This ensures the present node gets the right values in its input fields regardless of what keys the previous node used.
+
+KEY ANALYSIS (critical):
+- The previous node output may have ANY key names: e.g. number, value, num, number.1, number.2, number.list, inputData, age, userAge, etc.
+- You MUST analyze the actual keys and values in the previous output.
+- Map from whatever key holds the relevant data to the target node's input schema field names.
+- Example: if the target node needs a field "number" and the previous output has "value" or "number.1" or "num", use that value for "number".
+- Produce a JSON object whose keys are the TARGET node's input schema field names and whose values come from the previous output (with key mapping as needed).
 
 CONTEXT:
 - Target Node: ${nodeLabel || nodeType}
 - User Intent: "${userIntent}"
-- Previous Node Output:
+- Previous Node Output (analyze its keys and values):
 ${previousOutputStr}
 
-TARGET NODE INPUT SCHEMA:
+TARGET NODE INPUT SCHEMA (your output keys must match these field names):
 ${schemaStr}
 
 ${modeInstructions}
 ${specialInstructions}
 
+${context.retryRequiredFields?.length ? `
+RETRY (previous response was invalid): The following required fields MUST be present with correct types: ${context.retryRequiredFields.join(', ')}. Return only a JSON object that satisfies the target schema using values from the previous output. Do not omit any of these fields.
+` : ''}
+
 REQUIREMENTS:
-1. Analyze the previous output structure
-2. Understand what the user wants to achieve (from intent)
-3. Generate input that matches the target node's input schema
-4. Extract only relevant data from previous output
-5. Format according to the resolution mode above
+1. Analyze the KEY NAMES in the previous output (they can be anything: number, value, number.1, number.list, etc.).
+2. Map those keys/values to the target node's input schema field names.
+3. Produce the JSON that the present node requires so its input fields get the correct values and no errors occur.
+4. Format according to the resolution mode above.
 
 OUTPUT FORMAT:
 ${this.getOutputFormatInstructions(mode)}
 
 IMPORTANT:
 - Do NOT include explanations or markdown
-- Output ONLY the resolved input value
+- Output ONLY the resolved input value (JSON or text per mode)
 - Ensure the output matches the target schema exactly
 - If previous output is empty/null, generate appropriate default based on intent`;
   }
@@ -251,11 +252,14 @@ IMPORTANT:
   }
   
   /**
-   * Call AI to generate input
+   * Call AI to generate input.
+   * When the LLM provider supports structured output / response schema (e.g. Gemini JSON schema),
+   * pass inputSchema for mode === 'json' to constrain the model output to the node's input schema.
    */
   private async callAIForInputResolution(
     prompt: string,
-    mode: 'message' | 'message+json' | 'json'
+    mode: 'message' | 'message+json' | 'json',
+    _inputSchema?: NodeInputSchema
   ): Promise<any> {
     try {
       const messages = [
@@ -268,10 +272,11 @@ IMPORTANT:
           content: prompt,
         },
       ];
-      
-      const response = await this.llmAdapter.chat('ollama', messages, {
-        model: 'qwen2.5:14b-instruct-q4_K_M',
-        temperature: 0.3, // Lower temperature for more deterministic output
+      // TODO: when llmAdapter supports responseSchema/structuredOutput, pass _inputSchema for mode === 'json' to enforce schema
+      const response = await this.llmAdapter.chat('gemini', messages, {
+        model: 'gemini-2.5-flash',
+        apiKey: process.env.GEMINI_API_KEY,
+        temperature: 0.3,
       });
       
       // Parse response based on mode

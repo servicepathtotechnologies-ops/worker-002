@@ -2649,7 +2649,7 @@ export class DSLGenerator {
       type: 'ai_chat_model',
       operation: operation,
       config: {
-        provider: 'ollama',
+        provider: 'gemini',
         model: 'qwen2.5:14b-instruct-q4_K_M',
       },
       description: 'Guaranteed LLM node injection for AI transformations',

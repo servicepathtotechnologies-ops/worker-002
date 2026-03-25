@@ -1,0 +1,13 @@
+{
+  "id": "gmail-send-minimal",
+  "category": "google",
+  "nodeType": "google_gmail",
+  "userIntent": "Email the team a short summary of the previous step.",
+  "previousOutput": {
+    "response": "Q4 numbers are ready for review."
+  },
+  "expectations": {
+    "registrySubjectFillMode": "runtime_ai",
+    "requiredCredentialProviderHint": "google"
+  }
+}

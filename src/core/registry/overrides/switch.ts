@@ -1,95 +1,147 @@
 /**
  * ✅ SWITCH NODE - Real Execution Logic
- * 
- * Implements actual case-based routing:
- * - Evaluates expression and matches against cases
- * - Routes to matching case branch (case_1, case_2, etc.)
- * - Preserves all input data for downstream nodes
- * - ✅ CRITICAL: Dynamically sets outgoingPorts based on cases from config
+ *
+ * Implements case-based routing via legacy executor.
+ * Outgoing port names come from persisted config.cases (or legacy rules) —
+ * use unifiedNodeRegistry.getOutgoingPortsForWorkflowNode(node) for graph tooling.
  */
 
-import type { UnifiedNodeDefinition, NodeExecutionResult } from '../../types/unified-node-contract';
+import type { UnifiedNodeDefinition, NodeExecutionResult, NodeMigration, NodeInputSchema } from '../../types/unified-node-contract';
 import type { NodeSchema } from '../../../services/nodes/node-library';
 import { executeViaLegacyExecutor } from '../unified-node-registry-legacy-adapter';
+import { extractSwitchCasePortNames } from '../../utils/branching-node-ports';
+import { resolveEffectiveFieldFillMode } from '../../utils/fill-mode-resolver';
+
+const switchMigrations: NodeMigration[] = [
+  {
+    fromVersion: '1.0.0',
+    toVersion: '1.1.0',
+    migrate: (oldConfig: Record<string, any>) => {
+      const next = { ...oldConfig };
+      const casesEmpty =
+        !next.cases ||
+        (Array.isArray(next.cases) && next.cases.length === 0);
+      if (casesEmpty && next.rules != null) {
+        next.cases = next.rules;
+      }
+      return next;
+    },
+  },
+];
 
 export function overrideSwitch(
   def: UnifiedNodeDefinition,
   schema: NodeSchema
 ): UnifiedNodeDefinition {
-  // ✅ REAL FUNCTIONALITY: Extract cases from config to create dynamic output ports
-  // Cases can come from:
-  // 1. context.config.cases (when node is being executed)
-  // 2. schema default config (for initial setup)
-  // 3. User prompt (will be set during workflow generation)
-  
-  const getCasesFromConfig = (config?: Record<string, any>): string[] => {
-    if (!config) return [];
-    
-    try {
-      const casesRaw = config.cases || config.rules || [];
-      let cases: Array<{ value: string; label?: string }> = [];
-      
-      if (typeof casesRaw === 'string') {
-        cases = JSON.parse(casesRaw);
-      } else if (Array.isArray(casesRaw)) {
-        cases = casesRaw;
-      }
-      
-      // Extract case values as output port IDs
-      const caseValues = cases
-        .map((c: any) => c?.value != null ? String(c.value) : null)
-        .filter((v: string | null): v is string => v !== null && v !== '');
-      
-      return caseValues;
-    } catch (error) {
-      console.warn('[Switch Override] Failed to parse cases from config:', error);
-      return [];
-    }
+  const baseValidate = def.validateConfig.bind(def);
+
+  const inputSchema: NodeInputSchema = {
+    ...def.inputSchema,
+    expression: def.inputSchema.expression
+      ? {
+          ...def.inputSchema.expression,
+          type: def.inputSchema.expression.type === 'string' ? 'expression' : def.inputSchema.expression.type,
+          fillMode: {
+            default: 'buildtime_ai_once',
+            supportsRuntimeAI: false,
+            supportsBuildtimeAI: true,
+          },
+          role: 'config',
+        }
+      : def.inputSchema.expression,
+    cases: def.inputSchema.cases
+      ? {
+          ...def.inputSchema.cases,
+          fillMode: {
+            default: 'buildtime_ai_once',
+            supportsRuntimeAI: false,
+            supportsBuildtimeAI: true,
+          },
+          role: 'raw_json',
+        }
+      : def.inputSchema.cases,
+    ...(def.inputSchema.routingType
+      ? {
+          routingType: {
+            ...def.inputSchema.routingType,
+            fillMode: {
+              default: 'manual_static',
+              supportsRuntimeAI: false,
+              supportsBuildtimeAI: false,
+            },
+          },
+        }
+      : {}),
+    ...(def.inputSchema.rules
+      ? {
+          rules: {
+            ...def.inputSchema.rules,
+            fillMode: {
+              default: 'manual_static',
+              supportsRuntimeAI: false,
+              supportsBuildtimeAI: false,
+            },
+            role: 'raw_json',
+          },
+        }
+      : {}),
   };
 
-  // Try to get cases from default config or schema
-  // Note: ConfigSchema doesn't have 'default' property, so use empty object
-  const defaultCases = getCasesFromConfig({});
-  
   return {
     ...def,
+    inputSchema,
+    version: '1.1.0',
     isBranching: true,
-    // ✅ REAL FUNCTIONALITY: Set outgoingPorts dynamically based on cases
-    // If cases are provided in config, use them; otherwise use default or empty
-    // This creates REAL output ports (case_1, case_2, etc.) based on actual cases
-    outgoingPorts: defaultCases.length > 0 ? defaultCases : def.outgoingPorts || [],
-    execute: async (context): Promise<NodeExecutionResult> => {
-      // ✅ REAL FUNCTIONALITY: Extract cases from runtime config (from user prompt/workflow generation)
-      // This ensures the switch node has the correct output ports based on actual cases
-      const runtimeCases = getCasesFromConfig(context.config);
-      
-      // ✅ CRITICAL: Update outgoingPorts dynamically based on cases from config
-      // This makes the switch node have REAL functionality, not just a name
-      if (runtimeCases.length > 0) {
-        // The switch node now has real output ports: case_1, case_2, case_3, etc.
-        // Each case value becomes an output port that can route to different nodes
-        def.outgoingPorts = runtimeCases;
-        console.log(`[Switch Override] ✅ Set ${runtimeCases.length} output ports from cases:`, runtimeCases);
+    outgoingPorts: [],
+    migrations: [...(def.migrations || []), ...switchMigrations],
+    validateConfig: (config: Record<string, any>) => {
+      const base = baseValidate(config);
+      const extraErrors: string[] = [];
+
+      const exprMode = resolveEffectiveFieldFillMode('expression', inputSchema, config);
+      if (exprMode !== 'runtime_ai') {
+        const ex = config.expression;
+        if (ex === undefined || ex === null || (typeof ex === 'string' && ex.trim() === '')) {
+          extraErrors.push("Switch: 'expression' is required unless fill mode is runtime_ai");
+        }
       }
-      
-      // ✅ REAL FUNCTIONALITY: Use legacy executor which has full switch case matching logic
-      // The legacy executor will:
-      // 1. Resolve the expression value (from config.expression)
-      // 2. Match against defined cases (config.cases)
-      // 3. Return matchedCase for branch routing
-      
+
+      const casesMode = resolveEffectiveFieldFillMode('cases', inputSchema, config);
+      const rawCases = config.cases ?? config.rules;
+      if (casesMode !== 'runtime_ai') {
+        if (!Array.isArray(rawCases) || rawCases.length === 0) {
+          extraErrors.push("Switch: 'cases' must contain at least one case unless fill mode is runtime_ai");
+        } else {
+          const values = rawCases.map((c: any) => (c?.value != null ? String(c.value) : '')).filter(Boolean);
+          const seen = new Set<string>();
+          for (const v of values) {
+            if (seen.has(v)) {
+              extraErrors.push(`Switch: duplicate case value "${v}" — port IDs must be unique`);
+            }
+            seen.add(v);
+          }
+        }
+      }
+
+      const allErrors = [...(base.errors || []), ...extraErrors];
+      return {
+        valid: allErrors.length === 0,
+        errors: allErrors,
+        warnings: base.warnings || [],
+      };
+    },
+    execute: async (context): Promise<NodeExecutionResult> => {
       const result = await executeViaLegacyExecutor({
         context,
         schema,
         hooks: {
           beforeExecute: (prepared) => {
-            // ✅ CRITICAL: Switch needs the FULL upstream data for expression evaluation
-            // Expressions often reference upstream data like {{$json.status}}
             const mergedInput: Record<string, unknown> = {
-              ...(typeof prepared.executionInput === 'object' && prepared.executionInput !== null ? prepared.executionInput : {}),
+              ...(typeof prepared.executionInput === 'object' && prepared.executionInput !== null
+                ? prepared.executionInput
+                : {}),
             };
 
-            // Merge all upstream outputs into input for expression evaluation
             context.upstreamOutputs.forEach((output) => {
               if (output && typeof output === 'object' && !Array.isArray(output)) {
                 Object.assign(mergedInput, output as Record<string, unknown>);
@@ -101,27 +153,24 @@ export function overrideSwitch(
         },
       });
 
-      // ✅ REAL FUNCTIONALITY: Ensure output contains case match result and all input data
       if (result.success && result.output) {
         const outObj = result.output as any;
         const inputObj = context.inputs as any;
-        
-        // Preserve case matching result (matchedCase) for branch routing
+
         const finalOutput = {
           ...(typeof inputObj === 'object' && inputObj !== null ? inputObj : {}),
           ...(typeof outObj === 'object' && outObj !== null ? outObj : {}),
         };
 
-        // Ensure matchedCase is preserved (legacy executor sets this)
         if (outObj.matchedCase !== undefined) {
           finalOutput.matchedCase = outObj.matchedCase;
         }
 
-        return { 
-          success: true, 
+        return {
+          success: true,
           output: finalOutput,
           metadata: {
-            branch: outObj.matchedCase || null, // ✅ Route to matching case branch
+            branch: outObj.matchedCase || null,
             caseMatched: outObj.matchedCase !== null && outObj.matchedCase !== undefined,
           },
         };
@@ -130,4 +179,9 @@ export function overrideSwitch(
       return result;
     },
   };
+}
+
+/** Used by tests and tooling; ports match edge sourceHandle for switch. */
+export function getSwitchCasePortsFromConfig(config?: Record<string, any>): string[] {
+  return extractSwitchCasePortNames(config);
 }

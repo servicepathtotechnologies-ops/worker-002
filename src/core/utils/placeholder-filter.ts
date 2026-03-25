@@ -1,14 +1,36 @@
 /**
  * PLACEHOLDER FILTER
- * 
+ *
  * This utility detects and filters placeholder values from node configurations.
  * Placeholder values should never appear in node output JSON.
- * 
+ *
  * This ensures:
  * 1. Placeholder values are detected before execution
  * 2. Config values are filtered to remove placeholders
  * 3. Only actual user-provided values are used
  */
+
+/**
+ * True if the string looks like UI instructional copy (not normal prose).
+ * Uses start-anchored patterns only — avoids false positives like "your" in
+ * "Your weekly summary" or "enter" inside "Re-enter" / "carpenter".
+ */
+function looksLikeInstructionalPlaceholder(trimmed: string): boolean {
+  // "Enter your …", "Paste your …", etc. (must start with verb + your/the)
+  if (
+    /^(enter|type|add|paste|insert|provide|select|fill|choose)\s+(your|the|a)\b/i.test(trimmed)
+  ) {
+    return true;
+  }
+  if (/^fill\s+this\b/i.test(trimmed)) {
+    return true;
+  }
+  // Standalone todo marker
+  if (/^\s*todo\s*$/i.test(trimmed)) {
+    return true;
+  }
+  return false;
+}
 
 /**
  * Check if a value is a placeholder
@@ -27,7 +49,7 @@ export function isPlaceholderValue(value: any): boolean {
   }
 
   const trimmed = value.trim();
-  
+
   // Empty string
   if (trimmed === '') {
     return true;
@@ -35,31 +57,32 @@ export function isPlaceholderValue(value: any): boolean {
 
   const lowerValue = trimmed.toLowerCase();
 
-  // Common placeholder patterns
-  // ✅ CRITICAL FIX: Use exact matches or word boundaries to avoid false positives
-  // Don't match valid URLs like "jsonplaceholder.typicode.com" or "example-api.com"
-  const placeholderPatterns = [
-    'enter your',
-    'enter ',
-    'your ',
-    'https://example.com',
-    'http://example.com',
-    'https://example',
-    'http://example',
-    'todo',
-    'fill this',
-    'add your',
-    'paste your',
-    'insert your',
-    'provide your',
-    'select your',
-  ];
+  // ✅ ENHANCED: Detect YOUR_* patterns (e.g., YOUR_SPREADSHEET_ID, YOUR_API_KEY)
+  // These are common placeholder patterns used in default configs
+  if (/^your_[a-z0-9_]+$/i.test(trimmed)) {
+    return true;
+  }
 
-  // Check for exact placeholder patterns (not substring matches)
-  for (const pattern of placeholderPatterns) {
-    if (lowerValue.includes(pattern)) {
-      return true;
-    }
+  // ✅ ENHANCED: Detect *_PLACEHOLDER patterns (e.g., SPREADSHEET_ID_PLACEHOLDER)
+  if (/_[a-z0-9_]*placeholder$/i.test(trimmed)) {
+    return true;
+  }
+
+  // ✅ ENHANCED: Detect ENTER_YOUR_* patterns (e.g., ENTER_YOUR_API_KEY)
+  if (/^enter_your_[a-z0-9_]+$/i.test(trimmed)) {
+    return true;
+  }
+
+  if (looksLikeInstructionalPlaceholder(trimmed)) {
+    return true;
+  }
+
+  // Example / docs URLs (anchor to avoid matching unrelated strings)
+  if (/^https?:\/\/example\.com(\/|$|\?|#)/i.test(trimmed)) {
+    return true;
+  }
+  if (/^https?:\/\/example(\/|$|\?|#)/i.test(trimmed)) {
+    return true;
   }
 
   // ✅ CRITICAL FIX: Only match "placeholder" or "example" as standalone words or in specific contexts
@@ -67,24 +90,40 @@ export function isPlaceholderValue(value: any): boolean {
   // Match only if it's clearly a placeholder instruction, not a valid URL/domain
   if (lowerValue.includes('placeholder') || lowerValue.includes('example')) {
     // Check if it's a valid URL/domain (has TLD like .com, .org, etc.)
-    const hasValidTLD = /\.(com|org|net|io|co|dev|app|xyz|info|edu|gov|mil|int|biz|name|pro|museum|aero|coop|jobs|mobi|travel|tel|asia|cat|jobs|tel|xxx|arpa|xxx|test|localhost)(\/|$|\s|$)/i.test(trimmed);
-    
+    const hasValidTLD =
+      /\.(com|org|net|io|co|dev|app|xyz|info|edu|gov|mil|int|biz|name|pro|museum|aero|coop|jobs|mobi|travel|tel|asia|cat|jobs|tel|xxx|arpa|xxx|test|localhost)(\/|$|\s|$)/i.test(
+        trimmed
+      );
+
     // Check if it's clearly an instruction (starts with "enter", "your", etc.)
-    const isInstruction = /^(enter|your|add|paste|insert|provide|select|fill|use|set)\s+(your\s+)?(placeholder|example)/i.test(trimmed);
-    
+    const isInstruction =
+      /^(enter|your|add|paste|insert|provide|select|fill|use|set)\s+(your\s+)?(placeholder|example)/i.test(
+        trimmed
+      );
+
     // Only treat as placeholder if it's NOT a valid URL/domain AND it's an instruction
     if (!hasValidTLD && isInstruction) {
       return true;
     }
-    
+
     // Also match if it's exactly "placeholder" or "example" (standalone)
-    if (trimmed === 'placeholder' || trimmed === 'example' || trimmed === 'https://example.com' || trimmed === 'http://example.com') {
+    if (
+      trimmed === 'placeholder' ||
+      trimmed === 'example' ||
+      trimmed === 'https://example.com' ||
+      trimmed === 'http://example.com'
+    ) {
       return true;
     }
   }
 
   // Check for ENV placeholders that aren't resolved
-  if (trimmed.startsWith('{{ENV.') && !trimmed.includes('{{$json') && !trimmed.includes('{{input') && !trimmed.includes('{{trigger')) {
+  if (
+    trimmed.startsWith('{{ENV.') &&
+    !trimmed.includes('{{$json') &&
+    !trimmed.includes('{{input') &&
+    !trimmed.includes('{{trigger')
+  ) {
     return true; // ENV placeholder without actual value
   }
 
@@ -99,7 +138,7 @@ export function isPlaceholderValue(value: any): boolean {
 /**
  * Filter placeholder values from a config object
  * Returns a new config object with placeholder values removed
- * 
+ *
  * @param config - Node configuration object
  * @returns Config with placeholder values filtered out
  */
@@ -118,7 +157,9 @@ export function filterPlaceholderValues(config: Record<string, any>): Record<str
       filtered[key] = value;
     } else {
       // Log that we're filtering out a placeholder
-      console.log(`[PlaceholderFilter] Filtering out placeholder value for ${key}: ${typeof value === 'string' ? value.substring(0, 50) : value}`);
+      console.log(
+        `[PlaceholderFilter] Filtering out placeholder value for ${key}: ${typeof value === 'string' ? value.substring(0, 50) : value}`
+      );
     }
   }
 
@@ -128,7 +169,7 @@ export function filterPlaceholderValues(config: Record<string, any>): Record<str
 /**
  * Clean output to remove config values that shouldn't be in output
  * This ensures only actual output data is returned, not config values
- * 
+ *
  * @param output - Node output object
  * @param config - Node configuration (to identify what to filter)
  * @returns Cleaned output without config values

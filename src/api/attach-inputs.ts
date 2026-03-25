@@ -24,6 +24,12 @@ import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../cor
 import { connectorRegistry } from '../services/connectors/connector-registry';
 import { normalizeWorkflowGraph, validateNormalizedGraph } from '../core/utils/workflow-graph-normalizer';
 import { ErrorCode, createError } from '../core/utils/error-codes';
+import { unifiedNodeRegistry } from '../core/registry/unified-node-registry';
+import { coerceFieldFillModeByPolicy, resolveEffectiveFieldFillMode } from '../core/utils/fill-mode-resolver';
+import { unifiedGraphOrchestrator } from '../core/orchestration/unified-graph-orchestrator';
+import { validateStructuralReadiness } from '../core/validation/workflow-save-validator';
+import { getStructuralDiagnostics, materializeStructuralFields } from '../services/ai/structure-materializer';
+import { isCredentialOwnership, isStructuralOwnership } from '../core/utils/field-ownership';
 
 export default async function attachInputsHandler(req: Request, res: Response) {
   try {
@@ -399,6 +405,17 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     console.log('[AttachInputs] ✅ Workflow normalized and cloned before input injection (immutable operation)');
 
     // Inject inputs into nodes (operating on clone, not original)
+    const modeDiagnostics = {
+      appliedModes: [] as Array<{ nodeId: string; nodeType: string; fieldName: string; mode: string }>,
+      ignoredModes: [] as Array<{ nodeId: string; nodeType: string; fieldName: string; reason: string; value?: string }>,
+      unknownModeFields: [] as Array<{ nodeId: string; nodeType: string; fieldName: string }>,
+      runtimeOwnedFields: [] as Array<{ nodeId: string; nodeType: string; fieldName: string }>,
+      runtimeResolvedFields: [] as Array<{ nodeId: string; nodeType: string; fieldName: string }>,
+      runtimeResolutionErrors: [] as Array<{ nodeId: string; nodeType: string; fieldName: string; reason: string }>,
+      fallbackApplied: false,
+      schemaValidationFailures: [] as Array<{ nodeId: string; nodeType: string; message: string }>,
+      canonicalizationIssues: [] as Array<{ input: string; reason: string }>,
+    };
     let updatedNodes: any[];
     try {
       updatedNodes = clonedWorkflow.nodes.map((node: any) => {
@@ -413,6 +430,14 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       const existingConfig = node.data?.config || {};
       const config = { ...existingConfig };
       let updated = false;
+      const modeFieldsApplied: string[] = [];
+      const modeFieldsUnknown: string[] = [];
+      const unifiedDefForNode = unifiedNodeRegistry.get(nodeType);
+      const validFieldNames = new Set<string>([
+        ...(schema?.configSchema?.required || []),
+        ...Object.keys(schema?.configSchema?.optional || {}),
+        ...Object.keys(unifiedDefForNode?.inputSchema || {}),
+      ]);
 
       // ✅ CRITICAL: Validate inputs are NOT credentials
       // OAuth connectors must NEVER accept credential fields via attach-inputs
@@ -428,6 +453,101 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       for (const [key, rawValue] of Object.entries(cleanInputs)) {
         let fieldName: string | null = null;
         
+      // Wizard ownership: keys mode_<nodeId>_<fieldName> -> config._fillMode[fieldName] (manual_static vs runtime_ai)
+      // ✅ Handle explicit fill mode keys first: mode_<nodeId>_<fieldName>
+      if (key.startsWith('mode_')) {
+        const afterPrefix = key.substring('mode_'.length);
+        const nodeIdPrefix = `${node.id}_`;
+        if (afterPrefix.startsWith(nodeIdPrefix)) {
+          const modeFieldName = afterPrefix.substring(nodeIdPrefix.length);
+          if (!validFieldNames.has(modeFieldName)) {
+            modeFieldsUnknown.push(modeFieldName);
+            modeDiagnostics.unknownModeFields.push({
+              nodeId: node.id,
+              nodeType,
+              fieldName: modeFieldName,
+            });
+            console.warn(`[AttachInputs] Unknown mode field "${modeFieldName}" for node ${node.id} (${nodeType})`);
+            continue;
+          }
+          if (!config._fillMode || typeof config._fillMode !== 'object') {
+            (config as any)._fillMode = {};
+          }
+          const modeValue = typeof rawValue === 'string' ? rawValue.trim() : '';
+          if (modeValue === 'manual_static' || modeValue === 'runtime_ai' || modeValue === 'buildtime_ai_once') {
+            const modeFieldDef = unifiedDefForNode?.inputSchema?.[modeFieldName];
+            const structuralModeGuard =
+              modeFieldDef && isStructuralOwnership(modeFieldName, modeFieldDef) && modeValue === 'runtime_ai'
+                ? {
+                    mode: 'buildtime_ai_once' as const,
+                    coerced: true,
+                    reason: 'structural_fields_cannot_be_runtime_owned',
+                  }
+                : null;
+            const modePolicy = coerceFieldFillModeByPolicy(
+              modeFieldName,
+              structuralModeGuard?.mode || modeValue,
+              unifiedDefForNode?.inputSchema
+            );
+            (config as any)._fillMode[modeFieldName] = modePolicy.mode;
+            modeFieldsApplied.push(modeFieldName);
+            modeDiagnostics.appliedModes.push({
+              nodeId: node.id,
+              nodeType,
+              fieldName: modeFieldName,
+              mode: modePolicy.mode,
+            });
+            if (modePolicy.coerced) {
+              modeDiagnostics.ignoredModes.push({
+                nodeId: node.id,
+                nodeType,
+                fieldName: modeFieldName,
+                reason: structuralModeGuard?.reason || modePolicy.reason || 'policy_not_allowed',
+                value: modeValue,
+              });
+              console.warn(
+                `[AttachInputs] Coerced disallowed fill mode "${modeValue}" to "${modePolicy.mode}" for ${node.id}.${modeFieldName}`
+              );
+            }
+            if (modePolicy.mode === 'runtime_ai') {
+              modeDiagnostics.runtimeOwnedFields.push({
+                nodeId: node.id,
+                nodeType,
+                fieldName: modeFieldName,
+              });
+            }
+            updated = true;
+            console.log(`[AttachInputs] Applied fill mode for ${node.id}.${modeFieldName}: ${modePolicy.mode}`);
+          } else {
+            modeDiagnostics.ignoredModes.push({
+              nodeId: node.id,
+              nodeType,
+              fieldName: modeFieldName,
+              reason: 'invalid_mode_value',
+              value: modeValue,
+            });
+            console.warn(`[AttachInputs] Ignored invalid fill mode "${modeValue}" for ${node.id}.${modeFieldName}`);
+          }
+        }
+        continue;
+      }
+
+      // Migration/safety: clear legacy template-prefilled runtime fields so they
+      // are resolved only at execution time.
+      const def = unifiedNodeRegistry.get(nodeType);
+      if (def?.inputSchema) {
+        for (const fieldName of Object.keys(def.inputSchema)) {
+          const mode = resolveEffectiveFieldFillMode(fieldName, def.inputSchema, config as Record<string, any>);
+          if (mode !== 'runtime_ai') continue;
+          const current = config[fieldName];
+          if (typeof current === 'string' && current.includes('{{')) {
+            config[fieldName] = '';
+            updated = true;
+            console.log(`[AttachInputs] Cleared legacy template for runtime field ${node.id}.${fieldName}`);
+          }
+        }
+      }
+
       // ✅ COMPREHENSIVE: Handle question ID formats (input_*, cred_*, op_*, config_*, resource_*)
       // Format: {prefix}_{nodeId}_{fieldName}
       // Example: cred_step_hubspot_1771317308025_authType -> fieldName: authType
@@ -486,22 +606,11 @@ export default async function attachInputsHandler(req: Request, res: Response) {
               continue;
             }
             
-            // ✅ CRITICAL: For credential fields (apiKey, accessToken, credentialId), allow them if from comprehensive questions
-            // Otherwise, reject credential fields (they should use attach-credentials endpoint)
-            // Note: isFromComprehensiveQuestion is already set above when extracting fieldName
-            const isCredentialValueField = 
-              (fieldNameLower === 'apikey' || fieldNameLower === 'api_key') ||
-              (fieldNameLower === 'accesstoken' || fieldNameLower === 'access_token') ||
-              (fieldNameLower === 'credentialid' || fieldNameLower === 'credential_id');
-            
-            if (isCredentialValueField && !isFromComprehensiveQuestion) {
-              console.warn(`[AttachInputs] Rejected credential field "${fieldName}" for node ${node.id} (${nodeType}) - use attach-credentials endpoint`);
-              continue; // Skip credential fields that aren't from comprehensive questions
+            const fieldDef = unifiedDefForNode?.inputSchema?.[fieldName];
+            if (fieldDef && isCredentialOwnership(fieldName, fieldDef)) {
+              console.warn(`[AttachInputs] Rejected credential-owned field "${fieldName}" for node ${node.id} (${nodeType}) - use attach-credentials endpoint`);
+              continue;
             }
-            
-            // ✅ ALLOW: Credential value fields from comprehensive questions (apiKey, accessToken, credentialId)
-            // These are user-provided values that should be applied to node config
-            // Also allow non-credential fields (resource, operation, properties, etc.)
 
             // SPECIAL CASE: For Google resource IDs, extract from full URLs
             let value = rawValue;
@@ -594,52 +703,11 @@ export default async function attachInputsHandler(req: Request, res: Response) {
           // Nested format: { "nodeId": { "fieldName": "value" } }
           for (const [fieldName, fieldValueRaw] of Object.entries(rawValue as Record<string, any>)) {
             if (schema.configSchema) {
-              // ✅ CRITICAL: Reject ALL credential fields (comprehensive check)
-              // This ensures credentials are only handled via attach-credentials endpoint
-              // Note: webhookUrl is a configuration field, not a credential, so it's allowed here
-              const fieldNameLower = fieldName.toLowerCase();
-              
-              // ✅ CRITICAL: Exclude configuration fields that are NOT credentials
-              const isConfigurationField = 
-                fieldNameLower === 'webhookurl' || fieldNameLower === 'webhook_url' || // Webhook URL is configuration, not credential
-                fieldNameLower === 'callbackurl' || fieldNameLower === 'callback_url' || // OAuth callback URL is configuration
-                fieldNameLower === 'redirecturl' || fieldNameLower === 'redirect_url' || // OAuth redirect URL is configuration
-                fieldNameLower.includes('message') || // Message fields are not credentials
-                fieldNameLower.includes('channel') || // Channel fields are not credentials
-                fieldNameLower.includes('text') || // Text fields are not credentials
-                fieldNameLower.includes('subject') || // Subject fields are not credentials
-                fieldNameLower.includes('body') || // Body fields are not credentials
-                fieldNameLower.includes('to') || // To fields are not credentials
-                fieldNameLower.includes('from'); // From fields are not credentials
-              
-              // If it's a configuration field, allow it (don't reject)
-              if (!isConfigurationField) {
-                // ✅ STRICT: Only reject ACTUAL credential fields
-                const credentialPatterns = [
-                  'api_key', 'apikey', 'apiKey', 'api-key',
-                  'apitoken', 'api_token', 'api-token', 'apiToken',
-                  'apisecret', 'api_secret', 'api-secret', 'apiSecret',
-                  'token', 'access_token', 'refresh_token', 'accessToken', 'refreshToken',
-                  'secret', 'password', 'client_secret', 'clientSecret',
-                  'oauth', 'client_id', 'clientId',
-                  'credential', 'credentials', 'credentialId', 'credential_id',
-                  'bearer', 'authorization', 'auth_token', 'authToken',
-                  'private_key', 'privateKey', 'public_key', 'publicKey',
-                  'bottoken', 'bot_token',
-                  'secrettoken', 'secret_token',
-                ];
-                
-                const isCredentialField = credentialPatterns.some(pattern => fieldNameLower.includes(pattern)) ||
-                  (connector && connector.credentialContract.type === 'oauth' && 
-                   (fieldNameLower.includes(connector.credentialContract.vaultKey?.toLowerCase() || '') ||
-                    fieldNameLower.includes(connector.credentialContract.provider?.toLowerCase() || '')));
-                
-                if (isCredentialField) {
-                  console.warn(`[AttachInputs] ✅ Rejected credential field "${fieldName}" for node ${node.id} (${nodeType}) - use attach-credentials endpoint`);
-                  continue; // Skip credential fields - they must use attach-credentials endpoint
-                }
+              const fieldDef = unifiedDefForNode?.inputSchema?.[fieldName];
+              if (fieldDef && isCredentialOwnership(fieldName, fieldDef)) {
+                console.warn(`[AttachInputs] Rejected credential-owned field "${fieldName}" for node ${node.id} (${nodeType}) - use attach-credentials endpoint`);
+                continue;
               }
-              // If isConfigurationField is true, we allow it to continue (not rejected)
               
               // ✅ CRITICAL: Validate field exists in schema
               // ✅ RELAXED: Accept optional fields even if not in schema (for flexibility)
@@ -735,6 +803,13 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       // ✅ CRITICAL: Always return node with config, even if no changes were made
       // This ensures the config is preserved in the node structure
       if (updated || Object.keys(config).length > 0) {
+        if ((config as any)._fillMode && typeof (config as any)._fillMode === 'object') {
+          console.log(`[AttachInputs] Fill mode snapshot for ${node.id} (${nodeType}):`, {
+            appliedFields: modeFieldsApplied,
+            unknownFields: modeFieldsUnknown,
+            fillMode: (config as any)._fillMode,
+          });
+        }
         const updatedNode = {
           ...node,
           data: {
@@ -744,6 +819,17 @@ export default async function attachInputsHandler(req: Request, res: Response) {
         };
         // ✅ DEBUG: Log the config being saved for this node
         if (updated) {
+          const runtimeFields = modeFieldsApplied.filter((f) => (config as any)?._fillMode?.[f] === 'runtime_ai');
+          for (const f of runtimeFields) {
+            modeDiagnostics.runtimeResolvedFields.push({
+              nodeId: node.id,
+              nodeType,
+              fieldName: f,
+            });
+          }
+          if (runtimeFields.length > 0) {
+            modeDiagnostics.fallbackApplied = true;
+          }
           console.log(`[AttachInputs] ✅ Node ${node.id} (${nodeType}) config updated:`, Object.keys(config).filter(k => config[k] !== undefined && config[k] !== '').map(k => `${k}=${typeof config[k] === 'string' ? config[k].substring(0, 20) : config[k]}`).join(', '));
         }
         return updatedNode;
@@ -899,9 +985,22 @@ export default async function attachInputsHandler(req: Request, res: Response) {
 
     // ✅ CRITICAL: Apply save-time normalization to remove duplicates and fix structure
     const { normalizeWorkflowForSave: normalizeBeforeSave } = await import('../core/validation/workflow-save-validator');
+    const materializedWorkflow = materializeStructuralFields({
+      ...(finalWorkflow as any),
+      metadata: {
+        ...((workflow as any)?.metadata || {}),
+        ...((finalWorkflow as any)?.metadata || {}),
+        generatedFrom:
+          ((finalWorkflow as any)?.metadata?.generatedFrom as string) ||
+          ((workflow as any)?.metadata?.generatedFrom as string) ||
+          (workflow as any)?.name ||
+          '',
+      },
+    } as any);
+    const structuralDiagnostics = getStructuralDiagnostics(materializedWorkflow as any);
     const finalNormalizedForSave = normalizeBeforeSave(
-      finalWorkflow.nodes,
-      finalWorkflow.edges
+      materializedWorkflow.nodes,
+      materializedWorkflow.edges
     );
     
     if (finalNormalizedForSave.migrationsApplied.length > 0) {
@@ -937,6 +1036,71 @@ export default async function attachInputsHandler(req: Request, res: Response) {
           }
         )
       );
+    }
+
+    // Universal contract gate (registry + orchestrator): reconcile and validate
+    const contractDiagnostics: {
+      boundary: 'attach_inputs_save';
+      branchingNodeCount: number;
+      renderTypeMismatches: number;
+      validationValid: boolean;
+      validationErrors: string[];
+      validationWarnings?: string[];
+    } = {
+      boundary: 'attach_inputs_save',
+      branchingNodeCount: 0,
+      renderTypeMismatches: 0,
+      validationValid: true,
+      validationErrors: [],
+      validationWarnings: [],
+    };
+
+    try {
+      const reconciled = unifiedGraphOrchestrator.reconcileWorkflow({
+        nodes: finalNormalizedGraph.nodes as any,
+        edges: finalNormalizedGraph.edges as any,
+      } as any);
+
+      finalNormalizedGraph = {
+        ...finalNormalizedGraph,
+        nodes: reconciled.workflow.nodes as any,
+        edges: reconciled.workflow.edges as any,
+      };
+
+      const validationResult = unifiedGraphOrchestrator.validateWorkflow(
+        {
+          nodes: finalNormalizedGraph.nodes as any,
+          edges: finalNormalizedGraph.edges as any,
+        } as any
+      );
+
+      contractDiagnostics.validationValid = validationResult.valid;
+      contractDiagnostics.validationErrors = validationResult.errors || [];
+      contractDiagnostics.validationWarnings = validationResult.warnings || [];
+      contractDiagnostics.branchingNodeCount = finalNormalizedGraph.nodes.filter((n: any) => {
+        const t = unifiedNormalizeNodeTypeString(n?.data?.type || n?.type || '');
+        return unifiedNodeRegistry.get(t)?.isBranching === true;
+      }).length;
+      contractDiagnostics.renderTypeMismatches = finalNormalizedGraph.nodes.filter((n: any) => {
+        const renderType = String(n?.type || '');
+        const semanticType = String(n?.data?.type || '');
+        return renderType !== semanticType && renderType !== 'custom' && renderType !== 'form' && renderType !== 'manual_trigger' && renderType !== 'set_variable';
+      }).length;
+
+      if (!validationResult.valid) {
+        return res.status(400).json(
+          createError(
+            ErrorCode.WORKFLOW_VALIDATION_FAILED,
+            'Workflow contract validation failed before save',
+            {
+              workflowId,
+              contractDiagnostics,
+            }
+          )
+        );
+      }
+    } catch (contractError) {
+      console.warn('[AttachInputs] Contract gate failed (non-fatal):', contractError);
     }
 
     // ✅ CRITICAL: Check if credentials are required BEFORE updating
@@ -1022,20 +1186,44 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       missingCredentialsCount = 1;
     }
     
-    // ✅ CRITICAL: If no credentials required, move to ready_for_execution
+    // ✅ CRITICAL: Determine readiness using unified lifecycle gate
     // Use 'active' for status (enum) and phase values for execution readiness (TEXT)
     let nextStatus = 'active'; // Always use valid enum value when workflow is being configured
     let nextPhase = 'configuring_credentials';
-    if (requiredCredentialsCount === 0 || missingCredentialsCount === 0) {
-      // No credentials needed OR all credentials already satisfied
-      nextStatus = 'active'; // Valid enum value
-      nextPhase = 'ready_for_execution'; // TEXT field for execution readiness
-      console.log(`[AttachInputs] No credentials required - setting status to active, phase to ready_for_execution`);
-    } else {
-      // Credentials needed - keep status as 'active' but phase as 'configuring_credentials'
+    const readiness = await workflowLifecycleManager.validateExecutionReady(finalNormalizedGraph as any, userId);
+    if (readiness.ready) {
       nextStatus = 'active';
-      nextPhase = 'configuring_credentials';
-      console.log(`[AttachInputs] Credentials required - setting status to active, phase to configuring_credentials`);
+      nextPhase = 'ready_for_execution';
+      console.log(`[AttachInputs] Unified readiness passed - setting phase ready_for_execution`);
+    } else {
+      nextStatus = 'active';
+      nextPhase = missingCredentialsCount > 0 ? 'configuring_credentials' : 'configuring_inputs';
+      console.log(`[AttachInputs] Unified readiness blocked - phase ${nextPhase}: ${readiness.errors.join('; ')}`);
+    }
+    if (structuralDiagnostics.unresolved.length > 0) {
+      nextPhase = 'configuring_inputs';
+      modeDiagnostics.schemaValidationFailures.push(
+        ...structuralDiagnostics.unresolved.map((issue) => ({
+          nodeId: issue.nodeId,
+          nodeType: issue.nodeType,
+          message: `${issue.nodeType}.${issue.fieldName} is unresolved structural input`,
+        }))
+      );
+      console.warn('[AttachInputs] Structural diagnostics blocked credential phase:', structuralDiagnostics.unresolved);
+    }
+    if (nextPhase === 'ready_for_execution') {
+      const structuralGate = validateStructuralReadiness(finalNormalizedGraph.nodes as any, { strict: true });
+      if (structuralGate.errors.length > 0) {
+        nextPhase = 'configuring_inputs';
+        modeDiagnostics.schemaValidationFailures.push(
+          ...structuralGate.errors.map((message) => ({
+            nodeId: '',
+            nodeType: 'structural_readiness',
+            message,
+          }))
+        );
+        console.warn('[AttachInputs] Structural readiness gate blocked ready_for_execution:', structuralGate.errors);
+      }
     }
     
     // ✅ CRITICAL: Use linearized graph from normalizeWorkflowGraph (has single-trigger, single-chain enforcement)
@@ -1043,7 +1231,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     const nodesToSave = finalNormalizedGraph.nodes;
     const edgesToSave = finalNormalizedGraph.edges;
     
-    console.log('[AttachInputs] 💾 Saving workflow with linearized structure:', {
+    console.log('[AttachInputs] 💾 Saving workflow with normalized structure:', {
       nodeCount: nodesToSave.length,
       edgeCount: edgesToSave.length,
       triggerNodes: nodesToSave.filter(n => {
@@ -1054,7 +1242,8 @@ export default async function attachInputsHandler(req: Request, res: Response) {
                nodeType.includes('trigger') ||
                ['manual_trigger', 'webhook', 'schedule', 'interval', 'form', 'chat_trigger', 'workflow_trigger'].includes(nodeType);
       }).length,
-      linearized: true,
+      branchingNodes: contractDiagnostics.branchingNodeCount,
+      contractValidationValid: contractDiagnostics.validationValid,
     });
     
     // 🆕 VERSIONING: Get previous definition before update
@@ -1222,6 +1411,10 @@ export default async function attachInputsHandler(req: Request, res: Response) {
 
     // ✅ CRITICAL: Audit trail - log inputs attached event
     try {
+      const ownershipSummary = modeDiagnostics.appliedModes.reduce((acc, item) => {
+        acc[item.mode] = (acc[item.mode] || 0) + 1;
+        return acc;
+      }, {} as Record<string, number>);
       await supabase
         .from('workflow_events')
         .insert({
@@ -1236,6 +1429,8 @@ export default async function attachInputsHandler(req: Request, res: Response) {
             requiredCredentialsCount,
             missingCredentialsCount,
             nextStatus,
+            ownershipSummary,
+            ownershipFieldsTouched: modeDiagnostics.appliedModes.length,
           },
           created_at: new Date().toISOString(),
         });
@@ -1272,6 +1467,10 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       message: nextPhase === 'ready_for_execution' 
         ? 'Node inputs injected successfully. Workflow is ready for execution.'
         : 'Node inputs injected successfully. Credentials required.',
+      diagnostics: {
+        ...modeDiagnostics,
+        contract: contractDiagnostics,
+      },
     });
   } catch (error) {
     console.error('[AttachInputs] ❌ Unhandled error:', error);

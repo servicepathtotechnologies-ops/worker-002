@@ -5,35 +5,23 @@ import { overrideAiNodeWithIntentAwareSelection } from './ai-shared';
 export function overrideAiChatModel(def: UnifiedNodeDefinition, schema: NodeSchema): UnifiedNodeDefinition {
   const baseDef = overrideAiNodeWithIntentAwareSelection(def, schema);
   
-  // ✅ CRITICAL FIX: Ensure provider is never set to node type
-  // Fix provider if it's incorrectly set to "ai_chat_model" or invalid
-  const validProviders = ['ollama', 'openai', 'claude', 'gemini', 'anthropic', 'azure'];
-  
+  // ✅ MIGRATED: Always use Gemini 2.5 Flash (uses GEMINI_API_KEY)
+  // Provider/model selection removed - no longer needed
   const originalDefaultConfig = baseDef.defaultConfig;
   const fixedDefaultConfig = () => {
     const config = originalDefaultConfig();
-    // If provider is missing, invalid, or set to node type, default to ollama
-    if (!config.provider || 
-        config.provider === 'ai_chat_model' || 
-        !validProviders.includes(String(config.provider).toLowerCase())) {
-      config.provider = 'ollama';
-    }
-    // Ensure model is set if missing
-    if (!config.model) {
-      config.model = 'qwen2.5:14b-instruct-q4_K_M';
-    }
+    // Always use Gemini 2.5 Flash
+    config.provider = 'gemini';
+    config.model = 'gemini-2.5-flash';
     return config;
   };
   
-  // Also fix in validateConfig to catch this at validation time
+  // Remove provider/model validation - they're always set to Gemini
   const originalValidateConfig = baseDef.validateConfig;
   const fixedValidateConfig = (config: Record<string, any>) => {
-    // Fix provider before validation
-    if (config.provider === 'ai_chat_model' || 
-        (config.provider && !validProviders.includes(String(config.provider).toLowerCase()))) {
-      console.warn(`[ai_chat_model] ⚠️  Invalid provider "${config.provider}" - fixing to "ollama"`);
-      config.provider = 'ollama';
-    }
+    // Ensure provider/model are set to Gemini (for backward compatibility)
+    config.provider = 'gemini';
+    config.model = 'gemini-2.5-flash';
     return originalValidateConfig(config);
   };
   

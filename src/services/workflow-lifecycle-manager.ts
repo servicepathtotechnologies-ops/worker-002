@@ -16,7 +16,6 @@
  */
 
 import { Workflow, WorkflowNode } from '../core/types/ai-types';
-// ✅ MIGRATION: Legacy builder import removed - always use new pipeline
 import { credentialDiscoveryPhase, CredentialDiscoveryResult } from './ai/credential-discovery-phase';
 import { workflowValidationPipeline, ValidationPipelineResult } from './ai/workflow-validation-pipeline';
 import { connectorRegistry } from './connectors/connector-registry';
@@ -27,15 +26,33 @@ import { resolveNodeType } from '../core/utils/node-type-resolver-util';
 import { NodeResolver } from './ai/node-resolver';
 import { getSupabaseClient } from '../core/database/supabase-compat';
 import { planWorkflowSpecFromPrompt } from './ai/smart-planner-adapter';
+import { mergePrimaryPlannerPrompt } from './ai/planner-prompt-merge';
 import type { WorkflowSpec } from '../planner/types';
 import { workflowPipelineOrchestrator } from './ai/workflow-pipeline-orchestrator';
 import { credentialDetector } from './ai/credential-detector';
 import { credentialInjector } from './ai/credential-injector';
+import { AgenticWorkflowBuilder } from './ai/workflow-builder';
 // ✅ UNIFIED ORCHESTRATION: Import orchestrator for edge-safe node injection
 import { unifiedGraphOrchestrator } from '../core/orchestration';
 import { executionOrderManager } from '../core/orchestration/execution-order-manager';
-// ✅ CAPABILITY-BASED DEDUPLICATION: Import capability registry to prevent duplicate AI nodes
-import { nodeCapabilityRegistryDSL } from './ai/node-capability-registry-dsl';
+import { getNodeCapabilityDedupeKey } from '../core/utils/node-capability-dedupe';
+import { isPlaceholderValue } from '../core/utils/placeholder-filter';
+import { buildTagsFromRegistry } from './ai/gemini-node-selector';
+import { resolveEffectiveFieldFillMode } from '../core/utils/fill-mode-resolver';
+import { validateStructuralReadiness } from '../core/validation/workflow-save-validator';
+import { materializeStructuralFields } from './ai/structure-materializer';
+import { isCredentialOwnership, isStructuralOwnership } from '../core/utils/field-ownership';
+
+/** Trigger-style nodes only — used to avoid narrowing planner output to trigger-only when variation metadata is wrong. */
+function isTriggerishNodeType(nodeType: string): boolean {
+  try {
+    const def = unifiedNodeRegistry.get(nodeType);
+    if (def?.category === 'trigger') return true;
+  } catch {
+    /* ignore */
+  }
+  return /trigger|schedule|webhook|interval|respond_to_webhook/i.test(nodeType);
+}
 
 export interface WorkflowGenerationResult {
   workflow: Workflow;
@@ -77,7 +94,8 @@ export interface CredentialInjectionResult {
  */
 export class WorkflowLifecycleManager {
   /**
-   * Generate workflow using new deterministic pipeline architecture
+   * Generate workflow using Gemini planner + registry + graph orchestrator.
+   * Falls back to deterministic pipeline only if planner-based generation fails.
    */
   private async generateWorkflowWithNewPipeline(
     userPrompt: string, // ✅ Can be original prompt or selected structured prompt
@@ -86,7 +104,11 @@ export class WorkflowLifecycleManager {
       mandatoryNodesWithOperations?: Array<{ nodeType: string; operationHint?: string; context?: string }>; // ✅ NEW: Nodes with operation hints
       selectedStructuredPrompt?: string; // ✅ NEW: Selected structured prompt from summarize layer
       originalPrompt?: string; // ✅ NEW: Original user prompt (preserved for reference)
+      registryTags?: string[]; // Tags from registry for selected nodes (e.g. nodeType:category)
       providedCredentials?: Record<string, Record<string, any>>; // ✅ FIX: Added missing property
+      selectedVariantStrategy?: 'registry_minimal' | 'registry_extended' | 'keyword_minimal' | 'keyword_extended';
+      variantNodes?: string[]; // Ordered node types from variant (for registry/keyword enforcement)
+      requiredNodeTypes?: string[];
     },
     onProgress?: (step: number, stepName: string, progress: number, details?: any) => void
   ): Promise<{
@@ -100,7 +122,76 @@ export class WorkflowLifecycleManager {
     confidenceScore?: any;
     analysis?: import('./ai/workflow-pipeline-orchestrator').PipelineAnalysis;
   }> {
-    console.log('[WorkflowLifecycle] Executing new deterministic pipeline...');
+    console.log('[WorkflowLifecycle] Executing Gemini planner pipeline (with deterministic fallback)...');
+
+    // FIRST: Try Gemini-based planner path
+    try {
+      const builder = new AgenticWorkflowBuilder();
+      // If a selected structured prompt was provided, use variant-aware entry point (registry vs keyword semantics).
+      // userPrompt here is primaryPlannerPrompt (original + structured merged) so Gemini sees full intent.
+      if (constraints?.selectedStructuredPrompt) {
+        const workflow = await builder.generateWorkflowFromVariant(userPrompt, {
+          mandatoryNodeTypes: constraints.mandatoryNodeTypes,
+          registryTags: constraints.registryTags,
+          strategy: constraints.selectedVariantStrategy,
+          variantNodes: constraints.variantNodes,
+          requiredNodeTypes: constraints.requiredNodeTypes ?? constraints.mandatoryNodeTypes,
+        });
+        return {
+          workflow,
+          documentation: 'Workflow generated from selected prompt variation using Gemini planner + Unified Node Registry + Unified Graph Orchestrator',
+          suggestions: [],
+          estimatedComplexity: 'medium',
+          systemPrompt: undefined,
+          requirements: undefined,
+          requiredCredentials: [],
+          confidenceScore: {
+            score: 0.9,
+            factors: ['Gemini planner', 'registry defaults', 'graph orchestrator validation', 'selected prompt variation'],
+          },
+          analysis: undefined,
+        };
+      }
+
+      // Prefer graph-level planner + WorkflowPlan validator when possible,
+      // fall back to the existing step-based Gemini planner on failure.
+      let workflow: Workflow;
+      try {
+        workflow = await builder.generateWorkflowWithGraphPlanner(userPrompt, {
+          mandatoryNodeTypes: constraints?.mandatoryNodeTypes,
+          suggestedNodes: constraints?.registryTags,
+        });
+        console.log('[WorkflowLifecycle] ✅ Graph planner WorkflowPlan path succeeded');
+      } catch (graphError) {
+        console.warn(
+          '[WorkflowLifecycle] Graph planner WorkflowPlan path failed, falling back to step-based Gemini planner',
+          graphError instanceof Error ? graphError.message : String(graphError),
+        );
+        workflow = await builder.generateWorkflowWithGeminiPlannerRobust(userPrompt);
+      }
+
+      return {
+        workflow,
+        documentation: 'Workflow generated using Gemini planner + Unified Node Registry + Unified Graph Orchestrator',
+        suggestions: [],
+        estimatedComplexity: 'medium',
+        systemPrompt: undefined,
+        requirements: undefined,
+        requiredCredentials: [],
+        confidenceScore: {
+          score: 0.9,
+          factors: ['Gemini planner', 'registry defaults', 'graph orchestrator validation'],
+        },
+        analysis: undefined,
+      };
+    } catch (plannerError) {
+      console.warn('[WorkflowLifecycle] Gemini planner pipeline failed, falling back to deterministic pipeline', {
+        error: plannerError instanceof Error ? plannerError.message : String(plannerError),
+      });
+    }
+
+    // FALLBACK: existing deterministic pipeline architecture
+    console.log('[WorkflowLifecycle] Executing deterministic pipeline fallback...');
 
     // Get existing credentials from vault if available
     let existingCredentials: Record<string, any> | undefined;
@@ -118,10 +209,16 @@ export class WorkflowLifecycleManager {
     // ✅ NEW: Extract mandatory nodes from constraints and pass to pipeline
     const mandatoryNodeTypes = constraints?.mandatoryNodeTypes || [];
     const mandatoryNodesWithOperations = constraints?.mandatoryNodesWithOperations || [];
+    const tagsFromVariation = (constraints?.registryTags && constraints.registryTags.length > 0)
+      ? constraints.registryTags
+      : buildTagsFromRegistry(mandatoryNodeTypes);
     if (mandatoryNodeTypes.length > 0) {
       console.log(`[WorkflowLifecycle] 🔒 Passing ${mandatoryNodeTypes.length} mandatory node type(s) to pipeline: ${mandatoryNodeTypes.join(', ')}`);
       if (mandatoryNodesWithOperations.length > 0) {
         console.log(`[WorkflowLifecycle] ✅ Passing operation hints for ${mandatoryNodesWithOperations.length} node(s)`);
+      }
+      if (tagsFromVariation.length > 0) {
+        console.log(`[WorkflowLifecycle] ✅ Passing ${tagsFromVariation.length} tag(s) for ordering/pruning`);
       }
     }
     
@@ -146,6 +243,7 @@ export class WorkflowLifecycleManager {
         mandatoryNodesWithOperations, // ✅ NEW: Pass operation hints
         selectedStructuredPrompt, // ✅ NEW: Pass selected structured prompt
         originalPrompt, // ✅ NEW: Pass original prompt for reference
+        tagsFromVariation, // ✅ Tags from registry for selected nodes (ordering/pruning)
       }
     );
 
@@ -252,18 +350,36 @@ export class WorkflowLifecycleManager {
       originalPrompt?: string; // ✅ NEW: Original user prompt (preserved for reference)
       mandatoryNodeTypes?: string[];
       mandatoryNodesWithOperations?: Array<{ nodeType: string; operationHint?: string; context?: string }>; // ✅ NEW: Nodes with operation hints
+      registryTags?: string[]; // Tags from registry for selected nodes (from summarize layer / Gemini-first)
       providedCredentials?: Record<string, Record<string, any>>;
+      /** Optional userId for vault lookups (pre-resolved from request token). */
+      vaultUserId?: string;
+      /** Optional bearer token for auth lookups (avoid tokenless auth.getUser()). */
+      authToken?: string;
       explicitNodeTypes?: Set<string>; // ✅ PHASE 1: Explicit nodes from selected variation
       blockedNodeTypes?: Set<string>;  // ✅ PHASE 1: Blocked conflicting nodes
     },
     onProgress?: (step: number, stepName: string, progress: number, details?: any) => void
   ): Promise<WorkflowGenerationResult> {
     console.log('[WorkflowLifecycle] Step 1: Generating workflow graph...');
+    if (constraints?.mandatoryNodeTypes && constraints.mandatoryNodeTypes.length > 0) {
+      console.log(`[WorkflowLifecycle] 🔒 mandatoryNodeTypes (from intent/variant): ${constraints.mandatoryNodeTypes.join(', ')}`);
+    }
+    if (constraints?.originalPrompt) {
+      console.log(`[WorkflowLifecycle] 📝 originalPrompt (for config filler): "${(constraints.originalPrompt as string).slice(0, 80)}..."`);
+    }
+
+    const selectedStructuredForPlanner = constraints?.selectedStructuredPrompt || userPrompt;
+    const originalForPlanner = (constraints?.originalPrompt || '').trim() || userPrompt;
+    const primaryPlannerPrompt = mergePrimaryPlannerPrompt(originalForPlanner, selectedStructuredForPlanner);
+    console.log(
+      `[WorkflowLifecycle] 🧭 primaryPlannerPrompt (merged original + structured, first 120 chars): "${primaryPlannerPrompt.slice(0, 120)}..."`,
+    );
 
     // Optional STEP 0: Planner-driven spec (Smart Planner)
     let plannerSpec: WorkflowSpec | undefined;
     try {
-      plannerSpec = await planWorkflowSpecFromPrompt(userPrompt);
+      plannerSpec = await planWorkflowSpecFromPrompt(primaryPlannerPrompt);
       if (plannerSpec) {
         console.log('[WorkflowLifecycle] Smart Planner spec detected - using planner-driven node hints.');
       }
@@ -305,7 +421,7 @@ export class WorkflowLifecycleManager {
 
       // Transformations: map planner transformation names (capabilities) to concrete node types
       // ✅ IMPORTANT: Only include loop if user explicitly requests iteration (planner may over-suggest)
-      const promptLower = userPrompt.toLowerCase();
+      const promptLower = primaryPlannerPrompt.toLowerCase();
       const promptRequestsLoop =
         promptLower.includes('for each') ||
         promptLower.includes('foreach') ||
@@ -364,14 +480,120 @@ export class WorkflowLifecycleManager {
         errors: [],
         warnings: [],
       };
+
+      // ✅ AUTHORITATIVE: When mandatoryNodeTypes from summarize-layer exist, treat them as the node set.
+      // Intersect planner nodes with mandatory, or use mandatory if no overlap (same rule as NodeResolver path).
+      if (constraints?.mandatoryNodeTypes && constraints.mandatoryNodeTypes.length > 0) {
+        const hasActionMandatory = constraints.mandatoryNodeTypes.some((m) => !isTriggerishNodeType(m));
+        if (hasActionMandatory) {
+          // In plan-driven workflows, mandatoryNodeTypes from summarize/planner are authoritative.
+          // This prevents resolver/planner side-expansion from injecting unrelated nodes (e.g., ollama).
+          resolution = { ...resolution, nodeIds: [...constraints.mandatoryNodeTypes] };
+          console.log(
+            `[WorkflowLifecycle] ✅ Strict mandatoryNodeTypes override (planner path): ${resolution.nodeIds.join(', ')}`
+          );
+        } else {
+        const mandatorySet = new Set(constraints.mandatoryNodeTypes);
+        const filteredNodeIds = resolution.nodeIds.filter((id) => mandatorySet.has(id));
+        if (filteredNodeIds.length > 0) {
+          const plannerHasActions = resolution.nodeIds.some((id) => !isTriggerishNodeType(id));
+          const filteredOnlyTriggers = filteredNodeIds.every((id) => isTriggerishNodeType(id));
+          const mandatoryMostlyTriggers = constraints.mandatoryNodeTypes.every((m) => isTriggerishNodeType(m));
+          const wouldDropActions =
+            plannerHasActions && filteredOnlyTriggers && filteredNodeIds.length < resolution.nodeIds.length;
+          if (wouldDropActions && mandatoryMostlyTriggers) {
+            console.warn(
+              `[WorkflowLifecycle] ⚠️ Skipping mandatory ∩ planner: would keep only triggers while planner has actions. Keeping planner nodes: ${resolution.nodeIds.join(', ')}`,
+            );
+          } else {
+            console.log(
+              `[WorkflowLifecycle] ✅ Overriding planner result with intersection of mandatoryNodeTypes: ${filteredNodeIds.join(', ')}`,
+            );
+            resolution = { ...resolution, nodeIds: filteredNodeIds };
+          }
+        } else {
+          const plannerHasActions = resolution.nodeIds.some((id) => !isTriggerishNodeType(id));
+          const mandatoryOnlyTriggers = constraints.mandatoryNodeTypes.every((m) => isTriggerishNodeType(m));
+          if (plannerHasActions && mandatoryOnlyTriggers) {
+            console.warn(
+              `[WorkflowLifecycle] ⚠️ Planner has no overlap with trigger-only mandatoryNodeTypes; keeping planner nodes: ${resolution.nodeIds.join(', ')}`,
+            );
+          } else {
+            console.warn(
+              `[WorkflowLifecycle] ⚠️ Planner result has no overlap with mandatoryNodeTypes. Using mandatoryNodeTypes: ${constraints.mandatoryNodeTypes.join(', ')}`,
+            );
+            resolution = { ...resolution, nodeIds: [...constraints.mandatoryNodeTypes] };
+          }
+        }
+        }
+      }
     } else {
-      // Legacy NodeResolver behavior - ✅ UNIVERSAL FIX: Use selectedStructuredPrompt
-      const promptForResolution = constraints?.selectedStructuredPrompt || userPrompt;
-      // ✅ PHASE 2: Pass explicit and blocked nodes to node resolver
-      resolution = nodeResolver.resolvePrompt(promptForResolution, undefined, {
+      // Legacy NodeResolver: use merged prompt so required nodes match full user intent (not only short variation)
+      const promptForResolution = primaryPlannerPrompt;
+      const contextPrompt = undefined;
+      resolution = nodeResolver.resolvePrompt(promptForResolution, contextPrompt, {
         explicitNodeTypes: constraints?.explicitNodeTypes,
         blockedNodeTypes: constraints?.blockedNodeTypes,
       });
+
+      // ✅ ROOT-LEVEL FIX: When mandatory node types are known (from summarize-layer / selected variation),
+      // treat them as the single source of truth for required nodes.
+      if (constraints?.mandatoryNodeTypes && constraints.mandatoryNodeTypes.length > 0) {
+        const hasActionMandatory = constraints.mandatoryNodeTypes.some((m) => !isTriggerishNodeType(m));
+        if (hasActionMandatory) {
+          resolution = {
+            ...resolution,
+            nodeIds: [...constraints.mandatoryNodeTypes],
+          };
+          console.log(
+            `[WorkflowLifecycle] ✅ Strict mandatoryNodeTypes override (resolver path): ${resolution.nodeIds.join(', ')}`
+          );
+        } else {
+        const mandatorySet = new Set(constraints.mandatoryNodeTypes);
+        const filteredNodeIds = resolution.nodeIds.filter((id) => mandatorySet.has(id));
+
+        if (filteredNodeIds.length > 0) {
+          const resolverHasActions = resolution.nodeIds.some((id) => !isTriggerishNodeType(id));
+          const filteredOnlyTriggers = filteredNodeIds.every((id) => isTriggerishNodeType(id));
+          const mandatoryMostlyTriggers = constraints.mandatoryNodeTypes.every((m) => isTriggerishNodeType(m));
+          const wouldDropActions =
+            resolverHasActions && filteredOnlyTriggers && filteredNodeIds.length < resolution.nodeIds.length;
+          if (wouldDropActions && mandatoryMostlyTriggers) {
+            console.warn(
+              `[WorkflowLifecycle] ⚠️ Skipping mandatory ∩ resolver: would keep only triggers while resolver has actions. Keeping: ${resolution.nodeIds.join(', ')}`,
+            );
+          } else {
+            console.log(
+              `[WorkflowLifecycle] ✅ Overriding NodeResolver result with intersection of mandatoryNodeTypes: ${filteredNodeIds.join(
+                ', ',
+              )}`,
+            );
+            resolution = {
+              ...resolution,
+              nodeIds: filteredNodeIds,
+            };
+          }
+        } else {
+          const resolverHasActions = resolution.nodeIds.some((id) => !isTriggerishNodeType(id));
+          const mandatoryOnlyTriggers = constraints.mandatoryNodeTypes.every((m) => isTriggerishNodeType(m));
+          if (resolverHasActions && mandatoryOnlyTriggers) {
+            console.warn(
+              `[WorkflowLifecycle] ⚠️ NodeResolver has no overlap with trigger-only mandatoryNodeTypes; keeping resolver nodes: ${resolution.nodeIds.join(', ')}`,
+            );
+          } else {
+            console.warn(
+              `[WorkflowLifecycle] ⚠️  NodeResolver result has no overlap with mandatoryNodeTypes. Using mandatoryNodeTypes as required nodes instead: ${constraints.mandatoryNodeTypes.join(
+                ', ',
+              )}`,
+            );
+            resolution = {
+              ...resolution,
+              nodeIds: [...constraints.mandatoryNodeTypes],
+            };
+          }
+        }
+        }
+      }
 
       if (!resolution.success && resolution.errors.length > 0) {
         console.error('[WorkflowLifecycle] Node resolution failed:', resolution.errors);
@@ -381,6 +603,18 @@ export class WorkflowLifecycleManager {
       }
     }
 
+    // Merge conditional chain for age/vote/eligibility intents so STEP 1.5b can inject missing nodes
+    const promptForIntent = ((constraints?.originalPrompt || '') + ' ' + primaryPlannerPrompt).toLowerCase();
+    const needsConditional = /\b(age|eligible|vote|voting|verify|check|condition|if|else)\b/.test(promptForIntent);
+    if (needsConditional) {
+      const conditionalChain = ['form', 'if_else', 'log_output'];
+      resolution = {
+        ...resolution,
+        nodeIds: [...new Set([...resolution.nodeIds, ...conditionalChain])],
+      };
+      console.log(`[WorkflowLifecycle] Required nodes (merged with conditional chain): ${resolution.nodeIds.join(', ')}`);
+    }
+
     // STEP 1: Generate workflow graph (DAG only, no credentials)
     // ✅ PRODUCTION: Always use new deterministic pipeline architecture
     // ✅ MIGRATION: Legacy builder fallback removed - single production path
@@ -388,23 +622,27 @@ export class WorkflowLifecycleManager {
     // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt if provided, otherwise use userPrompt
     const selectedStructuredPrompt = constraints?.selectedStructuredPrompt || userPrompt;
     const originalPrompt = constraints?.originalPrompt || userPrompt;
-    
-    console.log(`[WorkflowLifecycle] generateWorkflowGraph - Using prompt: "${selectedStructuredPrompt.substring(0, 100)}..."`);
+
+    console.log(`[WorkflowLifecycle] generateWorkflowGraph - structured (variation): "${selectedStructuredPrompt.substring(0, 100)}..."`);
     if (constraints?.selectedStructuredPrompt) {
-      console.log(`[WorkflowLifecycle] ✅ Using selected structured prompt (original preserved for reference)`);
+      console.log(`[WorkflowLifecycle] ✅ Merged primaryPlannerPrompt used for planner/variant build; original preserved for config/resolution`);
     }
-    
-    // Pass selectedStructuredPrompt and originalPrompt to pipeline
+
+    // Pass pipeline options; mandatoryNodeTypes/registryTags from summarize-layer are the authoritative node set.
     const pipelineConstraints = {
       ...constraints,
       selectedStructuredPrompt,
       originalPrompt,
+      mandatoryNodeTypes: constraints?.mandatoryNodeTypes ?? [],
+      registryTags: constraints?.registryTags ?? [],
     };
-    
-    const generationResult = await this.generateWorkflowWithNewPipeline(selectedStructuredPrompt, pipelineConstraints, onProgress);
+
+    const generationResult = await this.generateWorkflowWithNewPipeline(primaryPlannerPrompt, pipelineConstraints, onProgress);
 
     let workflow = generationResult.workflow;
-    
+    const { mergeOriginalUserPromptMetadata } = await import('./ai/structure-materializer');
+    workflow = mergeOriginalUserPromptMetadata(workflow, originalPrompt) ?? workflow;
+
     console.log(`[WorkflowLifecycle] Graph generated: ${workflow.nodes.length} nodes, ${workflow.edges.length} edges`);
 
     // STEP 1.5a: If Smart Planner is active, drop any nodes that correspond to mentioned_only services
@@ -488,6 +726,7 @@ export class WorkflowLifecycleManager {
     // ✅ UNIFIED ORCHESTRATION: Use orchestrator to inject nodes (creates edges automatically)
     // This fixes cases where the workflow builder's node filter removed required nodes
     if (resolution.success && resolution.nodeIds.length > 0) {
+      const promptUsedForResolution = constraints?.selectedStructuredPrompt || userPrompt;
       // Normalize existing node types to canonical forms for comparison
       const existingNodeTypes = workflow.nodes.map((node: any) => {
         const normalized = unifiedNormalizeNodeType(node);
@@ -570,21 +809,30 @@ export class WorkflowLifecycleManager {
           }
           
           // ✅ SAFETY LAYER 2: Capability-based deduplication (prevents duplicate AI nodes like ai_chat_model + ai_agent)
-          const newNodeCapability = this.getNodeCapabilityCategory(resolvedNodeType);
-          if (newNodeCapability) {
+          // Branching nodes skip coarse dedupe so if_else is never dropped when an AI node exists
+          const newDedupeKey = getNodeCapabilityDedupeKey(resolvedNodeType);
+          if (newDedupeKey !== null) {
             const existingNodeWithSameCapability = workflow.nodes.find((n: any) => {
               const existingNodeType = unifiedNormalizeNodeType(n);
               const existingResolvedType = resolveNodeType(existingNodeType);
-              const existingCapability = this.getNodeCapabilityCategory(existingResolvedType);
-              return existingCapability === newNodeCapability && existingCapability !== null;
+              const existingKey = getNodeCapabilityDedupeKey(existingResolvedType);
+              return existingKey !== null && existingKey === newDedupeKey;
             });
-            
+
             if (existingNodeWithSameCapability) {
               const existingNodeType = unifiedNormalizeNodeType(existingNodeWithSameCapability);
               const existingResolvedType = resolveNodeType(existingNodeType);
-              console.log(`[WorkflowLifecycle] 🔍 Skipping duplicate capability: ${nodeType} (resolved to ${resolvedNodeType}, capability: ${newNodeCapability}) - ${existingResolvedType} already provides this capability`);
+              console.log(
+                `[WorkflowLifecycle] 🔍 Skipping duplicate capability: ${nodeType} (resolved to ${resolvedNodeType}, dedupe: ${newDedupeKey}) - ${existingResolvedType} already provides this capability`,
+              );
               continue; // Skip this node - capability already provided by existing node
             }
+          }
+
+          // ✅ Only inject if node is explicitly mentioned in the prompt (avoids adding e.g. instagram when user only said "Gmail")
+          if (!this.isNodeMentionedInPrompt(resolvedNodeType, promptUsedForResolution)) {
+            console.log(`[WorkflowLifecycle] 🔍 Skipping injection: ${resolvedNodeType} not mentioned in selected prompt (matched only by generic keyword)`);
+            continue;
           }
           
           console.log(`[WorkflowLifecycle] ✅ Adding missing resolved node via orchestrator: ${nodeType} (canonical: ${resolvedNodeType})`);
@@ -674,7 +922,7 @@ export class WorkflowLifecycleManager {
             console.log(`[WorkflowLifecycle] ℹ️  Node injection warnings for ${node.data?.type}: ${injectionResult.warnings.join(', ')}`);
           }
           
-          console.log(`[WorkflowLifecycle] ✅ Injected node ${node.data?.type} via orchestrator - edges created automatically`);
+          console.log(`[WorkflowLifecycle] ✅ Injected missing required node: ${node.data?.type} (requiredNodeIds enforcement)`);
         } catch (error: any) {
           console.error(`[WorkflowLifecycle] ❌ Failed to inject node ${node.data?.type}: ${error?.message || 'Unknown error'}`);
           // Continue with other nodes even if one fails
@@ -715,6 +963,26 @@ export class WorkflowLifecycleManager {
     // STEP 2.6: Ensure final workflow also has canonical types (after validation fixes)
     finalWorkflow = this.normalizeAllNodeTypesToCanonical(finalWorkflow);
     
+    // STEP 2.65: Intent-based config filling (form fields, etc.) using originalPrompt so age/vote → age field
+    try {
+      const { intelligentConfigFiller } = await import('./ai/intelligent-config-filler');
+      finalWorkflow = await intelligentConfigFiller.fillConfigurationsFromPrompt(
+        finalWorkflow,
+        selectedStructuredPrompt,
+        originalPrompt
+      );
+      finalWorkflow = materializeStructuralFields(finalWorkflow);
+      const { hydrateFormFieldsFromLlmIfEnabled } = await import('./ai/form-fields-structural-llm');
+      finalWorkflow = await hydrateFormFieldsFromLlmIfEnabled(finalWorkflow);
+      const { repairIfElseConditionsFromUpstreamForm } = await import(
+        '../core/orchestration/repair-ifelse-form-conditions'
+      );
+      finalWorkflow = repairIfElseConditionsFromUpstreamForm(finalWorkflow);
+      console.log('[WorkflowLifecycle] ✅ Intent-based config filling applied (originalPrompt used for form/age fields)');
+    } catch (err) {
+      console.warn('[WorkflowLifecycle] Intent-based config filling failed (non-fatal):', err instanceof Error ? err.message : err);
+    }
+    
     // STEP 2.5: Final Gmail integrity check
     // NOTE: When Smart Planner is active, we trust planner roles (mentioned_only vs data_source)
     // and SKIP legacy Gmail integrity enforcement to avoid over-creating gmail nodes.
@@ -738,13 +1006,21 @@ export class WorkflowLifecycleManager {
     console.log('[WorkflowLifecycle] Step 3: Discovering required credentials...');
     
     // Get userId for vault lookup
-    let userId: string | undefined;
-    try {
-      const supabase = getSupabaseClient();
-      const { data: { user } } = await supabase.auth.getUser();
-      userId = user?.id;
-    } catch (error) {
-      console.warn('[WorkflowLifecycle] Could not get userId for vault lookup:', error);
+    let userId: string | undefined = constraints?.vaultUserId;
+    if (!userId && constraints?.authToken) {
+      try {
+        const supabase = getSupabaseClient();
+        const { data: { user }, error: authError } = await supabase.auth.getUser(constraints.authToken);
+        if (!authError && user) {
+          userId = user.id;
+        }
+      } catch (error) {
+        console.warn('[WorkflowLifecycle] Could not resolve userId from auth token for vault lookup:', error);
+      }
+    }
+    if (!userId) {
+      // ✅ IMPORTANT: Never call tokenless supabase.auth.getUser() on backend; it can stall without a session.
+      console.warn('[WorkflowLifecycle] No vaultUserId/authToken provided; credential vault checks will be skipped.');
     }
     
     const credentialDiscovery = await credentialDiscoveryPhase.discoverCredentials(finalWorkflow, userId);
@@ -881,42 +1157,18 @@ export class WorkflowLifecycleManager {
   }
 
   /**
-   * ✅ CAPABILITY-BASED DEDUPLICATION: Get node capability category
-   * Uses NodeCapabilityRegistryDSL (same logic as summarize-layer.ts)
-   * Prevents duplicate nodes with same capability (e.g., ai_chat_model + ai_agent)
-   * 
-   * @param nodeType - Node type to categorize
-   * @returns Capability category: 'data_source' | 'transformation' | 'output' | null
+   * ✅ INJECTION GUARD: True if the prompt explicitly mentions this node (type, label, or distinctive keyword).
+   * Used to avoid injecting nodes that were resolved only via generic keywords (e.g. "send" → instagram when user said "Gmail").
    */
-  private getNodeCapabilityCategory(nodeType: string): 'data_source' | 'transformation' | 'output' | null {
-    // ✅ PRIMARY: Use capability registry (most reliable - works for ALL nodes)
-    if (nodeCapabilityRegistryDSL.isDataSource(nodeType)) {
-      return 'data_source';
-    }
-    if (nodeCapabilityRegistryDSL.isTransformation(nodeType)) {
-      return 'transformation';
-    }
-    if (nodeCapabilityRegistryDSL.isOutput(nodeType)) {
-      return 'output';
-    }
-    
-    // ✅ FALLBACK: Use unified node registry category
-    const nodeDef = unifiedNodeRegistry.get(nodeType);
-    if (nodeDef) {
-      const category = nodeDef.category;
-      if (category === 'data' || category === 'trigger') {
-        return 'data_source';
-      }
-      if (category === 'ai' || category === 'transformation' || category === 'logic' || category === 'utility') {
-        return 'transformation';
-      }
-      if (category === 'communication' || category === 'social' || category === 'output') {
-        return 'output';
-      }
-    }
-    
-    // Return null if cannot determine (safer than defaulting)
-    return null;
+  private isNodeMentionedInPrompt(nodeType: string, prompt: string): boolean {
+    const promptLower = prompt.toLowerCase();
+    const schema = nodeLibrary.getSchema(nodeType);
+    if (schema?.label && promptLower.includes(schema.label.toLowerCase())) return true;
+    const typeAsWords = nodeType.replace(/_/g, ' ');
+    if (promptLower.includes(typeAsWords) || promptLower.includes(nodeType)) return true;
+    const distinctive: Record<string, string> = { google_gmail: 'gmail', slack_message: 'slack', instagram: 'instagram', outlook: 'outlook', telegram: 'telegram', linkedin: 'linkedin', manual_trigger: 'manual', workflow_trigger: 'workflow' };
+    if (distinctive[nodeType] && promptLower.includes(distinctive[nodeType])) return true;
+    return false;
   }
 
   private normalizeAllNodeTypesToCanonical(workflow: Workflow): Workflow {
@@ -1056,6 +1308,10 @@ export class WorkflowLifecycleManager {
       required: boolean;
       defaultValue?: any;
       examples?: any[];
+      ownership?: 'structural' | 'value' | 'credential';
+      fillModeDefault?: 'manual_static' | 'runtime_ai' | 'buildtime_ai_once';
+      supportsRuntimeAI?: boolean;
+      supportsBuildtimeAI?: boolean;
     }>;
   } {
     console.log('[WorkflowLifecycle] config_scan_started', {
@@ -1072,6 +1328,10 @@ export class WorkflowLifecycleManager {
       required: boolean;
       defaultValue?: any;
       examples?: any[];
+      ownership?: 'structural' | 'value' | 'credential';
+      fillModeDefault?: 'manual_static' | 'runtime_ai' | 'buildtime_ai_once';
+      supportsRuntimeAI?: boolean;
+      supportsBuildtimeAI?: boolean;
     }> = [];
 
     const perNodeMissingFields: Array<{
@@ -1079,12 +1339,6 @@ export class WorkflowLifecycleManager {
       nodeType: string;
       missingFields: string[];
     }> = [];
-
-    const isExpressionValue = (value: any): boolean => {
-      if (typeof value !== 'string') return false;
-      const trimmed = value.trim();
-      return trimmed.startsWith('{{') && trimmed.endsWith('}}');
-    };
 
     for (const node of workflow.nodes) {
       const nodeType = unifiedNormalizeNodeType(node);
@@ -1097,186 +1351,49 @@ export class WorkflowLifecycleManager {
       const nodeLabel = node.data?.label || schema.label;
       const existingConfig = node.data?.config || {};
       const nodeMissingFields: string[] = [];
+      const unifiedDefinition = unifiedNodeRegistry.get(nodeType);
+      const definitionInputSchema = unifiedDefinition?.inputSchema;
 
-      // Check required fields from schema
-      const requiredFields = schema.configSchema?.required || [];
-      for (const fieldName of requiredFields) {
-        const existingValue = existingConfig[fieldName];
-
-        // ✅ UNIVERSAL: For array fields (like conditional node conditions), check if array is empty or has empty expressions
-        // Check if this is a conditional node using registry (not hardcoded)
-        const nodeDef = unifiedNodeRegistry.get(nodeType);
-        const isConditionalNode = nodeType === 'if_else' || 
-                                  nodeType === 'switch' ||
-                                  (nodeDef?.tags || []).includes('conditional') ||
-                                  (nodeDef?.tags || []).includes('logic');
-        
-        if (fieldName === 'conditions' && isConditionalNode) {
-          if (Array.isArray(existingValue) && existingValue.length > 0) {
-            // Check if all conditions have valid expressions
-            const hasValidCondition = existingValue.some((cond: any) => {
-              if (typeof cond === 'object' && cond !== null) {
-                // Check for expression field (new format)
-                if (cond.expression && typeof cond.expression === 'string' && cond.expression.trim() !== '') {
-                  return true;
-                }
-                // Check for field/operator/value format (new format)
-                if (cond.field && cond.operator && cond.value !== undefined && cond.value !== null && cond.value !== '') {
-                  return true;
-                }
-                // Check for legacy format
-                if (cond.leftValue || cond.operation || cond.rightValue) {
-                  return true;
-                }
-              }
-              return false;
-            });
-            if (hasValidCondition) {
-              console.log(`[DiscoverNodeInputs] ✅ Skipping conditions for conditional node - has valid condition(s)`);
-              continue; // Has valid conditions, skip
-            }
-          }
-          // If conditions is missing, empty array, or has no valid expressions, we need to ask for it
-        }
-
-        // Skip if field already has concrete value
-        // SPECIAL CASE: For google_sheets, treat expression values like {{output}} as NOT satisfied
-        if (
-          existingValue !== undefined &&
-          existingValue !== null &&
-          existingValue !== '' &&
-          !(nodeType === 'google_sheets' && isExpressionValue(existingValue)) &&
-          !(fieldName === 'conditions' && isConditionalNode) // Don't skip conditions for conditional nodes (handled above)
-        ) {
+      const requiredFields = new Set(schema.configSchema?.required || []);
+      const unifiedInputSchema = definitionInputSchema || {};
+      for (const [fieldName, fieldDef] of Object.entries(unifiedInputSchema)) {
+        if (isCredentialOwnership(fieldName, fieldDef) || isStructuralOwnership(fieldName, fieldDef)) {
           continue;
         }
 
-        // ✅ CRITICAL: Conditional validation for Gmail node
-        // messageId is only required when operation === 'get', not for 'send'
-        if (nodeType === 'google_gmail' && fieldName === 'messageId') {
-          const operation = existingConfig.operation || 'send';
-          if (operation !== 'get') {
-            console.log(`[DiscoverNodeInputs] Skipping messageId for Gmail node - operation is '${operation}', not 'get'`);
-            continue; // Skip messageId for non-get operations
-          }
+        const effectiveMode = resolveEffectiveFieldFillMode(fieldName, definitionInputSchema, existingConfig);
+        if (effectiveMode === 'runtime_ai') {
+          continue;
         }
 
-        // ✅ CRITICAL: Skip ALL credential fields (handled separately in credentials section)
-        const fieldInfo = schema.configSchema?.optional?.[fieldName];
-        const isCredentialField = this.isCredentialField(fieldName, nodeType);
-        
-        if (isCredentialField) {
-          console.log(`[DiscoverNodeInputs] ✅ Skipping credential field "${fieldName}" for ${nodeType} - handled in credentials section`);
-          continue; // Credentials handled separately in credentials section
+        const existingValue = existingConfig[fieldName];
+        const hasConcreteValue =
+          existingValue !== undefined &&
+          existingValue !== null &&
+          !(typeof existingValue === 'string' && existingValue.trim() === '') &&
+          !(Array.isArray(existingValue) && existingValue.length === 0) &&
+          !(typeof existingValue === 'object' && !Array.isArray(existingValue) && Object.keys(existingValue).length === 0) &&
+          !isPlaceholderValue(existingValue);
+        if (hasConcreteValue) {
+          continue;
         }
 
         nodeMissingFields.push(fieldName);
-
-        // ✅ UNIVERSAL: For conditional node conditions field, use array type and provide better description
-        let fieldType = fieldInfo?.type || 'string';
-        let description = fieldInfo?.description || fieldName;
-        let examples = fieldInfo?.examples;
-        
-        if (isConditionalNode && fieldName === 'conditions') {
-          fieldType = 'array';
-          description = 'Conditions to evaluate. Each condition should have: field (string), operator (equals|not_equals|greater_than|less_than|greater_than_or_equal|less_than_or_equal|contains|not_contains), value (string|number|boolean). Example: [{ field: "orderTotal", operator: "greater_than", value: 100 }]';
-          examples = [
-            [{ field: 'orderTotal', operator: 'greater_than', value: 100 }],
-            [{ field: '{{$json.age}}', operator: 'greater_than_or_equal', value: 18 }],
-            [{ expression: '{{$json.orderTotal}} > 100' }], // Legacy expression format also supported
-          ];
-        }
-
         inputs.push({
           nodeId: node.id,
           nodeType,
           nodeLabel,
           fieldName,
-          fieldType,
-          description,
-          required: true,
-          defaultValue: fieldInfo?.default,
-          examples,
+          fieldType: fieldDef.type || 'string',
+          description: fieldDef.description || fieldName,
+          required: requiredFields.has(fieldName) || !!fieldDef.required,
+          defaultValue: fieldDef.default,
+          examples: fieldDef.examples,
+          ownership: fieldDef.ownership || 'value',
+          fillModeDefault: fieldDef.fillMode?.default,
+          supportsRuntimeAI: fieldDef.fillMode?.supportsRuntimeAI !== false,
+          supportsBuildtimeAI: fieldDef.fillMode?.supportsBuildtimeAI !== false,
         });
-      }
-
-      // Check optional fields that might need user input (templates, channels, etc.)
-      const optionalFields = schema.configSchema?.optional || {};
-      for (const [fieldName, fieldInfo] of Object.entries(optionalFields)) {
-        const existingValue = existingConfig[fieldName];
-
-        // ✅ UNIVERSAL: Conditional required fields (schema-driven)
-        // If a field has `requiredIf: { field, equals }` and the condition is met,
-        // treat it as required and prompt when missing.
-        const requiredIf = (fieldInfo as any)?.requiredIf as { field: string; equals: any } | undefined;
-        const isConditionallyRequired =
-          !!requiredIf &&
-          typeof requiredIf.field === 'string' &&
-          (existingConfig as any)?.[requiredIf.field] === requiredIf.equals;
-
-        // Skip if field already has concrete value
-        // SPECIAL CASE: For google_sheets, treat expression values like {{output}} as NOT satisfied
-        if (
-          existingValue !== undefined &&
-          existingValue !== null &&
-          existingValue !== '' &&
-          !(nodeType === 'google_sheets' && isExpressionValue(existingValue))
-        ) {
-          continue;
-        }
-
-        // ✅ CRITICAL: Skip ALL credential fields (handled separately in credentials section)
-        if (this.isCredentialField(fieldName, nodeType)) {
-          console.log(`[DiscoverNodeInputs] ✅ Skipping credential field "${fieldName}" for ${nodeType} - handled in credentials section`);
-          continue; // Credentials handled separately in credentials section
-        }
-
-        // ✅ CRITICAL: Only include fields that are user-configurable inputs
-        // For Gmail: to, subject, body, and from (optional) are configurable inputs
-        // OAuth credentials handled separately, but 'from' can be overridden
-        const fieldNameLower = fieldName.toLowerCase();
-        const isUserConfigurable = 
-          fieldNameLower.includes('template') ||
-          fieldNameLower.includes('channel') ||
-          fieldNameLower.includes('subject') ||
-          fieldNameLower.includes('body') ||
-          fieldNameLower.includes('message') ||
-          fieldNameLower.includes('prompt') ||
-          fieldNameLower.includes('recipient') || // recipientSource / recipientEmails
-          (fieldNameLower === 'to' && nodeType === 'google_gmail') || // Gmail: 'to' is input
-          (fieldNameLower === 'subject' && nodeType === 'google_gmail') || // Gmail: 'subject' is input
-          (fieldNameLower === 'body' && nodeType === 'google_gmail') || // Gmail: 'body' is input
-          (fieldNameLower === 'from' && nodeType === 'google_gmail') || // Gmail: 'from' is optional input (can override OAuth)
-          (fieldNameLower.includes('to') && nodeType !== 'google_gmail') ||
-          (fieldNameLower.includes('from') && nodeType !== 'google_gmail') || // Other nodes: 'from' is input
-          // Google Sheets: spreadsheetId + sheetName + range should always be user-configurable
-          (nodeType === 'google_sheets' && (
-            fieldNameLower === 'spreadsheetid' ||
-            fieldNameLower === 'spreadsheet_id' ||
-            fieldNameLower === 'sheetname' ||
-            fieldNameLower === 'sheet_name' ||
-            fieldNameLower === 'range'
-          )) ||
-          // LinkedIn: mediaUrl should always be surfaced as a configurable input
-          (nodeType === 'linkedin' && fieldNameLower === 'mediaurl');
-
-        if ((isUserConfigurable || isConditionallyRequired) && !existingConfig[fieldName]) {
-          if (!nodeMissingFields.includes(fieldName)) {
-            nodeMissingFields.push(fieldName);
-          }
-
-          inputs.push({
-            nodeId: node.id,
-            nodeType,
-            nodeLabel,
-            fieldName,
-            fieldType: (fieldInfo as any)?.type || 'string',
-            description: (fieldInfo as any)?.description || fieldName,
-            required: isConditionallyRequired,
-            defaultValue: (fieldInfo as any)?.default,
-            examples: (fieldInfo as any)?.examples,
-          });
-        }
       }
 
       if (nodeMissingFields.length > 0) {
@@ -1796,7 +1913,7 @@ export class WorkflowLifecycleManager {
           // Map credential to node config fields based on connector type
           if (credentialContract.type === 'webhook' && credentialContract.provider === 'slack') {
             // ✅ WORLD-CLASS: Validate webhook URL before accepting
-            const { validateWebhookUrl } = require('../../core/validation/webhook-url-validator');
+            const { validateWebhookUrl } = require('../core/validation/webhook-url-validator');
             const urlValidation = validateWebhookUrl(credentialValue);
             if (!urlValidation.valid) {
               console.error(`[WorkflowLifecycle] ❌ Invalid Slack webhook URL: ${urlValidation.error}`);
@@ -2051,6 +2168,10 @@ export class WorkflowLifecycleManager {
     if (!validation.valid) {
       errors.push(...validation.errors);
     }
+    const structuralReadiness = validateStructuralReadiness(workflow.nodes as any, { strict: true });
+    if (structuralReadiness.errors.length > 0) {
+      errors.push(...structuralReadiness.errors);
+    }
 
     // ✅ CRITICAL: Check credentials with vault lookup
     const credentialDiscovery = await credentialDiscoveryPhase.discoverCredentials(workflow, userId);
@@ -2148,6 +2269,31 @@ export class WorkflowLifecycleManager {
       ready: errors.length === 0,
       errors,
       missingCredentials: missingCredentialMessages, // Return string array, not CredentialRequirement[]
+    };
+  }
+
+  /**
+   * Post-graph enrichment for plan-driven workflows: vault-aware credential discovery,
+   * satisfied OAuth ref injection, node input scan, validation pipeline.
+   * Mirrors steps after graph creation in generateWorkflowGraph without planner/DSL.
+   */
+  async finalizePlanDrivenWorkflow(
+    workflow: Workflow,
+    userId?: string
+  ): Promise<WorkflowGenerationResult> {
+    let finalWorkflow = materializeStructuralFields(workflow);
+    const credentialDiscovery = await credentialDiscoveryPhase.discoverCredentials(finalWorkflow, userId);
+    finalWorkflow = this.autoInjectSatisfiedCredentialRefs(finalWorkflow, credentialDiscovery);
+    const nodeInputs = this.discoverNodeInputs(finalWorkflow);
+    const validation = workflowValidationPipeline.validateWorkflow(finalWorkflow);
+    return {
+      workflow: finalWorkflow,
+      requiredCredentials: credentialDiscovery,
+      requiredInputs: nodeInputs,
+      validation,
+      documentation: 'Built from structured workflow plan (plan-driven)',
+      suggestions: [],
+      estimatedComplexity: 'medium',
     };
   }
 }

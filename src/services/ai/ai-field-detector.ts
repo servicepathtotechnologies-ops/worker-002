@@ -36,7 +36,7 @@ export class AIFieldDetector {
   ): boolean {
     const fieldLower = fieldName.toLowerCase();
     const nodeTypeLower = nodeType.toLowerCase();
-    
+
     // ✅ ROOT-LEVEL: Text fields that benefit from AI generation
     const aiGeneratableFields = [
       'message', 'subject', 'body', 'heading', 'title',

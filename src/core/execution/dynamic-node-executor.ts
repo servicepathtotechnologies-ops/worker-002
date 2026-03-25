@@ -17,7 +17,8 @@
  */
 
 import { unifiedNodeRegistry } from '../registry/unified-node-registry';
-import { NodeExecutionContext, NodeExecutionResult } from '../types/unified-node-contract';
+import type { UnifiedNodeDefinition } from '../types/unified-node-contract';
+import { NodeExecutionContext, NodeExecutionResult, FieldFillMode, NodeInputField } from '../types/unified-node-contract';
 import { WorkflowNode, Workflow } from '../../core/types/ai-types';
 import { LRUNodeOutputsCache } from '../cache/lru-node-outputs-cache';
 import { SupabaseClient } from '@supabase/supabase-js';
@@ -25,6 +26,70 @@ import { SupabaseClient } from '@supabase/supabase-js';
 import { IntentDrivenJsonRouter, shouldActivateRouter } from '../intent-driven-json-router';
 import { universalNodeAIContext } from '../../services/ai/universal-node-ai-context';
 import { aiFieldDetector } from '../../services/ai/ai-field-detector';
+import { normalizeRuntimePayload } from '../runtime/runtime-input-adapter';
+import { validateResolvedInput, guaranteeInputForSchema } from './input-guarantee';
+import { buildEffectiveFillModes, isMeaningfulStaticValue } from '../utils/fill-mode-resolver';
+import { isEffectivelyEmptyUpstreamPayload } from '../utils/upstream-payload-signal';
+import {
+  getUpstreamNodeTypeFromExecutionGlobal,
+  pickPrimaryNarrativeStringFromUpstreamOutput,
+} from '../utils/upstream-narrative-text';
+import { fillMissingTitleLikeRuntimeAiFields } from './runtime-ai-title-backfill';
+import { applyInputAliasesFromSchema } from './apply-input-aliases';
+import { isCredentialOwnership } from '../utils/field-ownership';
+
+/** Stable nodeOutputs cache keys — see `worker/docs/OBSERVABILITY_CONTRACT.md`. */
+export const EXECUTION_OBSERVABILITY_KEYS = {
+  resolvedInputs: (nodeId: string) => `__resolved_inputs__:${nodeId}`,
+  runtimeResolutionAudit: (nodeId: string) => `__runtime_resolution_audit__:${nodeId}`,
+} as const;
+
+/** NDJSON to workspace `debug-8c7c31.log` when HTTP ingest is unavailable (debug sessions). */
+function appendDebugSessionLog(payload: Record<string, unknown>): void {
+  try {
+    const fs = require('fs') as typeof import('fs');
+    const path = require('path') as typeof import('path');
+    const line = `${JSON.stringify({ sessionId: '8c7c31', ...payload, timestamp: Date.now() })}\n`;
+    const candidates = [
+      path.join(process.cwd(), 'debug-8c7c31.log'),
+      path.join(process.cwd(), '..', 'debug-8c7c31.log'),
+      path.join(__dirname, '../../../../debug-8c7c31.log'),
+      path.join(__dirname, '../../../debug-8c7c31.log'),
+    ];
+    for (const p of candidates) {
+      try {
+        fs.appendFileSync(p, line);
+        return;
+      } catch {
+        /* try next */
+      }
+    }
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Registry role first; if role is missing (legacy defs), allow canonical text field names only.
+ */
+function shouldFillRuntimeAiFromWorkflowIntent(fieldName: string, fieldDef: NodeInputField | undefined): boolean {
+  if (!fieldDef) return false;
+  const t = (fieldDef.type || 'string') as string;
+  if (t !== 'string' && t !== 'expression') return false;
+  const role = fieldDef.role;
+  if (
+    role === 'prompt' ||
+    role === 'content' ||
+    role === 'long_body' ||
+    role === 'short_summary' ||
+    role === 'title_like'
+  ) {
+    return true;
+  }
+  if (role) return false;
+  const f = fieldName.toLowerCase();
+  return f === 'prompt' || f === 'query' || f === 'text' || f === 'message';
+}
 
 export interface DynamicExecutionContext {
   node: WorkflowNode;
@@ -34,6 +99,58 @@ export interface DynamicExecutionContext {
   workflowId: string;
   userId?: string;
   currentUserId?: string;
+}
+
+function isSensitiveInputField(fieldName: string): boolean {
+  const key = fieldName.toLowerCase();
+  return (
+    key.includes('credential') ||
+    key.includes('password') ||
+    key.includes('token') ||
+    key.includes('secret') ||
+    key.includes('apikey') ||
+    key.includes('api_key') ||
+    key.includes('auth') ||
+    key.includes('oauth') ||
+    key.includes('privatekey') ||
+    key.includes('private_key')
+  );
+}
+
+/**
+ * Registry/schema-driven verbose logging for AI input resolution (avoid node-type string checks).
+ */
+function shouldLogVerboseAiInputResolution(definition: UnifiedNodeDefinition | undefined): boolean {
+  if (!definition) return false;
+  if (definition.category === 'ai') return true;
+  const schema = definition.inputSchema as Record<string, unknown> | undefined;
+  if (schema && typeof schema === 'object') {
+    const keys = Object.keys(schema);
+    if (keys.includes('body') && (keys.includes('headers') || keys.includes('url'))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function sanitizeResolvedInputsForPersistence(inputs: Record<string, any>): Record<string, any> {
+  const sanitized: Record<string, any> = {};
+  for (const [fieldName, value] of Object.entries(inputs)) {
+    if (isSensitiveInputField(fieldName)) {
+      sanitized[fieldName] = '[MASKED]';
+      continue;
+    }
+    sanitized[fieldName] = value;
+  }
+  return sanitized;
+}
+
+function isMeaningfulValueForResolution(value: unknown): boolean {
+  if (value === null || value === undefined) return false;
+  if (typeof value === 'string') return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === 'object') return Object.keys(value as Record<string, unknown>).length > 0;
+  return true;
 }
 
 /**
@@ -46,6 +163,16 @@ export async function executeNodeDynamically(
   context: DynamicExecutionContext
 ): Promise<unknown> {
   const { node, input, nodeOutputs, supabase, workflowId, userId, currentUserId } = context;
+  const runtimeMarker = 'runtime-marker-2026-03-20-v1';
+  const expectedRuntimeMarker = (global as any).__expectedExecutionRuntimeMarker;
+  if (expectedRuntimeMarker && expectedRuntimeMarker !== runtimeMarker) {
+    console.warn('[DynamicExecutor] ⚠️ Runtime marker mismatch detected', {
+      expectedRuntimeMarker,
+      runtimeMarker,
+      nodeId: node.id,
+      workflowId,
+    });
+  }
   
   // Step 1: Extract node type
   const nodeType = node.data?.type || node.type;
@@ -85,14 +212,29 @@ export async function executeNodeDynamically(
   const migratedConfig = unifiedNodeRegistry.migrateConfig(nodeType, config);
   config = migratedConfig;
   
+  // Derive effective fill modes for each input field from registry metadata and
+  // any explicit per-node overrides stored in config._fillMode.
+  const inputSchema = definition.inputSchema as Record<string, { fillMode?: { default: FieldFillMode; supportsRuntimeAI?: boolean; supportsBuildtimeAI?: boolean } }>;
+  const effectiveFillModes = buildEffectiveFillModes(definition.inputSchema, config as Record<string, any>);
+  
   // ✅ ROOT-LEVEL: Auto-fill text fields using AI before validation
-  // This ensures message, subject, body, etc. are auto-generated if empty
+  // This ensures message, subject, body, etc. are auto-generated if empty.
+  // Respect registry/UI-driven fill modes so we ONLY auto-fill fields that are
+  // allowed to use build-time AI (buildtime_ai_once or runtime_ai) and are not
+  // explicitly locked to manual_static.
   try {
     const aiFields = aiFieldDetector.detectAIFields(node);
     const emptyAIFields = aiFields
       .filter(f => f.shouldAutoGenerate)
       .map(f => f.fieldName)
       .filter(fieldName => {
+        const mode = effectiveFillModes[fieldName];
+        const fieldDef = inputSchema?.[fieldName];
+        const supportsBuildtimeAI = fieldDef?.fillMode?.supportsBuildtimeAI ?? false;
+        // Skip fields that are explicitly manual or where build-time AI is disallowed.
+        if (mode === 'manual_static' || !supportsBuildtimeAI) {
+          return false;
+        }
         const currentValue = config[fieldName];
         return !currentValue || (typeof currentValue === 'string' && currentValue.trim() === '');
       });
@@ -230,37 +372,297 @@ export async function executeNodeDynamically(
     // Wait for all router operations to complete
     await Promise.all(routerPromises);
   }
-  
-  // Step 6: Resolve input values using AI Input Resolver (NEW ARCHITECTURE)
-  // This replaces static JSON dropdown logic
-  // Use filtered outputs (router may have modified them)
-  const resolvedInputs = await resolveInputsWithAI(
+
+  // Step 5.5: Raw upstream payload – AI will analyze its keys and produce JSON for this node.
+  // Empty-until-runtime: config input fields are left empty at build time; we fill them here from actual previous output.
+  const upstreamPayload = input !== undefined && input !== null ? input : getPreviousNodeOutput(nodeOutputs);
+
+  // Step 6: Input resolution MUST combine (1) user prompt intent, (2) previous node JSON, (3) node responsibility (registry input schema),
+  // and MUST filter the previous JSON to only keys/values relevant to intent and responsibility. userIntent comes from currentWorkflowIntent set at execution start.
+  let resolvedInputs = await resolveInputsWithAI(
     definition.inputSchema as any,
     migratedConfig,
     nodeOutputs,
     node.id,
     nodeType,
-    node.data?.label
+    node.data?.label,
+    upstreamPayload
   );
-  
-  // ✅ CRITICAL FIX: Store rawInput as 'input' in cache for {{input.*}} template resolution
-  // This ensures templates like {{input.response.subject}} resolve correctly for ALL nodes
-  if (input !== undefined && input !== null) {
-    nodeOutputs.set('input', input, true);
-    // Also set as $json for backward compatibility (if not already set)
-    if (!nodeOutputs.get('$json')) {
-      nodeOutputs.set('$json', input, true);
+
+  // Guarantee: when validation fails or AI failed (fallback path), fill missing required fields from previous output so node always gets schema-valid input.
+  const requiredInputs = definition.requiredInputs || [];
+  const runtimeInputSchema = definition.inputSchema as Record<string, any>;
+  if (
+    runtimeInputSchema &&
+    (upstreamPayload == null ||
+      typeof upstreamPayload === 'object' ||
+      typeof upstreamPayload === 'string')
+  ) {
+    let runtimeFieldsAudit: string[] = [];
+    let resolvedRuntimeFieldsAudit: string[] = [];
+    let missingRuntimeFieldsAudit: string[] = [];
+    let current = typeof resolvedInputs === 'object' && resolvedInputs !== null ? resolvedInputs : {};
+    let validation = validateResolvedInput(current, runtimeInputSchema, requiredInputs);
+
+    // Optional retry: call AI once more with explicit required fields in the prompt.
+    if (!validation.valid) {
+      try {
+        const retried = await resolveInputsWithAI(
+          definition.inputSchema as any,
+          migratedConfig,
+          nodeOutputs,
+          node.id,
+          nodeType,
+          node.data?.label,
+          upstreamPayload,
+          requiredInputs
+        );
+        const retriedCurrent = typeof retried === 'object' && retried !== null ? retried : {};
+        const validation2 = validateResolvedInput(retriedCurrent, runtimeInputSchema, requiredInputs);
+        if (validation2.valid) {
+          resolvedInputs = retriedCurrent;
+          current = retriedCurrent;
+          validation = validation2;
+        }
+      } catch (_) {
+        // Fall through to guarantee layer.
+      }
     }
-    if (!nodeOutputs.get('json')) {
-      nodeOutputs.set('json', input, true);
+
+    // UNIVERSAL: Always run guarantee layer after AI resolution.
+    // This ensures *all* schema keys (required + optional) get type-safe values at runtime,
+    // even when the AI only satisfied required fields.
+    resolvedInputs = guaranteeInputForSchema({
+      resolved: current,
+      previousOutput: upstreamPayload,
+      inputSchema: runtimeInputSchema,
+      requiredInputs,
+      mappingMetadata: (migratedConfig as Record<string, any>)?._mappingMetadata,
+      fieldFillModes: effectiveFillModes,
+    });
+
+    const rawWorkflowIntent = String((global as any).currentWorkflowIntent || '').trim();
+
+    fillMissingTitleLikeRuntimeAiFields({
+      resolvedInputs: resolvedInputs as Record<string, any>,
+      upstreamPayload,
+      inputSchema: runtimeInputSchema,
+      effectiveFillModes,
+      workflowIntent: rawWorkflowIntent,
+    });
+
+    // Thin upstream (e.g. manual trigger): AI mapping often leaves runtime_ai text fields empty;
+    // guarantee cannot lift from previous. Registry role + runtime_ai → last-resort workflow intent.
+    if (isEffectivelyEmptyUpstreamPayload(upstreamPayload)) {
+      const fallbackIntent =
+        rawWorkflowIntent.length > 0
+          ? rawWorkflowIntent
+          : 'Process the workflow using the configured nodes.';
+      const filledFromIntent: string[] = [];
+      for (const fieldName of Object.keys(runtimeInputSchema)) {
+        if (effectiveFillModes[fieldName] !== 'runtime_ai') continue;
+        const fieldDef = runtimeInputSchema[fieldName] as NodeInputField | undefined;
+        if (!shouldFillRuntimeAiFromWorkflowIntent(fieldName, fieldDef)) continue;
+        if (isMeaningfulStaticValue((resolvedInputs as Record<string, any>)[fieldName])) continue;
+        (resolvedInputs as Record<string, any>)[fieldName] = fallbackIntent;
+        filledFromIntent.push(fieldName);
+      }
+      // #region agent log
+      const logPayload = {
+        runId: 'verify',
+        hypothesisId: 'H2',
+        location: 'dynamic-node-executor.ts:thinUpstreamIntentFallback',
+        message: 'workflow_intent_fallback',
+        data: {
+          nodeType,
+          nodeId: node.id,
+          fallbackLen: fallbackIntent.length,
+          filledFields: filledFromIntent,
+          upstreamKeys:
+            upstreamPayload && typeof upstreamPayload === 'object' && !Array.isArray(upstreamPayload)
+              ? Object.keys(upstreamPayload as object)
+              : typeof upstreamPayload,
+        },
+      };
+      appendDebugSessionLog(logPayload);
+      fetch('http://127.0.0.1:7242/ingest/931075f2-f077-4d4d-bcbc-f5580967ee5c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8c7c31'},body:JSON.stringify({sessionId:'8c7c31',runId:'verify',hypothesisId:'H2',location:'dynamic-node-executor.ts:thinUpstreamIntentFallback',message:'workflow_intent_fallback',data:logPayload.data,timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
     }
+
+    // Enforce mode contract: manual/build-time fields must come from config, not AI.
+    // Do NOT overwrite with empty static values; runtime-resolved values should survive.
+    for (const fieldName of Object.keys(runtimeInputSchema)) {
+      const mode = effectiveFillModes[fieldName];
+      if (mode === 'manual_static' || mode === 'buildtime_ai_once') {
+        const staticValue = (migratedConfig as Record<string, any>)[fieldName];
+        if (isMeaningfulStaticValue(staticValue)) {
+          (resolvedInputs as Record<string, any>)[fieldName] = staticValue;
+        }
+      }
+    }
+
+    // Registry aliasOf: copy canonical runtime_ai field into sibling alias (e.g. Slack text ← message).
+    applyInputAliasesFromSchema(resolvedInputs as Record<string, unknown>, runtimeInputSchema as Record<string, any>);
+
+    // Strict enforcement: requiredInputs OR schema essentialForExecution + runtime_ai (e.g. Gmail subject/body when library has empty requiredConfig).
+    const strictRuntimeFieldNames = Object.keys(runtimeInputSchema).filter((fieldName) => {
+      if (effectiveFillModes[fieldName] !== 'runtime_ai') return false;
+      const fd = runtimeInputSchema[fieldName] as NodeInputField | undefined;
+      const essential = fd?.essentialForExecution === true;
+      return requiredInputs.includes(fieldName) || essential;
+    });
+
+    const unresolvedRuntimeFields: string[] = [];
+    for (const fieldName of strictRuntimeFieldNames) {
+      const value = (resolvedInputs as Record<string, any>)[fieldName];
+      if (!isMeaningfulStaticValue(value)) {
+        unresolvedRuntimeFields.push(fieldName);
+      }
+    }
+    if (unresolvedRuntimeFields.length > 0) {
+      return {
+        _error: `Runtime input resolution failed for required field(s): ${unresolvedRuntimeFields.join(', ')}`,
+        _validationErrors: unresolvedRuntimeFields.map((f) => `Required runtime_ai field '${f}' is missing after runtime resolution`),
+        _nodeType: nodeType,
+        _runtimeDiagnostics: {
+          runtimeOwnedFields: strictRuntimeFieldNames,
+          runtimeResolvedFields: strictRuntimeFieldNames.filter((f) => !unresolvedRuntimeFields.includes(f)),
+          runtimeResolutionErrors: unresolvedRuntimeFields,
+          fallbackApplied: strictRuntimeFieldNames.length > 0,
+          schemaValidationFailures: unresolvedRuntimeFields.map((f) => `missing:${f}`),
+          canonicalizationIssues: [],
+        },
+      };
+    }
+
+    // Deterministic runtime fill-mode observability for debugging and auditing.
+    try {
+      const runtimeFields = Object.keys(runtimeInputSchema).filter(
+        (fieldName) => effectiveFillModes[fieldName] === 'runtime_ai'
+      );
+      const resolvedRuntimeFields = runtimeFields.filter((fieldName) =>
+        isMeaningfulValueForResolution((resolvedInputs as Record<string, any>)?.[fieldName])
+      );
+      const missingRuntimeFields = runtimeFields.filter(
+        (fieldName) => !resolvedRuntimeFields.includes(fieldName)
+      );
+
+      const effectiveFillModesForSchema = Object.fromEntries(
+        Object.keys(runtimeInputSchema).map((fieldName) => [fieldName, effectiveFillModes[fieldName] ?? 'manual_static'])
+      );
+
+      console.log(`[DynamicExecutor] Fill-mode resolution summary for ${node.id} (${nodeType}):`, {
+        effectiveFillModes: effectiveFillModesForSchema,
+        runtimeFields,
+        resolvedRuntimeFields,
+        missingRuntimeFields,
+      });
+      runtimeFieldsAudit = runtimeFields;
+      resolvedRuntimeFieldsAudit = resolvedRuntimeFields;
+      missingRuntimeFieldsAudit = missingRuntimeFields;
+    } catch (fillModeSummaryError) {
+      console.warn(`[DynamicExecutor] Failed fill-mode summary for ${node.id}:`, fillModeSummaryError);
+    }
+
+    try {
+      nodeOutputs.set(
+        EXECUTION_OBSERVABILITY_KEYS.runtimeResolutionAudit(node.id),
+        {
+          runtimeMarker,
+          nodeId: node.id,
+          nodeType,
+          runtimeFields: runtimeFieldsAudit,
+          resolvedRuntimeFields: resolvedRuntimeFieldsAudit,
+          unresolvedRuntimeFields: missingRuntimeFieldsAudit,
+          runtimeOwnedFields: runtimeFieldsAudit,
+          runtimeResolvedFields: resolvedRuntimeFieldsAudit,
+          runtimeResolutionErrors: missingRuntimeFieldsAudit,
+          fallbackApplied: runtimeFieldsAudit.length > 0,
+          schemaValidationFailures: missingRuntimeFieldsAudit.map((f) => `missing:${f}`),
+          canonicalizationIssues: [],
+          capturedAt: new Date().toISOString(),
+        },
+        true
+      );
+    } catch (runtimeAuditError) {
+      console.warn(`[DynamicExecutor] Failed to persist runtime resolution audit for ${node.id}:`, runtimeAuditError);
+    }
+  }
+
+  // Capture resolved runtime inputs for execution observability without leaking secrets.
+  // This is used by execution detail views and "last runtime value" previews in UI.
+  try {
+    const resolvedInputSources: Record<string, 'runtime_ai' | 'static_config'> = {};
+    for (const fieldName of Object.keys(resolvedInputs || {})) {
+      resolvedInputSources[fieldName] = effectiveFillModes[fieldName] === 'runtime_ai'
+        ? 'runtime_ai'
+        : 'static_config';
+    }
+    nodeOutputs.set(
+      EXECUTION_OBSERVABILITY_KEYS.resolvedInputs(node.id),
+      {
+        fields: sanitizeResolvedInputsForPersistence(resolvedInputs || {}),
+        sources: resolvedInputSources,
+        runtimeMarker,
+        capturedAt: new Date().toISOString(),
+      },
+      true
+    );
+  } catch (captureError) {
+    console.warn(`[DynamicExecutor] Failed to capture resolved inputs for ${node.id}:`, captureError);
+  }
+
+  // Effective input: use AI-produced JSON when it is a full object (so code/templates see the structure this node needs); else fallback to normalizer
+  // Branching nodes (switch/if_else) evaluate expressions against upstream data (e.g. $json.response) while also resolving runtime_ai config fields.
+  // Replacing effectiveInput with resolvedInputs alone drops the upstream payload and breaks routing (matchedCase null / expression throws).
+  let effectiveInput: unknown = upstreamPayload;
+  if (nodeType === 'switch' || nodeType === 'if_else') {
+    const up =
+      typeof upstreamPayload === 'object' && upstreamPayload !== null && !Array.isArray(upstreamPayload)
+        ? (upstreamPayload as Record<string, unknown>)
+        : {};
+    const res =
+      resolvedInputs && typeof resolvedInputs === 'object' && !Array.isArray(resolvedInputs)
+        ? (resolvedInputs as Record<string, unknown>)
+        : {};
+    effectiveInput = { ...up, ...res };
+    if (Object.keys(res).length > 0) {
+      console.log(
+        `[DynamicExecutor] ✅ Merged upstream payload with resolved branching config for ${nodeType} (upstreamKeys=${Object.keys(up).join(', ')}, resolvedKeys=${Object.keys(res).join(', ')})`
+      );
+    }
+  } else if (resolvedInputs && typeof resolvedInputs === 'object' && Object.keys(resolvedInputs).length > 0) {
+    effectiveInput = resolvedInputs;
+    const prevKeys = typeof upstreamPayload === 'object' && upstreamPayload !== null ? Object.keys(upstreamPayload as object) : [];
+    console.log(`[DynamicExecutor] ✅ AI analyzed previous keys [${prevKeys.join(', ')}] and produced input JSON for ${nodeType}`);
+  } else if (upstreamPayload !== undefined && upstreamPayload !== null && typeof upstreamPayload === 'object') {
+    const expectedKeys = (node.data?.config as Record<string, unknown>)?._expectedInputKeys as string[] | undefined;
+    const { normalizedPayload, normalized } = normalizeRuntimePayload({
+      payload: upstreamPayload,
+      expectedKeys: Array.isArray(expectedKeys) ? expectedKeys : undefined,
+    });
+    if (normalized) effectiveInput = normalizedPayload;
+  }
+
+  // Store effective input as 'input'/$json for template resolution and execution (node sees the structure it needs)
+  if (effectiveInput !== undefined && effectiveInput !== null) {
+    nodeOutputs.set('input', effectiveInput, true);
+    nodeOutputs.set('$json', effectiveInput, true);
+    nodeOutputs.set('json', effectiveInput, true);
   }
 
   // ✅ CRITICAL FIX: Merge AI-generated inputs back into config for UI display
   // This ensures AI-generated values (headers, body, prompts, etc.) are visible in Properties Panel
   // Only merge if the field is empty in config (don't overwrite user-provided values)
   const mergedConfig = { ...migratedConfig };
+  const mergedDef = unifiedNodeRegistry.get(nodeType);
+  const mergedSchema = mergedDef?.inputSchema || {};
   for (const [fieldName, aiValue] of Object.entries(resolvedInputs)) {
+    const fieldDef = (mergedSchema as Record<string, any>)[fieldName];
+    if (fieldDef && isCredentialOwnership(fieldName, fieldDef)) {
+      // Never persist AI-generated credential-like values into node config.
+      continue;
+    }
     const currentValue = mergedConfig[fieldName];
     // Only merge if current value is empty/undefined/null
     if (!currentValue || 
@@ -271,13 +673,13 @@ export async function executeNodeDynamically(
     }
   }
 
-  // Step 7: Create execution context
+  // Step 7: Create execution context (rawInput = effective normalized payload for never-failing code)
   const execContext: NodeExecutionContext = {
     nodeId: node.id,
     nodeType,
     config: mergedConfig, // Use merged config (includes AI-generated values)
     inputs: resolvedInputs, // Use resolved inputs for execution
-    rawInput: input,
+    rawInput: effectiveInput,
     upstreamOutputs: new Map(),
     workflowId,
     userId,
@@ -341,9 +743,7 @@ export async function executeNodeDynamically(
 
 /**
  * Resolve input values using AI Input Resolver (NEW ARCHITECTURE)
- * 
- * This replaces static JSON dropdown logic with AI-driven input generation.
- * AI analyzes previous outputs and generates appropriate inputs dynamically.
+ * When overridePreviousOutput is provided (e.g. normalized payload from runtime adapter), use it for key-aware binding.
  */
 async function resolveInputsWithAI(
   inputSchema: any,
@@ -351,24 +751,61 @@ async function resolveInputsWithAI(
   nodeOutputs: LRUNodeOutputsCache,
   currentNodeId: string,
   nodeType: string,
-  nodeLabel?: string
+  nodeLabel?: string,
+  overridePreviousOutput?: unknown,
+  retryRequiredFields?: string[]
 ): Promise<Record<string, any>> {
-  // Get previous node output (from upstream nodes)
-  const previousOutput = getPreviousNodeOutput(nodeOutputs);
-  
-  // ✅ CRITICAL: Store previous output globally for body mapping
+  let previousOutput: unknown;
+  if (overridePreviousOutput !== undefined) {
+    previousOutput = overridePreviousOutput;
+    (global as any).lastPreviousOutputNodeId = null;
+  } else {
+    const entry = nodeOutputs.getMostRecentOutputEntry(['$json', 'json', 'trigger', 'input']);
+    previousOutput = entry?.value;
+    (global as any).lastPreviousOutputNodeId = entry?.key ?? null;
+  }
+
+  // Store previous output globally for body mapping (and node id for registry-driven narrative pick).
   (global as any).lastPreviousOutput = previousOutput;
   
-  // Get user intent from workflow context (if available)
+  // User intent from currentWorkflowIntent set at execution start in execute-workflow (single source for this run).
   const userIntent = (global as any).currentWorkflowIntent || 'Process workflow data';
   
-  // Import AI Input Resolver
+  // Fast path when there is no previous output OR upstream is trigger-only / empty inputData.
+  // Otherwise AI runs on useless keys (_trigger) and often returns empty mapped runtime_ai fields.
+  if (
+    previousOutput == null ||
+    (typeof previousOutput === 'object' && Object.keys(previousOutput as object).length === 0) ||
+    isEffectivelyEmptyUpstreamPayload(previousOutput)
+  ) {
+    // #region agent log
+    appendDebugSessionLog({
+      runId: 'verify',
+      hypothesisId: 'H1',
+      location: 'dynamic-node-executor.ts:resolveInputsWithAI',
+      message: 'thin_upstream_fast_path',
+      data: {
+        nodeType,
+        nodeId: currentNodeId,
+        keys:
+          previousOutput && typeof previousOutput === 'object'
+            ? Object.keys(previousOutput as object)
+            : typeof previousOutput,
+      },
+    });
+    fetch('http://127.0.0.1:7242/ingest/931075f2-f077-4d4d-bcbc-f5580967ee5c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8c7c31'},body:JSON.stringify({sessionId:'8c7c31',runId:'verify',hypothesisId:'H1',location:'dynamic-node-executor.ts:resolveInputsWithAI',message:'thin_upstream_fast_path',data:{nodeType,nodeId:currentNodeId,keys:previousOutput&&typeof previousOutput==='object'?Object.keys(previousOutput as object):typeof previousOutput},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    return resolveInputsFromConfig(inputSchema, config, nodeOutputs);
+  }
+
+  // Import AI Input Resolver – AI analyzes actual keys (number, value, number.1, number.list, etc.) and creates input JSON
   const { aiInputResolver } = await import('../ai-input-resolver');
   
   // Resolve inputs using AI
   try {
-    // ✅ DEBUG: Log AI input resolution for Ollama/AI nodes and HTTP Request nodes
-    if (nodeType === 'ollama' || nodeType === 'ai_chat_model' || nodeType === 'http_request') {
+    const definitionForVerboseLogs = unifiedNodeRegistry.get(nodeType);
+    const logVerboseAiResolution = shouldLogVerboseAiInputResolution(definitionForVerboseLogs);
+    if (logVerboseAiResolution) {
       console.log('[DynamicExecutor] 🔍 Starting AI input resolution for node:', {
         nodeId: currentNodeId,
         nodeType,
@@ -384,17 +821,17 @@ async function resolveInputsWithAI(
         userIntent,
       });
     }
-    
+
     const resolved = await aiInputResolver.resolveInput({
       previousOutput,
       nodeInputSchema: inputSchema,
       userIntent,
       nodeType,
       nodeLabel,
+      retryRequiredFields,
     });
-    
-    // ✅ DEBUG: Log resolved input for Ollama/AI nodes and HTTP Request nodes
-    if (nodeType === 'ollama' || nodeType === 'ai_chat_model' || nodeType === 'http_request') {
+
+    if (logVerboseAiResolution) {
       console.log('[DynamicExecutor] ✅ AI input resolution result:', {
         nodeId: currentNodeId,
         nodeType,
@@ -412,12 +849,11 @@ async function resolveInputsWithAI(
         explanation: resolved.explanation,
       });
     }
-    
+
     // Map resolved value to input schema fields
     const mapped = mapResolvedValueToSchema(resolved.value, inputSchema, resolved.mode);
-    
-    // ✅ DEBUG: Log mapped result for Ollama/AI nodes and HTTP Request nodes
-    if (nodeType === 'ollama' || nodeType === 'ai_chat_model' || nodeType === 'http_request') {
+
+    if (logVerboseAiResolution) {
       console.log('[DynamicExecutor] ✅ Mapped resolved input to schema:', {
         nodeId: currentNodeId,
         mappedKeys: Object.keys(mapped),
@@ -502,29 +938,85 @@ function mapResolvedValueToSchema(
     if (typeof resolvedValue === 'object' && resolvedValue !== null) {
       Object.assign(mapped, resolvedValue);
       
-      // ✅ CRITICAL FIX: Special handling for HTTP Request body field
-      // If previous output has a "response" field (from AI Chat Model), use it as body
-      // This ensures AI Chat Model output is properly sent in HTTP POST body
+      // If the resolver LLM put wrong/short text in long_body fields but upstream has a richer
+      // narrative (from registry outputSchema or longest top-level string), prefer upstream.
+      // Must run before title_like backfill from body. No regex / no hardcoded node names.
+      const previousForBody = (global as any).lastPreviousOutput;
+      const upstreamType = getUpstreamNodeTypeFromExecutionGlobal();
+      const primaryNarrative = pickPrimaryNarrativeStringFromUpstreamOutput(
+        upstreamType,
+        previousForBody
+      );
+      if (primaryNarrative && primaryNarrative.length >= 40) {
+        const fp = primaryNarrative.slice(0, Math.min(80, primaryNarrative.length));
+        for (const [fieldName, fieldDef] of Object.entries(inputSchema)) {
+          const def = fieldDef as { role?: string; type?: string };
+          const isLongBody =
+            def.role === 'long_body' ||
+            (fieldName.toLowerCase() === 'body' && (def.type === 'string' || def.type === 'expression'));
+          if (!isLongBody) continue;
+          const cur = mapped[fieldName];
+          if (typeof cur !== 'string') continue;
+          const curTrim = cur.trim();
+          const hasUpstreamFingerprint = fp.length >= 20 && curTrim.includes(fp.slice(0, 20));
+          if (!hasUpstreamFingerprint && primaryNarrative.length > curTrim.length * 1.1) {
+            mapped[fieldName] = primaryNarrative;
+            console.log(
+              `[DynamicExecutor] ✅ Replaced ${fieldName} with registry-derived upstream narrative (resolver text did not match upstream fingerprint)`
+            );
+          }
+        }
+      }
+
+      // HTTP Request body: prefer registry-derived primary string from upstream, then from resolved object.
       if (inputSchema.body && !mapped.body) {
-        // Check if resolved value has a response field that should be used as body
         const previousOutput = (global as any).lastPreviousOutput;
-        if (previousOutput && typeof previousOutput === 'object' && 'response' in previousOutput) {
-          // Use the response field as the body
-          mapped.body = { message: previousOutput.response };
-          console.log('[DynamicExecutor] ✅ Mapped previous output.response to HTTP Request body');
-        } else if (resolvedValue.response) {
-          // If AI generated a response field, use it as body
-          mapped.body = typeof resolvedValue.response === 'string' 
-            ? { message: resolvedValue.response }
-            : resolvedValue.response;
-          console.log('[DynamicExecutor] ✅ Mapped resolved response to HTTP Request body');
-        } else if (resolvedValue.body) {
-          // If AI already generated body, use it
-          mapped.body = resolvedValue.body;
-        } else if (previousOutput && typeof previousOutput === 'object') {
-          // Fallback: Use entire previous output as body
+        const uType = getUpstreamNodeTypeFromExecutionGlobal();
+        const fromUpstream = pickPrimaryNarrativeStringFromUpstreamOutput(uType, previousOutput);
+        if (fromUpstream) {
+          mapped.body = { message: fromUpstream };
+          console.log('[DynamicExecutor] ✅ Mapped primary upstream narrative to HTTP Request body');
+        } else if (typeof resolvedValue === 'object' && resolvedValue !== null) {
+          const fromResolved = pickPrimaryNarrativeStringFromUpstreamOutput(undefined, resolvedValue);
+          if (fromResolved) {
+            mapped.body = { message: fromResolved };
+            console.log('[DynamicExecutor] ✅ Mapped primary string from resolved value to HTTP Request body');
+          } else if (resolvedValue.body) {
+            mapped.body = resolvedValue.body;
+          }
+        }
+        if (!mapped.body && previousOutput && typeof previousOutput === 'object') {
           mapped.body = previousOutput;
           console.log('[DynamicExecutor] ✅ Using entire previous output as HTTP Request body');
+        }
+      }
+
+      // Registry-driven: fill empty title_like from first line of a mapped long_body / text sibling (json mode).
+      const titleLikeFields = Object.keys(inputSchema).filter((f) => {
+        const def = inputSchema[f] as { role?: string };
+        return def?.role === 'title_like';
+      });
+      const bodyLikeFields = Object.keys(inputSchema).filter((f) => {
+        const def = inputSchema[f] as { role?: string };
+        const fl = f.toLowerCase();
+        return (
+          def?.role === 'long_body' ||
+          fl.includes('body') ||
+          fl.includes('message') ||
+          fl.includes('text') ||
+          fl.includes('content')
+        );
+      });
+      for (const tf of titleLikeFields) {
+        const tv = mapped[tf];
+        if (typeof tv === 'string' && tv.trim().length > 0) continue;
+        for (const bf of bodyLikeFields) {
+          const bv = mapped[bf];
+          if (typeof bv === 'string' && bv.trim().length > 0) {
+            const firstLine = bv.split(/\r?\n/)[0].trim().slice(0, 100);
+            if (firstLine) mapped[tf] = firstLine;
+            break;
+          }
         }
       }
     }

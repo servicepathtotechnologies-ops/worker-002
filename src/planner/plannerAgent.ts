@@ -1,7 +1,8 @@
-import { ollamaManager } from '../services/ai/ollama-manager';
+import { LLMAdapter } from '../shared/llm-adapter';
+import { config } from '../core/config';
 import { WorkflowSpec, PlannerResult } from './types';
 
-const DEFAULT_PLANNER_MODEL = 'qwen2.5:14b-instruct-q4_K_M';
+const DEFAULT_PLANNER_MODEL = 'gemini-2.5-pro'; // Use Pro for complex planning tasks
 
 /**
  * System prompt for the Smart Planner–Driven Workflow Orchestration System.
@@ -161,8 +162,10 @@ export async function callPlannerAgent(cleanPrompt: string): Promise<PlannerResu
     },
   ];
 
-  const response = await ollamaManager.chat(messages, {
+  const llmAdapter = new LLMAdapter();
+  const response = await llmAdapter.chat('gemini', messages, {
     model: DEFAULT_PLANNER_MODEL,
+    apiKey: config.geminiApiKey,
     temperature: 0,
     stream: false,
   });
@@ -171,7 +174,43 @@ export async function callPlannerAgent(cleanPrompt: string): Promise<PlannerResu
 
   let parsed: WorkflowSpec;
   try {
-    parsed = JSON.parse(raw) as WorkflowSpec;
+    // The planner *should* return raw JSON, but in practice models may wrap it
+    // in markdown fences or add brief commentary. Use the same hardened JSON
+    // extraction strategy as summarize-layer.parseAIResponse.
+    let jsonStr = String(raw).trim();
+
+    // Strategy 1: Strip markdown code fences if present
+    if (jsonStr.startsWith('```')) {
+      const lines = jsonStr.split('\n');
+      const firstLine = lines[0];
+      const lastLine = lines[lines.length - 1];
+
+      if (firstLine.includes('```') && lastLine.includes('```')) {
+        jsonStr = lines.slice(1, -1).join('\n').trim();
+      } else if (firstLine.includes('```')) {
+        jsonStr = lines.slice(1).join('\n').trim();
+      }
+    }
+
+    // Strategy 2: Strip leading "json" label if present
+    if (jsonStr.toLowerCase().startsWith('json')) {
+      jsonStr = jsonStr.substring(4).trim();
+    }
+
+    // Strategy 3: Extract the first complete JSON object
+    const firstBrace = jsonStr.indexOf('{');
+    const lastBrace = jsonStr.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+      jsonStr = jsonStr.substring(firstBrace, lastBrace + 1);
+    }
+
+    jsonStr = jsonStr.trim();
+
+    if (!jsonStr.startsWith('{') || !jsonStr.endsWith('}')) {
+      throw new Error('PlannerAgent response does not contain a valid JSON object');
+    }
+
+    parsed = JSON.parse(jsonStr) as WorkflowSpec;
   } catch (error) {
     throw new Error(`PlannerAgent returned non-JSON response: ${raw}`);
   }

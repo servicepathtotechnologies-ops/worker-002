@@ -7,7 +7,9 @@ export type AIRequestType =
   | 'workflow-improvement'
   | 'text-completion'
   | 'chat'
-  | 'analysis';
+  | 'analysis'
+  // ✅ New: explicit Gemini planning mode (steps only, no edges)
+  | 'workflow-planning';
 
 export interface AIRequest {
   type: AIRequestType;
@@ -101,6 +103,8 @@ export interface Constraint {
 }
 
 export interface WorkflowMetadata {
+  /** Raw user textarea / API originalPrompt — used for form field extraction (not merged planner text). */
+  originalUserPrompt?: string;
   generatedFrom?: string;
   requirements?: string;
   validation?: WorkflowValidation;
@@ -147,6 +151,42 @@ export interface Workflow {
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
   metadata?: any;
+}
+
+// =========================
+// Gemini Planning Contracts
+// =========================
+
+/**
+ * Planned step produced by Gemini in workflow-planning mode.
+ * This is a high-level planning artifact: no edges, only ordered steps.
+ */
+export interface PlannedStep {
+  id: string;
+  /**
+   * Node type that MUST exist in the Unified Node Registry.
+   */
+  type: string;
+  /**
+   * Optional semantic role hint for the planner/executor (trigger | action | logic | output | utility).
+   * Actual behavior is still driven by the registry.
+   */
+  role?: string;
+  /**
+   * Optional configuration fragment proposed by Gemini.
+   * Will be normalized/validated against the node's inputSchema and defaultConfig.
+   */
+  config?: Record<string, any>;
+}
+
+/**
+ * Planned workflow structure emitted by Gemini.
+ * The system will hydrate this into a full Workflow using the Unified Node Registry
+ * and the Unified Graph Orchestrator (which will derive all edges and execution order).
+ */
+export interface PlannedWorkflow {
+  summary: string;
+  steps: PlannedStep[];
 }
 
 // Requirements Analysis Types

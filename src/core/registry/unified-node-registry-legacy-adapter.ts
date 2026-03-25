@@ -56,7 +56,7 @@ export async function executeViaLegacyExecutor(args: {
 
     // Universal template resolution (single source of truth)
     const { resolveConfigTemplates } = await import('../utils/universal-template-resolver');
-    const resolvedConfig = resolveConfigTemplates(context.config || {}, nodeOutputs);
+    const resolvedConfig = resolveConfigTemplates(context.config || {}, nodeOutputs, context.nodeType);
 
     // Placeholder filtering (single source of truth)
     const { filterPlaceholderValues, cleanOutputFromConfig } = await import('../utils/placeholder-filter');

@@ -1,7 +1,7 @@
 // Chichu - Website AI Chatbot
 // Enhanced chatbot with knowledge base and conversation memory
 
-import { ollamaOrchestrator } from './ollama-orchestrator';
+import { geminiOrchestrator } from './gemini-orchestrator';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
@@ -231,7 +231,7 @@ export class ChichuChatbot {
     
     try {
       // Use faster model and lower token limit for quicker responses
-      const result = await ollamaOrchestrator.processRequest('chat-generation', {
+      const result = await geminiOrchestrator.processRequest('chat-generation', {
         prompt,
         system: `You are Chichu, a helpful AI assistant for CtrlChecks workflow platform. 
 Be friendly, informative, and concise. Keep responses under 200 words.
