@@ -85,6 +85,31 @@ describe('validateIfElseConditionsAgainstUpstreamForm', () => {
     expect(errors).toEqual([]);
   });
 
+  it('errors on input.* mismatch even when conditions fill mode is runtime_ai', () => {
+    const wf = {
+      nodes: [
+        {
+          id: 'f1',
+          data: { type: 'form', config: { fields: [{ name: 'response', key: 'response', type: 'textarea' }] } },
+        },
+        {
+          id: 'i1',
+          data: {
+            type: 'if_else',
+            config: {
+              _fillMode: { conditions: 'runtime_ai' },
+              conditions: [{ field: 'input.experience', operator: 'greater_than', value: 3 }],
+            },
+          },
+        },
+      ],
+      edges: [{ source: 'f1', target: 'i1' }],
+    } as any;
+    const { errors } = validateIfElseConditionsAgainstUpstreamForm(wf);
+    expect(errors.length).toBeGreaterThan(0);
+    expect(errors[0]).toContain('input.experience');
+  });
+
   it('handles long form keys without false validation errors', () => {
     const wf = {
       nodes: [

@@ -44,6 +44,9 @@ import { unifiedNodeRegistry } from '../core/registry/unified-node-registry';
 import { resolveEffectiveFieldFillMode } from '../core/utils/fill-mode-resolver';
 import { validateStructuralReadiness } from '../core/validation/workflow-save-validator';
 import { materializeStructuralFields } from '../services/ai/structure-materializer';
+import { applyStructuralIntentAlignment } from '../services/ai/intent-structural-projection';
+import { hydrateRequiredConfigFromRegistryDefaults } from '../core/validation/workflow-config-hydrator';
+import { pruneProposedPlanChain } from '../services/ai/plan-chain-prune';
 import { buildStructuralBlueprint } from '../services/ai/structural-blueprint-builder';
 import { buildUnifiedReadiness } from '../services/ai/unified-readiness';
 import { buildCredentialWizardView } from '../services/ai/wizard-credential-view';
@@ -292,7 +295,9 @@ function materializeThenSanitizeForClientResponse(
     },
   };
   const materialized = materializeStructuralFields(withIntent as any);
-  return sanitizeRuntimeInputsForResponse(materialized);
+  const aligned = applyStructuralIntentAlignment(materialized as any);
+  const hydrated = hydrateRequiredConfigFromRegistryDefaults(aligned as any);
+  return sanitizeRuntimeInputsForResponse(hydrated);
 }
 
 /**
@@ -1453,6 +1458,9 @@ async function handlePhasedRefine(
         phase: 'configuring_inputs',
         success: false,
         status: 'completed',
+        completionCode: 'STRUCTURAL_INCOMPLETE',
+        pipelineOutcome: 'blocked',
+        progress_percentage: 95,
         workflow: preparedWorkflow,
         nodes: preparedWorkflow.nodes,
         edges: preparedWorkflow.edges,
@@ -1474,6 +1482,9 @@ async function handlePhasedRefine(
     return res.json({
       phase: 'ready', // ✅ CRITICAL: Must be "ready" for frontend to show unified modal
       success: true,
+      completionCode: 'WORKFLOW_READY',
+      pipelineOutcome: 'success',
+      progress_percentage: 100,
       workflow: preparedWorkflow,
       nodes: preparedWorkflow.nodes,
       edges: preparedWorkflow.edges,
@@ -2879,6 +2890,7 @@ export default async function generateWorkflow(req: Request, res: Response) {
                   `Semantically invalid plan chain: ${semanticIssues.map((i) => i.reason).join(', ')}`
                 );
               }
+              effectiveChain = pruneProposedPlanChain(effectiveChain);
               const { buildWorkflowFromPlanChain } = await import('../services/ai/plan-driven-workflow-builder');
               const built = buildWorkflowFromPlanChain(effectiveChain);
               planBuildDiagnostics = built.diagnostics;
@@ -3059,6 +3071,9 @@ export default async function generateWorkflow(req: Request, res: Response) {
               success: false,
               status: 'completed',
               phase: 'configuring_inputs',
+              completionCode: 'STRUCTURAL_INCOMPLETE',
+              pipelineOutcome: 'blocked',
+              progress_percentage: 95,
               workflow: finalWorkflow,
               nodes: finalWorkflow.nodes,
               edges: finalWorkflow.edges,
@@ -3081,6 +3096,9 @@ export default async function generateWorkflow(req: Request, res: Response) {
             success: true,
             status: 'completed',
             phase: 'ready', // ✅ CRITICAL: Must be "ready" for frontend to show credentials
+            completionCode: 'WORKFLOW_READY',
+            pipelineOutcome: 'success',
+            progress_percentage: 100,
             workflow: finalWorkflow,
             nodes: finalWorkflow.nodes,
             edges: finalWorkflow.edges,
@@ -3446,6 +3464,9 @@ export default async function generateWorkflow(req: Request, res: Response) {
             success: false,
             status: 'completed',
             phase: 'configuring_inputs',
+            completionCode: 'STRUCTURAL_INCOMPLETE',
+            pipelineOutcome: 'blocked',
+            progress_percentage: 95,
             workflow: finalWorkflow,
             nodes: finalWorkflow.nodes,
             edges: finalWorkflow.edges,
@@ -3466,6 +3487,9 @@ export default async function generateWorkflow(req: Request, res: Response) {
         return res.json({
           success: true,
           phase: 'ready', // ✅ CRITICAL: Must be "ready" for frontend
+          completionCode: 'WORKFLOW_READY',
+          pipelineOutcome: 'success',
+          progress_percentage: 100,
           workflow: finalWorkflow,
           nodes: finalWorkflow.nodes,
           edges: finalWorkflow.edges,

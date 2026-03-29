@@ -120,6 +120,7 @@
     "@types/pg": "^8.10.9",
     "@types/uuid": "^9.0.8",
     "@types/ws": "^8.18.1",
+    "fast-check": "^4.6.0",
     "jest": "^29.7.0",
     "nodemon": "^3.0.2",
     "prisma": "^5.7.1",

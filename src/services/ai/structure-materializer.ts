@@ -9,6 +9,16 @@ import {
 } from '../../core/orchestration/form-ifelse-binding';
 import { normalizeFormFieldsIdentity } from '../../core/utils/form-field-identity';
 import { buildEffectiveFillModes } from '../../core/utils/fill-mode-resolver';
+import { normalizeIfElseConfig } from '../../core/utils/if-else-conditions';
+import {
+  buildFormFieldRecordsFromKeys,
+  deriveOrderedFieldKeysForForm,
+  formFieldsMissingReferencedKeys,
+  isPlaceholderFormFields,
+  normalizeFieldKey,
+  toTitleLabel,
+  FORM_FIELDS_PLACEHOLDER_FIELD_ID,
+} from './intent-extraction';
 
 type StructuralIssue = {
   nodeId: string;
@@ -39,169 +49,34 @@ function isMissingStructuralValue(value: unknown, required?: boolean): boolean {
   );
 }
 
-function normalizeFieldKey(label: string): string {
-  return label
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .slice(0, 32);
-}
-
-const FIELD_HEAD_ALIASES: Record<string, string> = {
-  age: 'age',
-  email: 'email',
-  e_mail: 'email',
-  mail: 'email',
-  phone: 'phone',
-  mobile: 'phone',
-  tel: 'phone',
-  name: 'name',
-  full_name: 'name',
-  first_name: 'first_name',
-  last_name: 'last_name',
-  status: 'status',
-  color: 'color',
-  message: 'message',
-  comment: 'comment',
-  description: 'description',
-  details: 'details',
-};
-
-const FIELD_NOISE_TOKENS = new Set([
-  'details',
-  'detail',
-  'through',
-  'including',
-  'include',
-  'form',
-  'submission',
-  'submit',
-  'submitted',
-  'user',
-  'workflow',
-  'where',
-  'with',
-  'and',
-  'or',
-  'a',
-  'an',
-  'the',
-]);
-
-function splitSemanticTokens(text: string): string[] {
-  const cleaned = text
-    .toLowerCase()
-    .replace(/[^a-z0-9_ ]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  if (!cleaned) return [];
-  return cleaned
-    .split(' ')
-    .map((token) => normalizeFieldKey(token))
-    .filter(Boolean);
-}
-
-function extractSemanticFieldCandidate(raw: string): string | null {
-  const key = normalizeFieldKey(raw);
-  if (!key) return null;
-  if (FIELD_HEAD_ALIASES[key]) return FIELD_HEAD_ALIASES[key];
-
-  const tokens = splitSemanticTokens(raw);
-  // Prefer known semantic field tokens over long phrase chunks.
-  for (const token of tokens) {
-    if (FIELD_HEAD_ALIASES[token] && !FIELD_NOISE_TOKENS.has(token)) {
-      return FIELD_HEAD_ALIASES[token];
-    }
+/** Placeholder or graph mismatch: treat as unfilled so keys can be re-derived. */
+function formFieldsEffectivelyMissing(
+  value: unknown,
+  workflow: Workflow,
+  combinedIntentText: string
+): boolean {
+  if (!Array.isArray(value)) return true;
+  if (value.length === 0) return true;
+  if (isPlaceholderFormFields(value)) return true;
+  if (formFieldsMissingReferencedKeys(workflow, value as Array<Record<string, unknown>>)) {
+    const keys = deriveOrderedFieldKeysForForm(combinedIntentText, workflow);
+    return keys.length > 0;
   }
-
-  // Accept compact keys that are not noise-heavy phrase fragments.
-  if (!key.includes('_')) return key;
-  const parts = key.split('_').filter(Boolean);
-  const noiseCount = parts.filter((p) => FIELD_NOISE_TOKENS.has(p)).length;
-  const noiseRatio = parts.length === 0 ? 1 : noiseCount / parts.length;
-  if (parts.length <= 3 && noiseRatio < 0.5) {
-    return key;
-  }
-  return null;
+  return false;
 }
 
-function toTitleLabel(key: string): string {
-  return key
-    .replace(/_/g, ' ')
-    .replace(/\b\w/g, (m) => m.toUpperCase());
-}
-
-function inferFieldTypeFromKey(key: string): string {
-  const k = key.toLowerCase();
-  if (k === 'age' || k.endsWith('_age') || k.startsWith('age_')) return 'number';
-  if (k.includes('email')) return 'email';
-  if (k.includes('age') || k.includes('count') || k.includes('qty') || k.includes('number')) return 'number';
-  if (k.includes('phone') || k.includes('mobile') || k.includes('contact')) return 'tel';
-  if (k.includes('message') || k.includes('description') || k.includes('comment') || k.includes('notes')) return 'textarea';
-  if (k.includes('file') || k.includes('attachment')) return 'file';
-  return 'text';
-}
-
-/**
- * Drop tokens that match registered node type ids (e.g. google_gmail, if_else) so planner
- * parentheticals never become form fields. Prefer underscore + registry hit to avoid rejecting
- * legitimate single-token keys like "email".
- */
-function filterNodeTypeLikeFieldKeys(keys: string[]): string[] {
-  return keys.filter((key) => {
-    if (!key.includes('_')) return true;
-    return !unifiedNodeRegistry.has(key);
-  });
-}
-
-function extractFieldNamesFromIntent(intentText: string): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  const push = (raw: string) => {
-    const key = extractSemanticFieldCandidate(raw);
-    if (!key || seen.has(key)) return;
-    seen.add(key);
-    out.push(key);
-  };
-
-  // Pattern: "(Name, Email, Color)" or "fields: Name, Email, Color"
-  const parenthetical = intentText.match(/\(([^)]+)\)/g) || [];
-  for (const chunk of parenthetical) {
-    const inner = chunk.slice(1, -1);
-    inner
-      .split(/,|\/|\bor\b|\band\b/gi)
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .forEach(push);
-  }
-
-  const fieldsClauses = intentText.match(/\b(fields?|inputs?)\b[\s:=-]*([^\n.]+)/gi) || [];
-  for (const clause of fieldsClauses) {
-    const rhs = clause.replace(/\b(fields?|inputs?)\b[\s:=-]*/i, '');
-    rhs
-      .split(/,|\/|\bor\b|\band\b/gi)
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .forEach(push);
-  }
-
-  // Pattern: "collect/capture/submit ... name, email and age"
-  const collectionClauses =
-    intentText.match(/\b(collect|capture|submit(?:ted|s)?|asks?\s+for|including|include)\b[\s\S]{0,120}/gi) || [];
-  for (const clause of collectionClauses) {
-    const firstSentence = clause.split(/[.\n]/)[0] || clause;
-    firstSentence
-      .split(/,|\/|\bor\b|\band\b/gi)
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .forEach((token) => {
-        // Keep only likely field tokens (skip stop text).
-        const cleaned = token.replace(/\b(collect|capture|submit(?:ted|s)?|asks?\s+for|including|include|with|fields?|inputs?)\b/gi, '').trim();
-        if (cleaned) push(cleaned);
-      });
-  }
-
-  return out;
+/** Last-resort single field so strict structural readiness never fails on an empty `fields` array. */
+function minimalPlaceholderFormFields(): Array<Record<string, unknown>> {
+  return normalizeFormFieldsIdentity([
+    {
+      id: FORM_FIELDS_PLACEHOLDER_FIELD_ID,
+      key: 'response',
+      name: 'response',
+      label: 'Response',
+      type: 'textarea',
+      required: false,
+    },
+  ] as Array<Record<string, unknown>>) as Array<Record<string, unknown>>;
 }
 
 /** User-only text for form field extraction — never the merged planner blob when original is set. */
@@ -220,7 +95,7 @@ export function getFormStructuralIntentText(workflow: Workflow): string {
   );
 }
 
-function getWorkflowIntentText(workflow: Workflow): string {
+export function getWorkflowIntentText(workflow: Workflow): string {
   const metadata = (workflow as any)?.metadata || {};
   const requirements = metadata.requirements || {};
   return String(
@@ -253,19 +128,12 @@ export function mergeOriginalUserPromptMetadata(
   } as Workflow;
 }
 
-function deriveFormFieldsFromIntent(intentText: string): Array<Record<string, unknown>> {
-  if (!intentText) return [];
-  const extracted = filterNodeTypeLikeFieldKeys(extractFieldNamesFromIntent(intentText));
-  if (extracted.length === 0) return [];
-  const raw = extracted.map((key) => ({
-    id: `field_${key}`,
-    key,
-    name: key,
-    label: toTitleLabel(key),
-    type: inferFieldTypeFromKey(key),
-    required: true,
-  }));
-  return normalizeFormFieldsIdentity(raw as Array<Record<string, unknown>>) as Array<Record<string, unknown>>;
+function deriveFormFieldsFromIntent(intentText: string, workflow: Workflow): Array<Record<string, unknown>> {
+  const keys = deriveOrderedFieldKeysForForm(intentText, workflow);
+  if (keys.length === 0) {
+    return minimalPlaceholderFormFields();
+  }
+  return buildFormFieldRecordsFromKeys(keys);
 }
 
 function operatorMeta(op: string): { normalizedOp: string; ruleOperator: string } {
@@ -509,7 +377,7 @@ function deriveStructuralValueFromIntent(
 ): unknown {
   if (isFormLikeNodeType(nodeType) && fieldName === 'fields') {
     const formText = getFormStructuralIntentText(workflow);
-    return deriveFormFieldsFromIntent(formText || intentText);
+    return deriveFormFieldsFromIntent(formText || intentText, workflow);
   }
   if (nodeType === 'if_else' && fieldName === 'conditions') {
     return deriveIfElseConditionsFromIntent(intentText);
@@ -526,6 +394,7 @@ function deriveStructuralValueFromIntent(
 
 export function materializeStructuralFields(workflow: Workflow): Workflow {
   const intentText = getWorkflowIntentText(workflow);
+  const combinedIntentText = getFormStructuralIntentText(workflow) || intentText;
   const unresolved: StructuralIssue[] = [];
   const nodes = (workflow.nodes || []).map((node: any) => {
     const nodeType = unifiedNormalizeNodeType(node);
@@ -558,7 +427,12 @@ export function materializeStructuralFields(workflow: Workflow): Workflow {
     for (const [fieldName, fieldDef] of Object.entries(inputSchema)) {
       if (!isStructuralOwnership(fieldName, fieldDef)) continue;
       const current = config[fieldName];
-      if (isMissingStructuralValue(current, fieldDef.required)) {
+      const missingBase = isMissingStructuralValue(current, fieldDef.required);
+      const formFieldsStale =
+        isFormLikeNodeType(nodeType) &&
+        fieldName === 'fields' &&
+        formFieldsEffectivelyMissing(current, workflow, combinedIntentText);
+      if (missingBase || formFieldsStale) {
         const intentDerived = deriveStructuralValueFromIntent(nodeType, fieldName, intentText, workflow);
         if (intentDerived !== undefined && !isMissingStructuralValue(intentDerived, fieldDef.required)) {
           config[fieldName] = intentDerived;

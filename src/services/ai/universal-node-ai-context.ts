@@ -29,6 +29,16 @@ export interface AIGeneratedField {
   reasoning: string;
 }
 
+function stripAiJsonFence(text: string): string {
+  let s = text.trim();
+  if (s.startsWith('```')) {
+    s = s.replace(/^```(?:json)?\s*/i, '');
+    const end = s.lastIndexOf('```');
+    if (end !== -1) s = s.slice(0, end);
+  }
+  return s.trim();
+}
+
 /**
  * Universal Node AI Context Service
  * Provides AI context and auto-generation for all nodes
@@ -110,18 +120,29 @@ Example: { "message": "Generated message text", "subject": "Generated subject" }
         }
       );
       
-      // Parse AI response
+      // Parse AI response (models often wrap JSON in ```json fences)
       let parsedResponse: Record<string, string>;
+      const asString = typeof response === 'string' ? response : JSON.stringify(response);
       try {
-        parsedResponse = typeof response === 'string' ? JSON.parse(response) : response;
+        parsedResponse =
+          typeof response === 'string' ? JSON.parse(stripAiJsonFence(response)) : (response as any);
       } catch (e) {
-        // If not JSON, try to extract JSON from response
-        const jsonMatch = response.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          parsedResponse = JSON.parse(jsonMatch[0]);
-        } else {
-          console.warn(`[UniversalNodeAIContext] Failed to parse AI response: ${response}`);
-          return {};
+        const cleaned = stripAiJsonFence(asString);
+        try {
+          parsedResponse = JSON.parse(cleaned);
+        } catch {
+          const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            try {
+              parsedResponse = JSON.parse(jsonMatch[0]);
+            } catch {
+              console.warn(`[UniversalNodeAIContext] Failed to parse AI response: ${asString.slice(0, 200)}`);
+              return {};
+            }
+          } else {
+            console.warn(`[UniversalNodeAIContext] Failed to parse AI response: ${asString.slice(0, 200)}`);
+            return {};
+          }
         }
       }
       

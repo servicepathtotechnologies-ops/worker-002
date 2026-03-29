@@ -1089,6 +1089,46 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
   }
 
   /**
+   * True when the edge carries an exclusive branch port (if_else / switch), not a linear "main" hop.
+   */
+  private edgeUsesBranchPort(edge: WorkflowEdge): boolean {
+    const t = String(edge.type || edge.sourceHandle || '').toLowerCase();
+    if (t === 'true' || t === 'false') return true;
+    if (t.startsWith('case_')) return true;
+    return false;
+  }
+
+  /**
+   * Category/array-based execution order can list branch heads *before* the fork node (same priority
+   * bucket in buildOrderFromCategories). Those edges are still valid DAG edges; dropping them for
+   * sourceIdx >= targetIdx alone removes real branches and orphans second terminals on save.
+   */
+  private shouldKeepEdgeDespiteNonMonotonicOrder(
+    workflow: Workflow,
+    edge: WorkflowEdge
+  ): boolean {
+    const sourceNode = workflow.nodes.find(n => n.id === edge.source);
+    const targetNode = workflow.nodes.find(n => n.id === edge.target);
+    if (!sourceNode || !targetNode) return false;
+
+    const sourceType = unifiedNormalizeNodeTypeString(
+      sourceNode.type || sourceNode.data?.type || ''
+    );
+    if (unifiedNodeRegistry.get(sourceType)?.isBranching === true && this.edgeUsesBranchPort(edge)) {
+      return true;
+    }
+
+    const targetType = unifiedNormalizeNodeTypeString(
+      targetNode.type || targetNode.data?.type || ''
+    );
+    if (targetType === 'log_output' && isOutputNode(sourceNode)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
    * Validate edges against execution order
    */
   validateEdges(
@@ -1115,7 +1155,10 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
       }
       
       if (sourceIdx >= targetIdx) {
-        // Edge violates execution order (target comes before source)
+        if (this.shouldKeepEdgeDespiteNonMonotonicOrder(workflow, edge)) {
+          return;
+        }
+        // Edge violates execution order (target comes before source in flat list)
         edgesToRemove.push(edge);
         violations.push(
           `Edge ${edge.source} → ${edge.target} violates execution order ` +

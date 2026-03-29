@@ -1,4 +1,8 @@
-import type { NodeInputSchema } from '../types/unified-node-contract';
+import type { NodeInputField, NodeInputSchema } from '../types/unified-node-contract';
+import {
+  getUpstreamNodeTypeFromExecutionGlobal,
+  pickPrimaryNarrativeStringFromUpstreamOutput,
+} from '../utils/upstream-narrative-text';
 
 export interface FieldContractContext {
   nodeType: string;
@@ -95,6 +99,30 @@ export function applyDeterministicFieldContracts(
       const fallback = upstreamText || context.userIntent || 'Summarize the upstream payload clearly and concisely.';
       out.prompt = fallback;
       repairs.push(`${context.nodeType}.prompt backfilled from deterministic fallback`);
+    }
+  }
+
+  // Registry-driven: fill post body / long_body fields from upstream narrative when router mis-mapped (e.g. ai_agent → linkedin).
+  const schema = context.inputSchema as Record<string, NodeInputField | unknown> | undefined;
+  if (schema && typeof schema === 'object') {
+    const upstreamType = getUpstreamNodeTypeFromExecutionGlobal();
+    const narrative = pickPrimaryNarrativeStringFromUpstreamOutput(
+      upstreamType,
+      context.upstreamPayload
+    );
+    if (narrative && narrative.length > 0) {
+      for (const [fieldName, rawDef] of Object.entries(schema)) {
+        const fd = rawDef as NodeInputField | undefined;
+        if (!fd || (fd.role !== 'content' && fd.role !== 'long_body' && fd.role !== 'prompt')) continue;
+        const t = String(fd.type || '').toLowerCase();
+        if (t !== 'string' && t !== 'text' && t !== 'markdown' && t !== 'expression') continue;
+        const cur = asNonEmptyString(out[fieldName]);
+        if (cur && cur.length > 2 && !cur.trim().startsWith('{')) continue;
+        if (!cur || cur.trim().startsWith('{')) {
+          out[fieldName] = narrative;
+          repairs.push(`${context.nodeType}.${fieldName} from upstream narrative (registry role ${fd.role})`);
+        }
+      }
     }
   }
 

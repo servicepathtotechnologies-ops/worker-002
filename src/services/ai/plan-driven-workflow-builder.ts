@@ -13,7 +13,10 @@ import { unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-ty
 import { resolveCanonicalNodeTypeStrict } from '../../core/utils/node-type-resolver-util';
 import { coerceFieldFillModeByPolicy } from '../../core/utils/fill-mode-resolver';
 import { materializeStructuralFields } from './structure-materializer';
+import { applyStructuralIntentAlignment } from './intent-structural-projection';
 import { normalizeWorkflowFormFieldIdentities } from '../../core/utils/form-field-identity';
+import { isEmptyConfigValue } from '../../core/validation/registry-field-contract';
+import { hydrateRequiredConfigFromRegistryDefaults } from '../../core/validation/workflow-config-hydrator';
 
 export interface CanonicalizationEntry {
   input: string;
@@ -109,11 +112,7 @@ export function buildWorkflowFromPlanChain(planChain: string[]): PlanDrivenBuild
     const requiredInputs = Array.isArray(def.requiredInputs) ? def.requiredInputs : [];
     for (const field of requiredInputs) {
       const value = (config as Record<string, unknown>)[field];
-      const missing =
-        value === undefined ||
-        value === null ||
-        (typeof value === 'string' && value.trim() === '') ||
-        (Array.isArray(value) && value.length === 0);
+      const missing = isEmptyConfigValue(value);
       if (missing) {
         if (!(config as any)._fillMode || typeof (config as any)._fillMode !== 'object') {
           (config as any)._fillMode = {};
@@ -159,6 +158,8 @@ export function buildWorkflowFromPlanChain(planChain: string[]): PlanDrivenBuild
 
   let { workflow, executionOrder } = unifiedGraphOrchestrator.initializeWorkflow(nodes);
   workflow = materializeStructuralFields(workflow);
+  workflow = applyStructuralIntentAlignment(workflow);
+  workflow = hydrateRequiredConfigFromRegistryDefaults(workflow);
   workflow = normalizeWorkflowFormFieldIdentities(workflow);
   // Ensure branching nodes receive contract-valid branch fanout/typed edges before validation.
   const reconciled = unifiedGraphOrchestrator.reconcileWorkflow(workflow);

@@ -708,6 +708,11 @@ console.log('⚙️  Configure Workflow API available at /api/workflows/:workflo
 app.post('/api/save-workflow', asyncHandler(saveWorkflowRoute));
 console.log('💾 Save Workflow API available at /api/save-workflow');
 
+// Field Mode Toggle API (spec task 8)
+import { patchWorkflowFieldMode } from './api/workflow-field-mode';
+app.patch('/api/workflows/:id/nodes/:nodeId/field-mode', asyncHandler(patchWorkflowFieldMode));
+console.log('🔧 Field Mode Toggle API available at PATCH /api/workflows/:id/nodes/:nodeId/field-mode');
+
 // Workflow Confirmation API
 app.post('/api/workflow/confirm', asyncHandler(confirmWorkflow));
 app.post('/api/workflow/reject', asyncHandler(rejectWorkflow));

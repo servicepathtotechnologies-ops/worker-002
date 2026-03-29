@@ -19,6 +19,8 @@ import { workflowLifecycleManager } from '../services/workflow-lifecycle-manager
 import { normalizeWorkflowGraph, validateNormalizedGraph } from '../core/utils/workflow-graph-normalizer';
 import { ErrorCode, createError } from '../core/utils/error-codes';
 import { getStructuralDiagnostics, materializeStructuralFields } from '../services/ai/structure-materializer';
+import { applyStructuralIntentAlignment } from '../services/ai/intent-structural-projection';
+import { hydrateRequiredConfigFromRegistryDefaults } from '../core/validation/workflow-config-hydrator';
 import { validateStructuralReadiness } from '../core/validation/workflow-save-validator';
 
 export default async function attachCredentialsHandler(req: Request, res: Response) {
@@ -143,17 +145,21 @@ export default async function attachCredentialsHandler(req: Request, res: Respon
     // This ensures consistent graph structure across all operations
     const { normalizeWorkflowForSave } = await import('../core/validation/workflow-save-validator');
     const workflowGraph = workflow.graph || { nodes: workflow.nodes || [], edges: workflow.edges || [] };
-    const materialized = materializeStructuralFields({
-      nodes: workflowGraph.nodes || [],
-      edges: workflowGraph.edges || [],
-      metadata: {
-        ...((workflow as any)?.metadata || {}),
-        generatedFrom:
-          ((workflow as any)?.metadata?.generatedFrom as string) ||
-          (workflow as any)?.name ||
-          '',
-      },
-    } as any);
+    const materialized = hydrateRequiredConfigFromRegistryDefaults(
+      applyStructuralIntentAlignment(
+        materializeStructuralFields({
+          nodes: workflowGraph.nodes || [],
+          edges: workflowGraph.edges || [],
+          metadata: {
+            ...((workflow as any)?.metadata || {}),
+            generatedFrom:
+              ((workflow as any)?.metadata?.generatedFrom as string) ||
+              (workflow as any)?.name ||
+              '',
+          },
+        } as any) as any
+      ) as any
+    );
     const structuralDiagnostics = getStructuralDiagnostics(materialized as any);
     const structuralReadiness = validateStructuralReadiness((materialized as any).nodes || [], { strict: true });
     if (structuralDiagnostics.unresolved.length > 0 || structuralReadiness.errors.length > 0) {

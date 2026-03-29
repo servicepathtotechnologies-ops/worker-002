@@ -41,9 +41,11 @@ export async function hydrateFormFieldsFromLlmIfEnabled(workflow: Workflow): Pro
   const intent = getFormStructuralIntentText(workflow);
   if (!intent.trim()) return workflow;
 
+  const isFormLike = (nodeType: string) => nodeType === 'form' || nodeType === 'form_trigger';
+
   const hasEmptyForm = (workflow.nodes || []).some((node: any) => {
     const nodeType = unifiedNormalizeNodeType(node);
-    if (nodeType !== 'form') return false;
+    if (!isFormLike(nodeType)) return false;
     const fields = node.data?.config?.fields;
     return !Array.isArray(fields) || fields.length === 0;
   });
@@ -97,7 +99,7 @@ export async function hydrateFormFieldsFromLlmIfEnabled(workflow: Workflow): Pro
 
     const nextNodes = (workflow.nodes || []).map((node: any) => {
       const nodeType = unifiedNormalizeNodeType(node);
-      if (nodeType !== 'form') return node;
+      if (nodeType !== 'form' && nodeType !== 'form_trigger') return node;
       const fields = node.data?.config?.fields;
       if (Array.isArray(fields) && fields.length > 0) return node;
       const cfg = { ...(node.data?.config || {}), fields: canonicalBuilt };

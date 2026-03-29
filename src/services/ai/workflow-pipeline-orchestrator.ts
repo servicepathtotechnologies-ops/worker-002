@@ -179,6 +179,16 @@ export interface PipelineContext {
    * Inference reasoning (for vague prompts)
    */
   inference_reasoning?: string;
+
+  /**
+   * Tracks which follow-up messages have been merged into this context.
+   */
+  mergedFollowUps?: string[];
+
+  /**
+   * Last known WorkflowIntentPlan — preserved for error recovery UI.
+   */
+  lastKnownPlan?: import('./summarize-layer').WorkflowIntentPlan;
 }
 
 export interface PipelineResult {
@@ -1187,6 +1197,8 @@ export class WorkflowPipelineOrchestrator {
       
       let workflow: Workflow;
       let buildResult: any;
+      // ✅ UNIVERSAL FIX: Hoist tagsFromVariation to outer scope so STEP 3.2 can access it
+      let tagsFromVariation: string[] = [];
       try {
         const { buildProductionWorkflow } = await import('./production-workflow-builder');
         // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt for workflow building
@@ -1199,7 +1211,7 @@ export class WorkflowPipelineOrchestrator {
         // ✅ PHASE 4: Extract tags from selected variation (if available)
         // Tags are the source of truth - nodes in tags must be preserved
         // Prefer options.tagsFromVariation (from registry), else nodesFromSelectedVariation, else mandatoryNodeTypes
-        const tagsFromVariation = (options?.tagsFromVariation && options.tagsFromVariation.length > 0)
+        tagsFromVariation = (options?.tagsFromVariation && options.tagsFromVariation.length > 0)
           ? options.tagsFromVariation
           : (nodesFromSelectedVariation.length > 0 ? nodesFromSelectedVariation : options?.mandatoryNodeTypes || []);
         if (tagsFromVariation.length > 0) {
@@ -1441,7 +1453,8 @@ export class WorkflowPipelineOrchestrator {
       try {
         const { enforceMinimalWorkflowPolicy } = await import('./minimal-workflow-policy');
         // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt for policy enforcement
-        const policyResult = enforceMinimalWorkflowPolicy(workflow, structuredIntent, selectedStructuredPrompt);
+        // ✅ UNIVERSAL FIX: Pass tagsFromVariation so tag-protected nodes are preserved correctly
+        const policyResult = enforceMinimalWorkflowPolicy(workflow, structuredIntent, selectedStructuredPrompt, tagsFromVariation);
         
         if (policyResult.violations.length > 0) {
           console.log(`[PipelineOrchestrator] ⚠️  Minimal workflow policy violations: ${policyResult.violations.length}`);
@@ -2452,3 +2465,72 @@ export class WorkflowPipelineOrchestrator {
 }
 
 export const workflowPipelineOrchestrator = new WorkflowPipelineOrchestrator();
+
+// ── Follow-up merge contract (spec task 7) ───────────────────────────────────
+
+export interface MergeFollowUpResult {
+  updatedContext: PipelineContext;
+  updatedPlan: import('./summarize-layer').WorkflowIntentPlan;
+  /** Which StructuredIntent fields changed as a result of the follow-up. */
+  changedFields: string[];
+}
+
+/**
+ * Merge a follow-up message into an existing PipelineContext without re-running
+ * the full pipeline. Only the fields the follow-up addresses are updated in the
+ * prior StructuredIntent; then only the summarize step is re-run.
+ *
+ * This replaces calling executePipeline() again on follow-up messages.
+ */
+export async function mergeFollowUpIntoPipelineContext(
+  context: PipelineContext,
+  followUpMessage: string
+): Promise<MergeFollowUpResult> {
+  const { intentStructurer } = await import('./intent-structurer');
+  const { AIIntentClarifier } = await import('./summarize-layer');
+
+  // Combine prior structured intent text with the follow-up message so the
+  // intent structurer can produce an updated StructuredIntent that incorporates
+  // both the prior answers and the new message.
+  const combinedPrompt = [
+    context.selectedStructuredPrompt || context.original_prompt,
+    followUpMessage,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+
+  // Re-structure intent from the combined prompt
+  const updatedIntent = await intentStructurer.structureIntent(combinedPrompt);
+
+  // Detect which fields changed
+  const prior = context.structured_intent as unknown as Record<string, unknown>;
+  const updated = updatedIntent as unknown as Record<string, unknown>;
+  const changedFields: string[] = [];
+  for (const key of new Set([...Object.keys(prior), ...Object.keys(updated)])) {
+    if (JSON.stringify(prior[key]) !== JSON.stringify(updated[key])) {
+      changedFields.push(key);
+    }
+  }
+
+  // Build updated context
+  const updatedContext: PipelineContext = {
+    ...context,
+    structured_intent: updatedIntent,
+    selectedStructuredPrompt: combinedPrompt,
+    mergedFollowUps: [...(context.mergedFollowUps ?? []), followUpMessage],
+  };
+
+  // Re-run only the summarize step (not the full pipeline)
+  const clarifier = new AIIntentClarifier();
+  const summarizeResult = await clarifier.clarifyIntentAndGenerateSinglePlan(combinedPrompt);
+  const updatedPlan = summarizeResult.workflowIntentPlan ?? {
+    structuredSummary: combinedPrompt,
+    proposedNodeChain: [],
+    originalPrompt: combinedPrompt,
+  };
+
+  // Preserve the last known plan for error recovery
+  updatedContext.lastKnownPlan = updatedPlan;
+
+  return { updatedContext, updatedPlan, changedFields };
+}

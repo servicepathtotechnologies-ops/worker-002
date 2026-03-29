@@ -53,5 +53,23 @@ describe('field-contract-engine', () => {
 
     expect(result.resolvedInputs.prompt).toBe('Row 1, Row 2, Row 3');
   });
+
+  it('repairs linkedin text from upstream narrative when value looks like JSON garbage', () => {
+    const result = applyDeterministicFieldContracts(
+      { text: '{"k":1}' },
+      {
+        nodeType: 'linkedin',
+        userIntent: 'post cricket update',
+        upstreamPayload: { response_text: 'AI generated post body for LinkedIn' },
+        config: {},
+        inputSchema: {
+          text: { type: 'string', role: 'content' },
+        } as any,
+      }
+    );
+
+    expect(result.resolvedInputs.text).toBe('AI generated post body for LinkedIn');
+    expect(result.repairs.some((r) => r.includes('linkedin.text'))).toBe(true);
+  });
 });
 

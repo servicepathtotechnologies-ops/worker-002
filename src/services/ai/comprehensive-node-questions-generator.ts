@@ -34,6 +34,7 @@ import {
 } from '../../core/utils/schema-field-control';
 import { getInputControlMetadata } from '../../core/utils/schema-input-control';
 import { getCredentialVaultMetaForField } from '../../core/utils/credential-field-vault-meta';
+import { computeFieldRequiredBeforeExecution } from '../../core/validation/registry-field-contract';
 
 export interface ComprehensiveNodeQuestion {
   id: string;
@@ -1164,7 +1165,15 @@ function generateOperationQuestions(
       // ✅ CRITICAL: Check if required in schema OR in node-question-order
       const isRequiredInSchema = requiredFields.includes(operationField);
       const isRequiredInConfig = operationQuestionFromConfig?.required || false;
-      const isRequired = isRequiredInSchema || isRequiredInConfig;
+      const unifiedOp = unifiedNodeRegistry.get(nodeType);
+      const opFd = unifiedOp?.inputSchema?.[operationField] as any;
+      const isRequiredRegistry = computeFieldRequiredBeforeExecution(
+        nodeType,
+        operationField,
+        opFd,
+        config as Record<string, unknown>
+      );
+      const isRequired = isRequiredInSchema || isRequiredInConfig || isRequiredRegistry;
       
       console.log(`[ComprehensiveQuestions]   Operation field: ${operationField}`);
       console.log(`[ComprehensiveQuestions]   Required in schema: ${isRequiredInSchema}`);
@@ -1373,6 +1382,12 @@ function generateConfigurationQuestions(
           }
         }
 
+        const unifiedRequired = computeFieldRequiredBeforeExecution(
+          nodeType,
+          qDef.field,
+          orderedFd as any,
+          config as Record<string, unknown>
+        );
         const question: ComprehensiveNodeQuestion = {
           id: `config_${nodeId}_${qDef.field}`,
           text: qDef.prompt || `Please provide ${qDef.field} for "${nodeLabel}"`,
@@ -1382,7 +1397,7 @@ function generateConfigurationQuestions(
           nodeLabel,
           fieldName: qDef.field,
           category: 'configuration',
-          required: qDef.required,
+          required: unifiedRequired || qDef.required,
           options: validOptions,
           askOrder: qDef.askOrder >= 2 ? qDef.askOrder : 3, // Configuration fields come after operations
           example: qDef.example,
@@ -1487,6 +1502,7 @@ function generateConfigurationQuestions(
           }
         }
         
+        const cfgFieldDef = unifiedForConfig?.inputSchema?.[fieldName] as any;
         const question: ComprehensiveNodeQuestion = {
           id: `config_${nodeId}_${fieldName}`,
           text: questionText,
@@ -1496,7 +1512,12 @@ function generateConfigurationQuestions(
           nodeLabel,
           fieldName,
           category: 'configuration',
-          required: requiredFields.includes(fieldName),
+          required: computeFieldRequiredBeforeExecution(
+            nodeType,
+            fieldName,
+            cfgFieldDef,
+            config as Record<string, unknown>
+          ),
           askOrder: 3, // Configuration fields come after operations
           description: fieldInfo?.description,
           placeholder: fieldInfo?.placeholder || (fieldLower.includes('id') ? `Enter ${fieldName}` : undefined),

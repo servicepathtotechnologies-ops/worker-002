@@ -40,9 +40,39 @@ import { isPlaceholderValue } from '../core/utils/placeholder-filter';
 import { buildTagsFromRegistry } from './ai/gemini-node-selector';
 import { resolveEffectiveFieldFillMode } from '../core/utils/fill-mode-resolver';
 import { validateStructuralReadiness } from '../core/validation/workflow-save-validator';
+import { computeFieldRequiredBeforeExecution } from '../core/validation/registry-field-contract';
 import { materializeStructuralFields } from './ai/structure-materializer';
+import { applyStructuralIntentAlignment } from './ai/intent-structural-projection';
+import { hydrateRequiredConfigFromRegistryDefaults } from '../core/validation/workflow-config-hydrator';
+import {
+  formatArchitecturalWorkflowPrompt,
+  structuredPromptAlreadyHasArchitecture,
+} from './ai/structured-workflow-prompt';
+import { pruneProposedPlanChain } from './ai/plan-chain-prune';
 import { getInputControlMetadata, InputControlType } from '../core/utils/schema-input-control';
 import { isCredentialOwnership, isStructuralOwnership } from '../core/utils/field-ownership';
+import type { FieldFillMode } from '../core/types/unified-node-contract';
+
+/**
+ * Credential gate helper (spec task 6).
+ *
+ * Returns true ONLY when:
+ * - The field has ownership === 'credential' in the registry, AND
+ * - The field's current toggle state (_fieldModes) is 'manual_static'
+ *   (meaning the user has explicitly chosen to supply this credential manually).
+ *
+ * This prevents prompting for credentials that are resolved via vault or runtime.
+ */
+export function shouldRequireCredential(
+  nodeType: string,
+  fieldName: string,
+  fieldModes: Record<string, FieldFillMode>
+): boolean {
+  const fieldDef = unifiedNodeRegistry.get(nodeType)?.inputSchema?.[fieldName];
+  if (!fieldDef || fieldDef.ownership !== 'credential') return false;
+  const userMode = fieldModes[fieldName];
+  return userMode === 'manual_static';
+}
 
 /** Trigger-style nodes only — used to avoid narrowing planner output to trigger-only when variation metadata is wrong. */
 function isTriggerishNodeType(nodeType: string): boolean {
@@ -235,6 +265,40 @@ export class WorkflowLifecycleManager {
   }
 
   /**
+   * When mandatory node chain exists but the prompt lacks an explicit architecture block,
+   * synthesize Goal + numbered chain + terminal for the deterministic pipeline.
+   */
+  private buildEffectiveStructuredPromptForPipeline(
+    plannerPrompt: string,
+    constraints?: {
+      selectedStructuredPrompt?: string;
+      originalPrompt?: string;
+      mandatoryNodeTypes?: string[];
+    }
+  ): { selectedStructuredPrompt: string; originalPrompt: string } {
+    const originalPrompt = constraints?.originalPrompt || plannerPrompt;
+    let selectedStructuredPrompt = constraints?.selectedStructuredPrompt || plannerPrompt;
+    const chain = pruneProposedPlanChain(constraints?.mandatoryNodeTypes || []);
+    if (
+      chain.length >= 2 &&
+      !structuredPromptAlreadyHasArchitecture(selectedStructuredPrompt)
+    ) {
+      const nar =
+        selectedStructuredPrompt.trim() &&
+        selectedStructuredPrompt.trim() !== String(plannerPrompt || '').trim()
+          ? selectedStructuredPrompt
+          : undefined;
+      selectedStructuredPrompt = formatArchitecturalWorkflowPrompt({
+        goal: originalPrompt,
+        proposedNodeChain: chain,
+        narrativeContext: nar,
+        includeRegistryFillContract: true,
+      });
+    }
+    return { selectedStructuredPrompt, originalPrompt };
+  }
+
+  /**
    * Generate workflow using Gemini planner + registry + graph orchestrator.
    * Falls back to deterministic pipeline only if planner-based generation fails.
    */
@@ -363,10 +427,11 @@ export class WorkflowLifecycleManager {
       }
     }
     
-    // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt if provided, otherwise use userPrompt
-    const selectedStructuredPrompt = constraints?.selectedStructuredPrompt || userPrompt;
-    const originalPrompt = constraints?.originalPrompt || userPrompt;
-    
+    const { selectedStructuredPrompt, originalPrompt } = this.buildEffectiveStructuredPromptForPipeline(
+      userPrompt,
+      constraints
+    );
+
     console.log(`[WorkflowLifecycle] Using prompt: "${selectedStructuredPrompt.substring(0, 100)}..."`);
     if (constraints?.selectedStructuredPrompt) {
       console.log(`[WorkflowLifecycle] ✅ Using selected structured prompt (original preserved for reference)`);
@@ -763,9 +828,10 @@ export class WorkflowLifecycleManager {
     // ✅ PRODUCTION: Always use new deterministic pipeline architecture
     // ✅ MIGRATION: Legacy builder fallback removed - single production path
     console.log('[WorkflowLifecycle] Using new deterministic pipeline architecture');
-    // ✅ UNIVERSAL FIX: Use selectedStructuredPrompt if provided, otherwise use userPrompt
-    const selectedStructuredPrompt = constraints?.selectedStructuredPrompt || userPrompt;
-    const originalPrompt = constraints?.originalPrompt || userPrompt;
+    const { selectedStructuredPrompt, originalPrompt } = this.buildEffectiveStructuredPromptForPipeline(
+      userPrompt,
+      constraints
+    );
 
     console.log(`[WorkflowLifecycle] generateWorkflowGraph - structured (variation): "${selectedStructuredPrompt.substring(0, 100)}..."`);
     if (constraints?.selectedStructuredPrompt) {
@@ -1138,6 +1204,8 @@ export class WorkflowLifecycleManager {
         originalPrompt
       );
       finalWorkflow = materializeStructuralFields(finalWorkflow);
+      finalWorkflow = applyStructuralIntentAlignment(finalWorkflow);
+      finalWorkflow = hydrateRequiredConfigFromRegistryDefaults(finalWorkflow);
       const { hydrateFormFieldsFromLlmIfEnabled } = await import('./ai/form-fields-structural-llm');
       finalWorkflow = await hydrateFormFieldsFromLlmIfEnabled(finalWorkflow);
       const { repairIfElseConditionsFromUpstreamForm } = await import(
@@ -1199,7 +1267,39 @@ export class WorkflowLifecycleManager {
 
     console.log(`[WorkflowLifecycle] Credential discovery complete: ${credentialDiscovery.requiredCredentials.length} credential(s) required`);
     console.log(`[WorkflowLifecycle] Satisfied: ${credentialDiscovery.satisfiedCredentials?.length || 0}, Missing: ${credentialDiscovery.missingCredentials?.length || 0}`);
-    credentialDiscovery.requiredCredentials.forEach(cred => {
+
+    // ── _fieldModes credential gate (spec task 6) ────────────────────────
+    // Filter requiredCredentials: only surface a credential when the corresponding
+    // field's _fieldModes toggle is 'manual_static'. Fields in buildtime_ai_once or
+    // runtime_ai mode are resolved via vault/runtime and must NOT prompt the user.
+    const gatedRequiredCredentials = credentialDiscovery.requiredCredentials.filter((cred) => {
+      // If no nodeIds, keep (conservative)
+      if (!cred.nodeIds || cred.nodeIds.length === 0) return true;
+      return cred.nodeIds.some((nodeId: string) => {
+        const node = finalWorkflow.nodes.find((n: any) => n.id === nodeId);
+        if (!node) return false;
+        const nodeType = unifiedNormalizeNodeType(node);
+        const fieldModes: Record<string, FieldFillMode> = (node as any).data?.config?._fieldModes ?? {};
+        // Check each credential field for this node
+        const nodeDef = unifiedNodeRegistry.get(nodeType);
+        if (!nodeDef) return true; // conservative: keep if no def
+        const credFields = Object.entries(nodeDef.inputSchema ?? {})
+          .filter(([, fd]) => (fd as any)?.ownership === 'credential')
+          .map(([name]) => name);
+        if (credFields.length === 0) return true;
+        return credFields.some((fieldName) => shouldRequireCredential(nodeType, fieldName, fieldModes));
+      });
+    });
+
+    if (gatedRequiredCredentials.length !== credentialDiscovery.requiredCredentials.length) {
+      console.log(
+        `[WorkflowLifecycle] _fieldModes gate: reduced required credentials from ${credentialDiscovery.requiredCredentials.length} to ${gatedRequiredCredentials.length}`
+      );
+      credentialDiscovery.requiredCredentials = gatedRequiredCredentials;
+    }
+    // ─────────────────────────────────────────────────────────────────────
+
+    credentialDiscovery.requiredCredentials.forEach((cred: any) => {
       const status = cred.satisfied ? '✅ SATISFIED' : '❌ MISSING';
       console.log(`  - ${cred.displayName} (${cred.provider}/${cred.type}) ${status} for nodes: ${cred.nodeIds.join(', ')}`);
     });
@@ -1592,7 +1692,6 @@ export class WorkflowLifecycleManager {
       const unifiedDefinition = unifiedNodeRegistry.get(nodeType);
       const definitionInputSchema = unifiedDefinition?.inputSchema;
 
-      const requiredFields = new Set(schema.configSchema?.required || []);
       const unifiedInputSchema = definitionInputSchema || {};
       for (const [fieldName, fieldDef] of Object.entries(unifiedInputSchema)) {
         if (isCredentialOwnership(fieldName, fieldDef) || isStructuralOwnership(fieldName, fieldDef)) {
@@ -1629,7 +1728,12 @@ export class WorkflowLifecycleManager {
           placeholder: controlMetadata.placeholder,
           uiWidget: controlMetadata.uiWidget,
           description: fieldDef.description || fieldName,
-          required: requiredFields.has(fieldName) || !!fieldDef.required,
+          required: computeFieldRequiredBeforeExecution(
+            nodeType,
+            fieldName,
+            fieldDef as any,
+            existingConfig as Record<string, unknown>
+          ),
           defaultValue: fieldDef.default,
           examples: fieldDef.examples,
           ownership: fieldDef.ownership || 'value',
@@ -2530,6 +2634,8 @@ export class WorkflowLifecycleManager {
     userId?: string
   ): Promise<WorkflowGenerationResult> {
     let finalWorkflow = materializeStructuralFields(workflow);
+    finalWorkflow = applyStructuralIntentAlignment(finalWorkflow);
+    finalWorkflow = hydrateRequiredConfigFromRegistryDefaults(finalWorkflow);
     const credentialDiscovery = await credentialDiscoveryPhase.discoverCredentials(finalWorkflow, userId);
     finalWorkflow = this.autoInjectSatisfiedCredentialRefs(finalWorkflow, credentialDiscovery);
     const nodeInputs = this.discoverNodeInputs(finalWorkflow);

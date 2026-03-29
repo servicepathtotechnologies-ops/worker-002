@@ -15,6 +15,8 @@ import {
   validateCanonicalIfElseConditions,
 } from '../utils/if-else-conditions';
 import { normalizeWorkflowFormFieldIdentities } from '../utils/form-field-identity';
+import { isEmptyConfigValue } from './registry-field-contract';
+import { validateIfElseConditionsAgainstUpstreamForm } from '../orchestration/form-ifelse-binding';
 
 // Workflow types (inline to avoid circular dependencies)
 interface WorkflowNode {
@@ -146,12 +148,7 @@ export function validateStructuralReadiness(
       if (!isStructuralOwnership(fieldName, fieldDef)) continue;
       const mode = resolveEffectiveFieldFillMode(fieldName, inputSchema, config as Record<string, any>);
       const value = config[fieldName];
-      const missing =
-        value === undefined ||
-        value === null ||
-        (typeof value === 'string' && value.trim() === '') ||
-        (Array.isArray(value) && value.length === 0) ||
-        (typeof value === 'object' && !Array.isArray(value) && Object.keys(value as Record<string, unknown>).length === 0);
+      const missing = isEmptyConfigValue(value);
 
       if (!missing) continue;
 
@@ -284,6 +281,13 @@ export function validateWorkflowForSave(
 
   const readiness = validateStructuralReadiness(nodes, { strict: false });
   warnings.push(...readiness.warnings);
+
+  const ifElseFormBinding = validateIfElseConditionsAgainstUpstreamForm({
+    nodes,
+    edges,
+    metadata: {},
+  } as Workflow);
+  errors.push(...ifElseFormBinding.errors);
 
   // 4. Check for cycles (basic check - full cycle detection would require DFS)
   const hasIncomingEdges = new Set(edges.map(e => e.target));

@@ -4694,6 +4694,7 @@ export class NodeLibrary {
           chat_model: {
             type: 'object',
             description: 'Chat model configuration (must connect Chat Model node)',
+            default: { provider: 'gemini', model: 'gemini-2.5-flash' },
           },
           memory: {
             type: 'object',

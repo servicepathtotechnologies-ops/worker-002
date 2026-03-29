@@ -656,11 +656,26 @@ export async function executeNodeDynamically(
     }
   }
 
+  // ── runtime_ai resolution contract (spec task 9) ────────────────────────
+  // Resolve all {{$json.*}} template expressions in mergedConfig via
+  // universalTemplateResolver BEFORE the legacy executor receives config.
+  // This ensures no template syntax leaks into node execution.
+  const { resolveUniversalTemplate } = require('../utils/universal-template-resolver');
+  const templateResolvedConfig: Record<string, any> = {};
+  for (const [key, value] of Object.entries(mergedConfig)) {
+    if (typeof value === 'string' && (value.includes('{{') || value.includes('$json'))) {
+      templateResolvedConfig[key] = resolveUniversalTemplate(value, nodeOutputs);
+    } else {
+      templateResolvedConfig[key] = value;
+    }
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
   // Step 7: Create execution context (rawInput = effective normalized payload for never-failing code)
   const execContext: NodeExecutionContext = {
     nodeId: node.id,
     nodeType,
-    config: mergedConfig, // Use merged config (includes AI-generated values)
+    config: templateResolvedConfig, // Use template-resolved config (spec task 9)
     inputs: resolvedInputs, // Use resolved inputs for execution
     rawInput: effectiveInput,
     upstreamOutputs: new Map(),

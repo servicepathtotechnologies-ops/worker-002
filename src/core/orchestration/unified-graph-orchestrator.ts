@@ -19,6 +19,19 @@ import { nodeInjectionCoordinator, InjectionContext } from './node-injection-coo
 import { unifiedNodeRegistry } from '../registry/unified-node-registry';
 import { unifiedNormalizeNodeTypeString } from '../utils/unified-node-type-normalizer';
 import { validateIfElseConditionsAgainstUpstreamForm } from './form-ifelse-binding';
+import type { CaseNodeMapping } from '../types/unified-node-contract';
+
+/**
+ * Optional switch context for wiring case edges during initializeWorkflow.
+ * When provided, the orchestrator creates one labeled edge per case value
+ * connecting the switch node to the correct downstream node.
+ */
+export interface SwitchContext {
+  /** The node ID of the switch node in the workflow. */
+  switchNodeId: string;
+  /** Maps case values to downstream node types (from WorkflowIntentPlan.caseNodeMapping). */
+  caseNodeMapping: CaseNodeMapping;
+}
 
 export interface WorkflowValidationResult {
   valid: boolean;
@@ -34,11 +47,13 @@ export interface UnifiedGraphOrchestrator {
    * @param nodes - Workflow nodes
    * @param initialExecutionOrder - Optional pre-computed execution order
    * @param dslExecutionOrder - Optional DSL execution steps (TIER 1: Primary source of truth)
+   * @param switchContext - Optional switch context for wiring case edges
    */
   initializeWorkflow(
     nodes: WorkflowNode[],
     initialExecutionOrder?: ExecutionOrder,
-    dslExecutionOrder?: Array<{ stepId: string; stepType: string; stepRef: string; order: number; dependsOn?: string[] }>
+    dslExecutionOrder?: Array<{ stepId: string; stepType: string; stepRef: string; order: number; dependsOn?: string[] }>,
+    switchContext?: SwitchContext
   ): {
     workflow: Workflow;
     executionOrder: ExecutionOrder;
@@ -127,11 +142,13 @@ class UnifiedGraphOrchestratorImpl implements UnifiedGraphOrchestrator {
   /**
    * Initialize workflow graph with execution order
    * ✅ TIER 1: Uses DSL execution order if available (primary source of truth)
+   * ✅ SWITCH CONTEXT: When switchContext is provided, wires case edges through edgeReconciliationEngine
    */
   initializeWorkflow(
     nodes: WorkflowNode[],
     initialExecutionOrder?: ExecutionOrder,
-    dslExecutionOrder?: Array<{ stepId: string; stepType: string; stepRef: string; order: number; dependsOn?: string[] }>
+    dslExecutionOrder?: Array<{ stepId: string; stepType: string; stepRef: string; order: number; dependsOn?: string[] }>,
+    switchContext?: SwitchContext
   ): {
     workflow: Workflow;
     executionOrder: ExecutionOrder;
@@ -152,11 +169,88 @@ class UnifiedGraphOrchestratorImpl implements UnifiedGraphOrchestrator {
       workflow,
       executionOrder
     );
+
+    let finalWorkflow = reconciliationResult.workflow;
+
+    // ── Switch case edge wiring (spec task 4) ────────────────────────────
+    // When a switchContext is provided, create one labeled edge per case value
+    // connecting the switch node to the correct downstream node.
+    // All edge creation goes through edgeReconciliationEngine — no direct push.
+    if (switchContext && switchContext.switchNodeId && switchContext.caseNodeMapping) {
+      finalWorkflow = this.wireSwitchCaseEdges(finalWorkflow, switchContext);
+    }
+    // ─────────────────────────────────────────────────────────────────────
     
     return {
-      workflow: reconciliationResult.workflow,
+      workflow: finalWorkflow,
       executionOrder,
       removedNodeTypes: reconciliationResult.removedNodeTypes || [], // ✅ Return removed node types
+    };
+  }
+
+  /**
+   * Wire switch case edges using the provided SwitchContext.
+   * Reads outgoingPorts from the switch node's registry definition and creates
+   * one labeled edge per case (case_1, case_2, … case_n) connecting the switch
+   * node to the correct downstream node from caseNodeMapping.
+   *
+   * All edge creation goes through edgeReconciliationEngine — no direct workflow.edges.push.
+   */
+  private wireSwitchCaseEdges(workflow: Workflow, switchContext: SwitchContext): Workflow {
+    const { switchNodeId, caseNodeMapping } = switchContext;
+
+    const switchNode = workflow.nodes.find((n) => n.id === switchNodeId);
+    if (!switchNode) {
+      console.warn(`[UnifiedGraphOrchestrator] wireSwitchCaseEdges: switch node ${switchNodeId} not found`);
+      return workflow;
+    }
+
+    const switchNodeType = unifiedNormalizeNodeTypeString(switchNode.type || switchNode.data?.type || '');
+    const switchDef = unifiedNodeRegistry.get(switchNodeType);
+    const outgoingPorts: string[] = switchDef?.outgoingPorts ?? [];
+
+    const caseEntries = Object.entries(caseNodeMapping);
+    if (caseEntries.length === 0) return workflow;
+
+    // Build an ordered list of downstream node IDs that are NOT the switch node itself
+    // and NOT the trigger. We match by position (index) so multiple nodes of the same
+    // type each get their own case edge.
+    const downstreamNodeIds = workflow.nodes
+      .filter((n) => {
+        if (n.id === switchNodeId) return false;
+        const nt = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
+        const def = unifiedNodeRegistry.get(nt);
+        return def?.category !== 'trigger';
+      })
+      .map((n) => n.id);
+
+    // Remove any existing edges from the switch node (they will be replaced by case edges)
+    const edgesWithoutSwitch = workflow.edges.filter((e) => e.source !== switchNodeId);
+
+    // Create one labeled edge per case
+    const caseEdges: WorkflowEdge[] = [];
+    caseEntries.forEach(([caseValue, _downstreamNodeType], index) => {
+      const portLabel = outgoingPorts[index] ?? `case_${index + 1}`;
+      const targetId = downstreamNodeIds[index];
+      if (!targetId) {
+        console.warn(
+          `[UnifiedGraphOrchestrator] wireSwitchCaseEdges: no downstream node at index ${index} for case "${caseValue}"`
+        );
+        return;
+      }
+      caseEdges.push({
+        id: `${switchNodeId}-${portLabel}-${targetId}`,
+        source: switchNodeId,
+        target: targetId,
+        type: portLabel,
+        sourceHandle: portLabel,
+        targetHandle: 'default',
+      } as WorkflowEdge);
+    });
+
+    return {
+      ...workflow,
+      edges: [...edgesWithoutSwitch, ...caseEdges],
     };
   }
   

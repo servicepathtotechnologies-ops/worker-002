@@ -146,6 +146,75 @@ describe('structure materializer', () => {
     );
   });
 
+  it('derives form.fields from if_else input.* when metadata is only architectural text', () => {
+    const workflow: any = {
+      nodes: [
+        {
+          id: 'form_1',
+          type: 'form',
+          data: {
+            type: 'form',
+            label: 'Form',
+            config: { fields: [], _fillMode: { fields: 'buildtime_ai_once' } },
+          },
+        },
+        {
+          id: 'if_1',
+          type: 'if_else',
+          data: {
+            type: 'if_else',
+            label: 'If',
+            config: {
+              conditions: [
+                {
+                  field: 'input.experience',
+                  operator: 'greater_than',
+                  value: 3,
+                  expression: '{{input.experience}} > 3',
+                },
+              ],
+            },
+          },
+        },
+      ],
+      edges: [],
+      metadata: {
+        generatedFrom: 'Goal:\nExample\n1. Form (form) → If/Else (if_else) → Gmail',
+      },
+    };
+
+    const out = materializeStructuralFields(workflow);
+    const formConfig: any = out.nodes[0].data.config;
+    expect(formConfig.fields.some((f: any) => String(f.key) === 'experience')).toBe(true);
+    const readiness = validateStructuralReadiness(out.nodes, { strict: true });
+    expect(readiness.errors.some((e) => e.includes('fields'))).toBe(false);
+  });
+
+  it('materializes a placeholder form field when no structural hints exist', () => {
+    const workflow: any = {
+      nodes: [
+        {
+          id: 'form_1',
+          type: 'form',
+          data: {
+            type: 'form',
+            label: 'Form',
+            config: { fields: [], _fillMode: { fields: 'buildtime_ai_once' } },
+          },
+        },
+      ],
+      edges: [],
+      metadata: { generatedFrom: 'Goal:\n1. manual_trigger (manual_trigger)' },
+    };
+
+    const out = materializeStructuralFields(workflow);
+    const formConfig: any = out.nodes[0].data.config;
+    expect(formConfig.fields.length).toBeGreaterThan(0);
+    expect(formConfig.fields.some((f: any) => String(f.key) === 'response')).toBe(true);
+    const readiness = validateStructuralReadiness(out.nodes, { strict: true });
+    expect(readiness.errors.some((e) => e.includes('fields'))).toBe(false);
+  });
+
   it('derives switch.expression and switch.cases from intent prompt', () => {
     const workflow: any = {
       nodes: [

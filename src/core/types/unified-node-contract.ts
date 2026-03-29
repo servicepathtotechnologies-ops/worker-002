@@ -292,6 +292,15 @@ export interface UnifiedNodeDefinition {
 }
 
 /**
+ * Maps switch case values to downstream node types.
+ * e.g. { "sales": "slack", "support": "google_gmail", "general": "log_output" }
+ * Used by WorkflowIntentPlan and Graph_Orchestrator switch edge wiring.
+ */
+export interface CaseNodeMapping {
+  [caseValue: string]: string;
+}
+
+/**
  * NODE REGISTRY INTERFACE
  * 
  * Central registry that stores ALL node definitions.

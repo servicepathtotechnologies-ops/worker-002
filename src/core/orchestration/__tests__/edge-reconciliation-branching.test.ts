@@ -100,6 +100,41 @@ describe('edge reconciliation branching completeness', () => {
     expect(addedFromIf.length).toBe(2);
   });
 
+  it('validateEdges keeps branch and output→log edges when flat execution order misorders nodes (save regression)', () => {
+    const workflow: any = {
+      nodes: [
+        { id: 't', type: 'manual_trigger', data: { type: 'manual_trigger' } },
+        { id: 'gmail', type: 'google_gmail', data: { type: 'google_gmail' } },
+        { id: 'slack', type: 'slack_message', data: { type: 'slack_message' } },
+        { id: 'if_1', type: 'if_else', data: { type: 'if_else', config: { conditions: [{ field: 'x', operator: 'equals', value: '1' }] } } },
+        { id: 'log1', type: 'log_output', data: { type: 'log_output' } },
+        { id: 'log2', type: 'log_output', data: { type: 'log_output' } },
+      ],
+      edges: [
+        { id: 'e1', source: 't', target: 'if_1', type: 'main' },
+        { id: 'e2', source: 'if_1', target: 'gmail', type: 'true', sourceHandle: 'true' },
+        { id: 'e3', source: 'if_1', target: 'slack', type: 'false', sourceHandle: 'false' },
+        { id: 'e4', source: 'gmail', target: 'log1', type: 'main' },
+        { id: 'e5', source: 'slack', target: 'log2', type: 'main' },
+      ],
+    };
+
+    // Mimics buildOrderFromCategories when communication nodes appear before logic in `nodes` array.
+    const misordered: ExecutionOrder = {
+      nodeIds: ['t', 'gmail', 'slack', 'if_1', 'log1', 'log2'],
+      dependencies: new Map(),
+      metadata: {
+        triggerNodeId: 't',
+        terminalNodeIds: ['log1', 'log2'],
+        branchingNodeIds: ['if_1'],
+        mergeNodeIds: [],
+      },
+    };
+
+    const v = edgeReconciliationEngine.validateEdges(workflow, misordered);
+    expect(v.edgesToRemove.length).toBe(0);
+  });
+
   it('does not duplicate if_else → first downstream when linear chain would collide with true branch', () => {
     const workflow: any = {
       nodes: [

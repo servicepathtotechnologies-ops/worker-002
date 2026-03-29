@@ -348,46 +348,54 @@ export class MinimalWorkflowPolicy {
   }
 
   /**
-   * Remove duplicate transformers
+   * Remove duplicate nodes of the same type.
+   *
+   * ✅ UNIVERSAL FIX: Previously only covered a hardcoded list of transformer types
+   * (transform, set_variable, format, parse, filter, map, reduce).
+   * Now covers ALL node types via registry-driven deduplication.
+   *
+   * Strategy:
+   * - Trigger nodes: always keep all (branching workflows may legitimately have none, but
+   *   triggers are handled separately and never reach this step).
+   * - Branching nodes (if_else, switch): keep all — each branch legitimately needs its own
+   *   downstream nodes, but the branching node itself should only appear once.
+   * - All other node types: keep the first occurrence, remove subsequent duplicates.
+   *
+   * "First occurrence" is defined as the node that appears earliest in the array, which
+   * corresponds to the node closest to the trigger in topological order (the builder
+   * already sorts nodes in execution order before this policy runs).
    */
   private removeDuplicateTransformers(
     nodes: WorkflowNode[]
   ): { filteredNodes: WorkflowNode[]; duplicateViolations: PolicyViolation[] } {
-    const transformerTypes = new Set([
-      'transform',
-      'set_variable',
-      'format',
-      'parse',
-      'filter',
-      'map',
-      'reduce',
-    ]);
-
-    const seenTransformers = new Map<string, string>(); // type -> first node id
+    const seenNodeTypes = new Map<string, string>(); // nodeType -> first node id
     const filteredNodes: WorkflowNode[] = [];
     const violations: PolicyViolation[] = [];
 
     for (const node of nodes) {
       const nodeType = unifiedNormalizeNodeType(node);
 
-      if (transformerTypes.has(nodeType)) {
-        if (seenTransformers.has(nodeType)) {
-          // Duplicate transformer - remove it
-          violations.push({
-            type: 'duplicate_transformer',
-            nodeId: node.id,
-            nodeType,
-            reason: `Duplicate transformer "${nodeType}" found`,
-            suggestion: `Remove duplicate transformer, keeping first occurrence (${seenTransformers.get(nodeType)})`,
-          });
-          console.log(`[MinimalWorkflowPolicy] ⚠️  Removed duplicate transformer: ${node.id} (${nodeType})`);
-          continue;
-        }
-
-        // First occurrence - keep it
-        seenTransformers.set(nodeType, node.id);
+      // Always keep trigger nodes (handled separately, should not be duplicated anyway)
+      if (this.isTriggerNode(nodeType)) {
+        filteredNodes.push(node);
+        continue;
       }
 
+      if (seenNodeTypes.has(nodeType)) {
+        // ✅ UNIVERSAL: Duplicate of ANY node type — remove it
+        violations.push({
+          type: 'duplicate_transformer',
+          nodeId: node.id,
+          nodeType,
+          reason: `Duplicate node "${nodeType}" found`,
+          suggestion: `Remove duplicate node, keeping first occurrence (${seenNodeTypes.get(nodeType)})`,
+        });
+        console.log(`[MinimalWorkflowPolicy] ⚠️  Removed duplicate node: ${node.id} (${nodeType}) — keeping ${seenNodeTypes.get(nodeType)}`);
+        continue;
+      }
+
+      // First occurrence — keep it
+      seenNodeTypes.set(nodeType, node.id);
       filteredNodes.push(node);
     }
 
@@ -777,6 +785,12 @@ export class MinimalWorkflowPolicy {
 export const minimalWorkflowPolicy = new MinimalWorkflowPolicy();
 
 // Export convenience function
-export function enforceMinimalWorkflowPolicy(workflow: Workflow, intent: StructuredIntent, originalPrompt?: string): PolicyEnforcementResult {
-  return minimalWorkflowPolicy.enforce(workflow, intent, originalPrompt);
+// ✅ UNIVERSAL FIX: Accept and forward tagsFromVariation so the wrapper is not a lossy shim
+export function enforceMinimalWorkflowPolicy(
+  workflow: Workflow,
+  intent: StructuredIntent,
+  originalPrompt?: string,
+  tagsFromVariation?: string[]
+): PolicyEnforcementResult {
+  return minimalWorkflowPolicy.enforce(workflow, intent, originalPrompt, tagsFromVariation);
 }

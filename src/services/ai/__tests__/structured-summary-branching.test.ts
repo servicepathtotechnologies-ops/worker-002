@@ -6,16 +6,44 @@ describe('structured summary branching connection plan', () => {
     const summary: string = clarifier.buildStructuredSummaryFromChain(
       ['form', 'if_else', 'google_gmail', 'slack_message', 'log_output'],
       'If age is greater than 18 send gmail, else send slack',
-      'Branching node routes data into separate paths based on condition/case evaluation.'
+      {
+        branchKind: 'if_else',
+        discriminatorField: 'value',
+        cases: [
+          { id: 'if_1', label: 'true', condition: { type: 'equality', left: 'value', matchValue: 'true' }, targetNodeTypes: ['google_gmail'], isDefault: false },
+          { id: 'if_2', label: 'false', condition: { type: 'equality', left: 'value', matchValue: 'false' }, targetNodeTypes: ['slack_message'], isDefault: false },
+        ],
+        estimatedBranchCount: 2,
+        confidence: 0.9,
+      }
     );
 
-    expect(summary).toContain('If/Else (if_else) ->');
+    expect(summary).toContain('If/Else (if_else)');
     expect(summary).toContain('[true]');
     expect(summary).toContain('[false]');
     expect(summary).toContain('Gmail (google_gmail)');
     expect(summary).toContain('Slack (slack_message)');
-    expect(summary).toContain('persist true-path observable output');
-    expect(summary).toContain('persist false-path observable output');
+    expect(summary).toContain('branch-path observable output');
+  });
+
+  it('renders parallel branches from output→log pairs when branch metadata is absent', () => {
+    const clarifier = new AIIntentClarifier() as any;
+    const summary: string = clarifier.buildStructuredSummaryFromChain(
+      ['form', 'if_else', 'google_gmail', 'log_output', 'slack_message', 'log_output'],
+      'If experience > 3 years shortlist and Gmail, else Slack.',
+      undefined
+    );
+
+    const executionOnly = summary.split('## Configuration contract')[0] || summary;
+
+    expect(executionOnly).toContain('[true]');
+    expect(executionOnly).toContain('[false]');
+    expect(executionOnly).toContain('If/Else (if_else)');
+    expect(executionOnly).toContain('Gmail (google_gmail)');
+    expect(executionOnly).toContain('Slack (slack_message)');
+    expect(executionOnly).not.toMatch(/\(log_output\)\s*→\s*Slack/i);
+    expect(executionOnly).toMatch(/Slack \(slack_message\).*→.*log_output/is);
+    expect(executionOnly).toMatch(/Gmail \(google_gmail\).*→.*log_output/is);
   });
 
   it('does not add extra branch output when prompt explicitly names two targets', () => {

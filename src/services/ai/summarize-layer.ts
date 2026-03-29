@@ -4,7 +4,7 @@
  * Produces a single registry-grounded structured plan:
  * 1. Collect alias keywords from node schemas / patterns
  * 2. Provide the model with the user prompt + candidate node types
- * 3. Return one WorkflowIntentPlan (structuredSummary + proposedNodeChain, ending with log_output)
+ * 3. Return one WorkflowIntentPlan (structuredSummary + proposedNodeChain; terminal = one or more log_output for branches)
  *
  * Legacy multi-variant helpers remain in AIIntentClarifier but are not used by processPrompt().
  */
@@ -26,6 +26,10 @@ import {
 import { resolveCanonicalNodeTypeStrict } from '../../core/utils/node-type-resolver-util';
 import { extractBranchIntentSignals, expectedBranchTargetCount } from '../../core/utils/branch-intent-model';
 import { BranchMetadata } from '../../core/types/branching';
+import { pruneProposedPlanChain } from './plan-chain-prune';
+import { buildRegistryStructuralFillContractSection } from './registry-structural-fill-contract';
+import { buildWorkflowIntentModel, formatWorkflowIntentModelDigest } from './workflow-intent-model';
+import type { Workflow } from '../../core/types/ai-types';
 
 export interface AliasKeyword {
   keyword: string;
@@ -96,6 +100,14 @@ export interface DetectionResult {
 }
 
 /**
+ * Maps switch case values to downstream node types.
+ * e.g. { "sales": "slack", "support": "google_gmail", "general": "log_output" }
+ */
+export interface CaseNodeMapping {
+  [caseValue: string]: string;
+}
+
+/**
  * Single structured workflow plan (registry-grounded narrative + ordered node chain).
  * Replaces multi-variant selection in the UI; user edits this text before proceeding.
  */
@@ -122,6 +134,14 @@ export interface WorkflowIntentPlan {
   branching?: BranchMetadata;
   branchingOverview?: string;
   originalPrompt: string;
+  /** Optional digest of unified intent keys (form / branch alignment). */
+  intentModelDigest?: string;
+  /**
+   * Maps each switch case value to the downstream node type that handles it.
+   * Populated by Summarize_Layer when a switch node is present in proposedNodeChain.
+   * Used by Graph_Orchestrator.initializeWorkflow to wire case edges.
+   */
+  caseNodeMapping?: CaseNodeMapping;
 }
 
 export interface SummarizeLayerResult {
@@ -6009,10 +6029,15 @@ The "variations" array MUST contain exactly 4 items, each with a detailed prompt
     const branching = this.buildBranchMetadataForPlan(userPrompt, proposedNodeChain);
     // Branching is primarily described in Execution lines / branch metadata; avoid duplicate prose.
     const branchingOverview: string | undefined = undefined;
+    const syntheticWf: Workflow = { nodes: [], edges: [] };
+    const intentModelDigest = formatWorkflowIntentModelDigest(
+      buildWorkflowIntentModel(syntheticWf, userPrompt)
+    );
     const structuredSummary = this.buildStructuredSummaryFromChain(
       proposedNodeChain,
       userPrompt,
-      branching
+      branching,
+      intentModelDigest
     );
     const mandatoryNodeTypes = [...new Set([...extractedNodeTypes, ...proposedNodeChain])];
     const mandatoryNodesWithOperations: NodeTypeWithOperation[] = [];
@@ -6042,6 +6067,8 @@ The "variations" array MUST contain exactly 4 items, each with a detailed prompt
       branching,
       branchingOverview,
       originalPrompt: userPrompt,
+      intentModelDigest: intentModelDigest || undefined,
+      caseNodeMapping: this.buildCaseNodeMappingForPlan(proposedNodeChain, userPrompt),
     };
 
     this.assertPlanConsistency(plan, userPrompt, extractedNodeTypes);
@@ -6062,8 +6089,8 @@ The "variations" array MUST contain exactly 4 items, each with a detailed prompt
         : '';
     return `You are a workflow automation architect. Output EXACTLY ONE JSON object (no markdown fences, no commentary) with this shape:
 {
-  "structuredSummary": "string — concise: Goal (one block) + Execution (numbered edges type → type [branch?] — short intent); if multiple branches each end at log_output, end with Terminals: N separate log_output (one per path), not a single merged terminal; use registry snake_case in parentheses",
-  "proposedNodeChain": ["string", ...] — ordered node types from trigger through outputs; include log_output once as the terminal type (branching expands to multiple log_output nodes at build time)",
+  "structuredSummary": "string — concise: Goal + Execution (numbered edges type → type [true/false/case_* when branching]); state Terminals: N × log_output when N>1; mention structural fields each node needs (e.g. form fields, if_else conditions) per user intent",
+  "proposedNodeChain": ["string", ...] — ordered node types from trigger through outputs; for if_else/switch with K branch outputs, include K occurrences of log_output (e.g. ... , outputA, log_output, outputB, log_output); linear flows end with a single log_output",
   "nodeInclusionReasons": { "node_type": "short reason" },
   "branchingOverview": "string or omit — if if_else/switch is needed, describe branches briefly; else omit or empty string"
 }
@@ -6071,7 +6098,8 @@ The "variations" array MUST contain exactly 4 items, each with a detailed prompt
 Rules:
 - Use ONLY valid node type identifiers from the unified registry (snake_case), not product marketing names.
 - Include exactly ONE trigger as the first element of proposedNodeChain (e.g. manual_trigger, schedule, webhook, form) when appropriate.
-- Always end proposedNodeChain with log_output so the user sees the final payload (unless the only output is already a pure terminal log — still prefer log_output last).
+- Distinguish **build-time AI** (static config generated once) vs **runtime AI** (filled when the node executes from upstream data) in prose when relevant; call out required structural fields (form fields JSON, conditions, cases).
+- Do NOT collapse multiple branch terminals into one log_output in proposedNodeChain.
 - Do NOT output multiple variants, alternatives joined with "or", or multiple chains.
 - ${nodesHint}
 `;
@@ -6138,10 +6166,13 @@ Rules:
     const branching = this.buildBranchMetadataForPlan(userPrompt, proposedNodeChain);
 
     if (!structuredSummary || structuredSummary.length < 20) {
+      const syntheticWf: Workflow = { nodes: [], edges: [] };
+      const digest = formatWorkflowIntentModelDigest(buildWorkflowIntentModel(syntheticWf, userPrompt));
       structuredSummary = this.buildStructuredSummaryFromChain(
         proposedNodeChain,
         userPrompt,
-        branching
+        branching,
+        digest
       );
     }
 
@@ -6179,7 +6210,57 @@ Rules:
       branching,
       branchingOverview,
       originalPrompt: userPrompt,
+      intentModelDigest: formatWorkflowIntentModelDigest(
+        buildWorkflowIntentModel({ nodes: [], edges: [] } as Workflow, userPrompt)
+      ),
+      caseNodeMapping: this.buildCaseNodeMappingForPlan(proposedNodeChain, userPrompt),
     };
+  }
+
+  /**
+   * Build caseNodeMapping for a proposedNodeChain that contains a switch node.
+   * Maps each case value (case_1, case_2, …) to the downstream node type that follows
+   * the switch node in the chain.
+   *
+   * If fewer downstream nodes exist than cases, the gap is logged (caller should record
+   * in PipelineContext.missing_fields).
+   */
+  private buildCaseNodeMappingForPlan(
+    proposedNodeChain: string[],
+    userPrompt: string
+  ): CaseNodeMapping | undefined {
+    const switchIdx = proposedNodeChain.indexOf('switch');
+    if (switchIdx === -1) return undefined;
+
+    // Determine the upstream node type for discriminant field selection
+    const upstreamNodeType = switchIdx > 0 ? proposedNodeChain[switchIdx - 1] : undefined;
+
+    // Get switch cases from the planner
+    const { planSwitchCasesFromPrompt } = require('./switch-case-plan');
+    const switchPlan = planSwitchCasesFromPrompt(userPrompt, upstreamNodeType);
+
+    if (!switchPlan.cases || switchPlan.cases.length === 0) return undefined;
+
+    // Downstream nodes are those that come after the switch node in the chain,
+    // excluding log_output (terminals) — each case maps to the next non-terminal output.
+    const downstreamNodes = proposedNodeChain
+      .slice(switchIdx + 1)
+      .filter((t) => t !== 'log_output');
+
+    const mapping: CaseNodeMapping = {};
+    for (let i = 0; i < switchPlan.cases.length; i++) {
+      const caseValue = switchPlan.cases[i].value;
+      const targetNode = downstreamNodes[i];
+      if (targetNode) {
+        mapping[caseValue] = targetNode;
+      } else {
+        console.warn(
+          `[AIIntentClarifier] caseNodeMapping gap: case "${caseValue}" has no downstream node in proposedNodeChain`
+        );
+      }
+    }
+
+    return Object.keys(mapping).length > 0 ? mapping : undefined;
   }
 
   private normalizeAndEnsureLogOutput(chain: string[]): string[] {
@@ -6188,7 +6269,15 @@ Rules:
     let triggerAdded = false;
     for (const raw of chain) {
       const normalized = this.resolveRegistryNodeType(raw);
-      if (!normalized || seen.has(normalized)) continue;
+      if (!normalized) continue;
+
+      // Multiple log_output entries are valid (one terminal per branch path); do not dedupe them.
+      if (normalized === 'log_output') {
+        out.push(normalized);
+        continue;
+      }
+
+      if (seen.has(normalized)) continue;
       if (this.isTriggerNodeType(normalized)) {
         if (triggerAdded) {
           continue;
@@ -6210,7 +6299,7 @@ Rules:
     if (last !== 'log_output' && unifiedNodeRegistry.has('log_output')) {
       out.push('log_output');
     }
-    return out;
+    return pruneProposedPlanChain(out);
   }
 
   private buildDeterministicSinglePlanChain(userPrompt: string, extractedNodeTypes: string[]): string[] {
@@ -6222,32 +6311,30 @@ Rules:
     let normalized = this.sequenceNodesByIntent(userPrompt, extractedNodeTypes);
     if (branchNode) {
       const requiredTargets = expectedBranchTargetCount(signals);
-      const currentOutputs = normalized.filter(
-        (t) => t !== 'log_output' && !!unifiedNodeRegistry.get(t) && nodeCapabilityRegistryDSL.isOutput(t)
+      let working = normalized.filter((t) => t !== 'log_output');
+      const currentOutputs = working.filter(
+        (t) => !!unifiedNodeRegistry.get(t) && nodeCapabilityRegistryDSL.isOutput(t)
       );
       if (currentOutputs.length < requiredTargets) {
         const missingCount = requiredTargets - currentOutputs.length;
-        const preferred = signals.mentionedOutputNodeTypes.filter((t) => !normalized.includes(t));
+        const preferred = signals.mentionedOutputNodeTypes.filter((t) => !working.includes(t));
         const shouldUseGenericFallbacks = preferred.length === 0;
         const fallbackOutputTypes = shouldUseGenericFallbacks
           ? unifiedNodeRegistry
               .getAllTypes()
-              .filter((t) => t !== 'log_output' && !normalized.includes(t) && nodeCapabilityRegistryDSL.isOutput(t))
+              .filter((t) => t !== 'log_output' && !working.includes(t) && nodeCapabilityRegistryDSL.isOutput(t))
           : [];
         const additions = [...preferred, ...fallbackOutputTypes].slice(0, missingCount);
-        const withInserted = normalized.filter((t) => t !== 'log_output').concat(additions, ['log_output']);
-        normalized = this.normalizeAndEnsureLogOutput(withInserted);
+        working = working.concat(additions);
       }
-      const selectedTrigger = normalized.find((t) => this.isTriggerNodeType(t)) || 'manual_trigger';
-      const branchOutputs = normalized.filter(
-        (t) => t !== selectedTrigger && t !== branchNode && t !== 'log_output' && nodeCapabilityRegistryDSL.isOutput(t)
+      const selectedTrigger = working.find((t) => this.isTriggerNodeType(t)) || 'manual_trigger';
+      const branchOutputs = working.filter(
+        (t) => t !== selectedTrigger && t !== branchNode && nodeCapabilityRegistryDSL.isOutput(t)
       );
-      // Strict branch template: trigger -> branch -> outputs -> log_output.
-      normalized = this.normalizeAndEnsureLogOutput([
-        selectedTrigger,
-        branchNode,
-        ...branchOutputs,
-      ]);
+      // One log_output after each branch output (single-input terminal contract).
+      const branchChainBody =
+        branchOutputs.length > 0 ? branchOutputs.flatMap((o) => [o, 'log_output'] as const) : [];
+      normalized = this.normalizeAndEnsureLogOutput([selectedTrigger, branchNode, ...branchChainBody]);
     }
 
     return normalized;
@@ -6635,6 +6722,43 @@ Rules:
   }
 
   /**
+   * Head of each branch segment before its terminal log: communication/output nodes, never log_output
+   * (log_output also carries `output` capability and must not be treated as a branch head here).
+   */
+  private isPlanBranchOutputHead(nodeType: string): boolean {
+    if (nodeType === 'log_output') return false;
+    if (nodeCapabilityRegistryDSL.isOutput(nodeType)) return true;
+    const def = unifiedNodeRegistry.get(nodeType);
+    const cat = def?.category || '';
+    return cat === 'communication';
+  }
+
+  /**
+   * After a branch node, detect … → output → log_output → output → log_output …
+   * (plan-chain shape from buildDeterministicSinglePlanChain). Returns output types in order, or null.
+   */
+  private tryParseOutputLogPairsAfterBranch(chain: string[], branchingIdx: number): string[] | null {
+    const rest = chain.slice(branchingIdx + 1);
+    const outputs: string[] = [];
+    let i = 0;
+    while (i < rest.length) {
+      const t = rest[i];
+      if (t === 'log_output') {
+        return null;
+      }
+      if (!this.isPlanBranchOutputHead(t)) {
+        return null;
+      }
+      if (rest[i + 1] !== 'log_output') {
+        return null;
+      }
+      outputs.push(t);
+      i += 2;
+    }
+    return outputs.length >= 2 ? outputs : null;
+  }
+
+  /**
    * Canonical DAG edges for the proposed chain (branch-aware). Used for both the editable summary
    * and orderingDiagnostics.hopRationales so narration never disagrees with execution order.
    */
@@ -6649,65 +6773,102 @@ Rules:
     };
 
     const branchingIdx = chain.findIndex((t) => this.isBranchingNodeType(t));
-    if (branchingIdx < 0 || !branching || !branching.cases || branching.cases.length === 0) {
-      for (let i = 0; i < chain.length - 1; i++) {
+    const hasBranchMetadata =
+      !!branching && Array.isArray(branching.cases) && branching.cases.length > 0;
+
+    if (branchingIdx >= 0 && hasBranchMetadata) {
+      for (let i = 0; i < branchingIdx; i++) {
         push(chain[i], chain[i + 1], this.describeHopIntent(chain[i], chain[i + 1], userPrompt));
+      }
+
+      const branchType = chain[branchingIdx];
+      const downstream = chain.slice(branchingIdx + 1).filter((t) => t !== 'log_output');
+      const outputTargets = downstream.filter((t) => nodeCapabilityRegistryDSL.isOutput(t));
+
+      const uniqueLogTargets = new Set<string>();
+      const caseCount = branching!.cases!.length;
+      for (let idx = 0; idx < caseCount; idx++) {
+        const branchCase = branching!.cases![idx];
+        const preferredTargetType = branchCase.targetNodeTypes[0];
+        const fallbackTargetType = outputTargets[idx] || outputTargets[0];
+        const targetType = preferredTargetType || fallbackTargetType;
+        if (!targetType) {
+          continue;
+        }
+
+        let via: string | undefined;
+        if (branchType === 'if_else') {
+          via = idx === 0 ? 'true' : idx === 1 ? 'false' : branchCase.label || `case_${idx + 1}`;
+        } else if (branchType === 'switch') {
+          via = `case_${idx + 1}`;
+        } else {
+          via = branchCase.label || undefined;
+        }
+
+        let intent: string;
+        const disc = branching!.discriminatorField || 'value';
+        if (branchType === 'if_else') {
+          intent = `route when ${disc} matches "${branchCase.label}"`;
+        } else if (branchType === 'switch') {
+          const matchValue =
+            branchCase.condition?.matchValue !== undefined
+              ? String(branchCase.condition.matchValue)
+              : branchCase.label;
+          intent = `route when ${disc} = ${matchValue}`;
+        } else {
+          intent = this.describeHopIntent(branchType, targetType, userPrompt);
+        }
+
+        push(branchType, targetType, intent, via);
+        uniqueLogTargets.add(targetType);
+      }
+
+      if (chain.includes('log_output')) {
+        uniqueLogTargets.forEach((targetType) => {
+          push(targetType, 'log_output', 'persist branch-path observable output');
+        });
       }
       return edges;
     }
 
-    for (let i = 0; i < branchingIdx; i++) {
-      push(chain[i], chain[i + 1], this.describeHopIntent(chain[i], chain[i + 1], userPrompt));
-    }
-
-    const branchType = chain[branchingIdx];
-    const downstream = chain.slice(branchingIdx + 1).filter((t) => t !== 'log_output');
-    const outputTargets = downstream.filter((t) => nodeCapabilityRegistryDSL.isOutput(t));
-
-    // Branch-aware edges driven by BranchMetadata.
-    const uniqueLogTargets = new Set<string>();
-    const caseCount = branching.cases.length;
-    for (let idx = 0; idx < caseCount; idx++) {
-      const branchCase = branching.cases[idx];
-      const preferredTargetType = branchCase.targetNodeTypes[0];
-      const fallbackTargetType = outputTargets[idx] || outputTargets[0];
-      const targetType = preferredTargetType || fallbackTargetType;
-      if (!targetType) {
-        continue;
+    const pairedOutputs =
+      branchingIdx >= 0 ? this.tryParseOutputLogPairsAfterBranch(chain, branchingIdx) : null;
+    if (pairedOutputs && pairedOutputs.length >= 2) {
+      for (let j = 0; j < branchingIdx; j++) {
+        push(chain[j], chain[j + 1], this.describeHopIntent(chain[j], chain[j + 1], userPrompt));
       }
-
-      let via: string | undefined;
-      if (branchType === 'if_else') {
-        via = idx === 0 ? 'true' : idx === 1 ? 'false' : branchCase.label || `case_${idx + 1}`;
-      } else if (branchType === 'switch') {
-        via = `case_${idx + 1}`;
-      } else {
-        via = branchCase.label || undefined;
-      }
-
-      let intent: string;
-      const disc = branching.discriminatorField || 'value';
-      if (branchType === 'if_else') {
-        intent = `route when ${disc} matches "${branchCase.label}"`;
-      } else if (branchType === 'switch') {
-        const matchValue =
-          branchCase.condition?.matchValue !== undefined
-            ? String(branchCase.condition.matchValue)
-            : branchCase.label;
-        intent = `route when ${disc} = ${matchValue}`;
-      } else {
-        intent = this.describeHopIntent(branchType, targetType, userPrompt);
-      }
-
-      push(branchType, targetType, intent, via);
-      uniqueLogTargets.add(targetType);
-    }
-
-    // Attach log_output as terminal observability for each branch target when present in chain.
-    if (chain.includes('log_output')) {
-      uniqueLogTargets.forEach((targetType) => {
-        push(targetType, 'log_output', 'persist branch-path observable output');
+      const branchType = chain[branchingIdx];
+      pairedOutputs.forEach((outputType, idx) => {
+        let via: string | undefined;
+        if (branchType === 'if_else') {
+          via = idx === 0 ? 'true' : idx === 1 ? 'false' : `branch_${idx + 1}`;
+        } else if (branchType === 'switch') {
+          via = `case_${idx + 1}`;
+        } else {
+          via = `branch_${idx + 1}`;
+        }
+        const branchIntent =
+          branchType === 'if_else'
+            ? idx === 0
+              ? 'when condition is true (success path)'
+              : idx === 1
+                ? 'when condition is false (fallback path)'
+                : `branch ${idx + 1} path`
+            : this.describeHopIntent(branchType, outputType, userPrompt);
+        push(branchType, outputType, branchIntent, via);
+        if (chain.includes('log_output')) {
+          push(
+            outputType,
+            'log_output',
+            'persist final observable output on this branch path'
+          );
+        }
       });
+      return edges;
+    }
+
+    for (let i = 0; i < chain.length - 1; i++) {
+      push(chain[i], chain[i + 1], this.describeHopIntent(chain[i], chain[i + 1], userPrompt));
     }
     return edges;
   }
@@ -6716,11 +6877,16 @@ Rules:
   private buildStructuredSummaryFromChain(
     chain: string[],
     userPrompt: string,
-    branching?: BranchMetadata
+    branching?: BranchMetadata,
+    intentModelDigest?: string
   ): string {
     const edgeSpecs = this.buildConnectionPlanEdges(chain, userPrompt, branching);
     const goal = userPrompt.trim();
     const goalDisplay = goal.length > 220 ? `${goal.slice(0, 220)}…` : goal;
+    const alignmentBlock =
+      intentModelDigest && intentModelDigest.trim().length > 0
+        ? `Intent alignment:\n${intentModelDigest.trim()}\n\n`
+        : '';
     const lines = edgeSpecs.map((e, i) => {
       const fromDef = unifiedNodeRegistry.get(e.fromType);
       const toDef = unifiedNodeRegistry.get(e.toType);
@@ -6734,7 +6900,8 @@ Rules:
       logTerminalCount <= 1
         ? 'Terminal: log_output.'
         : `Terminals: ${logTerminalCount} separate log_output nodes (one per branch path; the graph must not merge them).`;
-    return `Goal:\n${goalDisplay}\n\nExecution:\n${lines.join('\n')}\n\n${terminalLine}`;
+    const fillContract = buildRegistryStructuralFillContractSection(chain);
+    return `Goal:\n${goalDisplay}\n\n${alignmentBlock}Execution:\n${lines.join('\n')}\n\n${terminalLine}\n\n${fillContract}`;
   }
 
   private describeHopIntent(fromType: string, toType: string, userPrompt: string): string {

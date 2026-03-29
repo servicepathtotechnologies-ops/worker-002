@@ -251,7 +251,9 @@ export function validateIfElseConditionsAgainstUpstreamForm(
 
     const { jsonKeys, inputKeys } = extractConditionPathReferences(cond);
     const mode = (node as any).data?.config?._fillMode?.conditions;
-    if (mode === 'runtime_ai') continue;
+    const hasConcreteRefs = jsonKeys.length > 0 || inputKeys.length > 0;
+    // Defer only when runtime_ai and no concrete path refs yet; prefilled conditions still validate.
+    if (mode === 'runtime_ai' && !hasConcreteRefs) continue;
 
     for (const k of jsonKeys) {
       if (!allowed.has(k)) {

@@ -34,6 +34,8 @@ import { coerceFieldFillModeByPolicy, resolveEffectiveFieldFillMode } from '../c
 import { unifiedGraphOrchestrator } from '../core/orchestration/unified-graph-orchestrator';
 import { validateStructuralReadiness } from '../core/validation/workflow-save-validator';
 import { getStructuralDiagnostics, materializeStructuralFields } from '../services/ai/structure-materializer';
+import { applyStructuralIntentAlignment } from '../services/ai/intent-structural-projection';
+import { hydrateRequiredConfigFromRegistryDefaults } from '../core/validation/workflow-config-hydrator';
 import { isCredentialOwnership, isStructuralOwnership } from '../core/utils/field-ownership';
 
 export function collectEffectiveFillModesForWizard(nodes: any[]): Record<string, string> {
@@ -1166,18 +1168,22 @@ export default async function attachInputsHandler(req: Request, res: Response) {
 
     // ✅ CRITICAL: Apply save-time normalization to remove duplicates and fix structure
     const { normalizeWorkflowForSave: normalizeBeforeSave } = await import('../core/validation/workflow-save-validator');
-    const materializedWorkflow = materializeStructuralFields({
-      ...(finalWorkflow as any),
-      metadata: {
-        ...((workflow as any)?.metadata || {}),
-        ...((finalWorkflow as any)?.metadata || {}),
-        generatedFrom:
-          ((finalWorkflow as any)?.metadata?.generatedFrom as string) ||
-          ((workflow as any)?.metadata?.generatedFrom as string) ||
-          (workflow as any)?.name ||
-          '',
-      },
-    } as any);
+    const materializedWorkflow = hydrateRequiredConfigFromRegistryDefaults(
+      applyStructuralIntentAlignment(
+        materializeStructuralFields({
+          ...(finalWorkflow as any),
+          metadata: {
+            ...((workflow as any)?.metadata || {}),
+            ...((finalWorkflow as any)?.metadata || {}),
+            generatedFrom:
+              ((finalWorkflow as any)?.metadata?.generatedFrom as string) ||
+              ((workflow as any)?.metadata?.generatedFrom as string) ||
+              (workflow as any)?.name ||
+              '',
+          },
+        } as any) as any
+      ) as any
+    );
     const structuralDiagnostics = getStructuralDiagnostics(materializedWorkflow as any);
     const finalNormalizedForSave = normalizeBeforeSave(
       materializedWorkflow.nodes,

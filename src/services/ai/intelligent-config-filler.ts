@@ -190,7 +190,14 @@ Return a JSON object mapping each target field to exactly one upstream key. Exam
 
   /**
    * Analyze prompt and upstream output schema to fill configuration for a specific node.
-   * Node responsibility (which fields to bind) comes from registry only; no per-type intent rules. Key selection here is best-effort hint; runtime does the real intent-based filtering.
+   *
+   * fillMode gate (redesigned per spec task 2):
+   * - SKIP manual_static fields unconditionally
+   * - SKIP ownership === 'credential' fields unconditionally
+   * - ONLY fill buildtime_ai_once fields
+   *
+   * After filling, writes _fieldModes metadata into `filled` by iterating inputSchema
+   * and recording field.fillMode?.default ?? 'manual_static' for every field.
    */
   private async analyzeAndFillConfig(
     node: WorkflowNode,
@@ -287,6 +294,17 @@ Return a JSON object mapping each target field to exactly one upstream key. Exam
     const llmBindings = await this.getLLMSuggestedBindings(prompt, upstreamKeys, candidateFields);
 
     for (const fieldName of candidateFields) {
+      const fieldDef = (inputSchema as Record<string, any>)[fieldName];
+      const fillMode: string = fieldDef?.fillMode?.default ?? 'manual_static';
+      const ownership: string | undefined = fieldDef?.ownership;
+
+      // ── fillMode gate (spec task 2) ──────────────────────────────────────
+      // Hard skip: manual_static and credential fields are never AI-filled at build time.
+      if (fillMode === 'manual_static' || ownership === 'credential') continue;
+      // Only fill buildtime_ai_once fields.
+      if (fillMode !== 'buildtime_ai_once') continue;
+      // ─────────────────────────────────────────────────────────────────────
+
       if (!shouldFillField(fieldName)) continue;
 
       const pick = llmBindings?.[fieldName]
@@ -313,6 +331,17 @@ Return a JSON object mapping each target field to exactly one upstream key. Exam
     if (expectedInputKeys.length > 0) {
       filled._expectedInputKeys = [...new Set(expectedInputKeys)];
     }
+
+    // ── Write _fieldModes metadata (spec task 2) ─────────────────────────
+    // Record the registry fillMode.default for every field so the UI can display
+    // the correct toggle state and the credential gate can read it.
+    filled._fieldModes = Object.fromEntries(
+      Object.entries(inputSchema as Record<string, any>).map(([name, field]: [string, any]) => [
+        name,
+        field?.fillMode?.default ?? 'manual_static',
+      ])
+    );
+    // ─────────────────────────────────────────────────────────────────────
 
     return filled;
   }
