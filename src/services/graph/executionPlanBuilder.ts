@@ -69,6 +69,20 @@ export class ExecutionPlanBuilder {
       };
     }
     
+    // Soft guard: this linear planner is a legacy/fallback path and is not
+    // responsible for creating typed branch edges. Prefer unified-graph-orchestrator
+    // for workflows that contain explicit branching nodes.
+    const hasBranchingNodes = nodes.some((node) => {
+      const nodeType = unifiedNormalizeNodeType(node);
+      return nodeType === 'if_else' || nodeType === 'switch';
+    });
+    if (hasBranchingNodes) {
+      console.warn(
+        '[ExecutionPlanBuilder] Branching nodes detected (if_else/switch). ' +
+          'Prefer unified graph orchestrator for branch edge construction.'
+      );
+    }
+
     // ✅ STEP 2: Sort nodes by intent priority
     const sortedNodes = this.sortNodesByIntentPriority(nodes, triggerNode, intent);
     

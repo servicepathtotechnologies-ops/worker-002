@@ -308,7 +308,8 @@ export default async function attachCredentialsHandler(req: Request, res: Respon
           nodes: normalizedGraph.nodes,
           edges: normalizedGraph.edges,
         },
-        credentialsToInject
+        credentialsToInject,
+        userId
       );
 
       if (!injectionResult.success) {

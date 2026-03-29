@@ -12,34 +12,14 @@ import { QueueClient, createQueueClient } from '../services/workflow-executor/di
 import { StorageManager } from '../services/workflow-executor/distributed/storage-manager';
 import { createObjectStorageService } from '../services/workflow-executor/object-storage-service';
 import { ErrorCode } from '../core/utils/error-codes';
+import { normalizeIfElseConfig } from '../core/utils/if-else-conditions';
 
 /**
  * Normalize If/Else node conditions field
  * Converts string or object formats to the expected array format
  */
 function normalizeIfElseConditions(config: Record<string, unknown>): Record<string, unknown> {
-  const normalized = { ...config };
-  
-  if (config.condition && !config.conditions) {
-    // Old format: condition (string) -> convert to conditions array
-    const conditionStr = typeof config.condition === 'string' ? config.condition : String(config.condition);
-    if (conditionStr.trim()) {
-      normalized.conditions = [{ expression: conditionStr.trim() }];
-    }
-  } else if (config.conditions && !Array.isArray(config.conditions)) {
-    // Handle case where conditions is sent as string or object
-    if (typeof config.conditions === 'string') {
-      normalized.conditions = [{ expression: config.conditions }];
-    } else if (typeof config.conditions === 'object' && config.conditions !== null) {
-      const conditionsObj = config.conditions as Record<string, unknown>;
-      if (conditionsObj.expression) {
-        // Single condition object - wrap in array
-        normalized.conditions = [config.conditions];
-      }
-    }
-  }
-  
-  return normalized;
+  return normalizeIfElseConfig(config);
 }
 
 /**
@@ -194,6 +174,14 @@ export default async function distributedExecuteWorkflow(
                 nodeLabel: node.data?.label || node.id,
                 fieldName: requiredField,
                 fieldType: expectedType,
+                inputType:
+                  expectedType === 'number'
+                    ? 'number'
+                    : expectedType === 'boolean'
+                      ? 'select'
+                      : (expectedType === 'array' || expectedType === 'object' || expectedType === 'json')
+                        ? 'textarea'
+                        : 'text',
                 description: fieldSchema.description || requiredField,
                 required: true,
               });

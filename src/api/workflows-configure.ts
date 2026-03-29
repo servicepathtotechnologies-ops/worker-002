@@ -116,7 +116,8 @@ export default async function configureWorkflowHandler(req: Request, res: Respon
       console.log(`[ConfigureWorkflow] Injecting ${Object.keys(credentials).length} credential(s)`);
       const credentialInjectionResult = await workflowLifecycleManager.injectCredentials(
         workflow,
-        credentials
+        credentials,
+        userId
       );
       
       if (!credentialInjectionResult.success) {

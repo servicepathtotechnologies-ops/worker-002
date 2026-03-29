@@ -11,7 +11,7 @@ export interface ModelInfo {
 
 const GEMINI_MODELS = [
   'gemini-2.5-flash',
-  'gemini-2.5-flash-lite',
+  'gemini-3-flash-preview',
   'gemini-2.5-pro',
 ];
 
@@ -54,9 +54,9 @@ export class ModelManager {
 
   getFallbackModels(primaryModel: string): string[] {
     const fallbackMap: Record<string, string[]> = {
-      'gemini-2.5-pro': ['gemini-2.5-flash', 'gemini-2.5-flash-lite'],
-      'gemini-2.5-flash': ['gemini-2.5-flash-lite', 'gemini-2.5-pro'],
-      'gemini-2.5-flash-lite': ['gemini-2.5-flash', 'gemini-2.5-pro'],
+      'gemini-2.5-pro': ['gemini-2.5-flash', 'gemini-3-flash-preview'],
+      'gemini-2.5-flash': ['gemini-3-flash-preview', 'gemini-2.5-pro'],
+      'gemini-3-flash-preview': ['gemini-2.5-flash', 'gemini-2.5-pro'],
     };
     return fallbackMap[primaryModel] || ['gemini-2.5-flash'];
   }

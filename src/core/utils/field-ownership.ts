@@ -11,6 +11,8 @@ const STRICT_CREDENTIAL_CATEGORIES = new Set<FieldHelpCategory>([
   'credential_id',
   'bearer_token',
   'webhook_secret',
+  /** Incoming webhooks (Slack, Discord, etc.) — vault/attach-credentials, not normal config. */
+  'webhook_url',
   'smtp_password',
   'db_password',
   'private_key',

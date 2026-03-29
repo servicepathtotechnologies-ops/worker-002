@@ -80,6 +80,20 @@ export class GraphConnectivityBuilder {
       }
     }
     
+    // Soft guard: this connectivity builder constructs linear edges plan[i] → plan[i+1].
+    // For workflows with branching nodes, unified-graph-orchestrator should be the
+    // primary mechanism for edge creation and reconciliation.
+    const hasBranchingNodes = nodes.some((node) => {
+      const nodeType = unifiedNormalizeNodeType(node);
+      return nodeType === 'if_else' || nodeType === 'switch';
+    });
+    if (hasBranchingNodes) {
+      console.warn(
+        '[GraphConnectivityBuilder] Branching nodes detected (if_else/switch). ' +
+          'Prefer unified graph orchestrator for branch edge construction.'
+      );
+    }
+
     // ✅ STEP 1.2: Find or create trigger node
     const triggerNode = this.findOrCreateTrigger(nodes, triggerType);
     

@@ -91,4 +91,42 @@ describe('fill-mode-resolver', () => {
     });
     expect(mode).toBe('buildtime_ai_once');
   });
+
+  it('coerces credential field to manual_static when credential is locked', () => {
+    const schema: any = {
+      apiKey: {
+        type: 'string',
+        ownership: 'credential',
+        fillMode: {
+          default: 'runtime_ai',
+          supportsRuntimeAI: true,
+          supportsBuildtimeAI: true,
+        },
+      },
+    };
+    const result = coerceFieldFillModeByPolicy('apiKey', 'runtime_ai', schema, {});
+    expect(result.coerced).toBe(true);
+    expect(result.reason).toBe('credential_locked');
+    expect(result.mode).toBe('manual_static');
+  });
+
+  it('allows runtime_ai on unlockable credential when _ownershipUnlock is set', () => {
+    const schema: any = {
+      webhookUrl: {
+        type: 'string',
+        ownership: 'credential',
+        credentialTogglePolicy: 'unlockable',
+        fillMode: {
+          default: 'manual_static',
+          supportsRuntimeAI: true,
+          supportsBuildtimeAI: true,
+        },
+      },
+    };
+    const result = coerceFieldFillModeByPolicy('webhookUrl', 'runtime_ai', schema, {
+      _ownershipUnlock: { webhookUrl: true },
+    });
+    expect(result.coerced).toBe(false);
+    expect(result.mode).toBe('runtime_ai');
+  });
 });

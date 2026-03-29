@@ -10,6 +10,7 @@ import { CredentialDiscoveryPhase, CredentialRequirement } from './credential-di
 import { workflowLifecycleManager } from '../workflow-lifecycle-manager';
 import { getSupabaseClient } from '../../core/database/supabase-compat';
 import { isPlaceholderValue } from '../../core/utils/placeholder-filter';
+import { InputControlType } from '../../core/utils/schema-input-control';
 
 export interface UnifiedMissingCredential {
   provider: string;
@@ -20,6 +21,8 @@ export interface UnifiedMissingCredential {
   vaultKey: string;
   scopes?: string[];
   satisfied?: boolean;
+  inputType?: InputControlType;
+  placeholder?: string;
 }
 
 export interface UnifiedMissingInput {
@@ -29,6 +32,10 @@ export interface UnifiedMissingInput {
   fieldName: string;
   description: string;
   fieldType: string;
+  inputType?: InputControlType;
+  options?: Array<{ label: string; value: string }>;
+  placeholder?: string;
+  uiWidget?: 'text' | 'textarea' | 'json' | 'multi_email';
   required: boolean;
   examples?: any[];
   defaultValue?: any;
@@ -41,6 +48,19 @@ export interface UnifiedMissingInput {
 export interface UnifiedMissingItems {
   credentials: UnifiedMissingCredential[];
   inputs: UnifiedMissingInput[];
+  /** Optional grouped view for clients (no duplicate flat arrays). */
+  display?: {
+    summary: {
+      missingCredentialCount: number;
+      missingInputCount: number;
+    };
+    inputsByNode: Array<{
+      nodeId: string;
+      nodeType: string;
+      nodeLabel: string;
+      fields: UnifiedMissingInput[];
+    }>;
+  };
 }
 
 /**
@@ -97,6 +117,8 @@ export async function getUnifiedMissingItems(
     vaultKey: cred.vaultKey,
     scopes: cred.scopes,
     satisfied: cred.satisfied,
+    inputType: cred.type === 'api_key' || cred.type === 'token' || cred.type === 'basic_auth' ? 'password' : 'text',
+    placeholder: `Enter ${cred.displayName || cred.vaultKey || cred.provider} credentials`,
   }));
 
   // Discover node inputs
@@ -130,6 +152,10 @@ export async function getUnifiedMissingItems(
       fieldName: input.fieldName,
       description: input.description,
       fieldType: input.fieldType,
+      inputType: (input as any).inputType,
+      options: (input as any).options,
+      placeholder: (input as any).placeholder,
+      uiWidget: (input as any).uiWidget,
       required: input.required,
       examples: input.examples,
       defaultValue: input.defaultValue,
@@ -141,8 +167,32 @@ export async function getUnifiedMissingItems(
 
   console.log(`[UnifiedDiscovery] Discovered ${unifiedCredentials.length} missing credential(s) and ${unifiedInputs.length} missing input(s)`);
 
+  const inputsByNodeMap = new Map<
+    string,
+    { nodeId: string; nodeType: string; nodeLabel: string; fields: UnifiedMissingInput[] }
+  >();
+  for (const inp of unifiedInputs) {
+    const key = inp.nodeId;
+    if (!inputsByNodeMap.has(key)) {
+      inputsByNodeMap.set(key, {
+        nodeId: inp.nodeId,
+        nodeType: inp.nodeType,
+        nodeLabel: inp.nodeLabel,
+        fields: [],
+      });
+    }
+    inputsByNodeMap.get(key)!.fields.push(inp);
+  }
+
   return {
     credentials: unifiedCredentials,
     inputs: unifiedInputs,
+    display: {
+      summary: {
+        missingCredentialCount: unifiedCredentials.length,
+        missingInputCount: unifiedInputs.length,
+      },
+      inputsByNode: Array.from(inputsByNodeMap.values()),
+    },
   };
 }

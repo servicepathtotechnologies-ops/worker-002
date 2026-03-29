@@ -361,8 +361,12 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
       }).join(' → ')}]`
     );
     
-    // Process log_output nodes specifically (if any exist)
-    for (const logOutputNode of logOutputNodes) {
+    // Process log_output nodes in execution order (stable wiring for multi-branch terminals)
+    const logOutputNodesSorted = [...logOutputNodes].sort(
+      (a, b) => orderedNodeIds.indexOf(a.id) - orderedNodeIds.indexOf(b.id)
+    );
+
+    for (const logOutputNode of logOutputNodesSorted) {
       const logOutputIndex = orderedNodeIds.indexOf(logOutputNode.id);
       console.log(
         `[EdgeReconciliationEngine] 🔍 DEBUG log_output(${logOutputNode.id.substring(0, 8)}): ` +
@@ -375,82 +379,20 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
         continue;
       }
       
-      // Find the last non-terminal node before log_output in execution order
-      // ✅ FIX: Prefer output nodes (linkedin, gmail, etc.) over transformation nodes
-      // This ensures log_output connects from the actual last output, not from a transformation
-      let lastNonTerminalNodeId: string | null = null;
-      let lastOutputNodeId: string | null = null; // Track the last output node specifically
-      
-      // Walk backwards from log_output to find the last non-terminal node
-      console.log(`[EdgeReconciliationEngine] 🔍 DEBUG Walking backwards from log_output (index ${logOutputIndex})...`);
-      for (let i = logOutputIndex - 1; i >= 0; i--) {
-        const candidateId = orderedNodeIds[i];
-        const candidateNode = workflow.nodes.find(n => n.id === candidateId);
-        if (!candidateNode) {
-          console.log(`[EdgeReconciliationEngine] 🔍 DEBUG   Index ${i}: Node ${candidateId} not found in workflow.nodes`);
-          continue;
-        }
-        
-        const candidateType = unifiedNormalizeNodeTypeString(candidateNode.type || candidateNode.data?.type || '');
-        const candidateDef = unifiedNodeRegistry.get(candidateType);
-        
-        // Skip log_output itself and other terminal nodes
-        if (candidateType === 'log_output') {
-          console.log(`[EdgeReconciliationEngine] 🔍 DEBUG   Index ${i}: ${candidateType} - skipping (is log_output)`);
-          continue;
-        }
-        
-        // Check if this node is terminal (has workflowBehavior.alwaysTerminal)
-        const isTerminal = candidateDef?.workflowBehavior?.alwaysTerminal === true;
-        if (isTerminal) {
-          console.log(`[EdgeReconciliationEngine] 🔍 DEBUG   Index ${i}: ${candidateType} - skipping (is terminal)`);
-          continue;
-        }
-        
-        // ✅ FIX: Check if this is an output node (prefer output nodes over transformations)
-        const isOutput = candidateDef?.category === 'communication' || 
-                        (candidateDef?.tags || []).includes('output') ||
-                        nodeCapabilityRegistryDSL.isOutput(candidateType);
-        
-        if (isOutput && !lastOutputNodeId) {
-          // Found an output node - prefer this over transformation nodes
-          lastOutputNodeId = candidateId;
-          console.log(
-            `[EdgeReconciliationEngine] 🔍 DEBUG   Index ${i}: ${candidateType}(${candidateId.substring(0, 8)}) - ` +
-            `FOUND as last output node (preferred)`
-          );
-        }
-        
-        // Track the last non-terminal node (fallback if no output node found)
-        if (!lastNonTerminalNodeId) {
-          lastNonTerminalNodeId = candidateId;
-          console.log(
-            `[EdgeReconciliationEngine] 🔍 DEBUG   Index ${i}: ${candidateType}(${candidateId.substring(0, 8)}) - ` +
-            `FOUND as last non-terminal node (fallback)`
-          );
-        }
-        
-        // ✅ FIX: If we found an output node, use it and stop searching
-        if (lastOutputNodeId) {
-          lastNonTerminalNodeId = lastOutputNodeId;
-          break;
-        }
-      }
-      
-      // ✅ FIX: Use output node if found, otherwise use last non-terminal node
-      if (lastOutputNodeId) {
-        lastNonTerminalNodeId = lastOutputNodeId;
-        console.log(`[EdgeReconciliationEngine] ✅ Using last output node: ${lastOutputNodeId.substring(0, 8)}`);
-      }
-      
-      // If no non-terminal node found, use the node immediately before log_output
-      if (!lastNonTerminalNodeId && logOutputIndex > 0) {
-        lastNonTerminalNodeId = orderedNodeIds[logOutputIndex - 1];
-        const fallbackNode = workflow.nodes.find(n => n.id === lastNonTerminalNodeId);
-        const fallbackType = unifiedNormalizeNodeTypeString(fallbackNode?.type || fallbackNode?.data?.type || 'unknown');
+      const structuralSnapshot = [...edgesToKeep, ...edgesToAdd];
+      // Branch-aware predecessor: avoids wiring the wrong branch's communication node into a sibling log
+      let lastNonTerminalNodeId = this.pickBranchAwarePredecessorForLogOutput(
+        workflow,
+        orderedNodeIds,
+        structuralSnapshot,
+        logOutputNode.id,
+        logOutputIndex
+      );
+
+      if (lastNonTerminalNodeId) {
         console.log(
-          `[EdgeReconciliationEngine] 🔍 DEBUG No non-terminal node found, using fallback: ` +
-          `${fallbackType}(${lastNonTerminalNodeId?.substring(0, 8)}) at index ${logOutputIndex - 1}`
+          `[EdgeReconciliationEngine] ✅ Branch-aware predecessor for log_output(${logOutputNode.id.substring(0, 8)}): ` +
+            `${lastNonTerminalNodeId.substring(0, 8)}`
         );
       }
       
@@ -470,9 +412,29 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
           `${sourceType}(${lastNonTerminalNodeId.substring(0, 8)}) → log_output(${logOutputNode.id.substring(0, 8)}): ` +
           `exists=${edgeExists}`
         );
-        
-        if (!edgeExists) {
-          const structuralEdgesSnapshot = [...edgesToKeep, ...edgesToAdd];
+        const structuralEdgesSnapshot = [...edgesToKeep, ...edgesToAdd];
+        const existingIncoming = structuralEdgesSnapshot.filter(e => e.target === logOutputNode.id);
+
+        // If log_output already has at least one incoming edge, Step 7's responsibility
+        // (preventing orphaned terminals) is satisfied. Additional fan-in should come
+        // from explicit branch edges (handled earlier) and multi-input terminals are
+        // handled by splitMultiInputLogOutputs. Avoid creating extra edges here that
+        // would force non-branching nodes to have multiple outgoing edges or cause
+        // duplicate terminal wiring in simple linear flows.
+        if (existingIncoming.length > 0) {
+          console.log(
+            `[EdgeReconciliationEngine] 🔍 Skip log_output wiring: log already has ` +
+              `${existingIncoming.length} incoming edge(s)`
+          );
+        } else if (!edgeExists) {
+          const wouldCrossForkFanIn = existingIncoming.some(inc =>
+            this.areExclusiveForkDescendantsInDifferentRegions(
+              workflow.nodes,
+              structuralEdgesSnapshot,
+              lastNonTerminalNodeId,
+              inc.source
+            )
+          );
           const crossExclusiveFork =
             this.areExclusiveForkDescendantsInDifferentRegions(
               workflow.nodes,
@@ -486,7 +448,13 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
               lastNonTerminalNodeId,
               logOutputNode.id
             );
-          if (crossExclusiveFork) {
+          if (wouldCrossForkFanIn) {
+            console.log(
+              `[EdgeReconciliationEngine] 🔍 Skip log_output wiring: cross-fork fan-in avoided ` +
+                `(would add ${lastNonTerminalNodeId.substring(0, 8)} but log already has edge(s) from ` +
+                `${existingIncoming.map(e => e.source.substring(0, 8)).join(', ')})`
+            );
+          } else if (crossExclusiveFork) {
             console.log(
               `[EdgeReconciliationEngine] 🔍 Skip log_output wiring: exclusive fork regions ` +
                 `(${lastNonTerminalNodeId.substring(0, 8)} → ${logOutputNode.id.substring(0, 8)})`
@@ -903,6 +871,106 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
       }
     }
     return visited;
+  }
+
+  /**
+   * Choose upstream node for log_output wiring when execution order interleaves both branch outputs
+   * (e.g. form → if_else → gmail → slack → log_true → log_false). Naïve "closest output" picks Slack for both logs.
+   */
+  private pickBranchAwarePredecessorForLogOutput(
+    workflow: Workflow,
+    orderedNodeIds: string[],
+    structuralEdges: WorkflowEdge[],
+    logOutputNodeId: string,
+    logOutputIndex: number
+  ): string | null {
+    const nodeById = new Map(workflow.nodes.map(n => [n.id, n]));
+    const isLogType = (id: string) =>
+      unifiedNormalizeNodeTypeString(nodeById.get(id)?.type || nodeById.get(id)?.data?.type || '') ===
+      'log_output';
+
+    const outputsBefore: Array<{ id: string; idx: number }> = [];
+    for (let i = logOutputIndex - 1; i >= 0; i--) {
+      const id = orderedNodeIds[i];
+      const n = nodeById.get(id);
+      if (!n || isLogType(id)) continue;
+      if (!isOutputNode(n)) continue;
+      outputsBefore.push({ id, idx: i });
+    }
+
+    // 1) Upstream that already reaches this log on current edges
+    for (let k = outputsBefore.length - 1; k >= 0; k--) {
+      const { id } = outputsBefore[k];
+      if (this.reachableNodeIdsFrom(structuralEdges, id).has(logOutputNodeId)) {
+        return id;
+      }
+    }
+
+    // 2) If/Else (or any registry branching node): partition outputs by index between true/false heads
+    for (const brNode of workflow.nodes) {
+      const bt = unifiedNormalizeNodeTypeString(brNode.type || brNode.data?.type || '');
+      if (!unifiedNodeRegistry.get(bt)?.isBranching) continue;
+      const forkId = brNode.id;
+      const outs = structuralEdges.filter(e => this.getExclusiveBranchPortFromEdge(e, forkId) !== null);
+      if (outs.length < 2) continue;
+
+      const byPort = (p: string) =>
+        outs.find(e => String(e.type || e.sourceHandle || '').toLowerCase() === p);
+      const trueE = byPort('true');
+      const falseE = byPort('false');
+      if (!trueE || !falseE) continue;
+
+      const ti = orderedNodeIds.indexOf(trueE.target);
+      const fi = orderedNodeIds.indexOf(falseE.target);
+      if (ti < 0 || fi < 0) continue;
+
+      const logIdx = logOutputIndex;
+      for (let k = outputsBefore.length - 1; k >= 0; k--) {
+        const { id, idx } = outputsBefore[k];
+        if (ti < fi) {
+          if (logIdx >= fi) {
+            if (idx >= fi && idx < logIdx) return id;
+          } else if (idx >= ti && idx < fi) {
+            return id;
+          }
+        } else {
+          if (logIdx >= ti) {
+            if (idx >= ti && idx < logIdx) return id;
+          } else if (idx >= fi && idx < ti) {
+            return id;
+          }
+        }
+      }
+    }
+
+    // 3) Closest output not in a mutually exclusive fork region vs this log (registry-aware)
+    for (let k = outputsBefore.length - 1; k >= 0; k--) {
+      const { id } = outputsBefore[k];
+      if (
+        !this.areExclusiveForkDescendantsInDifferentRegions(
+          workflow.nodes,
+          structuralEdges,
+          id,
+          logOutputNodeId
+        )
+      ) {
+        return id;
+      }
+    }
+
+    // 4) Closest communication output before log (legacy)
+    for (let i = logOutputIndex - 1; i >= 0; i--) {
+      const id = orderedNodeIds[i];
+      const n = nodeById.get(id);
+      if (!n || isLogType(id)) continue;
+      const ct = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
+      const candidateDef = unifiedNodeRegistry.get(ct);
+      if (candidateDef?.workflowBehavior?.alwaysTerminal === true) continue;
+      if (isOutputNode(n)) return id;
+    }
+
+    if (logOutputIndex > 0) return orderedNodeIds[logOutputIndex - 1];
+    return null;
   }
 
   /**

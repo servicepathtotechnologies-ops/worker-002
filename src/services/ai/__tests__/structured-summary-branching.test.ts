@@ -29,4 +29,17 @@ describe('structured summary branching connection plan', () => {
     expect(selected.selectedNodeTypes).toContain('slack_message');
     expect(selected.selectedNodeTypes).not.toContain('email');
   });
+
+  it('keeps explicit switch outputs without generic output fan-out', () => {
+    const clarifier = new AIIntentClarifier() as any;
+    const selected = clarifier.buildIntentMinimalNodeSelection(
+      'Use switch by ball color: red to slack, blue to gmail, green to logout.',
+      ['form', 'switch', 'google_gmail', 'slack_message', 'email', 'log_output']
+    );
+
+    expect(selected.selectedNodeTypes).toContain('switch');
+    expect(selected.selectedNodeTypes).toContain('google_gmail');
+    expect(selected.selectedNodeTypes).toContain('slack_message');
+    expect(selected.selectedNodeTypes).not.toContain('email');
+  });
 });

@@ -13,6 +13,11 @@
  * 6. Backend injects inputs into nodes
  * 7. Frontend calls attach-credentials
  * 8. Auto-run workflow
+ *
+ * Field-plane aligned keys (see ctrl_checks `wizard-types.ts`):
+ * - `mode_<nodeId>_<fieldName>` → `data.config._fillMode[fieldName]`
+ * - `unlock_<nodeId>_<fieldName>` → `data.config._ownershipUnlock[fieldName]` (registry unlockable credential fields only)
+ * - Prefixed comprehensive ids: `cred_`, `input_`, `config_`, `resource_`, `op_` + `<nodeId>_<fieldName>`
  */
 
 import { Request, Response } from 'express';
@@ -30,6 +35,124 @@ import { unifiedGraphOrchestrator } from '../core/orchestration/unified-graph-or
 import { validateStructuralReadiness } from '../core/validation/workflow-save-validator';
 import { getStructuralDiagnostics, materializeStructuralFields } from '../services/ai/structure-materializer';
 import { isCredentialOwnership, isStructuralOwnership } from '../core/utils/field-ownership';
+
+export function collectEffectiveFillModesForWizard(nodes: any[]): Record<string, string> {
+  return (Array.isArray(nodes) ? nodes : []).reduce((acc: Record<string, string>, node: any) => {
+    const perField = (node?.data?.config?._fillMode || {}) as Record<string, unknown>;
+    for (const [fieldName, mode] of Object.entries(perField)) {
+      if (
+        mode === 'manual_static' ||
+        mode === 'runtime_ai' ||
+        mode === 'buildtime_ai_once'
+      ) {
+        acc[`mode_${node.id}_${fieldName}`] = mode;
+      }
+    }
+    return acc;
+  }, {});
+}
+
+/**
+ * Round-trip for wizard: `unlock_<nodeId>_<field>=true|false` from saved node configs.
+ */
+export function collectOwnershipUnlockFlagsForWizard(nodes: any[]): Record<string, 'true' | 'false'> {
+  const acc: Record<string, 'true' | 'false'> = {};
+  for (const node of Array.isArray(nodes) ? nodes : []) {
+    const id = node?.id;
+    const u = node?.data?.config?._ownershipUnlock;
+    if (!id || !u || typeof u !== 'object') continue;
+    for (const [fieldName, v] of Object.entries(u as Record<string, unknown>)) {
+      if (v === true) {
+        acc[`unlock_${id}_${fieldName}`] = 'true';
+      }
+    }
+  }
+  return acc;
+}
+
+/**
+ * Apply `unlock_<nodeId>_<field>` keys from the request into `config._ownershipUnlock`.
+ * Exported for unit tests; kept in sync with the attach-inputs handler loop.
+ */
+export function mergeOwnershipUnlockInputsForNode(
+  cleanInputs: Record<string, any>,
+  node: { id: string },
+  nodeType: string,
+  config: Record<string, any>,
+  validFieldNames: Set<string>
+): boolean {
+  const unifiedDefForNode = unifiedNodeRegistry.get(nodeType);
+  let updated = false;
+  for (const [unlockKey, rawUnlock] of Object.entries(cleanInputs)) {
+    if (!unlockKey.startsWith('unlock_')) continue;
+    const afterUnlockPrefix = unlockKey.substring('unlock_'.length);
+    const unlockNodePrefix = `${node.id}_`;
+    if (!afterUnlockPrefix.startsWith(unlockNodePrefix)) continue;
+    const unlockFieldName = afterUnlockPrefix.substring(unlockNodePrefix.length);
+    if (!validFieldNames.has(unlockFieldName)) {
+      console.warn(`[AttachInputs] Unknown unlock field "${unlockFieldName}" for node ${node.id} (${nodeType})`);
+      continue;
+    }
+    const unlockFieldDef = unifiedDefForNode?.inputSchema?.[unlockFieldName];
+    if (
+      !unlockFieldDef ||
+      unlockFieldDef.credentialTogglePolicy !== 'unlockable' ||
+      !isCredentialOwnership(unlockFieldName, unlockFieldDef)
+    ) {
+      console.warn(
+        `[AttachInputs] Ignored unlock for ${node.id}.${unlockFieldName}: not an unlockable credential field`
+      );
+      continue;
+    }
+    if (!config._ownershipUnlock || typeof config._ownershipUnlock !== 'object') {
+      (config as any)._ownershipUnlock = {};
+    }
+    const truthy =
+      rawUnlock === true ||
+      rawUnlock === 1 ||
+      String(rawUnlock).trim() === 'true' ||
+      String(rawUnlock).trim() === '1';
+    if (truthy) {
+      (config as any)._ownershipUnlock[unlockFieldName] = true;
+    } else {
+      delete (config as any)._ownershipUnlock[unlockFieldName];
+    }
+    updated = true;
+    console.log(`[AttachInputs] Applied ownership unlock for ${node.id}.${unlockFieldName}: ${truthy}`);
+  }
+  return updated;
+}
+
+export function normalizeSwitchCasesInput(raw: unknown): { value: Array<{ value: string; label?: string }>; valid: boolean } {
+  let candidate: unknown = raw;
+  if (typeof candidate === 'string') {
+    const trimmed = candidate.trim();
+    if (!trimmed) return { value: [], valid: false };
+    try {
+      candidate = JSON.parse(trimmed);
+    } catch {
+      return { value: [], valid: false };
+    }
+  }
+  if (!Array.isArray(candidate)) return { value: [], valid: false };
+
+  const seen = new Set<string>();
+  const normalized: Array<{ value: string; label?: string }> = [];
+  for (const item of candidate) {
+    const rawValue =
+      typeof item === 'string' ? item : item && typeof item === 'object' && (item as any).value != null ? String((item as any).value) : '';
+    const value = String(rawValue || '').trim();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    const label =
+      item && typeof item === 'object' && typeof (item as any).label === 'string'
+        ? String((item as any).label).trim() || undefined
+        : undefined;
+    normalized.push({ value, ...(label ? { label } : {}) });
+  }
+
+  return { value: normalized, valid: normalized.length > 0 };
+}
 
 export default async function attachInputsHandler(req: Request, res: Response) {
   try {
@@ -439,6 +562,24 @@ export default async function attachInputsHandler(req: Request, res: Response) {
         ...Object.keys(unifiedDefForNode?.inputSchema || {}),
       ]);
 
+      if (nodeType === 'switch') {
+        const normalizedExisting = normalizeSwitchCasesInput((config as any).cases ?? (config as any).rules);
+        const canonical = normalizedExisting.valid ? normalizedExisting.value : [];
+        if (JSON.stringify((config as any).cases) !== JSON.stringify(canonical)) {
+          (config as any).cases = canonical;
+          updated = true;
+        }
+        if (JSON.stringify((config as any).rules) !== JSON.stringify(canonical)) {
+          (config as any).rules = canonical;
+          updated = true;
+        }
+      }
+
+      // Field Ownership: unlock_<nodeId>_<fieldName> (before mode_ so one payload can unlock + set fill mode).
+      if (mergeOwnershipUnlockInputsForNode(cleanInputs, node, nodeType, config, validFieldNames)) {
+        updated = true;
+      }
+
       // ✅ CRITICAL: Validate inputs are NOT credentials
       // OAuth connectors must NEVER accept credential fields via attach-inputs
       const connector = connectorRegistry.getConnectorByNodeType(nodeType);
@@ -487,7 +628,8 @@ export default async function attachInputsHandler(req: Request, res: Response) {
             const modePolicy = coerceFieldFillModeByPolicy(
               modeFieldName,
               structuralModeGuard?.mode || modeValue,
-              unifiedDefForNode?.inputSchema
+              unifiedDefForNode?.inputSchema,
+              config as Record<string, any>
             );
             (config as any)._fillMode[modeFieldName] = modePolicy.mode;
             modeFieldsApplied.push(modeFieldName);
@@ -645,6 +787,26 @@ export default async function attachInputsHandler(req: Request, res: Response) {
                 console.warn('[AttachInputs] Failed to normalize Google URL to ID:', extractErr);
               }
             }
+
+            if (nodeType === 'switch' && (fieldName === 'cases' || fieldName === 'rules')) {
+              const normalized = normalizeSwitchCasesInput(value);
+              if (!normalized.valid) {
+                modeDiagnostics.schemaValidationFailures.push({
+                  nodeId: node.id,
+                  nodeType,
+                  message: `Invalid switch ${fieldName}: expected non-empty JSON array of case objects`,
+                });
+                console.warn(`[AttachInputs] Rejected invalid switch ${fieldName} for node ${node.id}`);
+                continue;
+              }
+              value = normalized.value;
+              // Canonicalize on cases and keep legacy alias in sync.
+              config.cases = normalized.value;
+              config.rules = normalized.value;
+            }
+            if (nodeType === 'switch' && fieldName === 'expression' && typeof value === 'string') {
+              value = value.trim();
+            }
             
             // ✅ CRITICAL: Validate field exists in schema
             // ✅ RELAXED: Accept optional fields even if not in schema (for flexibility)
@@ -746,6 +908,25 @@ export default async function attachInputsHandler(req: Request, res: Response) {
                 } catch (extractErr) {
                   console.warn('[AttachInputs] Failed to normalize Google URL to ID (nested):', extractErr);
                 }
+              }
+
+              if (nodeType === 'switch' && (fieldName === 'cases' || fieldName === 'rules')) {
+                const normalized = normalizeSwitchCasesInput(fieldValue);
+                if (!normalized.valid) {
+                  modeDiagnostics.schemaValidationFailures.push({
+                    nodeId: node.id,
+                    nodeType,
+                    message: `Invalid switch ${fieldName}: expected non-empty JSON array of case objects`,
+                  });
+                  console.warn(`[AttachInputs] Rejected invalid switch ${fieldName} for node ${node.id} (nested)`);
+                  continue;
+                }
+                fieldValue = normalized.value;
+                config.cases = normalized.value;
+                config.rules = normalized.value;
+              }
+              if (nodeType === 'switch' && fieldName === 'expression' && typeof fieldValue === 'string') {
+                fieldValue = fieldValue.trim();
               }
 
               // ✅ CRITICAL: For Gmail, validate based on operation type
@@ -1200,6 +1381,30 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       nextPhase = missingCredentialsCount > 0 ? 'configuring_credentials' : 'configuring_inputs';
       console.log(`[AttachInputs] Unified readiness blocked - phase ${nextPhase}: ${readiness.errors.join('; ')}`);
     }
+    const structuralReadinessErrors = (readiness.errors || []).filter((msg) => {
+      const lower = String(msg || '').toLowerCase();
+      return (
+        lower.includes('disconnected') ||
+        lower.includes('orphan') ||
+        lower.includes('no input connection') ||
+        lower.includes('has no input') ||
+        lower.includes('cycle') ||
+        lower.includes('invalid edge')
+      );
+    });
+    if (structuralReadinessErrors.length > 0) {
+      return res.status(400).json(
+        createError(
+          ErrorCode.WORKFLOW_VALIDATION_FAILED,
+          'Workflow graph is structurally invalid after input attachment',
+          {
+            workflowId,
+            errors: structuralReadinessErrors,
+            phase: nextPhase,
+          }
+        )
+      );
+    }
     if (structuralDiagnostics.unresolved.length > 0) {
       nextPhase = 'configuring_inputs';
       modeDiagnostics.schemaValidationFailures.push(
@@ -1451,6 +1656,8 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       }
     });
 
+    const effectiveFillModes = collectEffectiveFillModesForWizard(finalNormalizedGraph.nodes as any[]);
+
     return res.json({
       success: true,
       workflow: finalNormalizedGraph,
@@ -1469,6 +1676,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
         : 'Node inputs injected successfully. Credentials required.',
       diagnostics: {
         ...modeDiagnostics,
+        effectiveFillModes,
         contract: contractDiagnostics,
       },
     });

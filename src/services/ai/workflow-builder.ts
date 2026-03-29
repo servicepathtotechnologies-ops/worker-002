@@ -542,9 +542,12 @@ export class AgenticWorkflowBuilder {
     }
 
     // Fallback: preserve branching intent when Gemini fails (avoid always-linear AI fallback)
-    const { workflow: fallbackWorkflow, executionOrder } = detectBranchingIntentFromPrompt(userPrompt)
-      ? this.generateConditionalBranchingFallbackWorkflow(userPrompt)
-      : this.generateMinimalFallbackWorkflow(userPrompt);
+    // Do not degrade explicit switch/case prompts to binary if_else fallback.
+    const hasExplicitSwitchIntent = /\bswitch\b|\bcase\b/.test((userPrompt || '').toLowerCase());
+    const { workflow: fallbackWorkflow, executionOrder } =
+      detectBranchingIntentFromPrompt(userPrompt) && !hasExplicitSwitchIntent
+        ? this.generateConditionalBranchingFallbackWorkflow(userPrompt)
+        : this.generateMinimalFallbackWorkflow(userPrompt);
     const validation = unifiedGraphOrchestrator.validateWorkflow(fallbackWorkflow, executionOrder);
     if (!validation.valid) {
       const message = (validation.errors || []).join('; ') || 'Unknown validation error in fallback workflow';
@@ -4222,7 +4225,7 @@ Use only nodes from the library above.`;
       ],
       airtable: [/\bairtable\b/i],
       slack: [/\bslack\b/i, /\bnotify\s+(the\s+)?(sales\s+)?team\s+on\s+slack/i, /\bnotify\s+.*?\s+on\s+slack/i],
-      gmail: [/\bgmail\b/i, /\bgoogle\s*gmail\b/i, /\bsend\s+(a\s+)?(welcome\s+)?email\s+via\s+gmail/i, /\bemail\s+via\s+gmail/i, /\bsend\s+(a\s+)?(welcome\s+)?email/i],
+      gmail: [/\bgmail\b/i, /\bgoogle\s*gmail\b/i, /\bsend\s+(a\s+)?(welcome\s+)?email\s+via\s+gmail/i, /\bemail\s+via\s+gmail/i],
       google_sheets: [/\bgoogle\s*sheets\b/i, /\bsheets\b/i, /\bgoogle\s*spreadsheet\b/i, /\bcreate\s+(a\s+)?(corresponding\s+)?record\s+in\s+google\s+sheets/i, /\bsave\s+to\s+google\s+sheets/i, /\brecord\s+in\s+google\s+sheets/i, /\badd\s+(a\s+)?(row|record)\s+to\s+google\s+sheets/i],
       clickup: [/\bclickup\b/i, /\bclick\s*up\b/i],
       notion: [/\bnotion\b/i],

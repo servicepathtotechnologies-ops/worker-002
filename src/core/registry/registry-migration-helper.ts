@@ -13,6 +13,9 @@
 import { unifiedNodeRegistry } from './unified-node-registry';
 import { getNodeExecutionStub, hasExecutionStub, getUnmigratedNodeTypes } from './node-execution-stubs';
 import { CANONICAL_NODE_TYPES } from '../../services/nodes/node-library';
+import type { Workflow } from '../types/ai-types';
+import { normalizeWorkflowFormFieldIdentities } from '../utils/form-field-identity';
+import { repairIfElseConditionsFromUpstreamForm } from '../orchestration/repair-ifelse-form-conditions';
 
 export interface MigrationStatus {
   nodeType: string;
@@ -100,5 +103,97 @@ export function validateRegistryCoverage(): {
     valid: errors.length === 0,
     errors,
     warnings,
+  };
+}
+
+export function migrateWorkflowFormFieldIdentities(workflow: Workflow): {
+  workflow: Workflow;
+  changed: boolean;
+} {
+  const before = JSON.stringify((workflow as any).nodes || []);
+  let migrated = normalizeWorkflowFormFieldIdentities(workflow);
+  migrated = repairIfElseConditionsFromUpstreamForm(migrated);
+  const after = JSON.stringify((migrated as any).nodes || []);
+  return { workflow: migrated, changed: before !== after };
+}
+
+export interface FormIdentityMigrationItem {
+  id: string;
+  workflow: Workflow;
+}
+
+export interface FormIdentityMigrationResult {
+  id: string;
+  changed: boolean;
+  error?: string;
+  workflow?: Workflow;
+}
+
+export interface FormIdentityMigrationReport {
+  total: number;
+  changed: number;
+  unchanged: number;
+  failed: number;
+  results: FormIdentityMigrationResult[];
+}
+
+export function dryRunFormIdentityMigration(
+  items: FormIdentityMigrationItem[]
+): FormIdentityMigrationReport {
+  const results: FormIdentityMigrationResult[] = [];
+  for (const item of items) {
+    try {
+      const migration = migrateWorkflowFormFieldIdentities(item.workflow);
+      results.push({
+        id: item.id,
+        changed: migration.changed,
+      });
+    } catch (error: any) {
+      results.push({
+        id: item.id,
+        changed: false,
+        error: error?.message || 'migration_failed',
+      });
+    }
+  }
+  const changed = results.filter((r) => r.changed).length;
+  const failed = results.filter((r) => !!r.error).length;
+  return {
+    total: results.length,
+    changed,
+    unchanged: results.length - changed - failed,
+    failed,
+    results,
+  };
+}
+
+export function applyFormIdentityMigration(
+  items: FormIdentityMigrationItem[]
+): FormIdentityMigrationReport {
+  const results: FormIdentityMigrationResult[] = [];
+  for (const item of items) {
+    try {
+      const migration = migrateWorkflowFormFieldIdentities(item.workflow);
+      results.push({
+        id: item.id,
+        changed: migration.changed,
+        workflow: migration.workflow,
+      });
+    } catch (error: any) {
+      results.push({
+        id: item.id,
+        changed: false,
+        error: error?.message || 'migration_failed',
+      });
+    }
+  }
+  const changed = results.filter((r) => r.changed).length;
+  const failed = results.filter((r) => !!r.error).length;
+  return {
+    total: results.length,
+    changed,
+    unchanged: results.length - changed - failed,
+    failed,
+    results,
   };
 }

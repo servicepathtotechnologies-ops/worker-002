@@ -13,6 +13,7 @@ import { unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-ty
 import { resolveCanonicalNodeTypeStrict } from '../../core/utils/node-type-resolver-util';
 import { coerceFieldFillModeByPolicy } from '../../core/utils/fill-mode-resolver';
 import { materializeStructuralFields } from './structure-materializer';
+import { normalizeWorkflowFormFieldIdentities } from '../../core/utils/form-field-identity';
 
 export interface CanonicalizationEntry {
   input: string;
@@ -120,7 +121,8 @@ export function buildWorkflowFromPlanChain(planChain: string[]): PlanDrivenBuild
         (config as any)._fillMode[field] = coerceFieldFillModeByPolicy(
           field,
           'runtime_ai',
-          def.inputSchema
+          def.inputSchema,
+          config as Record<string, any>
         ).mode;
       }
     }
@@ -157,6 +159,7 @@ export function buildWorkflowFromPlanChain(planChain: string[]): PlanDrivenBuild
 
   let { workflow, executionOrder } = unifiedGraphOrchestrator.initializeWorkflow(nodes);
   workflow = materializeStructuralFields(workflow);
+  workflow = normalizeWorkflowFormFieldIdentities(workflow);
   // Ensure branching nodes receive contract-valid branch fanout/typed edges before validation.
   const reconciled = unifiedGraphOrchestrator.reconcileWorkflow(workflow);
   workflow = reconciled.workflow;

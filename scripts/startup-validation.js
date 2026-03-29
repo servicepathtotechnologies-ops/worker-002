@@ -23,15 +23,12 @@ async function validateSystemOnStartup() {
     let schemas = [];
     
     try {
-      // Try to load from dist (compiled)
+      // In development, prefer source to avoid stale dist dependency trees.
+      const sourcePath = path.join(__dirname, '../src/core/contracts/node-schema-registry.ts');
       const registryPath = path.join(__dirname, '../dist/core/contracts/node-schema-registry.js');
-      if (fs.existsSync(registryPath)) {
-        NodeSchemaRegistry = require(registryPath).NodeSchemaRegistry;
-        schemaRegistry = NodeSchemaRegistry.getInstance();
-        schemas = schemaRegistry.getAllSchemas();
-        console.log(`✅ Loaded ${schemas.length} node schemas from compiled code`);
-      } else {
-        // Try to load from source (for development)
+      const preferSource = process.env.NODE_ENV !== 'production';
+
+      if (preferSource && fs.existsSync(sourcePath)) {
         const tsNode = require('ts-node');
         tsNode.register({
           transpileOnly: true,
@@ -40,18 +37,36 @@ async function validateSystemOnStartup() {
             esModuleInterop: true
           }
         });
-        
-        const sourcePath = path.join(__dirname, '../src/core/contracts/node-schema-registry.ts');
-        if (fs.existsSync(sourcePath)) {
-          delete require.cache[require.resolve(sourcePath)];
-          const module = require(sourcePath);
-          NodeSchemaRegistry = module.NodeSchemaRegistry;
-          schemaRegistry = NodeSchemaRegistry.getInstance();
-          schemas = schemaRegistry.getAllSchemas();
-          console.log(`✅ Loaded ${schemas.length} node schemas from source code`);
-        } else {
-          throw new Error('Schema registry not found');
-        }
+
+        delete require.cache[require.resolve(sourcePath)];
+        const module = require(sourcePath);
+        NodeSchemaRegistry = module.NodeSchemaRegistry;
+        schemaRegistry = NodeSchemaRegistry.getInstance();
+        schemas = schemaRegistry.getAllSchemas();
+        console.log(`✅ Loaded ${schemas.length} node schemas from source code`);
+      } else if (fs.existsSync(registryPath)) {
+        NodeSchemaRegistry = require(registryPath).NodeSchemaRegistry;
+        schemaRegistry = NodeSchemaRegistry.getInstance();
+        schemas = schemaRegistry.getAllSchemas();
+        console.log(`✅ Loaded ${schemas.length} node schemas from compiled code`);
+      } else if (fs.existsSync(sourcePath)) {
+        const tsNode = require('ts-node');
+        tsNode.register({
+          transpileOnly: true,
+          compilerOptions: {
+            module: 'commonjs',
+            esModuleInterop: true
+          }
+        });
+
+        delete require.cache[require.resolve(sourcePath)];
+        const module = require(sourcePath);
+        NodeSchemaRegistry = module.NodeSchemaRegistry;
+        schemaRegistry = NodeSchemaRegistry.getInstance();
+        schemas = schemaRegistry.getAllSchemas();
+        console.log(`✅ Loaded ${schemas.length} node schemas from source code`);
+      } else {
+        throw new Error('Schema registry not found');
       }
     } catch (error) {
       console.warn('⚠️  Could not load schema registry:', error.message);

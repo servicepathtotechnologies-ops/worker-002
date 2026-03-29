@@ -8,7 +8,12 @@
 
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import { Request, Response } from 'express';
-import attachInputsHandler from '../attach-inputs';
+import attachInputsHandler, {
+  collectEffectiveFillModesForWizard,
+  collectOwnershipUnlockFlagsForWizard,
+  mergeOwnershipUnlockInputsForNode,
+  normalizeSwitchCasesInput,
+} from '../attach-inputs';
 import { getSupabaseClient } from '../../core/database/supabase-compat';
 
 const mkNode = (
@@ -234,6 +239,120 @@ describe('Attach Inputs - Normalization and Validation', () => {
         !nodeIds.has(e.source) || !nodeIds.has(e.target)
       );
       expect(invalidEdges.length).toBe(0);
+    });
+  });
+
+  describe('ownership unlock (credentialTogglePolicy)', () => {
+    it('mergeOwnershipUnlockInputsForNode sets _ownershipUnlock for unlockable credential field', () => {
+      const config: Record<string, any> = {};
+      const valid = new Set(['webhookUrl', 'message', 'channel']);
+      const updated = mergeOwnershipUnlockInputsForNode(
+        { unlock_n1_webhookUrl: 'true' },
+        { id: 'n1' },
+        'slack_message',
+        config,
+        valid
+      );
+      expect(updated).toBe(true);
+      expect(config._ownershipUnlock?.webhookUrl).toBe(true);
+    });
+
+    it('mergeOwnershipUnlockInputsForNode clears flag when unlock value is false', () => {
+      const config: Record<string, any> = { _ownershipUnlock: { webhookUrl: true } };
+      const valid = new Set(['webhookUrl', 'message']);
+      const updated = mergeOwnershipUnlockInputsForNode(
+        { unlock_n1_webhookUrl: 'false' },
+        { id: 'n1' },
+        'slack_message',
+        config,
+        valid
+      );
+      expect(updated).toBe(true);
+      expect(config._ownershipUnlock?.webhookUrl).toBeUndefined();
+    });
+
+    it('collectOwnershipUnlockFlagsForWizard builds unlock_* keys from node configs', () => {
+      const nodes = [
+        mkNode('a', 'slack_message', 'S', 'communication', {
+          _ownershipUnlock: { webhookUrl: true },
+        }),
+      ];
+      expect(collectOwnershipUnlockFlagsForWizard(nodes as any)).toEqual({
+        unlock_a_webhookUrl: 'true',
+      });
+    });
+  });
+
+  describe('effective fill-mode diagnostics', () => {
+    it('collects mode_<nodeId>_<fieldName> keys for valid fill modes only', () => {
+      const nodes = [
+        mkNode('n1', 'slack_message', 'Slack', 'communication', {
+          _fillMode: {
+            message: 'runtime_ai',
+            webhookUrl: 'manual_static',
+            invalidField: 'bogus_mode',
+          },
+        }),
+        mkNode('n2', 'if_else', 'If', 'logic', {
+          _fillMode: {
+            conditions: 'buildtime_ai_once',
+          },
+        }),
+      ];
+
+      const modes = collectEffectiveFillModesForWizard(nodes as any[]);
+      expect(modes).toEqual({
+        mode_n1_message: 'runtime_ai',
+        mode_n1_webhookUrl: 'manual_static',
+        mode_n2_conditions: 'buildtime_ai_once',
+      });
+    });
+  });
+
+  describe('field-plane keys and graph validation', () => {
+    it('initializeWorkflow + validateWorkflow succeeds for minimal trigger + slack chain', async () => {
+      const { unifiedGraphOrchestrator } = await import('../../core/orchestration/unified-graph-orchestrator');
+      const nodes = [
+        mkNode('t', 'manual_trigger', 'T', 'triggers', {}),
+        mkNode(
+          'n1',
+          'slack_message',
+          'S',
+          'communication',
+          {
+            message: 'hello',
+            _fillMode: { message: 'manual_static', webhookUrl: 'manual_static' },
+          }
+        ),
+      ];
+      const init = unifiedGraphOrchestrator.initializeWorkflow(nodes as any);
+      const validation = unifiedGraphOrchestrator.validateWorkflow(init.workflow, init.executionOrder);
+      expect(validation.valid).toBe(true);
+    });
+  });
+
+  describe('switch cases normalization', () => {
+    it('accepts JSON string arrays and deduplicates empty/duplicate values', () => {
+      const normalized = normalizeSwitchCasesInput(
+        JSON.stringify([
+          { value: 'red', label: 'Red' },
+          { value: 'red', label: 'Red duplicate' },
+          { value: 'blue' },
+          '',
+        ])
+      );
+
+      expect(normalized.valid).toBe(true);
+      expect(normalized.value).toEqual([
+        { value: 'red', label: 'Red' },
+        { value: 'blue' },
+      ]);
+    });
+
+    it('rejects malformed scalar values', () => {
+      expect(normalizeSwitchCasesInput('/')).toEqual({ value: [], valid: false });
+      expect(normalizeSwitchCasesInput('')).toEqual({ value: [], valid: false });
+      expect(normalizeSwitchCasesInput({ foo: 'bar' })).toEqual({ value: [], valid: false });
     });
   });
 });

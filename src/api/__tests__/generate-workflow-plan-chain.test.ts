@@ -1,8 +1,10 @@
 import { describe, expect, it } from '@jest/globals';
 import {
   autoRepairCanonicalChainForIntent,
+  autoRepairCanonicalChainSemantics,
   canonicalizePlanChainStrict,
   validateCanonicalChainCompleteness,
+  validateCanonicalChainSemantics,
 } from '../plan-chain-guards';
 
 describe('generate-workflow canonical plan chain gates', () => {
@@ -72,5 +74,35 @@ describe('generate-workflow canonical plan chain gates', () => {
       { userPrompt: 'Users submit form, if age > 18 send gmail else send slack' }
     );
     expect(issues.some((i) => i.reason.includes('over_broad_chain_non_intent_nodes'))).toBe(true);
+  });
+
+  it('flags semantic reversal when transformation appears before data source', () => {
+    const issues = validateCanonicalChainSemantics(
+      ['manual_trigger', 'ai_agent', 'google_sheets', 'slack_message', 'log_output'],
+      { userPrompt: 'Fetch tickets from Google Sheets, summarize, then send to Slack' }
+    );
+    expect(issues.some((i) => i.reason.includes('semantic_order_violation:transformation_before_data_source'))).toBe(true);
+  });
+
+  it('passes semantic checks for fetch -> summarize -> send ordering', () => {
+    const issues = validateCanonicalChainSemantics(
+      ['manual_trigger', 'google_sheets', 'ai_agent', 'slack_message', 'log_output'],
+      { userPrompt: 'Fetch tickets from Google Sheets, summarize, then send to Slack' }
+    );
+    expect(issues).toHaveLength(0);
+  });
+
+  it('auto-repairs invalid branch order into semantically valid sequence', () => {
+    const repaired = autoRepairCanonicalChainSemantics(
+      ['form', 'google_gmail', 'if_else', 'slack_message', 'log_output'],
+      { userPrompt: 'If age > 18 send Gmail else send Slack' }
+    );
+    expect(repaired.repairs.length).toBeGreaterThan(0);
+    expect(repaired.canonical.indexOf('if_else')).toBeGreaterThan(repaired.canonical.indexOf('form'));
+    expect(repaired.canonical.indexOf('if_else')).toBeLessThan(repaired.canonical.indexOf('google_gmail'));
+    const issues = validateCanonicalChainSemantics(repaired.canonical, {
+      userPrompt: 'If age > 18 send Gmail else send Slack',
+    });
+    expect(issues).toHaveLength(0);
   });
 });

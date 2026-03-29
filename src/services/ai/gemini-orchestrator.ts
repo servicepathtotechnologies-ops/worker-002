@@ -49,7 +49,7 @@ export class GeminiOrchestrator {
   private readonly MODEL_PRICING = {
     'gemini-2.5-pro': { input: 1.25, output: 5.00 },
     'gemini-2.5-flash': { input: 0.075, output: 0.30 },
-    'gemini-2.5-flash-lite': { input: 0.0375, output: 0.15 },
+    'gemini-3-flash-preview': { input: 0.0375, output: 0.15 },
   };
 
   constructor() {
@@ -58,7 +58,7 @@ export class GeminiOrchestrator {
   }
 
   private initializeModelPerformance() {
-    const models = ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'];
+    const models = ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-3-flash-preview'];
     models.forEach(model => {
       this.modelPerformance.set(model, {
         usageCount: 0,
@@ -167,7 +167,7 @@ export class GeminiOrchestrator {
     
     // Low complexity tasks → Flash Lite
     if (['summarization', 'text-completion'].includes(type)) {
-      return 'gemini-2.5-flash-lite';
+      return 'gemini-3-flash-preview';
     }
     
     // Default → Flash (balanced)

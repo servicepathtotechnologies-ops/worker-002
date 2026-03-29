@@ -4,11 +4,11 @@
   "description": "Unified Node.js backend for CtrlChecks - migrated from Supabase Edge Functions",
   "main": "dist/index.js",
   "scripts": {
-    "dev": "node scripts/startup-validation.js && nodemon --watch src --exec ts-node src/index.ts",
+    "dev": "node --max-old-space-size=8192 scripts/startup-validation.js && nodemon --watch src --exec \"node --max-old-space-size=8192 -r ts-node/register src/index.ts\"",
     "build": "tsc && npm run export:schemas && npm run copy:data",
     "copy:data": "node scripts/copy-data-files.js",
     "start": "node dist/index.js",
-    "type-check": "tsc --noEmit",
+    "type-check": "node --max-old-space-size=8192 ./node_modules/typescript/bin/tsc --noEmit",
     "type-check:watch": "tsc --noEmit --watch",
     "predev": "npm run type-check",
     "prebuild": "npm run type-check",
@@ -63,9 +63,11 @@
     "inventory:field-guidance:write": "ts-node scripts/dump-input-field-guidance-inventory.ts --out-file tmp/field-guidance-inventory.json",
     "inventory:node-compliance-matrix": "ts-node scripts/export-node-compliance-matrix.ts",
     "validate:registry-gates": "ts-node scripts/run-node-registry-gates.ts",
+    "validate:quality-gates": "ts-node scripts/run-quality-gates.ts",
     "test:intent-e2e": "jest src/core/utils/__tests__/intent-e2e-harness.test.ts --passWithNoTests",
     "validate:enhancements": "ts-node scripts/validate-enhancements.ts",
-    "test:15-workflows": "ts-node scripts/test-15-workflows-execution.ts"
+    "test:15-workflows": "ts-node scripts/test-15-workflows-execution.ts",
+    "verify:universality": "node scripts/verify-universality-readiness.js"
   },
   "keywords": [],
   "author": "",

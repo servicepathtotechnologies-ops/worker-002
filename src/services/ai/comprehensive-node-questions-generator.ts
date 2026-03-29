@@ -32,6 +32,8 @@ import {
   isFieldUserProvidedText,
   shouldUseSelectForExplicitOptions,
 } from '../../core/utils/schema-field-control';
+import { getInputControlMetadata } from '../../core/utils/schema-input-control';
+import { getCredentialVaultMetaForField } from '../../core/utils/credential-field-vault-meta';
 
 export interface ComprehensiveNodeQuestion {
   id: string;
@@ -74,12 +76,30 @@ export interface ComprehensiveNodeQuestion {
     | 'runtime_ai_default'
     | 'ai_filled'
     | 'vault_or_oauth'
+    | 'credential_locked_until_unlock'
     | 'manual_only'
     | 'no_runtime_ai';
   /** True when the field was populated by build-time AI (snapshot shown; row usually remains selectable). */
   aiFilledAtBuildTime?: boolean;
+  /**
+   * Effective fill mode is runtime_ai: value is intentionally empty in stored workflow;
+   * executor fills at run time. Not the same as "prefilled".
+   */
+  aiUsesRuntime?: boolean;
+  /**
+   * Effective mode is buildtime_ai_once but value is still empty (e.g. [] before materialize/attach).
+   * User should regenerate, run attach-inputs, or switch to You and edit.
+   */
+  aiBuildTimePending?: boolean;
+  /** Credential row can be unlocked via attach-inputs `unlock_<nodeId>_<fieldName>`. */
+  isUnlockableCredential?: boolean;
   /** Current value from node.data.config (stringified for objects/arrays); for wizard pre-fill. */
   defaultValue?: string;
+  /**
+   * Vault key for filterCredentialQuestions / attach-credentials (connector registry).
+   * Must align with credential discovery `credentialId` / `vaultKey` (e.g. slack + webhookUrl field).
+   */
+  credential?: { vaultKey: string; credentialId?: string };
 }
 
 export interface NodeQuestionsResult {
@@ -107,10 +127,12 @@ function addMissingInputSchemaQuestionsForOwnership(
       if (byKey.has(key)) continue;
       byKey.add(key);
       const fieldDef = inputSchema[fieldName] as any;
+      const control = getInputControlMetadata(fieldName, fieldDef);
+      const mergedType = control.inputType === 'json' ? 'textarea' : control.inputType;
       added.push({
         id: `ownership_${node.id}_${fieldName}`,
         text: `${fieldName}`,
-        type: 'text',
+        type: mergedType,
         nodeId: node.id,
         nodeType,
         nodeLabel,
@@ -118,7 +140,9 @@ function addMissingInputSchemaQuestionsForOwnership(
         category: 'configuration',
         required: false,
         askOrder: 99,
-        description: `Input field ${fieldName}`,
+        options: control.options,
+        placeholder: control.placeholder || fieldDef?.description,
+        description: fieldDef?.description || `Input field ${fieldName}`,
         fillModeDefault: fieldDef?.fillMode?.default,
         supportsRuntimeAI: fieldDef?.fillMode?.supportsRuntimeAI !== false,
         supportsBuildtimeAI: fieldDef?.fillMode?.supportsBuildtimeAI !== false,
@@ -174,14 +198,13 @@ function annotateQuestionsForOwnershipUi(
     const node = workflow.nodes.find((n) => n.id === q.nodeId);
     const next: ComprehensiveNodeQuestion = { ...q };
 
-    if (q.category === 'credential') {
-      next.ownershipUiMode = 'locked';
-      next.ownershipLockReason = 'vault_or_oauth';
-      return next;
-    }
-
     if (!node) {
-      next.ownershipUiMode = 'selectable';
+      if (q.category === 'credential') {
+        next.ownershipUiMode = 'locked';
+        next.ownershipLockReason = 'vault_or_oauth';
+      } else {
+        next.ownershipUiMode = 'selectable';
+      }
       return next;
     }
 
@@ -190,12 +213,36 @@ function annotateQuestionsForOwnershipUi(
     const inputSchema = def?.inputSchema;
     const config = (node.data?.config || {}) as Record<string, any>;
 
+    const fieldDef = inputSchema?.[q.fieldName];
+    const isCredentialRow =
+      q.category === 'credential' ||
+      (!!fieldDef && isCredentialOwnership(q.fieldName, fieldDef));
+
+    if (isCredentialRow) {
+      if (!inputSchema || !fieldDef) {
+        next.ownershipUiMode = 'locked';
+        next.ownershipLockReason = 'vault_or_oauth';
+        return next;
+      }
+      const policy = fieldDef.credentialTogglePolicy ?? 'locked';
+      const unlocked = policy === 'unlockable' && config._ownershipUnlock?.[q.fieldName] === true;
+      if (!unlocked) {
+        next.ownershipUiMode = 'locked';
+        next.ownershipLockReason =
+          policy === 'unlockable' ? 'credential_locked_until_unlock' : 'vault_or_oauth';
+        if (policy === 'unlockable') {
+          next.isUnlockableCredential = true;
+        }
+        return next;
+      }
+      // Unlocked unlockable credential: same ownership UX as value fields (below).
+      next.isUnlockableCredential = false;
+    }
+
     if (!inputSchema || !(q.fieldName in inputSchema)) {
       next.ownershipUiMode = 'selectable';
       return next;
     }
-
-    const fieldDef = inputSchema[q.fieldName];
     if (fieldDef?.ownership) {
       next.ownershipClass = fieldDef.ownership;
     }
@@ -216,20 +263,29 @@ function annotateQuestionsForOwnershipUi(
     }
 
     const mode = resolveEffectiveFieldFillMode(q.fieldName, inputSchema, config);
-    // runtime_ai in config is a recommendation, not a lock: user may switch to manual_static and edit.
+    const val = config[q.fieldName];
+
+    // runtime_ai: stored workflow keeps this empty by design; show runtime badge, not "prefilled".
     if (mode === 'runtime_ai') {
       next.ownershipUiMode = 'selectable';
       next.ownershipLockReason = undefined;
+      next.aiUsesRuntime = true;
+      (next as any).effectiveFillMode = mode;
       return next;
     }
 
-    const fillModePerField = (config._fillMode || {}) as Record<string, string>;
-    const buildTimeAi = fillModePerField[q.fieldName] === 'buildtime_ai_once';
-    const val = config[q.fieldName];
-    if (buildTimeAi && !isEmptyValue(val)) {
-      next.aiFilledAtBuildTime = true;
-      // Still selectable: user may adopt snapshot as manual_static in the wizard.
+    // buildtime_ai_once: distinguish snapshot present vs still empty (universal UX).
+    if (mode === 'buildtime_ai_once') {
+      if (!isEmptyValue(val)) {
+        next.aiFilledAtBuildTime = true;
+      } else {
+        next.aiBuildTimePending = true;
+      }
     }
+
+    // Expose effective fill mode for diagnostics / future UI, while keeping
+    // wizard ownership logic derived from config + defaults.
+    (next as any).effectiveFillMode = mode;
 
     next.ownershipUiMode = 'selectable';
     next.ownershipLockReason = undefined;
@@ -496,6 +552,22 @@ export function generateComprehensiveNodeQuestions(
   };
 }
 
+/** Attach connector vault metadata to credential-category questions for wizard filtering. */
+function attachCredentialVaultMetaToQuestions(
+  nodeType: string,
+  questions: ComprehensiveNodeQuestion[]
+): ComprehensiveNodeQuestion[] {
+  return questions.map((q) => {
+    if (q.category !== 'credential') return q;
+    const meta = getCredentialVaultMetaForField(nodeType, q.fieldName);
+    if (!meta) return q;
+    return {
+      ...q,
+      credential: { vaultKey: meta.vaultKey, credentialId: meta.credentialId },
+    };
+  });
+}
+
 /**
  * Generate credential questions for a node
  * ✅ ENHANCED: Asks for credential type (API Key OR OAuth Access Token) when both are available
@@ -668,7 +740,8 @@ function generateCredentialQuestions(
     // Only specific URL types (webhook, callback, redirect) remain as configuration
     // ✅ SPECIAL: Gmail "to" field is handled as credential with dropdown (excluded from this check)
     const isConfigurationField = 
-      fieldLower === 'webhookurl' || fieldLower === 'webhook_url' || // Slack webhook URL is configuration, not credential
+      // NOTE: webhook URLs are credential-like in many integrations.
+      // Do not hard-exclude them here; rely on registry ownership classification instead.
       fieldLower === 'callbackurl' || fieldLower === 'callback_url' || // OAuth callback URL is configuration
       fieldLower === 'redirecturl' || fieldLower === 'redirect_url' || // OAuth redirect URL is configuration
       fieldLower.includes('message') || // Message fields are not credentials
@@ -794,41 +867,26 @@ function generateCredentialQuestions(
           const optionalSchema: any = (schema.configSchema as any).optional || {};
           const fieldSchema = optionalSchema[fieldName] || {};
           const fieldType = fieldSchema.type || 'string';
-          
-          // ✅ WORLD-CLASS FIX: Only use explicit options, NOT examples
-          // Examples are just hints for users, not selectable dropdown options
-          // Only operations/resources with explicit options should be dropdowns
-          const fieldOptions = fieldSchema.options || []; // ✅ CRITICAL: Don't use examples as options
-          const hasExplicitOptions = Array.isArray(fieldOptions) && fieldOptions.length > 0;
-          
-          const isUserProvidedTextField = isFieldUserProvidedText(fieldName);
-
-          // ✅ Schema-driven: any field with explicit `options` in node library → select (same as Properties panel),
-          // except URL/key/id-style fields (see schema-field-control).
-          let questionType: string;
-          let questionOptions: Array<{ label: string; value: string }> | undefined;
+          const control = getInputControlMetadata(fieldName, {
+            ...fieldSchema,
+            ui: {
+              ...(fieldSchema.ui || {}),
+              options: fieldSchema.ui?.options || fieldSchema.options,
+            },
+          });
+          let questionType: string = control.inputType === 'json' ? 'textarea' : control.inputType;
+          let questionOptions: Array<{ label: string; value: string }> | undefined = control.options;
 
           if (hasCredentialId && fieldLower.includes('credentialid')) {
             questionType = 'credential';
-          } else if (isUserProvidedTextField) {
-            questionType = 'text';
-            console.log(`[ComprehensiveQuestions] ✅ Using text input for ${nodeType}.${fieldName} (user-provided field: URL/API key/ID)`);
-          } else if (hasExplicitOptions && shouldUseSelectForExplicitOptions(fieldName, fieldSchema)) {
-            questionType = 'select';
-            questionOptions = fieldOptions.map((opt: any) => {
-              if (typeof opt === 'string') {
-                return { label: opt, value: opt };
-              } else if (typeof opt === 'object' && opt.label && opt.value) {
-                return { label: opt.label, value: opt.value };
-              } else {
-                return { label: String(opt), value: String(opt) };
-              }
-            });
-            console.log(`[ComprehensiveQuestions] ✅ Using dropdown for ${nodeType}.${fieldName} (${questionOptions?.length ?? 0} explicit options from schema)`);
           } else {
-            // ✅ ROOT-LEVEL: Text fields → use text input (same as node properties)
-            questionType = mapQuestionType(fieldType);
-            console.log(`[ComprehensiveQuestions] ✅ Using ${questionType} for ${nodeType}.${fieldName} (from schema type: ${fieldType})`);
+            if (questionType === 'select' && (!questionOptions || questionOptions.length === 0)) {
+              questionType = 'text';
+            }
+            if (!questionType || questionType === 'json') {
+              questionType = mapQuestionType(fieldType);
+            }
+            console.log(`[ComprehensiveQuestions] ✅ Using ${questionType} for ${nodeType}.${fieldName} (schema-driven mapper)`);
           }
           
           const question: ComprehensiveNodeQuestion = {
@@ -854,7 +912,7 @@ function generateCredentialQuestions(
     }
   }
 
-  return questions;
+  return attachCredentialVaultMetaToQuestions(nodeType, questions);
 }
 
 /**
@@ -1267,9 +1325,14 @@ function generateConfigurationQuestions(
   if (questionConfig) {
     const orderedQuestions = getOrderedQuestions(nodeType, answeredFields);
     
+    const unifiedForOrdered = unifiedNodeRegistry.get(nodeType);
     for (const qDef of orderedQuestions) {
       // Skip if already asked (credential or operation)
       if (qDef.type === 'credential' || qDef.field.toLowerCase().includes('operation')) {
+        continue;
+      }
+      const orderedFd = unifiedForOrdered?.inputSchema?.[qDef.field];
+      if (orderedFd && isCredentialOwnership(qDef.field, orderedFd)) {
         continue;
       }
 
@@ -1339,6 +1402,7 @@ function generateConfigurationQuestions(
       ? Array.from(new Set([...requiredFields, ...optionalFieldNames]))
       : requiredFields;
     
+    const unifiedForConfig = unifiedNodeRegistry.get(nodeType);
     for (const fieldName of fieldsToProcess) {
       // Skip credential and operation fields (already handled)
       const fieldLower = fieldName.toLowerCase();
@@ -1346,6 +1410,10 @@ function generateConfigurationQuestions(
           fieldLower.includes('operation') ||
           fieldLower.includes('apikey') ||
           fieldLower.includes('token')) {
+        continue;
+      }
+      const cfgFd = unifiedForConfig?.inputSchema?.[fieldName];
+      if (cfgFd && isCredentialOwnership(fieldName, cfgFd)) {
         continue;
       }
 

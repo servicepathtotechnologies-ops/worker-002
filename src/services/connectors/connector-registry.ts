@@ -199,6 +199,7 @@ export class ConnectorRegistry {
         vaultKey: 'discord',
         displayName: 'Discord Webhook URL',
         required: true,
+        credentialFieldName: 'webhookUrl',
       },
       nodeTypes: ['discord'],
       description: 'Send messages to Discord via webhook',

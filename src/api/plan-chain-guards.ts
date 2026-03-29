@@ -6,6 +6,9 @@ import { nodeCapabilityRegistryDSL } from '../services/ai/node-capability-regist
 export interface PlanChainIssue {
   input: string;
   reason: string;
+  expected_before?: string;
+  expected_after?: string;
+  branch_required?: boolean;
 }
 
 export interface ValidateChainOptions {
@@ -13,6 +16,11 @@ export interface ValidateChainOptions {
 }
 
 export interface AutoRepairResult {
+  canonical: string[];
+  repairs: string[];
+}
+
+export interface SemanticAutoRepairResult {
   canonical: string[];
   repairs: string[];
 }
@@ -49,8 +57,8 @@ function isOutputNodeType(nodeType: string): boolean {
 
 function isBranchingNodeType(nodeType: string): boolean {
   const def: any = unifiedNodeRegistry.get(nodeType);
-  if (!def) return false;
-  return !!def.isBranching;
+  if (!def) return nodeType === 'if_else' || nodeType === 'switch';
+  return !!def.isBranching || nodeType === 'if_else' || nodeType === 'switch';
 }
 
 function hasExplicitCue(promptLower: string, nodeType: string): boolean {
@@ -243,4 +251,107 @@ export function validateCanonicalChainCompleteness(
     }
   }
   return issues;
+}
+
+export function validateCanonicalChainSemantics(
+  canonical: string[],
+  options?: ValidateChainOptions
+): PlanChainIssue[] {
+  const issues: PlanChainIssue[] = [];
+  const promptLower = String(options?.userPrompt || '').toLowerCase();
+  const hasTransformIntent = /\bsummari[sz]e|classif|analy[sz]e|transform|rewrite|extract\b/.test(promptLower);
+  const hasDataFetchIntent = /\bfetch|get|read|from\b/.test(promptLower);
+
+  let seenDataSource = false;
+  let seenTransformation = false;
+  let seenOutput = false;
+  for (const nodeType of canonical) {
+    const isDataSource = nodeCapabilityRegistryDSL.isDataSource(nodeType) || nodeCapabilityRegistryDSL.canReadData(nodeType);
+    const isTransformation = nodeCapabilityRegistryDSL.isTransformation(nodeType);
+    const isOutput = isOutputNodeType(nodeType) && !isDataSource;
+
+    if (isDataSource) seenDataSource = true;
+    if (isTransformation) {
+      if (hasDataFetchIntent && !seenDataSource && canonical.some((n) => nodeCapabilityRegistryDSL.isDataSource(n))) {
+        issues.push({
+          input: canonical.join(' -> '),
+          reason: `semantic_order_violation:transformation_before_data_source:${nodeType}`,
+          expected_after: 'data_source',
+        });
+      }
+      seenTransformation = true;
+    }
+    if (isOutput) {
+      if (hasTransformIntent && canonical.some((n) => nodeCapabilityRegistryDSL.isTransformation(n)) && !seenTransformation) {
+        issues.push({
+          input: canonical.join(' -> '),
+          reason: `semantic_order_violation:output_before_transformation:${nodeType}`,
+          expected_after: 'transformation',
+        });
+      }
+      if (hasDataFetchIntent && canonical.some((n) => nodeCapabilityRegistryDSL.isDataSource(n)) && !seenDataSource) {
+        issues.push({
+          input: canonical.join(' -> '),
+          reason: `semantic_order_violation:output_before_data_source:${nodeType}`,
+          expected_after: 'data_source',
+        });
+      }
+      seenOutput = true;
+    }
+    if (seenOutput && !isOutput && (isDataSource || isTransformation) && nodeType !== 'log_output') {
+      issues.push({
+        input: canonical.join(' -> '),
+        reason: `semantic_order_violation:post_output_processing:${nodeType}`,
+        expected_before: 'output',
+      });
+    }
+  }
+
+  return issues;
+}
+
+export function autoRepairCanonicalChainSemantics(
+  canonical: string[],
+  options?: ValidateChainOptions
+): SemanticAutoRepairResult {
+  const repairs: string[] = [];
+  const chain = normalizeChainWithTerminal(canonical).filter((n) => n !== 'log_output');
+  const trigger = chain.find((n) => isTriggerNodeType(n)) || 'manual_trigger';
+  const branch = chain.find((n) => isBranchingNodeType(n));
+  const dataSources = chain.filter(
+    (n) =>
+      !isTriggerNodeType(n) &&
+      !isBranchingNodeType(n) &&
+      !isOutputNodeType(n) &&
+      (nodeCapabilityRegistryDSL.isDataSource(n) || nodeCapabilityRegistryDSL.canReadData(n))
+  );
+  const transforms = chain.filter(
+    (n) => !isTriggerNodeType(n) && !isBranchingNodeType(n) && !(nodeCapabilityRegistryDSL.isDataSource(n) || nodeCapabilityRegistryDSL.canReadData(n)) && nodeCapabilityRegistryDSL.isTransformation(n)
+  );
+  const outputs = chain.filter(
+    (n) => !isTriggerNodeType(n) && !isBranchingNodeType(n) && !dataSources.includes(n) && !transforms.includes(n) && isOutputNodeType(n)
+  );
+  const others = chain.filter(
+    (n) => !isTriggerNodeType(n) && !isBranchingNodeType(n) && !dataSources.includes(n) && !transforms.includes(n) && !outputs.includes(n)
+  );
+
+  let rebuilt: string[];
+  if (branch) {
+    const branchTail = chain.filter((n) => !isTriggerNodeType(n) && n !== branch);
+    rebuilt = [trigger, branch, ...branchTail];
+    repairs.push('semantic_reorder_branch_template');
+  } else {
+    rebuilt = [trigger, ...dataSources, ...transforms, ...others, ...outputs];
+    repairs.push('semantic_reorder_linear_template');
+  }
+
+  const unique: string[] = [];
+  const seen = new Set<string>();
+  for (const n of rebuilt) {
+    if (!seen.has(n)) {
+      seen.add(n);
+      unique.push(n);
+    }
+  }
+  return { canonical: normalizeChainWithTerminal(unique), repairs };
 }

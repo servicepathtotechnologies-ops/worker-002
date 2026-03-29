@@ -10,6 +10,11 @@ import { unifiedGraphOrchestrator } from '../orchestration/unified-graph-orchest
 import { unifiedNodeRegistry } from '../registry/unified-node-registry';
 import { resolveEffectiveFieldFillMode } from '../utils/fill-mode-resolver';
 import { isStructuralOwnership } from '../utils/field-ownership';
+import {
+  normalizeIfElseConfig,
+  validateCanonicalIfElseConditions,
+} from '../utils/if-else-conditions';
+import { normalizeWorkflowFormFieldIdentities } from '../utils/form-field-identity';
 
 // Workflow types (inline to avoid circular dependencies)
 interface WorkflowNode {
@@ -125,7 +130,11 @@ export function validateStructuralReadiness(
 
   for (const node of nodes) {
     const nodeType = node.data?.type || node.type;
-    const config = (node.data?.config || {}) as Record<string, unknown>;
+    const config = (
+      nodeType === 'if_else'
+        ? normalizeIfElseConfig((node.data?.config || {}) as Record<string, unknown>)
+        : (node.data?.config || {})
+    ) as Record<string, unknown>;
     const def = unifiedNodeRegistry.get(nodeType);
     if (!def) continue;
     const inputSchema = def.inputSchema || {};
@@ -195,7 +204,10 @@ export function validateWorkflowForSave(
   // 3. Validate node configurations (registry + fill-mode aware)
   for (const node of nodes) {
     const nodeType = node.data?.type || node.type;
-    const config = node.data?.config || {};
+    const config =
+      (nodeType === 'if_else'
+        ? normalizeIfElseConfig((node.data?.config || {}) as Record<string, unknown>)
+        : (node.data?.config || {})) as Record<string, unknown>;
     const def = unifiedNodeRegistry.get(nodeType);
 
     if (def) {
@@ -226,9 +238,45 @@ export function validateWorkflowForSave(
       }
     }
 
-    // Backward-compatible specific warning retained until old payloads are fully migrated.
-    if (nodeType === 'if_else' && config.conditions && !Array.isArray(config.conditions)) {
-      warnings.push(`If/Else node "${node.data?.label || node.id}" has conditions in wrong format (should be array)`);
+    if (nodeType === 'if_else') {
+      const normalizedIfElse = normalizeIfElseConfig(config as Record<string, unknown>);
+      const conditionErrors = validateCanonicalIfElseConditions(normalizedIfElse.conditions);
+      if (conditionErrors.length > 0) {
+        errors.push(
+          ...conditionErrors.map(
+            (e) => `Node "${node.data?.label || node.id}" (if_else) invalid canonical conditions: ${e}`
+          )
+        );
+      }
+    }
+
+    if (nodeType === 'form') {
+      const fields = (config as any).fields;
+      if (Array.isArray(fields)) {
+        const seen = new Set<string>();
+        for (let i = 0; i < fields.length; i++) {
+          const field = fields[i] || {};
+          const key = String(field.key || field.name || '').trim();
+          const label = String(field.label || '').trim();
+          if (!key) {
+            errors.push(`Form node "${node.data?.label || node.id}" field[${i}] is missing key/name`);
+            continue;
+          }
+          if (key.length > 32) {
+            errors.push(`Form node "${node.data?.label || node.id}" field "${key}" exceeds max key length 32`);
+          }
+          if (!/^[a-z0-9_]+$/.test(key)) {
+            errors.push(`Form node "${node.data?.label || node.id}" field "${key}" must use lowercase snake_case`);
+          }
+          if (seen.has(key)) {
+            errors.push(`Form node "${node.data?.label || node.id}" has duplicate field key "${key}"`);
+          }
+          seen.add(key);
+          if (label.length > 40) {
+            errors.push(`Form node "${node.data?.label || node.id}" field "${key}" exceeds max label length 40`);
+          }
+        }
+      }
     }
 
     // Add more node-specific validations as needed
@@ -318,27 +366,14 @@ export function normalizeWorkflowForSave(
     const nodeType = node.data?.type || node.type;
     const config = { ...(node.data?.config || {}) };
 
-    // Migrate If/Else conditions format
+    // Canonicalize If/Else config using the shared contract normalizer.
     if (nodeType === 'if_else') {
-      if (config.condition && !config.conditions) {
-        // Old format: condition (string) -> convert to conditions array
-        const conditionStr = typeof config.condition === 'string' ? config.condition : String(config.condition);
-        if (conditionStr.trim()) {
-          config.conditions = [{ expression: conditionStr.trim() }];
-          migrationsApplied.push(`Migrated If/Else node "${node.data?.label || node.id}" from condition to conditions array`);
-        }
-      } else if (config.conditions && !Array.isArray(config.conditions)) {
-        // Handle case where conditions is sent as string or object
-        if (typeof config.conditions === 'string') {
-          config.conditions = [{ expression: config.conditions }];
-          migrationsApplied.push(`Migrated If/Else node "${node.data?.label || node.id}" from string conditions to array`);
-        } else if (typeof config.conditions === 'object' && config.conditions !== null) {
-          const conditionsObj = config.conditions as Record<string, unknown>;
-          if (conditionsObj.expression) {
-            config.conditions = [config.conditions];
-            migrationsApplied.push(`Migrated If/Else node "${node.data?.label || node.id}" from object conditions to array`);
-          }
-        }
+      const before = JSON.stringify(config);
+      const normalized = normalizeIfElseConfig(config as Record<string, unknown>);
+      const after = JSON.stringify(normalized);
+      Object.assign(config, normalized);
+      if (before !== after) {
+        migrationsApplied.push(`Canonicalized If/Else node "${node.data?.label || node.id}" conditions`);
       }
     }
 
@@ -350,11 +385,104 @@ export function normalizeWorkflowForSave(
       },
     };
   });
+
+  // Normalize form field identities globally before edge validation.
+  const normalizedWorkflow = normalizeWorkflowFormFieldIdentities({
+    nodes: normalizedNodes as any,
+    edges: edges as any,
+  } as any);
+  normalizedNodes = (normalizedWorkflow.nodes || normalizedNodes) as any;
   
-  // ✅ STEP 4: Build node ID set for edge validation
+  // ✅ STEP 4: Canonicalize branching edge semantics BEFORE edge deduplication.
+  // Without this, two outgoing edges from if_else with missing sourceHandle collide on the
+  // dedupe key and one branch is silently deleted, causing backend rewire on save.
+  try {
+    const nodeTypeById = new Map<string, string>(
+      normalizedNodes.map((n) => [n.id, String(n.data?.type || n.type || '')])
+    );
+
+    // Group outgoing edges by source for branching nodes.
+    const outgoingBySource = new Map<string, WorkflowEdge[]>();
+    for (const e of edges) {
+      if (!outgoingBySource.has(e.source)) outgoingBySource.set(e.source, []);
+      outgoingBySource.get(e.source)!.push(e);
+    }
+
+    const patched: WorkflowEdge[] = edges.map((e) => ({ ...e }));
+
+    const findInPatched = (id?: string, fallback?: WorkflowEdge) => {
+      if (!id) return fallback;
+      return patched.find((x) => x.id === id) || fallback;
+    };
+
+    for (const [sourceId, outEdges] of outgoingBySource.entries()) {
+      const sourceType = (nodeTypeById.get(sourceId) || '').toLowerCase();
+      if (!sourceType) continue;
+
+      // if_else: ensure each outgoing edge has explicit sourceHandle 'true'/'false'
+      if (sourceType === 'if_else') {
+        const normalizedOut = outEdges.map((e) => findInPatched(e.id, e)!);
+        const used = new Set<string>();
+
+        // 1) Prefer explicit sourceHandle
+        for (const e of normalizedOut) {
+          const h = String(e.sourceHandle || '').toLowerCase();
+          if (h === 'true' || h === 'false') used.add(h);
+        }
+        // 2) Fall back to edge "type" if present
+        for (const e of normalizedOut) {
+          if (e.sourceHandle) continue;
+          const t = (e as any).type;
+          const tt = typeof t === 'string' ? t.toLowerCase() : '';
+          if (tt === 'true' || tt === 'false') {
+            e.sourceHandle = tt;
+            used.add(tt);
+          }
+        }
+        // 3) If still missing, assign remaining handle deterministically
+        for (const e of normalizedOut) {
+          const h = String(e.sourceHandle || '').toLowerCase();
+          if (h === 'true' || h === 'false') continue;
+          const next = used.has('true') ? (used.has('false') ? null : 'false') : 'true';
+          if (next) {
+            e.sourceHandle = next;
+            used.add(next);
+          }
+        }
+
+        // 4) Keep edge.type consistent with branch handle when available
+        for (const e of normalizedOut) {
+          const h = String(e.sourceHandle || '').toLowerCase();
+          if (h === 'true' || h === 'false') {
+            (e as any).type = h;
+          }
+        }
+      }
+
+      // switch: preserve case_* semantics if present on edge.type
+      if (sourceType === 'switch') {
+        const normalizedOut = outEdges.map((e) => findInPatched(e.id, e)!);
+        for (const e of normalizedOut) {
+          if (e.sourceHandle) continue;
+          const t = (e as any).type;
+          const tt = typeof t === 'string' ? t : '';
+          if (tt.toLowerCase().startsWith('case_')) {
+            e.sourceHandle = tt;
+          }
+        }
+      }
+    }
+
+    edges = patched;
+  } catch (e) {
+    // Non-fatal: normalization continues; downstream orchestrator/validator will surface issues.
+    console.warn('[NormalizeWorkflow] Branch edge canonicalization skipped (non-fatal):', e);
+  }
+
+  // ✅ STEP 5: Build node ID set for edge validation
   const validNodeIds = new Set(normalizedNodes.map(n => n.id));
   
-  // ✅ STEP 5: Deduplicate and validate edges
+  // ✅ STEP 6: Deduplicate and validate edges
   const edgeMap = new Map<string, WorkflowEdge>();
   const invalidEdges: string[] = [];
   

@@ -46,7 +46,7 @@ describe('GenerateWorkflow + FixAgent integration (if_else normalization)', () =
     };
 
     // Stub lifecycle manager to return our synthetic workflow
-    (workflowLifecycleManager.generateWorkflowGraph as jest.Mock).mockResolvedValue({
+    (workflowLifecycleManager.generateWorkflowGraph as any).mockResolvedValue({
       workflow,
       requiredCredentials: {
         requiredCredentials: [],
@@ -67,12 +67,12 @@ describe('GenerateWorkflow + FixAgent integration (if_else normalization)', () =
     });
 
     // Memory system mocks
-    (getReferenceBuilder as jest.Mock).mockReturnValue({
-      buildContext: jest.fn().mockResolvedValue({ similarPatterns: [] }),
+    (getReferenceBuilder as any).mockReturnValue({
+      buildContext: (jest.fn() as any).mockResolvedValue({ similarPatterns: [] }),
     });
 
-    (getMemoryManager as jest.Mock).mockReturnValue({
-      storeWorkflow: jest.fn().mockResolvedValue('mem-1'),
+    (getMemoryManager as any).mockReturnValue({
+      storeWorkflow: (jest.fn() as any).mockResolvedValue('mem-1'),
     });
 
     mockRequest = {
@@ -83,8 +83,8 @@ describe('GenerateWorkflow + FixAgent integration (if_else normalization)', () =
     };
 
     mockResponse = {
-      status: jest.fn().mockReturnThis(),
-      json: jest.fn().mockReturnThis(),
+      status: jest.fn().mockReturnThis() as any,
+      json: jest.fn().mockReturnThis() as any,
     };
   });
 
@@ -92,16 +92,20 @@ describe('GenerateWorkflow + FixAgent integration (if_else normalization)', () =
     await generateWorkflowHandler(mockRequest as Request, mockResponse as Response);
 
     expect(mockResponse.json).toHaveBeenCalledTimes(1);
-    const payload = (mockResponse.json as jest.Mock).mock.calls[0][0];
+    const payload = (mockResponse.json as jest.Mock).mock.calls[0][0] as any;
 
     const nodes: WorkflowNode[] = payload.workflow.nodes;
     const ifNode = nodes.find((n) => n.id === 'if1')!;
     const cfg = ifNode.data.config as any;
 
-    // Verify FixAgent normalized the condition into conditions array with wrapped expression
+    // Verify FixAgent normalized legacy condition into canonical conditions array
     expect(Array.isArray(cfg.conditions)).toBe(true);
     expect(cfg.conditions.length).toBeGreaterThan(0);
-    expect(cfg.conditions[0].expression).toBe('{{$json.count > 0}}');
+    expect(cfg.conditions[0]).toEqual({
+      field: '$json.count',
+      operator: 'greater_than',
+      value: 0,
+    });
 
     // Verify fixAudit contains an if_else_normalization entry
     expect(Array.isArray(payload.fixAudit)).toBe(true);

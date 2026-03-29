@@ -7,6 +7,7 @@ import type { Workflow } from '../../core/types/ai-types';
 import { LLMAdapter } from '../../shared/llm-adapter';
 import { unifiedNormalizeNodeType } from '../../core/utils/unified-node-type-normalizer';
 import { getFormStructuralIntentText } from './structure-materializer';
+import { normalizeFormFieldsIdentity } from '../../core/utils/form-field-identity';
 
 const ALLOWED_TYPES = new Set(['text', 'email', 'number', 'tel', 'textarea', 'file', 'select', 'checkbox']);
 
@@ -15,7 +16,7 @@ function normalizeFieldKey(label: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '')
-    .slice(0, 60);
+    .slice(0, 32);
 }
 
 function inferType(key: string): string {
@@ -62,7 +63,7 @@ export async function hydrateFormFieldsFromLlmIfEnabled(workflow: Workflow): Pro
         },
         { role: 'user', content: userContent },
       ],
-      { model: 'gemini-2.0-flash', apiKey: process.env.GEMINI_API_KEY, temperature: 0.2 }
+      { model: 'gemini-2.5-flash', apiKey: process.env.GEMINI_API_KEY, temperature: 0.2 }
     );
 
     let jsonStr = response.content.trim();
@@ -92,13 +93,14 @@ export async function hydrateFormFieldsFromLlmIfEnabled(workflow: Workflow): Pro
       .filter(Boolean) as Array<Record<string, unknown>>;
 
     if (built.length === 0) return workflow;
+    const canonicalBuilt = normalizeFormFieldsIdentity(built);
 
     const nextNodes = (workflow.nodes || []).map((node: any) => {
       const nodeType = unifiedNormalizeNodeType(node);
       if (nodeType !== 'form') return node;
       const fields = node.data?.config?.fields;
       if (Array.isArray(fields) && fields.length > 0) return node;
-      const cfg = { ...(node.data?.config || {}), fields: built };
+      const cfg = { ...(node.data?.config || {}), fields: canonicalBuilt };
       return {
         ...node,
         data: { ...(node.data || {}), config: cfg },

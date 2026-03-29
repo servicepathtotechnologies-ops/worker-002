@@ -5,9 +5,10 @@ import { isStructuralOwnership } from '../../core/utils/field-ownership';
 import {
   conditionsReferenceInputPaths,
   findUpstreamFormContextForIfElse,
-  pickFormFieldKeyForAgeIntent,
   resolveFormFieldKeyForConditionOperand,
 } from '../../core/orchestration/form-ifelse-binding';
+import { normalizeFormFieldsIdentity } from '../../core/utils/form-field-identity';
+import { buildEffectiveFillModes } from '../../core/utils/fill-mode-resolver';
 
 type StructuralIssue = {
   nodeId: string;
@@ -43,7 +44,85 @@ function normalizeFieldKey(label: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '')
-    .slice(0, 60);
+    .slice(0, 32);
+}
+
+const FIELD_HEAD_ALIASES: Record<string, string> = {
+  age: 'age',
+  email: 'email',
+  e_mail: 'email',
+  mail: 'email',
+  phone: 'phone',
+  mobile: 'phone',
+  tel: 'phone',
+  name: 'name',
+  full_name: 'name',
+  first_name: 'first_name',
+  last_name: 'last_name',
+  status: 'status',
+  color: 'color',
+  message: 'message',
+  comment: 'comment',
+  description: 'description',
+  details: 'details',
+};
+
+const FIELD_NOISE_TOKENS = new Set([
+  'details',
+  'detail',
+  'through',
+  'including',
+  'include',
+  'form',
+  'submission',
+  'submit',
+  'submitted',
+  'user',
+  'workflow',
+  'where',
+  'with',
+  'and',
+  'or',
+  'a',
+  'an',
+  'the',
+]);
+
+function splitSemanticTokens(text: string): string[] {
+  const cleaned = text
+    .toLowerCase()
+    .replace(/[^a-z0-9_ ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned) return [];
+  return cleaned
+    .split(' ')
+    .map((token) => normalizeFieldKey(token))
+    .filter(Boolean);
+}
+
+function extractSemanticFieldCandidate(raw: string): string | null {
+  const key = normalizeFieldKey(raw);
+  if (!key) return null;
+  if (FIELD_HEAD_ALIASES[key]) return FIELD_HEAD_ALIASES[key];
+
+  const tokens = splitSemanticTokens(raw);
+  // Prefer known semantic field tokens over long phrase chunks.
+  for (const token of tokens) {
+    if (FIELD_HEAD_ALIASES[token] && !FIELD_NOISE_TOKENS.has(token)) {
+      return FIELD_HEAD_ALIASES[token];
+    }
+  }
+
+  // Accept compact keys that are not noise-heavy phrase fragments.
+  if (!key.includes('_')) return key;
+  const parts = key.split('_').filter(Boolean);
+  const noiseCount = parts.filter((p) => FIELD_NOISE_TOKENS.has(p)).length;
+  const noiseRatio = parts.length === 0 ? 1 : noiseCount / parts.length;
+  if (parts.length <= 3 && noiseRatio < 0.5) {
+    return key;
+  }
+  return null;
 }
 
 function toTitleLabel(key: string): string {
@@ -54,6 +133,7 @@ function toTitleLabel(key: string): string {
 
 function inferFieldTypeFromKey(key: string): string {
   const k = key.toLowerCase();
+  if (k === 'age' || k.endsWith('_age') || k.startsWith('age_')) return 'number';
   if (k.includes('email')) return 'email';
   if (k.includes('age') || k.includes('count') || k.includes('qty') || k.includes('number')) return 'number';
   if (k.includes('phone') || k.includes('mobile') || k.includes('contact')) return 'tel';
@@ -78,7 +158,7 @@ function extractFieldNamesFromIntent(intentText: string): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
   const push = (raw: string) => {
-    const key = normalizeFieldKey(raw);
+    const key = extractSemanticFieldCandidate(raw);
     if (!key || seen.has(key)) return;
     seen.add(key);
     out.push(key);
@@ -107,7 +187,7 @@ function extractFieldNamesFromIntent(intentText: string): string[] {
 
   // Pattern: "collect/capture/submit ... name, email and age"
   const collectionClauses =
-    intentText.match(/\b(collect|capture|submit(?:ted|s)?|asks?\s+for)\b[\s\S]{0,120}/gi) || [];
+    intentText.match(/\b(collect|capture|submit(?:ted|s)?|asks?\s+for|including|include)\b[\s\S]{0,120}/gi) || [];
   for (const clause of collectionClauses) {
     const firstSentence = clause.split(/[.\n]/)[0] || clause;
     firstSentence
@@ -116,7 +196,7 @@ function extractFieldNamesFromIntent(intentText: string): string[] {
       .filter(Boolean)
       .forEach((token) => {
         // Keep only likely field tokens (skip stop text).
-        const cleaned = token.replace(/\b(collect|capture|submit(?:ted|s)?|asks?\s+for|with|fields?|inputs?)\b/gi, '').trim();
+        const cleaned = token.replace(/\b(collect|capture|submit(?:ted|s)?|asks?\s+for|including|include|with|fields?|inputs?)\b/gi, '').trim();
         if (cleaned) push(cleaned);
       });
   }
@@ -177,7 +257,7 @@ function deriveFormFieldsFromIntent(intentText: string): Array<Record<string, un
   if (!intentText) return [];
   const extracted = filterNodeTypeLikeFieldKeys(extractFieldNamesFromIntent(intentText));
   if (extracted.length === 0) return [];
-  return extracted.map((key) => ({
+  const raw = extracted.map((key) => ({
     id: `field_${key}`,
     key,
     name: key,
@@ -185,6 +265,7 @@ function deriveFormFieldsFromIntent(intentText: string): Array<Record<string, un
     type: inferFieldTypeFromKey(key),
     required: true,
   }));
+  return normalizeFormFieldsIdentity(raw as Array<Record<string, unknown>>) as Array<Record<string, unknown>>;
 }
 
 function operatorMeta(op: string): { normalizedOp: string; ruleOperator: string } {
@@ -266,32 +347,6 @@ export function deriveIfElseConditionsFromIntent(
         operator: ruleOperator,
         value: isNumber ? Number(rightRaw) : normalizeFieldKey(rightRaw),
         expression: `{{input.${left}}} ${normalizedOp} ${right}`,
-      },
-    ];
-  }
-
-  // Domain fallback: eligibility workflows usually compare age threshold.
-  const lower = canonical.toLowerCase();
-  if (lower.includes('age') && (lower.includes('eligible') || lower.includes('not eligible'))) {
-    if (formFields && formFields.length > 0) {
-      const k = pickFormFieldKeyForAgeIntent(formFields);
-      if (k) {
-        return [
-          {
-            field: `$json.${k}`,
-            operator: 'greater_than',
-            value: 18,
-            expression: `{{$json.${k}}} > 18`,
-          },
-        ];
-      }
-    }
-    return [
-      {
-        field: 'input.age',
-        operator: 'greater_than',
-        value: 18,
-        expression: '{{input.age}} > 18',
       },
     ];
   }
@@ -411,13 +466,48 @@ function deriveSwitchExpressionFromIntent(intentText: string, cases: Array<Recor
   return firstCase ? `{{$json.route || '${firstCase}'}}` : '';
 }
 
+function normalizeSwitchCasesValue(raw: unknown): Array<Record<string, unknown>> {
+  let candidate: unknown = raw;
+  if (typeof candidate === 'string') {
+    const trimmed = candidate.trim();
+    if (!trimmed) return [];
+    try {
+      candidate = JSON.parse(trimmed);
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(candidate)) return [];
+
+  const out: Array<Record<string, unknown>> = [];
+  const seen = new Set<string>();
+  for (const item of candidate) {
+    const valueRaw =
+      typeof item === 'string' ? item : (item as Record<string, unknown>)?.value != null ? String((item as any).value) : '';
+    const value = normalizeFieldKey(String(valueRaw || ''));
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    const label =
+      typeof item === 'object' && item !== null && typeof (item as any).label === 'string'
+        ? String((item as any).label)
+        : toTitleLabel(value);
+    out.push({ value, label });
+  }
+  return out;
+}
+
+/** Form Trigger shares the same `fields` shape as Form; intent derivation must run for both. */
+function isFormLikeNodeType(nodeType: string): boolean {
+  return nodeType === 'form' || nodeType === 'form_trigger';
+}
+
 function deriveStructuralValueFromIntent(
   nodeType: string,
   fieldName: string,
   intentText: string,
   workflow: Workflow
 ): unknown {
-  if (nodeType === 'form' && fieldName === 'fields') {
+  if (isFormLikeNodeType(nodeType) && fieldName === 'fields') {
     const formText = getFormStructuralIntentText(workflow);
     return deriveFormFieldsFromIntent(formText || intentText);
   }
@@ -439,12 +529,27 @@ export function materializeStructuralFields(workflow: Workflow): Workflow {
   const unresolved: StructuralIssue[] = [];
   const nodes = (workflow.nodes || []).map((node: any) => {
     const nodeType = unifiedNormalizeNodeType(node);
-    const def = unifiedNodeRegistry.get(nodeType);
+    let def = unifiedNodeRegistry.get(nodeType);
+    // Library registers Form Trigger as `form`; workflows often use `form_trigger`. Share one definition.
+    if (!def?.inputSchema && isFormLikeNodeType(nodeType)) {
+      def = unifiedNodeRegistry.get('form');
+    }
     if (!def?.inputSchema) return node;
 
     const inputSchema = def.inputSchema;
     const config = { ...(node.data?.config || {}) } as Record<string, unknown>;
     let changed = false;
+    if (nodeType === 'switch') {
+      const normalizedCasesPrimary = normalizeSwitchCasesValue(config.cases);
+      const normalizedCasesFallback = normalizeSwitchCasesValue(config.rules);
+      const normalizedCases =
+        normalizedCasesPrimary.length > 0 ? normalizedCasesPrimary : normalizedCasesFallback;
+      const currentCases = normalizeSwitchCasesValue(config.cases);
+      if (normalizedCases.length > 0 && JSON.stringify(currentCases) !== JSON.stringify(normalizedCases)) {
+        config.cases = normalizedCases;
+        changed = true;
+      }
+    }
     if (!config._fillMode || typeof config._fillMode !== 'object') {
       config._fillMode = {};
     }
@@ -478,6 +583,32 @@ export function materializeStructuralFields(workflow: Workflow): Workflow {
 
       if (fillMode[fieldName] === 'runtime_ai') {
         fillMode[fieldName] = 'buildtime_ai_once';
+        changed = true;
+      }
+    }
+
+    const effectiveFillModes = buildEffectiveFillModes(inputSchema, config);
+    for (const fieldName of Object.keys(inputSchema)) {
+      const cur = fillMode[fieldName];
+      const explicitValid =
+        cur === 'manual_static' || cur === 'runtime_ai' || cur === 'buildtime_ai_once';
+      if (!explicitValid && effectiveFillModes[fieldName] !== undefined) {
+        fillMode[fieldName] = effectiveFillModes[fieldName];
+        changed = true;
+      }
+    }
+    for (const [fieldName, fieldDef] of Object.entries(inputSchema)) {
+      if (!isStructuralOwnership(fieldName, fieldDef)) continue;
+      if (fillMode[fieldName] === 'runtime_ai') {
+        fillMode[fieldName] = 'buildtime_ai_once';
+        changed = true;
+      }
+    }
+
+    if (isFormLikeNodeType(nodeType) && Array.isArray(config.fields)) {
+      const normalizedFields = normalizeFormFieldsIdentity(config.fields as Array<Record<string, unknown>>);
+      if (JSON.stringify(normalizedFields) !== JSON.stringify(config.fields)) {
+        config.fields = normalizedFields;
         changed = true;
       }
     }

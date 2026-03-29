@@ -1,4 +1,7 @@
 /**
+ * @deprecated Legacy scan path. Generate-workflow and workflow-compiler use
+ * {@link CredentialDiscoveryPhase} + {@link CredentialResolver} instead. Kept for reference/tests only.
+ *
  * Comprehensive Credential Scanner
  * 
  * 🎯 GOAL: Always identify 100% of required credentials AFTER workflow is fully generated
@@ -14,6 +17,8 @@
 import { WorkflowNode } from '../../core/types/ai-types';
 import { NodeLibrary } from '../nodes/node-library';
 import { getNodeCredentialRequirements, getRequiredCredentialFieldsForNode } from './node-credential-requirements';
+import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
+import { isCredentialOwnership } from '../../core/utils/field-ownership';
 
 export interface CredentialRequirement {
   credentialName: string; // Normalized name like "SLACK_WEBHOOK_URL"
@@ -87,6 +92,19 @@ export class ComprehensiveCredentialScanner {
         // Check each required credential field
         for (const credField of credentialFields) {
           const fieldName = credField.fieldName;
+
+          // ✅ UNIVERSAL: Registry is the single source of truth for whether a field is a credential.
+          // If a hard-coded mapping says "credential" but the registry classifies it as value/structural,
+          // skip it to prevent duplicate prompts (config + credentials) across the wizard.
+          const def = unifiedNodeRegistry.get(nodeType);
+          const fd = def?.inputSchema?.[fieldName];
+          if (fd && !isCredentialOwnership(fieldName, fd)) {
+            console.log(
+              `  🔑 [CredentialScanner] Skipping ${nodeType}.${fieldName} from hardcoded requirements ` +
+                `(registry ownership=${fd.ownership || 'derived'})`
+            );
+            continue;
+          }
           
           // Skip SMTP fields for Gmail nodes
           if (isGmailNode && (fieldName.toLowerCase().includes('smtp') || 
@@ -333,10 +351,13 @@ export class ComprehensiveCredentialScanner {
    */
   private isCredentialField(fieldName: string): boolean {
     const lower = fieldName.toLowerCase();
+
+    if (lower === 'webhookurl' || lower === 'webhook_url') {
+      return true;
+    }
     
     // ✅ CRITICAL: Exclude configuration fields that are NOT credentials
     const isConfigurationField = 
-      lower === 'webhookurl' || lower === 'webhook_url' || // Webhook URL is configuration, not credential
       lower === 'callbackurl' || lower === 'callback_url' || // OAuth callback URL is configuration
       lower === 'redirecturl' || lower === 'redirect_url' || // OAuth redirect URL is configuration
       lower.includes('message') || // Message fields are not credentials
@@ -371,15 +392,10 @@ export class ComprehensiveCredentialScanner {
       // Note: connection_string, username, user, email, host, port removed - these are configuration fields
     ];
 
-    // Check if field matches credential keywords (but exclude webhook URLs)
     const matchesKeyword = credentialKeywords.some(keyword => {
       if (lower.includes(keyword)) {
-        // Double-check: exclude webhook URLs and message tokens
-        if (lower.includes('webhook') && lower.includes('url')) {
-          return false; // webhookUrl is configuration
-        }
         if (lower.includes('message') && lower.includes('token')) {
-          return false; // messageToken is not a credential
+          return false;
         }
         return true;
       }
@@ -395,10 +411,9 @@ export class ComprehensiveCredentialScanner {
    */
   private isLikelyRequiredCredential(fieldName: string): boolean {
     const lower = fieldName.toLowerCase();
-    
-    // Exclude webhook URLs - they're configuration, not credentials
+
     if (lower === 'webhookurl' || lower === 'webhook_url') {
-      return false;
+      return true;
     }
     
     // These patterns usually indicate required credentials even if marked optional

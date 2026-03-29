@@ -208,7 +208,7 @@ router.get('/ollama/models', async (req: Request, res: Response) => {
   try {
     const models = [
       { name: 'gemini-2.5-flash' },
-      { name: 'gemini-2.5-flash-lite' },
+      { name: 'gemini-3-flash-preview' },
       { name: 'gemini-2.5-pro' },
     ];
     res.json({ success: true, models });

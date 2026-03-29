@@ -37,37 +37,13 @@ import {
 import { fillMissingTitleLikeRuntimeAiFields } from './runtime-ai-title-backfill';
 import { applyInputAliasesFromSchema } from './apply-input-aliases';
 import { isCredentialOwnership } from '../utils/field-ownership';
+import { applyDeterministicFieldContracts } from './field-contract-engine';
 
 /** Stable nodeOutputs cache keys — see `worker/docs/OBSERVABILITY_CONTRACT.md`. */
 export const EXECUTION_OBSERVABILITY_KEYS = {
   resolvedInputs: (nodeId: string) => `__resolved_inputs__:${nodeId}`,
   runtimeResolutionAudit: (nodeId: string) => `__runtime_resolution_audit__:${nodeId}`,
 } as const;
-
-/** NDJSON to workspace `debug-8c7c31.log` when HTTP ingest is unavailable (debug sessions). */
-function appendDebugSessionLog(payload: Record<string, unknown>): void {
-  try {
-    const fs = require('fs') as typeof import('fs');
-    const path = require('path') as typeof import('path');
-    const line = `${JSON.stringify({ sessionId: '8c7c31', ...payload, timestamp: Date.now() })}\n`;
-    const candidates = [
-      path.join(process.cwd(), 'debug-8c7c31.log'),
-      path.join(process.cwd(), '..', 'debug-8c7c31.log'),
-      path.join(__dirname, '../../../../debug-8c7c31.log'),
-      path.join(__dirname, '../../../debug-8c7c31.log'),
-    ];
-    for (const p of candidates) {
-      try {
-        fs.appendFileSync(p, line);
-        return;
-      } catch {
-        /* try next */
-      }
-    }
-  } catch {
-    // ignore
-  }
-}
 
 /**
  * Registry role first; if role is missing (legacy defs), allow canonical text field names only.
@@ -467,26 +443,33 @@ export async function executeNodeDynamically(
         (resolvedInputs as Record<string, any>)[fieldName] = fallbackIntent;
         filledFromIntent.push(fieldName);
       }
-      // #region agent log
-      const logPayload = {
-        runId: 'verify',
-        hypothesisId: 'H2',
-        location: 'dynamic-node-executor.ts:thinUpstreamIntentFallback',
-        message: 'workflow_intent_fallback',
-        data: {
-          nodeType,
-          nodeId: node.id,
-          fallbackLen: fallbackIntent.length,
-          filledFields: filledFromIntent,
-          upstreamKeys:
-            upstreamPayload && typeof upstreamPayload === 'object' && !Array.isArray(upstreamPayload)
-              ? Object.keys(upstreamPayload as object)
-              : typeof upstreamPayload,
-        },
-      };
-      appendDebugSessionLog(logPayload);
-      fetch('http://127.0.0.1:7242/ingest/931075f2-f077-4d4d-bcbc-f5580967ee5c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8c7c31'},body:JSON.stringify({sessionId:'8c7c31',runId:'verify',hypothesisId:'H2',location:'dynamic-node-executor.ts:thinUpstreamIntentFallback',message:'workflow_intent_fallback',data:logPayload.data,timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
+      if (filledFromIntent.length > 0) {
+        console.log(
+          `[DynamicExecutor] ✅ Filled runtime_ai fields from workflow intent for ${nodeType}: ${filledFromIntent.join(', ')}`
+        );
+      }
+    }
+
+    const contractResult = applyDeterministicFieldContracts(
+      (resolvedInputs as Record<string, unknown>),
+      {
+        nodeType,
+        userIntent: rawWorkflowIntent,
+        upstreamPayload,
+        config: migratedConfig as Record<string, unknown>,
+        inputSchema: runtimeInputSchema,
+      }
+    );
+    resolvedInputs = contractResult.resolvedInputs as Record<string, any>;
+    if (contractResult.repairs.length > 0) {
+      console.log(
+        `[DynamicExecutor] 🛠️ Applied ${contractResult.repairs.length} deterministic field contract repair(s) for ${nodeType}: ${contractResult.repairs.join('; ')}`
+      );
+    }
+    if (contractResult.warnings.length > 0) {
+      console.warn(
+        `[DynamicExecutor] ⚠️ Field contract warnings for ${nodeType}: ${contractResult.warnings.join('; ')}`
+      );
     }
 
     // Enforce mode contract: manual/build-time fields must come from config, not AI.
@@ -778,23 +761,10 @@ async function resolveInputsWithAI(
     (typeof previousOutput === 'object' && Object.keys(previousOutput as object).length === 0) ||
     isEffectivelyEmptyUpstreamPayload(previousOutput)
   ) {
-    // #region agent log
-    appendDebugSessionLog({
-      runId: 'verify',
-      hypothesisId: 'H1',
-      location: 'dynamic-node-executor.ts:resolveInputsWithAI',
-      message: 'thin_upstream_fast_path',
-      data: {
-        nodeType,
-        nodeId: currentNodeId,
-        keys:
-          previousOutput && typeof previousOutput === 'object'
-            ? Object.keys(previousOutput as object)
-            : typeof previousOutput,
-      },
+    console.log('[DynamicExecutor] ℹ️ Thin upstream payload detected, using config-first fallback input resolution', {
+      nodeType,
+      nodeId: currentNodeId,
     });
-    fetch('http://127.0.0.1:7242/ingest/931075f2-f077-4d4d-bcbc-f5580967ee5c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8c7c31'},body:JSON.stringify({sessionId:'8c7c31',runId:'verify',hypothesisId:'H1',location:'dynamic-node-executor.ts:resolveInputsWithAI',message:'thin_upstream_fast_path',data:{nodeType,nodeId:currentNodeId,keys:previousOutput&&typeof previousOutput==='object'?Object.keys(previousOutput as object):typeof previousOutput},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     return resolveInputsFromConfig(inputSchema, config, nodeOutputs);
   }
 

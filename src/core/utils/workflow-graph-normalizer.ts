@@ -96,7 +96,78 @@ export function normalizeWorkflowGraph(rawGraph: any): NormalizedWorkflowGraph {
     });
 
     // Validate edges structure and fix handles
-    let normalizedEdges = edges.map((edge: any, index: number) => {
+    // ✅ Branch-handle inference pass (pre-handle-registry):
+    // - If/Else requires explicit 'true'/'false' sourceHandle (never default both to 'true')
+    // - Switch prefers case_* handle IDs when provided on edge.type
+    const nodesById = new Map<string, any>(normalizedNodes.map((n: any) => [n.id, n]));
+    const outgoingBySource = new Map<string, any[]>();
+    for (const e of edges) {
+      if (!e || typeof e !== 'object') continue;
+      if (!outgoingBySource.has(e.source)) outgoingBySource.set(e.source, []);
+      outgoingBySource.get(e.source)!.push(e);
+    }
+    // Mutate a shallow clone so we can safely adjust handles.
+    const edgesWithInferredHandles = edges.map((e: any) => ({ ...e }));
+    const edgeById = new Map<string, any>();
+    for (const e of edgesWithInferredHandles) {
+      if (e && typeof e === 'object' && e.id) edgeById.set(String(e.id), e);
+    }
+    const getWorkingEdge = (e: any) =>
+      e && e.id && edgeById.has(String(e.id)) ? edgeById.get(String(e.id)) : e;
+
+    for (const [sourceId, outs] of outgoingBySource.entries()) {
+      const srcNode = nodesById.get(sourceId);
+      const srcType = String(srcNode?.data?.type || srcNode?.type || '').toLowerCase();
+      if (!srcType) continue;
+
+      if (srcType === 'if_else') {
+        const working = outs.map(getWorkingEdge);
+        const used = new Set<string>();
+        for (const e of working) {
+          const h = String(e?.sourceHandle || '').toLowerCase();
+          if (h === 'true' || h === 'false') used.add(h);
+        }
+        // Prefer edge.type if it already encodes the branch.
+        for (const e of working) {
+          if (e?.sourceHandle) continue;
+          const t = typeof e?.type === 'string' ? String(e.type).toLowerCase() : '';
+          if (t === 'true' || t === 'false') {
+            e.sourceHandle = t;
+            used.add(t);
+          }
+        }
+        // Assign remaining handle deterministically for any still-missing.
+        for (const e of working) {
+          const h = String(e?.sourceHandle || '').toLowerCase();
+          if (h === 'true' || h === 'false') continue;
+          const next = used.has('true') ? (used.has('false') ? null : 'false') : 'true';
+          if (next) {
+            e.sourceHandle = next;
+            used.add(next);
+          }
+        }
+        // Keep type in sync (helps downstream exclusive-fork detection).
+        for (const e of working) {
+          const h = String(e?.sourceHandle || '').toLowerCase();
+          if (h === 'true' || h === 'false') {
+            e.type = h;
+          }
+        }
+      }
+
+      if (srcType === 'switch') {
+        const working = outs.map(getWorkingEdge);
+        for (const e of working) {
+          if (e?.sourceHandle) continue;
+          const t = typeof e?.type === 'string' ? String(e.type) : '';
+          if (t.toLowerCase().startsWith('case_')) {
+            e.sourceHandle = t;
+          }
+        }
+      }
+    }
+
+    let normalizedEdges = edgesWithInferredHandles.map((edge: any, index: number) => {
       if (!edge || typeof edge !== 'object') {
         throw new Error(`Invalid edge at index ${index}: must be an object`);
       }
@@ -131,6 +202,7 @@ export function normalizeWorkflowGraph(rawGraph: any): NormalizedWorkflowGraph {
         target: edge.target || '',
         sourceHandle,
         targetHandle,
+        // Preserve explicit branching type when present; otherwise default.
         type: edge.type || 'default',
         ...edge,
       };

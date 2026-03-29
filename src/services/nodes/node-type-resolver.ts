@@ -132,7 +132,7 @@ const NODE_TYPE_ALIASES: Record<string, string[]> = {
   'limit': ['limit', 'take', 'top', 'first', 'head', 'slice', 'truncate', 'restrict', 'maximum', 'max items', 'cap'],
   'filter': ['where', 'filter_data', 'filter', 'where clause', 'condition', 'select', 'find', 'search', 'match', 'criteria'],
   'set_variable': ['set', 'variable', 'assign', 'map', 'transform', 'add field', 'set value', 'assign value', 'create variable', 'define variable'],
-  'javascript': ['js', 'code', 'script', 'javascript', 'transform', 'custom', 'complex', 'custom code', 'js code', 'javascript code', 'execute code'],
+  'javascript': ['js', 'code', 'script', 'javascript', 'transform', 'custom', 'complex', 'custom code', 'js code', 'javascript code', 'execute code', 'logout', 'log out', 'sign out', 'signout'],
   'function': ['function', 'custom function', 'execute function', 'function call', 'call function', 'invoke function', 'run function'],
   'function_item': ['function item', 'each item', 'per item', 'for each', 'item function', 'process item', 'map item', 'transform item'],
   'date_time': ['date', 'time', 'format', 'timestamp', 'schedule', 'date time', 'format date', 'format time', 'datetime', 'date format', 'time format'],

@@ -2636,8 +2636,6 @@ export class NodeLibrary {
               // Form / trigger output is top-level JSON — use $json.<field_internal_name> (matches form field name/key).
               [{ field: '$json.age', operator: 'greater_than_or_equal', value: 18 }],
               [{ field: '$json.status', operator: 'equals', value: 'active' }],
-              // Legacy format still supported:
-              [{ leftValue: '{{$json.status}}', operation: 'equals', rightValue: 'error' }],
             ],
           },
           combineOperation: {
@@ -6770,7 +6768,7 @@ export class NodeLibrary {
           model: {
             type: 'string',
             description: 'Model name',
-            examples: ['gemini-pro', 'gemini-pro-vision'],
+            examples: ['gemini-2.5-pro', 'gemini-2.5-flash'],
           },
           apiKey: {
             type: 'string',

@@ -107,4 +107,25 @@ describe('repairIfElseConditionsFromUpstreamForm', () => {
     expect(ifNode).toBeDefined();
     expect(ifNode.data.config.conditions[0].field).toBe('$json.status');
   });
+
+  it('keeps malformed conditions untouched instead of crashing', () => {
+    const wf = repairIfElseConditionsFromUpstreamForm({
+      nodes: [
+        {
+          id: 'form1',
+          type: 'custom',
+          data: { type: 'form', config: { fields: [{ name: 'age', type: 'number' }] } },
+        },
+        {
+          id: 'if1',
+          type: 'custom',
+          data: { type: 'if_else', config: { conditions: ['invalid_shape'] } },
+        },
+      ],
+      edges: [{ source: 'form1', target: 'if1' }],
+    } as any);
+
+    const ifNode = wf.nodes.find((n: any) => n.id === 'if1') as any;
+    expect(ifNode.data.config.conditions).toEqual(['invalid_shape']);
+  });
 });

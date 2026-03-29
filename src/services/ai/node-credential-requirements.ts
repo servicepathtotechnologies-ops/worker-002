@@ -391,7 +391,7 @@ export const NODE_CREDENTIAL_REQUIREMENTS: Map<string, NodeCredentialRequirement
   }],
 
   // ============================================
-  // NOTE: For nodes not listed here, the ComprehensiveCredentialScanner
+  // NOTE: For nodes not listed here, CredentialDiscoveryPhase / registry contracts
   // will automatically fall back to schema-based detection, checking:
   // 1. Required fields in node schema
   // 2. Optional fields with credential-like names

@@ -14,7 +14,6 @@ import { propertyInferenceEngine } from './property-inference-engine';
 import { nodeLibrary } from '../nodes/node-library';
 import { workflowValidator } from './workflow-validator';
 import type { ValidationResult } from './workflow-validator';
-import { ComprehensiveCredentialScanner } from './comprehensive-credential-scanner';
 import type { WorkflowNode, WorkflowEdge, Workflow } from '../../core/types/ai-types';
 
 export interface CompilerProgress {
@@ -474,7 +473,6 @@ export class WorkflowCompiler {
    * Identifies required authentication types
    */
   private async resolveAuth(nodes: WorkflowNode[]): Promise<string[]> {
-    const scanner = new ComprehensiveCredentialScanner(nodeLibrary);
     const requiredAuth: string[] = [];
 
     for (const node of nodes) {

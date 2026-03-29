@@ -222,7 +222,7 @@ export class DistributedOrchestrator {
       }
 
       // 4. Get next nodes from workflow definition
-      const nextNodes = this.getNextNodes(workflowDef.definition, nodeId);
+      const nextNodes = this.getNextNodes(workflowDef.definition, nodeId, outputRefs);
 
       // 5. Check if workflow is complete
       if (nextNodes.length === 0) {
@@ -385,10 +385,13 @@ export class DistributedOrchestrator {
    */
   getNextNodes(
     definition: WorkflowDefinition['definition'],
-    completedNodeId: string
+    completedNodeId: string,
+    completedNodeOutput?: Record<string, unknown>
   ): Array<{ id: string; data: { type: string; label: string; config: Record<string, unknown> } }> {
     // Find edges where source is the completed node
-    const nextEdges = definition.edges.filter(e => e.source === completedNodeId);
+    const nextEdges = definition.edges.filter(
+      (e) => e.source === completedNodeId && this.matchesBranchEdge(e.sourceHandle, completedNodeOutput)
+    );
     
     // Get target nodes
     const nextNodeIds = new Set(nextEdges.map(e => e.target));
@@ -416,6 +419,35 @@ export class DistributedOrchestrator {
     }
 
     return nextNodes;
+  }
+
+  private matchesBranchEdge(
+    sourceHandle: string | undefined,
+    completedNodeOutput?: Record<string, unknown>
+  ): boolean {
+    if (!sourceHandle) return true;
+    if (!completedNodeOutput || typeof completedNodeOutput !== 'object') return true;
+
+    if (sourceHandle === 'true' || sourceHandle === 'false') {
+      const raw =
+        (completedNodeOutput as any).condition_result ??
+        (completedNodeOutput as any).condition ??
+        (completedNodeOutput as any).result ??
+        (completedNodeOutput as any).output;
+      if (typeof raw !== 'boolean') return true;
+      return sourceHandle === 'true' ? raw : !raw;
+    }
+
+    if (sourceHandle.startsWith('case_')) {
+      const matched =
+        (completedNodeOutput as any).matchedCase ??
+        (completedNodeOutput as any).result ??
+        null;
+      if (typeof matched !== 'string') return true;
+      return matched === sourceHandle;
+    }
+
+    return true;
   }
 
   /**

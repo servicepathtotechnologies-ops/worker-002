@@ -1080,13 +1080,31 @@ export class WorkflowValidator {
     const def = nodeDefinitionRegistry.get(nodeType);
     const config = node.data?.config || {};
 
-    // If schema provides credential fields, require at least one to be present.
-    const requiredCredFields = def?.credentialSchema?.required || [];
-    if (requiredCredFields.length > 0) {
-      return requiredCredFields.some((f) => config[f] !== undefined && config[f] !== null && String(config[f]).trim() !== '');
+    const nonEmpty = (v: unknown) =>
+      v !== undefined && v !== null && String(v).trim() !== '';
+
+    // Vault / OAuth: workflows store provider key (e.g. "google", "slack"), not raw tokens in config.
+    if (nonEmpty(config.credentialId)) {
+      return true;
     }
 
-    // Otherwise, best-effort heuristic: common key names.
+    // Registry-listed credential input fields (webhookUrl, apiKey, …)
+    const credFields = def?.credentialSchema?.credentialFields;
+    if (Array.isArray(credFields) && credFields.length > 0) {
+      if (credFields.some((f) => nonEmpty(config[f]))) {
+        return true;
+      }
+    }
+
+    // Legacy mapping: `credentialSchema.required` may be provider categories, not config keys.
+    const requiredCredFields = def?.credentialSchema?.required || [];
+    if (requiredCredFields.length > 0) {
+      if (requiredCredFields.some((f) => nonEmpty(config[f]))) {
+        return true;
+      }
+    }
+
+    // Best-effort heuristic: common secret / connection key names (presence-based for backward compatibility).
     return (
       'credentials' in config ||
       'apiKey' in config ||
@@ -1112,112 +1130,17 @@ export class WorkflowValidator {
   }
 
   /**
-   * ✅ ENHANCED: Validate execution order
-   * Merged from comprehensive-workflow-validator and strict-workflow-validator
+   * Execution order is defined by the workflow graph (DAG) and unified graph
+   * orchestrator / registry-driven reconciliation — not by static per-type tier
+   * lists or substring heuristics on node type names (those produced false
+   * positives, e.g. google_gmail matching includes('ai')).
+   *
+   * Registry- and capability-based linear checks live in
+   * workflow-validation-pipeline (LinearFlowValidationLayer) and operation
+   * semantics, not here.
    */
-  private validateExecutionOrder(workflow: Workflow, result: ValidationResult): void {
-    // Execution order priority (lower number = executes first)
-    const EXECUTION_ORDER: Record<string, number> = {
-      // Triggers (0-10)
-      'manual_trigger': 0,
-      'schedule': 1,
-      'interval': 2,
-      'webhook': 3,
-      'form': 4,
-      'chat_trigger': 5,
-      'workflow_trigger': 6,
-      'error_trigger': 7,
-      
-      // Data Sources (10-20)
-      'google_sheets': 10,
-      'google_drive': 11,
-      'http_request': 12,
-      'http_post': 13,
-      'database_read': 14,
-      'supabase': 15,
-      
-      // Data Processing (20-30)
-      'set_variable': 20,
-      'edit_fields': 21,
-      'json_parser': 22,
-      'csv_processor': 23,
-      
-      // Logic (30-40)
-      'if_else': 30,
-      'switch': 31,
-      'filter': 32,
-      'loop': 33,
-      'merge': 34,
-      'split_in_batches': 35,
-      
-      // AI/Transformation (40-50)
-      'ai_agent': 40,
-      'openai_gpt': 41,
-      'anthropic_claude': 42,
-      'google_gemini': 43,
-      'javascript': 44,
-      'text_formatter': 45,
-      'text_summarizer': 46,
-      
-      // Output (50-60)
-      'slack_message': 50,
-      'email': 51,
-      'google_gmail': 52,
-      'log_output': 53,
-      'respond_to_webhook': 54,
-      'database_write': 55,
-    };
-
-    // Check execution order on edges
-    for (const edge of workflow.edges) {
-      const sourceNode = workflow.nodes.find(n => n.id === edge.source);
-      const targetNode = workflow.nodes.find(n => n.id === edge.target);
-      
-      if (sourceNode && targetNode) {
-        const sourceType = this.getCanonicalNodeType(sourceNode);
-        const targetType = this.getCanonicalNodeType(targetNode);
-        const sourceOrder = EXECUTION_ORDER[sourceType] ?? 100;
-        const targetOrder = EXECUTION_ORDER[targetType] ?? 100;
-        
-        // Rule: email/send must come after summarization/transform
-        const isEmailNode = targetType.includes('gmail') || targetType.includes('email') || targetType.includes('send');
-        const isTransformNode = sourceType.includes('summarizer') || sourceType.includes('transform') || 
-                                sourceType.includes('ai') || sourceType.includes('llm') || 
-                                sourceType.includes('gemini') || sourceType.includes('gpt') || sourceType.includes('claude');
-        
-        if (isEmailNode && !isTransformNode && sourceOrder < 40) {
-          result.warnings.push({
-            type: 'inefficient_structure',
-            message: `Email/send operation "${targetType}" should come after transformation/summarization`,
-            nodeId: targetNode.id,
-            suggestion: 'Consider adding transformation step before email/send',
-          });
-        }
-        
-        // Rule: fetch_data must come before transform/send
-        const isFetchNode = sourceType.includes('sheets') || sourceType.includes('database') || 
-                            sourceType.includes('http_request') || sourceType.includes('read');
-        
-        if (isTransformNode && !isFetchNode && sourceOrder >= 40) {
-          result.warnings.push({
-            type: 'inefficient_structure',
-            message: `Transform operation "${targetType}" should come after data source`,
-            nodeId: targetNode.id,
-            suggestion: 'Ensure data source comes before transformation',
-          });
-        }
-        
-        // General order violation
-        if (sourceOrder > targetOrder && Math.abs(sourceOrder - targetOrder) > 10) {
-          result.warnings.push({
-            type: 'inefficient_structure',
-            message: `Execution order violation: ${sourceType} (order ${sourceOrder}) connects to ${targetType} (order ${targetOrder})`,
-            nodeId: targetNode.id,
-            suggestion: 'Consider reordering nodes for better execution flow',
-          });
-        }
-      }
-    }
+  private validateExecutionOrder(_workflow: Workflow, _result: ValidationResult): void {
+    // Intentionally empty — see class comment above.
   }
   
   /**

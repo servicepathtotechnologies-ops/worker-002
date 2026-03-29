@@ -122,6 +122,8 @@ const overridesByType: Record<string, OverrideFn> = {
   webhook: overrideWebhook,
   schedule: overrideSchedule,
   interval: overrideInterval,
+  // Form Trigger schema uses library type `form` (see createFormTriggerSchema); `form_trigger` is the workflow node alias.
+  form: overrideFormTrigger,
   form_trigger: overrideFormTrigger,
   workflow_trigger: overrideWorkflowTrigger,
   error_trigger: overrideErrorTrigger,

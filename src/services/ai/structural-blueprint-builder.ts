@@ -38,7 +38,7 @@ export function buildStructuralBlueprint(workflow: Workflow): StructuralBlueprin
       const fieldSentence =
         fields.length > 0
           ? `users will enter ${humanJoin(fields)}`
-          : 'users will enter the required form fields';
+          : 'form fields are not configured yet';
       nodeNarratives.push({
         nodeId: node.id,
         nodeType,
@@ -50,27 +50,54 @@ export function buildStructuralBlueprint(workflow: Workflow): StructuralBlueprin
     if (nodeType === 'if_else') {
       const conditions = isNonEmptyArray(cfg.conditions) ? cfg.conditions : [];
       const condText = conditions
-        .map((c: any) => String(c?.expression || `${c?.field || 'value'} ${c?.operator || ''} ${c?.value || ''}`).trim())
+        .map((c: any) =>
+          String(
+            c?.expression ||
+              `${c?.field || 'value'} ${c?.operator || ''} ${c?.value || ''}`
+          ).trim()
+        )
         .filter(Boolean)[0];
-      const readable = condText || 'configured condition';
+      const hasConditions = conditions.length > 0;
+      const readable = hasConditions && condText ? condText : 'missing conditions';
       nodeNarratives.push({
         nodeId: node.id,
         nodeType,
-        text: `${label} evaluates ${readable} and routes to true/false branches.`,
+        text: hasConditions
+          ? `${label} evaluates ${readable} and routes to true/false branches.`
+          : `${label} has no conditions configured yet; true/false branches will not behave as intended.`,
       });
-      branchNarratives.push(`If condition is true, workflow follows the success branch.`);
-      branchNarratives.push(`If condition is false, workflow follows the fallback branch.`);
+      if (hasConditions) {
+        branchNarratives.push(
+          'If condition is true, workflow follows the success branch.'
+        );
+        branchNarratives.push(
+          'If condition is false, workflow follows the fallback branch.'
+        );
+      } else {
+        branchNarratives.push(
+          `${label} has missing conditions; configure them before relying on true/false branches.`
+        );
+      }
       continue;
     }
 
     if (nodeType === 'switch') {
       const cases = isNonEmptyArray(cfg.cases)
-        ? cfg.cases.map((c: any) => String(c?.label || c?.value || '').trim()).filter(Boolean)
+        ? cfg.cases
+            .map((c: any) => String(c?.label || c?.value || '').trim())
+            .filter(Boolean)
         : [];
+      const hasCases = cases.length > 0;
       nodeNarratives.push({
         nodeId: node.id,
         nodeType,
-        text: `${label} evaluates ${String(cfg.expression || 'switch expression')} and routes to ${cases.length > 0 ? humanJoin(cases) : 'configured cases'}.`,
+        text: hasCases
+          ? `${label} evaluates ${String(
+              cfg.expression || 'switch expression'
+            )} and routes to ${humanJoin(cases)}.`
+          : `${label} evaluates ${String(
+              cfg.expression || 'switch expression'
+            )} but no cases are configured yet.`,
       });
       continue;
     }

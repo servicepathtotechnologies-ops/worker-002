@@ -1,29 +1,31 @@
 import { FieldFillMode, NodeInputSchema } from '../types/unified-node-contract';
+import { isCredentialOwnership } from './field-ownership';
 
 export function resolveEffectiveFieldFillMode(
   fieldName: string,
   inputSchema?: NodeInputSchema,
   config?: Record<string, any>
 ): FieldFillMode {
+  let candidate: FieldFillMode = 'manual_static';
   const explicitMode = config?._fillMode?.[fieldName];
   if (
     explicitMode === 'manual_static' ||
     explicitMode === 'runtime_ai' ||
     explicitMode === 'buildtime_ai_once'
   ) {
-    return coerceFieldFillModeByPolicy(fieldName, explicitMode, inputSchema).mode;
+    candidate = explicitMode;
+  } else {
+    const schemaDefault = inputSchema?.[fieldName]?.fillMode?.default;
+    if (
+      schemaDefault === 'manual_static' ||
+      schemaDefault === 'runtime_ai' ||
+      schemaDefault === 'buildtime_ai_once'
+    ) {
+      candidate = schemaDefault;
+    }
   }
 
-  const schemaDefault = inputSchema?.[fieldName]?.fillMode?.default;
-  if (
-    schemaDefault === 'manual_static' ||
-    schemaDefault === 'runtime_ai' ||
-    schemaDefault === 'buildtime_ai_once'
-  ) {
-    return schemaDefault;
-  }
-
-  return 'manual_static';
+  return coerceFieldFillModeByPolicy(fieldName, candidate, inputSchema, config).mode;
 }
 
 export function buildEffectiveFillModes(
@@ -45,13 +47,24 @@ export function buildEffectiveFillModes(
 export function coerceFieldFillModeByPolicy(
   fieldName: string,
   requestedMode: FieldFillMode,
-  inputSchema?: NodeInputSchema
+  inputSchema?: NodeInputSchema,
+  config?: Record<string, any>
 ): {
   mode: FieldFillMode;
   coerced: boolean;
-  reason?: 'runtime_not_supported' | 'buildtime_not_supported';
+  reason?: 'runtime_not_supported' | 'buildtime_not_supported' | 'credential_locked';
 } {
   const fieldDef = inputSchema?.[fieldName];
+
+  if (fieldDef && isCredentialOwnership(fieldName, fieldDef)) {
+    const policy = fieldDef.credentialTogglePolicy ?? 'locked';
+    const unlocked =
+      policy === 'unlockable' && config?._ownershipUnlock?.[fieldName] === true;
+    if (!unlocked && requestedMode !== 'manual_static') {
+      return { mode: 'manual_static', coerced: true, reason: 'credential_locked' };
+    }
+  }
+
   const fillMeta = fieldDef?.fillMode;
   if (!fillMeta) {
     return { mode: requestedMode, coerced: false };

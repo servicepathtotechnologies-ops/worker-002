@@ -41,6 +41,7 @@ import { buildTagsFromRegistry } from './ai/gemini-node-selector';
 import { resolveEffectiveFieldFillMode } from '../core/utils/fill-mode-resolver';
 import { validateStructuralReadiness } from '../core/validation/workflow-save-validator';
 import { materializeStructuralFields } from './ai/structure-materializer';
+import { getInputControlMetadata, InputControlType } from '../core/utils/schema-input-control';
 import { isCredentialOwnership, isStructuralOwnership } from '../core/utils/field-ownership';
 
 /** Trigger-style nodes only — used to avoid narrowing planner output to trigger-only when variation metadata is wrong. */
@@ -54,6 +55,59 @@ function isTriggerishNodeType(nodeType: string): boolean {
   return /trigger|schedule|webhook|interval|respond_to_webhook/i.test(nodeType);
 }
 
+export function needsSummarizationNode(prompt: string): boolean {
+  const p = (prompt || '').toLowerCase();
+  return (
+    p.includes('summarize') ||
+    p.includes('summarise') ||
+    p.includes('summary') ||
+    p.includes('summarization')
+  );
+}
+
+export function isSummarizationNodeType(nodeType: string): boolean {
+  const t = resolveNodeType(nodeType);
+  return t === 'ai_chat_model' || t === 'text_summarizer' || t === 'ai_service';
+}
+
+// Minimal structural/system node set that may be present even when an
+// authoritative semantic chain is enforced.
+const SYSTEM_ALLOWED_TYPES = new Set<string>([
+  'manual_trigger',
+  'log_output',
+]);
+const ENABLE_INTENT_AUTHORITY_GUARDS = process.env.ENABLE_INTENT_AUTHORITY_GUARDS !== 'false';
+type IntentAuthorityMode = 'shadow' | 'warn' | 'strict';
+
+function getIntentAuthorityMode(): IntentAuthorityMode {
+  const raw = String(process.env.INTENT_AUTHORITY_ENFORCEMENT_MODE || 'strict').toLowerCase();
+  if (raw === 'shadow' || raw === 'warn' || raw === 'strict') return raw;
+  return 'strict';
+}
+
+function shouldHardBlockIntentAuthorityViolation(): boolean {
+  if (!ENABLE_INTENT_AUTHORITY_GUARDS) return false;
+  const mode = getIntentAuthorityMode();
+  return mode === 'strict' || mode === 'warn';
+}
+
+export function detectLogoutIntent(prompt: string): boolean {
+  const p = (prompt || '').toLowerCase();
+  return /\blog\s*out\b|\blogout\b|\bsign\s*out\b|\bsignout\b/.test(p);
+}
+
+export function applyEmailTransportExclusivity(nodeTypes: string[], prompt: string): string[] {
+  const normalized = [...new Set((nodeTypes || []).map((t) => resolveNodeType(t)))];
+  const hasGmail = normalized.includes('google_gmail');
+  const hasEmail = normalized.includes('email');
+  if (!hasGmail || !hasEmail) return normalized;
+
+  const lower = (prompt || '').toLowerCase();
+  const mentionsGmail = lower.includes('gmail') || lower.includes('google mail') || lower.includes('google email');
+  const keep = mentionsGmail ? 'google_gmail' : 'email';
+  return normalized.filter((t) => t === keep || t !== (keep === 'google_gmail' ? 'email' : 'google_gmail'));
+}
+
 export interface WorkflowGenerationResult {
   workflow: Workflow;
   requiredCredentials: CredentialDiscoveryResult;
@@ -64,6 +118,10 @@ export interface WorkflowGenerationResult {
       nodeLabel: string;
       fieldName: string;
       fieldType: string;
+      inputType: InputControlType;
+      options?: Array<{ label: string; value: string }>;
+      placeholder?: string;
+      uiWidget?: 'text' | 'textarea' | 'json' | 'multi_email';
       description: string;
       required: boolean;
       defaultValue?: any;
@@ -93,6 +151,89 @@ export interface CredentialInjectionResult {
  * Manages the complete workflow lifecycle from generation to execution readiness.
  */
 export class WorkflowLifecycleManager {
+  private async enforceIntentCoverageGuards(
+    workflow: Workflow,
+    prompt: string,
+    options?: { authoritativeNodeTypes?: string[] }
+  ): Promise<Workflow> {
+    const authoritativeSet = new Set((options?.authoritativeNodeTypes || []).map((t) => resolveNodeType(t)));
+    const hasAuthoritativeChain = authoritativeSet.size > 0;
+
+    // When chain is authoritative, do not inject semantic summarizer nodes unless explicitly allowed.
+    if (
+      hasAuthoritativeChain &&
+      !authoritativeSet.has('ai_chat_model') &&
+      !authoritativeSet.has('text_summarizer') &&
+      !authoritativeSet.has('ai_service')
+    ) {
+      return workflow;
+    }
+
+    if (!needsSummarizationNode(prompt)) {
+      return workflow;
+    }
+
+    const hasSummarizer = workflow.nodes.some((n) => isSummarizationNodeType((n.data as any)?.type || n.type));
+    if (hasSummarizer) {
+      return workflow;
+    }
+
+    const order = executionOrderManager.initialize(workflow);
+    const orderedIds = executionOrderManager.getOrderedNodeIds(order);
+    const orderedNodes = orderedIds
+      .map((id: string) => workflow.nodes.find((n: WorkflowNode) => n.id === id))
+      .filter((n): n is WorkflowNode => !!n);
+
+    const lastDataOrTransform = [...orderedNodes].reverse().find((node) => {
+      const type = resolveNodeType((node.data as any)?.type || node.type);
+      const def = unifiedNodeRegistry.get(type);
+      return def?.category === 'data' || def?.category === 'transformation' || def?.category === 'ai';
+    });
+    const firstCommunication = orderedNodes.find((node: WorkflowNode) => {
+      const type = resolveNodeType((node.data as any)?.type || node.type);
+      const def = unifiedNodeRegistry.get(type);
+      return def?.category === 'communication';
+    });
+
+    const referenceNodeId =
+      firstCommunication?.id ||
+      lastDataOrTransform?.id ||
+      orderedNodes[orderedNodes.length - 1]?.id;
+    if (!referenceNodeId) {
+      return workflow;
+    }
+
+    const { randomUUID } = await import('crypto');
+    const summarizerNode: WorkflowNode = {
+      id: randomUUID(),
+      type: 'custom',
+      position: { x: 0, y: 0 },
+      data: {
+        type: 'ai_chat_model',
+        label: 'AI Summarizer',
+        category: 'ai',
+        config: {
+          operation: 'summarize',
+          _fillMode: {
+            prompt: 'runtime_ai',
+            text: 'runtime_ai',
+          },
+        },
+      },
+    };
+
+    const injection = await unifiedGraphOrchestrator.injectNode(workflow, summarizerNode, {
+      type: 'missing',
+      position: firstCommunication ? 'before' : 'after',
+      referenceNodeId,
+      reason: 'Intent coverage guard: prompt requires summarization capability',
+    });
+    if (injection.errors.length > 0) {
+      throw new Error(`Intent coverage guard failed to inject summarizer: ${injection.errors.join('; ')}`);
+    }
+    return injection.workflow;
+  }
+
   /**
    * Generate workflow using Gemini planner + registry + graph orchestrator.
    * Falls back to deterministic pipeline only if planner-based generation fails.
@@ -606,13 +747,16 @@ export class WorkflowLifecycleManager {
     // Merge conditional chain for age/vote/eligibility intents so STEP 1.5b can inject missing nodes
     const promptForIntent = ((constraints?.originalPrompt || '') + ' ' + primaryPlannerPrompt).toLowerCase();
     const needsConditional = /\b(age|eligible|vote|voting|verify|check|condition|if|else)\b/.test(promptForIntent);
-    if (needsConditional) {
+    const hasAuthoritativeMandatory = (constraints?.mandatoryNodeTypes?.length || 0) > 0;
+    if (needsConditional && !hasAuthoritativeMandatory) {
       const conditionalChain = ['form', 'if_else', 'log_output'];
       resolution = {
         ...resolution,
         nodeIds: [...new Set([...resolution.nodeIds, ...conditionalChain])],
       };
       console.log(`[WorkflowLifecycle] Required nodes (merged with conditional chain): ${resolution.nodeIds.join(', ')}`);
+    } else if (needsConditional && hasAuthoritativeMandatory) {
+      console.log('[WorkflowLifecycle] Intent telemetry: skipped conditional auto-merge due to authoritative mandatory node chain');
     }
 
     // STEP 1: Generate workflow graph (DAG only, no credentials)
@@ -786,9 +930,26 @@ export class WorkflowLifecycleManager {
       // ✅ Collect nodes to inject (batch for efficiency)
       const nodesToInject: Array<{ node: WorkflowNode; context: any }> = [];
       
+      const authoritativeSet = new Set((constraints?.mandatoryNodeTypes || []).map((t) => resolveNodeType(t)));
+      const hasAuthoritativeChain = authoritativeSet.size > 0;
+
       for (const nodeType of resolution.nodeIds) {
         // Resolve nodeType to canonical form (handles aliases like "gmail" → "google_gmail")
         const resolvedNodeType = resolveNodeType(nodeType);
+
+        // Authoritative-chain guard: block semantic post-plan injection for unplanned nodes.
+        if (
+          hasAuthoritativeChain &&
+          !authoritativeSet.has(resolvedNodeType) &&
+          !SYSTEM_ALLOWED_TYPES.has(resolvedNodeType)
+        ) {
+          console.log(
+            `[WorkflowLifecycle] Intent telemetry: blocked post-plan node injection for ${resolvedNodeType} (not in authoritative chain)`,
+          );
+          if (shouldHardBlockIntentAuthorityViolation()) {
+            continue;
+          }
+        }
         
         // ✅ UNIVERSAL: Check if node is already specified by AI (prevent duplicate injection)
         // If AI already specified this node in StructuredIntent, skip keyword-based injection
@@ -954,6 +1115,7 @@ export class WorkflowLifecycleManager {
     // STEP 2.1: Normalize all node types to canonical forms (replace aliases)
     console.log('[WorkflowLifecycle] Step 2.1: Normalizing all node types to canonical forms...');
     workflow = this.normalizeAllNodeTypesToCanonical(workflow);
+    workflow = this.applyEmailTransportExclusivityToWorkflow(workflow, originalPrompt);
     
     // STEP 2.5: Validate workflow structure
     console.log('[WorkflowLifecycle] Step 2.5: Validating workflow structure...');
@@ -962,6 +1124,10 @@ export class WorkflowLifecycleManager {
     
     // STEP 2.6: Ensure final workflow also has canonical types (after validation fixes)
     finalWorkflow = this.normalizeAllNodeTypesToCanonical(finalWorkflow);
+    finalWorkflow = this.applyEmailTransportExclusivityToWorkflow(finalWorkflow, originalPrompt);
+
+    // STEP 2.62: Authoritative semantic subset gate
+    finalWorkflow = this.enforceAuthoritativeSemanticSubset(finalWorkflow, constraints?.mandatoryNodeTypes ?? [], originalPrompt);
     
     // STEP 2.65: Intent-based config filling (form fields, etc.) using originalPrompt so age/vote → age field
     try {
@@ -1000,6 +1166,12 @@ export class WorkflowLifecycleManager {
     } else {
       console.log('[WorkflowLifecycle] Skipping legacy Gmail integrity check (Smart Planner active).');
     }
+
+    // STEP 2.7: Intent-critical coverage guards (compile-time semantic completeness)
+    const guardPrompt = [originalPrompt, selectedStructuredPrompt].filter(Boolean).join('\n');
+    finalWorkflow = await this.enforceIntentCoverageGuards(finalWorkflow, guardPrompt, {
+      authoritativeNodeTypes: constraints?.mandatoryNodeTypes ?? [],
+    });
 
     // STEP 3: Discover credentials (ONLY AFTER graph creation)
     // ✅ CRITICAL: Pass userId to check vault during discovery
@@ -1090,6 +1262,64 @@ export class WorkflowLifecycleManager {
       estimatedComplexity: generationResult.estimatedComplexity,
       analysis: generationResult.analysis,
     };
+  }
+
+  private applyEmailTransportExclusivityToWorkflow(workflow: Workflow, prompt: string): Workflow {
+    const nodeTypes = workflow.nodes.map((n: any) => resolveNodeType(unifiedNormalizeNodeType(n)));
+    const allowedTypes = new Set(applyEmailTransportExclusivity(nodeTypes, prompt));
+    const filteredNodes = workflow.nodes.filter((n: any) => {
+      const t = resolveNodeType(unifiedNormalizeNodeType(n));
+      return allowedTypes.has(t);
+    });
+    if (filteredNodes.length === workflow.nodes.length) {
+      return workflow;
+    }
+    const remainingIds = new Set(filteredNodes.map((n: any) => n.id));
+    const filteredEdges = workflow.edges.filter(
+      (e: any) => remainingIds.has(e.source as string) && remainingIds.has(e.target as string),
+    );
+    console.log('[WorkflowLifecycle] Intent telemetry: pruned email/gmail overlap by exclusivity guard');
+    return { ...workflow, nodes: filteredNodes, edges: filteredEdges };
+  }
+
+  private enforceAuthoritativeSemanticSubset(
+    workflow: Workflow,
+    mandatoryNodeTypes: string[],
+    prompt: string,
+  ): Workflow {
+    if (!ENABLE_INTENT_AUTHORITY_GUARDS) {
+      return workflow;
+    }
+    const mandatory = (mandatoryNodeTypes || []).map((t) => resolveNodeType(t));
+    if (mandatory.length === 0) return workflow;
+
+    const authoritativeSet = new Set(mandatory);
+    const unexpected = workflow.nodes
+      .map((n: any) => resolveNodeType(unifiedNormalizeNodeType(n)))
+      .filter((t) => !authoritativeSet.has(t) && !SYSTEM_ALLOWED_TYPES.has(t));
+    if (unexpected.length > 0) {
+      const msg = `Authoritative chain violation: unexpected semantic node(s) present: ${[...new Set(unexpected)].join(', ')}`;
+      console.warn(`[WorkflowLifecycle] Intent telemetry: ${msg}`);
+      if (shouldHardBlockIntentAuthorityViolation()) {
+        throw new Error(msg);
+      }
+    }
+
+    if (detectLogoutIntent(prompt)) {
+      const hasLogoutCapableNode = workflow.nodes.some((n: any) => {
+        const t = resolveNodeType(unifiedNormalizeNodeType(n));
+        return t === 'javascript' || t === 'http_request';
+      });
+      if (!hasLogoutCapableNode) {
+        const msg =
+          'Logout intent detected but no canonical logout-capable node is present. Add an explicit javascript or http_request step for logout action.';
+        console.warn(`[WorkflowLifecycle] Intent telemetry: ${msg}`);
+        if (shouldHardBlockIntentAuthorityViolation()) {
+          throw new Error(msg);
+        }
+      }
+    }
+    return workflow;
   }
 
   /**
@@ -1304,6 +1534,10 @@ export class WorkflowLifecycleManager {
       nodeLabel: string;
       fieldName: string;
       fieldType: string;
+      inputType: InputControlType;
+      options?: Array<{ label: string; value: string }>;
+      placeholder?: string;
+      uiWidget?: 'text' | 'textarea' | 'json' | 'multi_email';
       description: string;
       required: boolean;
       defaultValue?: any;
@@ -1324,6 +1558,10 @@ export class WorkflowLifecycleManager {
       nodeLabel: string;
       fieldName: string;
       fieldType: string;
+      inputType: InputControlType;
+      options?: Array<{ label: string; value: string }>;
+      placeholder?: string;
+      uiWidget?: 'text' | 'textarea' | 'json' | 'multi_email';
       description: string;
       required: boolean;
       defaultValue?: any;
@@ -1379,12 +1617,17 @@ export class WorkflowLifecycleManager {
         }
 
         nodeMissingFields.push(fieldName);
+        const controlMetadata = getInputControlMetadata(fieldName, fieldDef as any);
         inputs.push({
           nodeId: node.id,
           nodeType,
           nodeLabel,
           fieldName,
           fieldType: fieldDef.type || 'string',
+          inputType: controlMetadata.inputType,
+          options: controlMetadata.options,
+          placeholder: controlMetadata.placeholder,
+          uiWidget: controlMetadata.uiWidget,
           description: fieldDef.description || fieldName,
           required: requiredFields.has(fieldName) || !!fieldDef.required,
           defaultValue: fieldDef.default,
@@ -1552,7 +1795,9 @@ export class WorkflowLifecycleManager {
    */
   async injectCredentials(
     workflow: Workflow,
-    credentials: Record<string, string | object>
+    credentials: Record<string, string | object>,
+    /** Required for post-injection discovery: vault OAuth checks (header-connected Google, etc.). */
+    userId?: string
   ): Promise<CredentialInjectionResult> {
     console.log('[WorkflowLifecycle] Injecting credentials into workflow...');
     console.log(`[WorkflowLifecycle] Credentials provided: ${Object.keys(credentials).join(', ')}`);
@@ -2085,7 +2330,10 @@ export class WorkflowLifecycleManager {
 
     // ✅ CRITICAL: Check credentials FIRST - this is the primary purpose of credential injection
     // Workflow structure validation errors are less critical and can be fixed later
-    const credentialDiscovery = await credentialDiscoveryPhase.discoverCredentials(workflowWithCredentials);
+    const credentialDiscovery = await credentialDiscoveryPhase.discoverCredentials(
+      workflowWithCredentials,
+      userId
+    );
     // ✅ CRITICAL: Only filter for credentials that are required AND not satisfied
     const missingCredentials = credentialDiscovery.requiredCredentials.filter(cred => cred.required && !cred.satisfied);
     

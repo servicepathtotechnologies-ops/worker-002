@@ -2,7 +2,14 @@
  * Unit tests for Registry Migration
  */
 
-import { getMigrationStatus, getMigrationReport, isNodeMigrated, validateRegistryCoverage } from '../registry-migration-helper';
+import {
+  applyFormIdentityMigration,
+  dryRunFormIdentityMigration,
+  getMigrationStatus,
+  getMigrationReport,
+  isNodeMigrated,
+  validateRegistryCoverage,
+} from '../registry-migration-helper';
 import { unifiedNodeRegistry } from '../unified-node-registry';
 
 describe('Registry Migration', () => {
@@ -52,6 +59,46 @@ describe('Registry Migration', () => {
       expect(validation.valid).toBeDefined();
       expect(Array.isArray(validation.errors)).toBe(true);
       expect(Array.isArray(validation.warnings)).toBe(true);
+    });
+  });
+
+  describe('form identity migration report', () => {
+    it('should produce dry-run and apply reports', () => {
+      const workflows: any[] = [
+        {
+          id: 'w1',
+          workflow: {
+            nodes: [
+              {
+                id: 'form1',
+                data: {
+                  type: 'form',
+                  config: {
+                    fields: [
+                      {
+                        key: 'details_through_a_form_including_age',
+                        name: 'details_through_a_form_including_age',
+                        label: 'Details Through A Form Including Age',
+                        type: 'number',
+                        required: true,
+                      },
+                    ],
+                  },
+                },
+              },
+            ],
+            edges: [],
+          },
+        },
+      ];
+      const dry = dryRunFormIdentityMigration(workflows as any);
+      expect(dry.total).toBe(1);
+      expect(dry.failed).toBe(0);
+
+      const applied = applyFormIdentityMigration(workflows as any);
+      expect(applied.total).toBe(1);
+      expect(applied.failed).toBe(0);
+      expect(applied.results[0].workflow).toBeDefined();
     });
   });
 });

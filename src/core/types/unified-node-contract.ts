@@ -50,6 +50,13 @@ export interface NodeInputField {
   /** Canonical ownership class used across planner/question/runtime phases. */
   ownership?: FieldOwnershipClass;
   /**
+   * When `ownership` is `credential`, controls whether the Field Ownership UI may
+   * be unlocked so the user can choose manual vs AI fill modes (via `unlock_<nodeId>_<field>` on attach-inputs).
+   * - `locked` (default): treat as vault-like; only manual_static unless explicitly unlocked when unlockable.
+   * - `unlockable`: locked until `config._ownershipUnlock[fieldName]` is true.
+   */
+  credentialTogglePolicy?: 'locked' | 'unlockable';
+  /**
    * Whether this field is essential for useful node behavior in the unified
    * full-configuration wizard. Required fields are implicitly essential.
    */

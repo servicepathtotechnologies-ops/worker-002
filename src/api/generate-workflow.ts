@@ -14,18 +14,24 @@ import { chatbotPageGenerator } from '../services/chatbot-page-generator';
 import { fixAgent } from '../services/fix-agent';
 import { RobustEdgeGenerator } from '../services/ai/robust-edge-generator';
 import { nodeLibrary } from '../services/nodes/node-library';
-import { WorkflowNode } from '../core/types/ai-types';
+import { WorkflowNode, Workflow } from '../core/types/ai-types';
 import { config } from '../core/config';
 import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../core/utils/unified-node-type-normalizer';
 import { resolveNodeType } from '../core/utils/node-type-resolver-util';
 import {
   autoRepairCanonicalChainForIntent,
+  autoRepairCanonicalChainSemantics,
   canonicalizePlanChainStrict,
   validateCanonicalChainCompleteness,
+  validateCanonicalChainSemantics,
 } from './plan-chain-guards';
 import { getMemoryManager, getReferenceBuilder } from '../memory';
 import { getSupabaseClient } from '../core/database/supabase-compat';
-import { ComprehensiveCredentialScanner } from '../services/ai/comprehensive-credential-scanner';
+import {
+  CredentialDiscoveryPhase,
+  mapDiscoveryMissingToWizardDiscoveredCredentials,
+  mapDiscoveryResultToCredentialStatusResolution,
+} from '../services/ai/credential-discovery-phase';
 import { CredentialResolver } from '../services/ai/credential-resolver';
 import { workflowLifecycleManager } from '../services/workflow-lifecycle-manager';
 import { generateComprehensiveNodeQuestions } from '../services/ai/comprehensive-node-questions-generator';
@@ -40,6 +46,7 @@ import { validateStructuralReadiness } from '../core/validation/workflow-save-va
 import { materializeStructuralFields } from '../services/ai/structure-materializer';
 import { buildStructuralBlueprint } from '../services/ai/structural-blueprint-builder';
 import { buildUnifiedReadiness } from '../services/ai/unified-readiness';
+import { buildCredentialWizardView } from '../services/ai/wizard-credential-view';
 
 /**
  * ✅ PHASE 4: Extract nodes from selected variation's matchedKeywords
@@ -1143,8 +1150,16 @@ async function handlePhasedRefine(
       });
     }
     
-    // Ensure resolved nodes are in workflow
-    const resolvedNodeTypes = resolution.nodeIds;
+    // Ensure resolved nodes are in workflow.
+    // Legacy append path is disabled when an authoritative chain is present.
+    const authoritativeNodeTypes = Array.isArray((req.body as any)?.planMandatoryNodeTypes)
+      ? ((req.body as any).planMandatoryNodeTypes as string[]).filter((t) => typeof t === 'string')
+      : [];
+    const hasAuthoritativeChain = authoritativeNodeTypes.length > 0;
+    const resolvedNodeTypes = hasAuthoritativeChain ? [] : resolution.nodeIds;
+    if (hasAuthoritativeChain) {
+      console.log('[PHASE] INTENT_AUTHORITY: Skipping legacy resolved-node append due to authoritative plan chain');
+    }
     // Normalize existing node types to canonical forms for comparison
     const existingNodeTypes = validatedWorkflow.nodes.map((node: any) => {
       const normalized = unifiedNormalizeNodeType(node);
@@ -1270,10 +1285,6 @@ async function handlePhasedRefine(
       });
     }
     
-    // Keep legacy scanner for backward compatibility (but use resolver as source of truth)
-    const credentialScanner = new ComprehensiveCredentialScanner(nodeLibrary);
-    const credentialScanResult = credentialScanner.scanWorkflowForCredentials(validatedWorkflow);
-    
     // 🔧 STEP 4.5: INTELLIGENT CONFIGURATION FILLING
     // Before checking for missing fields, use AI to intelligently fill in configuration
     // based on prompt analysis. This prevents asking users for things the AI can infer.
@@ -1303,14 +1314,10 @@ async function handlePhasedRefine(
     // The resolver has already identified ALL required credentials from ALL nodes
     // and checked the vault for stored credentials
     const allRequiredCredentials = credentialResolution.required.map((c: any) => c.credentialId);
-    const missingCredentialsFromResolver = credentialResolution.missing;
     
     console.log(`[PHASE] CREDENTIALS_DETECTION - Resolver found ${credentialResolution.summary.totalCredentials} total credential(s)`);
     console.log(`[PHASE] CREDENTIALS_DETECTION - Missing: ${credentialResolution.summary.missingCount}, Satisfied: ${credentialResolution.summary.satisfiedCount}`);
     console.log(`[PHASE] CREDENTIALS_DETECTION - Providers: [${credentialResolution.providers.join(', ')}]`);
-    
-    // Legacy scanner result (for backward compatibility)
-    const missingCredentialsFromScanner = credentialScanResult.missingCredentials;
     
     // Check if user already has credentials stored in Supabase
     let storedCredentials: string[] = [];
@@ -1363,41 +1370,11 @@ async function handlePhasedRefine(
       console.warn(`[PHASE] CREDENTIALS_DETECTION - Could not check stored credentials:`, error instanceof Error ? error.message : String(error));
     }
     
-    // 🎯 USE RESOLVER RESULT AS SOURCE OF TRUTH
-    // The resolver has already:
-    // 1. Read all node credential contracts
-    // 2. Checked vault for stored credentials
-    // 3. Marked credentials as resolved/satisfied
-    // 4. Filtered out OAuth credentials (handled via UI)
-    // 5. Ensured Gmail uses OAuth (not SMTP)
-    const missingCredentials = missingCredentialsFromResolver.map((cred: any) => ({
-      credentialName: cred.credentialId,
-      displayName: cred.displayName,
-      nodeId: cred.nodeId,
-      nodeType: cred.nodeType,
-      nodeLabel: cred.nodeLabel,
-      fieldName: cred.credentialId, // Use credentialId as fieldName
-      description: cred.displayName,
-      type: cred.type,
-      required: cred.required,
-      isMissing: true,
-    }));
-    
     console.log(`[PHASE] CREDENTIALS_REQUIRED - Found ${credentialResolution.summary.totalCredentials} required credential(s), ${credentialResolution.summary.satisfiedCount} already satisfied, ${credentialResolution.summary.missingCount} need to be provided`);
     
     // 🚨 CRITICAL: BLOCK EXECUTION if resolver says workflow is invalid
     if (credentialResolution.summary.missingCount > 0) {
       console.error(`🚨 [PHASE] WORKFLOW_BLOCKED - Resolver detected ${credentialResolution.summary.missingCount} missing required credential(s). Execution blocked.`);
-    }
-    
-    // ✅ REMOVED: CONFIGURATION_REQUIRED phase
-    // Configuration questions are now handled via discoveredInputs in phase: 'ready'
-    // This prevents premature configuration prompts and phase re-entry loops
-
-    // STEP 6: 🚨 VALIDATION CHECK - Block if scanner says invalid
-    if (!credentialScanResult.isValid) {
-      console.error(`🚨 [PHASE] WORKFLOW_BLOCKED - Comprehensive scanner detected missing credentials. Cannot proceed.`);
-      console.error(`🚨 [PHASE] Missing credentials:`, missingCredentials.map((c: any) => `${c.credentialName} (${c.nodeType}.${c.fieldName})`));
     }
     
     // ✅ PRODUCTION FLOW: Always return phase: 'ready' with discovered inputs and credentials
@@ -1412,6 +1389,13 @@ async function handlePhasedRefine(
       finalEnhancedPrompt || finalPrompt,
       (req.body as any).originalPrompt || finalPrompt
     );
+    const wizardCredentialDiscovery = await new CredentialDiscoveryPhase().discoverCredentials(
+      preparedWorkflow as Workflow,
+      userId
+    );
+    console.log(
+      `[PHASE] CREDENTIALS_WIZARD_DISCOVERY - missing=${wizardCredentialDiscovery.missingCredentials?.length ?? 0}, satisfied=${wizardCredentialDiscovery.satisfiedCredentials?.length ?? 0}`
+    );
     const nodeInputs = workflowLifecycleManager.discoverNodeInputs(preparedWorkflow);
     const structuralGate = getStructuralGate(preparedWorkflow);
     console.log(`[PHASE] READY_RESPONSE - Node inputs: ${nodeInputs.inputs.length}, Credentials: ${credentialResolution.summary.missingCount}`);
@@ -1424,12 +1408,16 @@ async function handlePhasedRefine(
       nodeLabel: input.nodeLabel,
       fieldName: input.fieldName,
       fieldType: input.fieldType,
+      inputType: input.inputType || determineInputTypeFromSchema(input.fieldName, input.fieldType),
+      options: input.options,
+      placeholder: input.placeholder,
+      uiWidget: input.uiWidget,
       label: `${input.nodeLabel} - ${input.fieldName}`,
       description: input.description,
       required: input.required,
       defaultValue: input.defaultValue,
       examples: input.examples,
-      type: input.fieldType === 'textarea' ? 'textarea' : 'text',
+      type: input.inputType || determineInputTypeFromSchema(input.fieldName, input.fieldType),
       category: 'configuration',
     }));
 
@@ -1439,41 +1427,17 @@ async function handlePhasedRefine(
       {},
       { mode: 'full_configuration' }
     ).questions;
-    const credentialStatuses = buildCredentialStatuses(preparedWorkflow, {
-      required: credentialResolution.required as any,
-      missing: credentialResolution.missing as any,
-      satisfied: credentialResolution.satisfied as any,
-    });
+    const credentialStatuses = buildCredentialStatuses(
+      preparedWorkflow,
+      mapDiscoveryResultToCredentialStatusResolution(wizardCredentialDiscovery) as any
+    );
     const structuralBlueprint = buildStructuralBlueprint(preparedWorkflow as any);
     const structuralDiagnostics = {
       errors: structuralGate.errors,
       warnings: structuralGate.warnings,
     };
 
-    const discoveredCredentialsForModal = credentialResolution.missing
-      .filter((c: any) => {
-        const isGoogleOAuth =
-          (c.provider?.toLowerCase() === 'google' && c.type === 'oauth') ||
-          (c.vaultKey?.toLowerCase() === 'google' && c.type === 'oauth') ||
-          (c.credentialId?.toLowerCase().includes('google') && c.type === 'oauth');
-        if (isGoogleOAuth) {
-          console.log(
-            `[GenerateWorkflow] ✅ Filtering out Google OAuth from configuration: ${c.displayName || c.credentialId}`
-          );
-          return false;
-        }
-        return true;
-      })
-      .map((c: any) => ({
-        credentialId: c.credentialId,
-        displayName: c.displayName,
-        provider: c.provider,
-        type: c.type,
-        resolved: false,
-        required: c.required,
-        vaultKey: c.vaultKey,
-        nodeIds: c.nodeIds || [],
-      }));
+    const discoveredCredentialsForModal = mapDiscoveryMissingToWizardDiscoveredCredentials(wizardCredentialDiscovery);
 
     const unifiedReadiness = buildUnifiedReadiness({
       phase: structuralGate.ok ? 'ready' : 'configuring_inputs',
@@ -1482,6 +1446,7 @@ async function handlePhasedRefine(
       discoveredCredentials: discoveredCredentialsForModal,
       credentialStatuses,
     });
+    const credentialWizardView = buildCredentialWizardView(comprehensiveQuestions, credentialStatuses);
 
     if (!structuralGate.ok) {
       return res.json({
@@ -1497,6 +1462,7 @@ async function handlePhasedRefine(
         requiredCredentials: discoveredCredentialsForModal.map((c: any) => c.credentialId),
         comprehensiveQuestions,
         credentialStatuses,
+        credentialWizardView,
         structuralDiagnostics,
         unifiedReadiness,
         phaseBlockingReasons: unifiedReadiness.blockingReasons,
@@ -1524,6 +1490,7 @@ async function handlePhasedRefine(
       requiredInputs: formattedInputs.filter((i: any) => i.required),
       comprehensiveQuestions,
       credentialStatuses,
+      credentialWizardView,
       structuralDiagnostics,
       unifiedReadiness,
       phaseBlockingReasons: unifiedReadiness.blockingReasons,
@@ -2298,9 +2265,14 @@ function determineInputTypeFromSchema(
   fieldType: string,
   fieldInfo?: any
 ): string {
-  // Check if field has options (select field)
-  if (fieldInfo?.options || (Array.isArray(fieldInfo?.examples) && fieldInfo.examples.length > 0 && fieldInfo.examples.length <= 10)) {
+  // Explicit select options from schema
+  if ((Array.isArray(fieldInfo?.ui?.options) && fieldInfo.ui.options.length > 0) || (Array.isArray(fieldInfo?.options) && fieldInfo.options.length > 0)) {
     return 'select';
+  }
+
+  // Widget hints
+  if (fieldInfo?.ui?.widget === 'textarea' || fieldInfo?.ui?.widget === 'json' || fieldInfo?.ui?.widget === 'multi_email') {
+    return 'textarea';
   }
   
   // Check field name patterns
@@ -2339,25 +2311,17 @@ function determineInputTypeFromSchema(
 /**
  * UNIVERSAL: Get field options for select inputs
  */
-function getFieldOptions(fieldInfo?: any, examples?: any[]): Array<{ label: string; value: string }> {
+function getFieldOptions(fieldInfo?: any, _examples?: any[]): Array<{ label: string; value: string }> {
   const options: Array<{ label: string; value: string }> = [];
   
-  // Check if fieldInfo has options array
-  if (fieldInfo?.options && Array.isArray(fieldInfo.options)) {
-    fieldInfo.options.forEach((opt: any) => {
+  const explicitOptions = Array.isArray(fieldInfo?.ui?.options) ? fieldInfo.ui.options : fieldInfo?.options;
+  if (Array.isArray(explicitOptions)) {
+    explicitOptions.forEach((opt: any) => {
       if (typeof opt === 'string') {
         options.push({ label: opt, value: opt });
       } else if (opt && typeof opt === 'object' && opt.value) {
         options.push({ label: opt.label || opt.value, value: opt.value });
       }
-    });
-  }
-  
-  // Use examples as options if available and limited
-  if (options.length === 0 && examples && examples.length > 0 && examples.length <= 10) {
-    examples.forEach((ex: any) => {
-      const value = typeof ex === 'string' ? ex : JSON.stringify(ex);
-      options.push({ label: value, value });
     });
   }
   
@@ -2449,12 +2413,28 @@ export default async function generateWorkflow(req: Request, res: Response) {
         });
       }
       const repaired = autoRepairCanonicalChainForIntent(canonicalization.canonical, confirmed);
-      const completenessIssues = validateCanonicalChainCompleteness(repaired.canonical, { userPrompt: confirmed });
+      let effectiveChain = repaired.canonical;
+      let semanticRepairActions: string[] = [];
+      const completenessIssues = validateCanonicalChainCompleteness(effectiveChain, { userPrompt: confirmed });
       if (completenessIssues.length > 0) {
         return res.status(400).json({
           success: false,
           error: 'planProposedNodeChain failed structural completeness checks',
           canonicalizationIssues: completenessIssues,
+        });
+      }
+      let semanticIssues = validateCanonicalChainSemantics(effectiveChain, { userPrompt: confirmed });
+      if (semanticIssues.length > 0) {
+        const semanticRepaired = autoRepairCanonicalChainSemantics(effectiveChain, { userPrompt: confirmed });
+        semanticRepairActions = semanticRepaired.repairs;
+        effectiveChain = semanticRepaired.canonical;
+        semanticIssues = validateCanonicalChainSemantics(effectiveChain, { userPrompt: confirmed });
+      }
+      if (semanticIssues.length > 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'planProposedNodeChain failed semantic ordering checks',
+          canonicalizationIssues: semanticIssues,
         });
       }
       if (!confirmed) {
@@ -2464,7 +2444,7 @@ export default async function generateWorkflow(req: Request, res: Response) {
         });
       }
       const { buildWorkflowFromPlanChain } = await import('../services/ai/plan-driven-workflow-builder');
-      const built = buildWorkflowFromPlanChain(repaired.canonical);
+      const built = buildWorkflowFromPlanChain(effectiveChain);
       if (!built.success || !built.workflow) {
         return res.status(400).json({
           success: false,
@@ -2482,6 +2462,7 @@ export default async function generateWorkflow(req: Request, res: Response) {
         success: true,
         resolvedChain: built.resolvedChain,
         diagnostics: built.diagnostics,
+        semanticRepairActions,
         requiredCredentials: lifecycleResult.requiredCredentials.requiredCredentials,
         satisfiedCredentials: lifecycleResult.requiredCredentials.satisfiedCredentials,
         missingCredentials: missingForUi,
@@ -2874,7 +2855,8 @@ export default async function generateWorkflow(req: Request, res: Response) {
                   ? String((req.body as Record<string, unknown>).confirmedStructuredPrompt)
                   : finalPrompt;
               const repaired = autoRepairCanonicalChainForIntent(canonicalization.canonical, planPrompt);
-              const completenessIssues = validateCanonicalChainCompleteness(repaired.canonical, {
+              let effectiveChain = repaired.canonical;
+              const completenessIssues = validateCanonicalChainCompleteness(effectiveChain, {
                 userPrompt: planPrompt,
               });
               if (completenessIssues.length > 0) {
@@ -2882,8 +2864,23 @@ export default async function generateWorkflow(req: Request, res: Response) {
                   `Incomplete canonical plan chain: ${completenessIssues.map((i) => i.reason).join(', ')}`
                 );
               }
+              let semanticIssues = validateCanonicalChainSemantics(effectiveChain, {
+                userPrompt: planPrompt,
+              });
+              if (semanticIssues.length > 0) {
+                const semanticRepaired = autoRepairCanonicalChainSemantics(effectiveChain, { userPrompt: planPrompt });
+                effectiveChain = semanticRepaired.canonical;
+                semanticIssues = validateCanonicalChainSemantics(effectiveChain, {
+                  userPrompt: planPrompt,
+                });
+              }
+              if (semanticIssues.length > 0) {
+                throw new Error(
+                  `Semantically invalid plan chain: ${semanticIssues.map((i) => i.reason).join(', ')}`
+                );
+              }
               const { buildWorkflowFromPlanChain } = await import('../services/ai/plan-driven-workflow-builder');
-              const built = buildWorkflowFromPlanChain(repaired.canonical);
+              const built = buildWorkflowFromPlanChain(effectiveChain);
               planBuildDiagnostics = built.diagnostics;
               if (!built.success || !built.workflow) {
                 throw new Error(
@@ -3017,12 +3014,16 @@ export default async function generateWorkflow(req: Request, res: Response) {
             nodeLabel: input.nodeLabel,
             fieldName: input.fieldName,
             fieldType: input.fieldType,
+            inputType: input.inputType || determineInputTypeFromSchema(input.fieldName, input.fieldType),
+            options: input.options,
+            placeholder: input.placeholder,
+            uiWidget: input.uiWidget,
             label: `${input.nodeLabel} - ${input.fieldName}`,
             description: input.description,
             required: input.required,
             defaultValue: input.defaultValue,
             examples: input.examples,
-            type: input.fieldType === 'textarea' ? 'textarea' : 'text',
+            type: input.inputType || determineInputTypeFromSchema(input.fieldName, input.fieldType),
             category: 'configuration',
           }));
           
@@ -3052,6 +3053,7 @@ export default async function generateWorkflow(req: Request, res: Response) {
             discoveredCredentials,
             credentialStatuses,
           });
+          const credentialWizardView = buildCredentialWizardView(comprehensiveQuestions, credentialStatuses);
           if (!structuralGate.ok) {
             res.write(JSON.stringify({
               success: false,
@@ -3065,6 +3067,7 @@ export default async function generateWorkflow(req: Request, res: Response) {
               requiredCredentials: discoveredCredentials.map((c: any) => c.vaultKey),
               comprehensiveQuestions,
               credentialStatuses,
+              credentialWizardView,
               structuralDiagnostics,
               unifiedReadiness,
               phaseBlockingReasons: unifiedReadiness.blockingReasons,
@@ -3086,6 +3089,7 @@ export default async function generateWorkflow(req: Request, res: Response) {
             requiredCredentials: discoveredCredentials.map((c: any) => c.vaultKey), // Legacy format
             comprehensiveQuestions,
             credentialStatuses,
+            credentialWizardView,
             structuralDiagnostics,
             unifiedReadiness,
             phaseBlockingReasons: unifiedReadiness.blockingReasons,
@@ -3209,7 +3213,8 @@ export default async function generateWorkflow(req: Request, res: Response) {
                 ? String((req.body as Record<string, unknown>).confirmedStructuredPrompt)
                 : finalPrompt;
             const repaired = autoRepairCanonicalChainForIntent(canonicalization.canonical, planPrompt);
-            const completenessIssues = validateCanonicalChainCompleteness(repaired.canonical, {
+            let effectiveChain = repaired.canonical;
+            const completenessIssues = validateCanonicalChainCompleteness(effectiveChain, {
               userPrompt: planPrompt,
             });
             if (completenessIssues.length > 0) {
@@ -3217,8 +3222,23 @@ export default async function generateWorkflow(req: Request, res: Response) {
                 `Incomplete canonical plan chain: ${completenessIssues.map((i) => i.reason).join(', ')}`
               );
             }
+            let semanticIssues = validateCanonicalChainSemantics(effectiveChain, {
+              userPrompt: planPrompt,
+            });
+            if (semanticIssues.length > 0) {
+              const semanticRepaired = autoRepairCanonicalChainSemantics(effectiveChain, { userPrompt: planPrompt });
+              effectiveChain = semanticRepaired.canonical;
+              semanticIssues = validateCanonicalChainSemantics(effectiveChain, {
+                userPrompt: planPrompt,
+              });
+            }
+            if (semanticIssues.length > 0) {
+              throw new Error(
+                `Semantically invalid plan chain: ${semanticIssues.map((i) => i.reason).join(', ')}`
+              );
+            }
             const { buildWorkflowFromPlanChain } = await import('../services/ai/plan-driven-workflow-builder');
-            const built = buildWorkflowFromPlanChain(repaired.canonical);
+            const built = buildWorkflowFromPlanChain(effectiveChain);
             if (!built.success || !built.workflow) {
               throw new Error(
                 built.errors.join('; ') || 'Plan-driven workflow build failed: graph does not match plan chain'
@@ -3294,12 +3314,16 @@ export default async function generateWorkflow(req: Request, res: Response) {
           nodeLabel: input.nodeLabel,
           fieldName: input.fieldName,
           fieldType: input.fieldType,
+          inputType: input.inputType || determineInputTypeFromSchema(input.fieldName, input.fieldType),
+          options: input.options,
+          placeholder: input.placeholder,
+          uiWidget: input.uiWidget,
           label: `${input.nodeLabel} - ${input.fieldName}`,
           description: input.description,
           required: input.required,
           defaultValue: input.defaultValue,
           examples: input.examples,
-          type: input.fieldType === 'textarea' ? 'textarea' : 'text',
+          type: input.inputType || determineInputTypeFromSchema(input.fieldName, input.fieldType),
           category: 'configuration',
         }));
         
@@ -3415,6 +3439,7 @@ export default async function generateWorkflow(req: Request, res: Response) {
           discoveredCredentials,
           credentialStatuses,
         });
+        const credentialWizardView = buildCredentialWizardView(comprehensiveQuestions, credentialStatuses);
 
         if (!structuralGate.ok) {
           return res.json({
@@ -3429,6 +3454,7 @@ export default async function generateWorkflow(req: Request, res: Response) {
             requiredCredentials: allFinalCredentialsArray,
             comprehensiveQuestions,
             credentialStatuses,
+            credentialWizardView,
             structuralDiagnostics,
             unifiedReadiness,
             phaseBlockingReasons: unifiedReadiness.blockingReasons,
@@ -3452,6 +3478,7 @@ export default async function generateWorkflow(req: Request, res: Response) {
           // Include non-credential configuration questions for ownership contract alignment.
           comprehensiveQuestions,
           credentialStatuses,
+          credentialWizardView,
           structuralDiagnostics,
           unifiedReadiness,
           phaseBlockingReasons: unifiedReadiness.blockingReasons,

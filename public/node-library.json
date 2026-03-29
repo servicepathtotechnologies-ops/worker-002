@@ -304,7 +304,10 @@
       "operation",
       "recipientSource",
       "recipientEmails",
-      "to",
+      "spreadsheetId",
+      "sheetName",
+      "range",
+      "useAiRecipientMapping",
       "subject",
       "body",
       "from",
@@ -553,10 +556,12 @@
       "result"
     ],
     "requiredConfig": [
-      "routingType",
-      "rules"
+      "expression",
+      "cases"
     ],
     "optionalConfig": [
+      "expression",
+      "cases",
       "routingType",
       "rules"
     ]
@@ -920,8 +925,6 @@
       "prompt"
     ],
     "optionalConfig": [
-      "provider",
-      "model",
       "temperature",
       "prompt",
       "systemPrompt",
@@ -948,8 +951,6 @@
       "prompt",
       "inputData",
       "serviceType",
-      "provider",
-      "model",
       "temperature",
       "maxTokens",
       "outputFormat"
@@ -1760,12 +1761,11 @@
       "result"
     ],
     "requiredConfig": [
-      "model",
       "prompt"
     ],
     "optionalConfig": [
-      "model",
-      "prompt"
+      "prompt",
+      "temperature"
     ]
   },
   {
@@ -1819,12 +1819,8 @@
       "data",
       "result"
     ],
-    "requiredConfig": [
-      "model"
-    ],
+    "requiredConfig": [],
     "optionalConfig": [
-      "provider",
-      "model",
       "temperature"
     ]
   },

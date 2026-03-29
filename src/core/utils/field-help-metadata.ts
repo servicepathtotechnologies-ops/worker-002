@@ -62,6 +62,7 @@ export const CREDENTIAL_QUESTION_HELP_CATEGORIES: ReadonlySet<FieldHelpCategory>
   'credential_id',
   'bearer_token',
   'webhook_secret',
+  'webhook_url',
   'smtp_password',
   'db_password',
   'private_key',

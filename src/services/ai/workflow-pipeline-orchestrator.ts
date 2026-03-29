@@ -29,6 +29,7 @@ import { validateAndFixEdgeHandles, getNodeHandleContract, resolveSourceHandleDy
 import { resolveCompatibleHandles } from './schema-driven-connection-resolver';
 import { enhancedEdgeCreationService } from './enhanced-edge-creation-service';
 import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
+import { normalizeWorkflowFormFieldIdentities } from '../../core/utils/form-field-identity';
 import { randomUUID } from 'crypto';
 import { nodeTypeNormalizationService } from './node-type-normalization-service';
 import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
@@ -1534,6 +1535,8 @@ export class WorkflowPipelineOrchestrator {
       }
       
 
+      workflow = normalizeWorkflowFormFieldIdentities(workflow);
+
       // STEP 3.6: Generate structured workflow explanation
       console.log(`[PipelineOrchestrator] STEP 3.6: Generating workflow explanation`);
       onProgress?.(3.6, 'Generating Explanation', 79, { message: 'Generating structured workflow explanation...' });
@@ -1796,6 +1799,8 @@ export class WorkflowPipelineOrchestrator {
         workflowId,
       };
     }
+
+    finalWorkflow = normalizeWorkflowFormFieldIdentities(finalWorkflow);
 
     // STEP 5.5: Prune workflow graph (after repair)
     // ✅ CRITICAL: Apply graph pruning after workflow builder and repair phase

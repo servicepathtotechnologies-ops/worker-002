@@ -11,6 +11,10 @@ import type { UnifiedNodeDefinition, NodeExecutionResult, NodeInputSchema } from
 import type { NodeSchema } from '../../../services/nodes/node-library';
 import { executeViaLegacyExecutor } from '../unified-node-registry-legacy-adapter';
 import { resolveEffectiveFieldFillMode } from '../../utils/fill-mode-resolver';
+import {
+  normalizeIfElseConfig,
+  validateCanonicalIfElseConditions,
+} from '../../utils/if-else-conditions';
 
 export function overrideIfElse(def: UnifiedNodeDefinition, schema: NodeSchema): UnifiedNodeDefinition {
   const baseValidate = def.validateConfig.bind(def);
@@ -47,19 +51,17 @@ export function overrideIfElse(def: UnifiedNodeDefinition, schema: NodeSchema): 
     outgoingPorts: ['true', 'false'],
     tags: Array.from(new Set([...(def.tags || []), 'conditional'])),
     validateConfig: (config: Record<string, any>) => {
-      const base = baseValidate(config);
+      const normalizedConfig = normalizeIfElseConfig(config);
+      const base = baseValidate(normalizedConfig);
       const extraErrors: string[] = [];
-      const mode = resolveEffectiveFieldFillMode('conditions', inputSchema, config);
-      if (mode !== 'runtime_ai') {
-        const cond = config.conditions;
-        const empty =
-          cond === undefined ||
-          cond === null ||
-          (Array.isArray(cond) && cond.length === 0) ||
-          (typeof cond === 'string' && cond.trim() === '');
-        if (empty) {
-          extraErrors.push("If/Else: 'conditions' must be set unless fill mode is runtime_ai");
-        }
+      const mode = resolveEffectiveFieldFillMode('conditions', inputSchema, normalizedConfig);
+      const cond = normalizedConfig.conditions;
+      const empty = cond === undefined || cond === null || (Array.isArray(cond) && cond.length === 0);
+      if (mode !== 'runtime_ai' && empty) {
+        extraErrors.push("If/Else: 'conditions' must be set unless fill mode is runtime_ai");
+      }
+      if (!empty) {
+        extraErrors.push(...validateCanonicalIfElseConditions(cond));
       }
       const allErrors = [...(base.errors || []), ...extraErrors];
       return {
@@ -74,6 +76,9 @@ export function overrideIfElse(def: UnifiedNodeDefinition, schema: NodeSchema): 
         schema,
         hooks: {
           beforeExecute: (prepared) => {
+            const preparedConfig = normalizeIfElseConfig(
+              (prepared.mergedConfig || {}) as Record<string, unknown>
+            );
             const mergedInput: Record<string, unknown> = {
               ...(typeof prepared.executionInput === 'object' && prepared.executionInput !== null
                 ? prepared.executionInput
@@ -86,7 +91,7 @@ export function overrideIfElse(def: UnifiedNodeDefinition, schema: NodeSchema): 
               }
             });
 
-            return { executionInput: mergedInput };
+            return { executionInput: mergedInput, mergedConfig: preparedConfig };
           },
         },
       });

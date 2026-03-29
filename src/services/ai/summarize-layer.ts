@@ -25,6 +25,7 @@ import {
 } from '../../core/utils/node-capability-dedupe';
 import { resolveCanonicalNodeTypeStrict } from '../../core/utils/node-type-resolver-util';
 import { extractBranchIntentSignals, expectedBranchTargetCount } from '../../core/utils/branch-intent-model';
+import { BranchMetadata } from '../../core/types/branching';
 
 export interface AliasKeyword {
   keyword: string;
@@ -102,9 +103,23 @@ export interface WorkflowIntentPlan {
   structuredSummary: string;
   proposedNodeChain: string[];
   nodeInclusionReasons?: Record<string, string>;
+  rankedSelectionDiagnostics?: {
+    kept: Array<{ nodeType: string; score: number; reason: string }>;
+    dropped: Array<{ nodeType: string; score: number; reason: string }>;
+  };
+  orderingDiagnostics?: {
+    confidence: number;
+    hopRationales: string[];
+    repairActions?: string[];
+  };
   mandatoryNodeTypes?: string[];
   mandatoryNodesWithOperations?: NodeTypeWithOperation[];
   registryTags?: string[];
+  /**
+   * Optional planner-level branching metadata (if_else / switch / threshold / match).
+   * Used for structured summaries and diagnostics; runtime branching is still registry-driven.
+   */
+  branching?: BranchMetadata;
   branchingOverview?: string;
   originalPrompt: string;
 }
@@ -1765,19 +1780,20 @@ export class AIIntentClarifier {
         },
         category: 'output' 
       },
-      // Email/Communication - find email nodes from registry
-      { 
-        pattern: /gmail|google\s+mail|email/i, 
-        findNodes: (registry) => {
-          return registry.getAllTypes().filter((nt: string) => {
-            const nodeDef = registry.get(nt);
-            return nodeDef && (
-              (nodeDef.category === 'communication' || (nodeDef.tags || []).includes('email')) &&
-              (nt.includes('gmail') || nt.includes('email') || nt.includes('mail'))
-            );
-          });
+      // Email/Communication - explicit channel mapping only (no family-wide fan-out)
+      {
+        pattern: /gmail|google\s+mail|email\s+via\s+gmail/i,
+        findNodes: () => ['google_gmail'],
+        category: 'output'
+      },
+      {
+        pattern: /\bemail\b/i,
+        findNodes: (_registry, text: string) => {
+          const lower = (text || '').toLowerCase();
+          const mentionsGmail = lower.includes('gmail') || lower.includes('google mail') || lower.includes('google email');
+          return mentionsGmail ? [] : ['email'];
         },
-        category: 'output' 
+        category: 'output'
       },
       // Message/Notification - find message nodes from registry
       { 
@@ -5990,10 +6006,14 @@ The "variations" array MUST contain exactly 4 items, each with a detailed prompt
     const minimalSelection = this.buildIntentMinimalNodeSelection(userPrompt, allExtractedNodeTypes);
     const extractedNodeTypes = [...minimalSelection.selectedNodeTypes];
     const proposedNodeChain = this.buildDeterministicSinglePlanChain(userPrompt, extractedNodeTypes);
-    const branchingOverview = proposedNodeChain.includes('if_else') || proposedNodeChain.includes('switch')
-      ? 'Branching node routes data into separate paths based on condition/case evaluation.'
-      : undefined;
-    const structuredSummary = this.buildStructuredSummaryFromChain(proposedNodeChain, userPrompt, branchingOverview);
+    const branching = this.buildBranchMetadataForPlan(userPrompt, proposedNodeChain);
+    // Branching is primarily described in Execution lines / branch metadata; avoid duplicate prose.
+    const branchingOverview: string | undefined = undefined;
+    const structuredSummary = this.buildStructuredSummaryFromChain(
+      proposedNodeChain,
+      userPrompt,
+      branching
+    );
     const mandatoryNodeTypes = [...new Set([...extractedNodeTypes, ...proposedNodeChain])];
     const mandatoryNodesWithOperations: NodeTypeWithOperation[] = [];
     for (const m of enrichedNodeMentions) {
@@ -6009,10 +6029,17 @@ The "variations" array MUST contain exactly 4 items, each with a detailed prompt
       structuredSummary,
       proposedNodeChain,
       nodeInclusionReasons: minimalSelection.reasons,
+      rankedSelectionDiagnostics: minimalSelection.rankedSelectionDiagnostics,
+      orderingDiagnostics: this.buildOrderingDiagnostics(
+        proposedNodeChain,
+        userPrompt,
+        branching
+      ),
       mandatoryNodeTypes,
       mandatoryNodesWithOperations:
         mandatoryNodesWithOperations.length > 0 ? mandatoryNodesWithOperations : undefined,
       registryTags: buildTagsFromRegistry(mandatoryNodeTypes),
+      branching,
       branchingOverview,
       originalPrompt: userPrompt,
     };
@@ -6035,8 +6062,8 @@ The "variations" array MUST contain exactly 4 items, each with a detailed prompt
         : '';
     return `You are a workflow automation architect. Output EXACTLY ONE JSON object (no markdown fences, no commentary) with this shape:
 {
-  "structuredSummary": "string — numbered or clear steps describing the workflow in plain language, using registry node type names where possible",
-  "proposedNodeChain": ["string", ...] — ordered node types from trigger through outputs, ending with log_output for final visibility",
+  "structuredSummary": "string — concise: Goal (one block) + Execution (numbered edges type → type [branch?] — short intent); if multiple branches each end at log_output, end with Terminals: N separate log_output (one per path), not a single merged terminal; use registry snake_case in parentheses",
+  "proposedNodeChain": ["string", ...] — ordered node types from trigger through outputs; include log_output once as the terminal type (branching expands to multiple log_output nodes at build time)",
   "nodeInclusionReasons": { "node_type": "short reason" },
   "branchingOverview": "string or omit — if if_else/switch is needed, describe branches briefly; else omit or empty string"
 }
@@ -6108,8 +6135,14 @@ Rules:
 
     proposedNodeChain = this.normalizeAndEnsureLogOutput(proposedNodeChain);
 
+    const branching = this.buildBranchMetadataForPlan(userPrompt, proposedNodeChain);
+
     if (!structuredSummary || structuredSummary.length < 20) {
-      structuredSummary = this.buildStructuredSummaryFromChain(proposedNodeChain, userPrompt, branchingOverview);
+      structuredSummary = this.buildStructuredSummaryFromChain(
+        proposedNodeChain,
+        userPrompt,
+        branching
+      );
     }
 
     const mandatoryFromAi = Array.isArray(obj.mandatoryNodeTypes)
@@ -6133,10 +6166,17 @@ Rules:
       structuredSummary,
       proposedNodeChain,
       nodeInclusionReasons,
+      rankedSelectionDiagnostics: this.rankNodesByIntent(
+        userPrompt,
+        mandatoryNodeTypes,
+        nodeInclusionReasons || {}
+      ),
+      orderingDiagnostics: this.buildOrderingDiagnostics(proposedNodeChain, userPrompt, branching),
       mandatoryNodeTypes,
       mandatoryNodesWithOperations:
         mandatoryNodesWithOperations.length > 0 ? mandatoryNodesWithOperations : undefined,
       registryTags: buildTagsFromRegistry(mandatoryNodeTypes),
+      branching,
       branchingOverview,
       originalPrompt: userPrompt,
     };
@@ -6179,32 +6219,7 @@ Rules:
     const branchNode =
       extractedNodeTypes.find((t) => t === 'if_else' || t === 'switch') ||
       (conditionalIntent && unifiedNodeRegistry.has('if_else') ? 'if_else' : null);
-
-    const triggerCandidates = extractedNodeTypes.filter((t) => this.isTriggerNodeType(t));
-    const selectedTrigger = triggerCandidates[0] || 'manual_trigger';
-
-    const middle: string[] = [];
-    const outputs: string[] = [];
-    for (const nodeType of extractedNodeTypes) {
-      if (nodeType === selectedTrigger || nodeType === 'log_output') continue;
-      if (branchNode && nodeType === branchNode) continue;
-      const def = unifiedNodeRegistry.get(nodeType);
-      const isOutput = !!def && (nodeCapabilityRegistryDSL.isOutput(nodeType) || (def.tags || []).includes('output'));
-      if (isOutput) {
-        outputs.push(nodeType);
-      } else {
-        middle.push(nodeType);
-      }
-    }
-
-    const candidate = [
-      selectedTrigger,
-      ...middle,
-      ...(branchNode ? [branchNode] : []),
-      ...outputs,
-    ];
-
-    let normalized = this.normalizeAndEnsureLogOutput(candidate);
+    let normalized = this.sequenceNodesByIntent(userPrompt, extractedNodeTypes);
     if (branchNode) {
       const requiredTargets = expectedBranchTargetCount(signals);
       const currentOutputs = normalized.filter(
@@ -6223,15 +6238,179 @@ Rules:
         const withInserted = normalized.filter((t) => t !== 'log_output').concat(additions, ['log_output']);
         normalized = this.normalizeAndEnsureLogOutput(withInserted);
       }
+      const selectedTrigger = normalized.find((t) => this.isTriggerNodeType(t)) || 'manual_trigger';
+      const branchOutputs = normalized.filter(
+        (t) => t !== selectedTrigger && t !== branchNode && t !== 'log_output' && nodeCapabilityRegistryDSL.isOutput(t)
+      );
+      // Strict branch template: trigger -> branch -> outputs -> log_output.
+      normalized = this.normalizeAndEnsureLogOutput([
+        selectedTrigger,
+        branchNode,
+        ...branchOutputs,
+      ]);
     }
 
     return normalized;
   }
 
+  /**
+   * Build planner-level BranchMetadata for a proposed node chain and prompt.
+   * This is used for structured summaries and diagnostics only; runtime branching
+   * is still derived from unified-node-registry + orchestrators.
+   */
+  private buildBranchMetadataForPlan(
+    userPrompt: string,
+    chain: string[]
+  ): BranchMetadata | undefined {
+    const signals = extractBranchIntentSignals(userPrompt);
+    if (!signals.hasBranchingIntent) {
+      return undefined;
+    }
+
+    // Determine branching node type present in the chain, if any.
+    const branchingNodeType =
+      chain.find((t) => this.isBranchingNodeType(t)) || (signals.branchType === 'switch' ? 'switch' : signals.branchType === 'if_else' ? 'if_else' : undefined);
+
+    if (!branchingNodeType) {
+      // No explicit branching node in chain; keep metadata minimal.
+      return undefined;
+    }
+
+    // Candidate output node types reachable from the branch, in chain order.
+    const downstreamOutputs = chain.filter(
+      (t) =>
+        t !== 'log_output' &&
+        t !== branchingNodeType &&
+        !this.isTriggerNodeType(t) &&
+        nodeCapabilityRegistryDSL.isOutput(t)
+    );
+
+    const rawDescriptors = signals.outcomeDescriptors;
+    const distinctDescriptors = rawDescriptors.filter((v, i) => rawDescriptors.indexOf(v) === i);
+
+    const estimatedCount = Math.max(
+      signals.estimatedBranchCount || 0,
+      distinctDescriptors.length || 0,
+      2
+    );
+
+    const effectiveBranchKind =
+      signals.branchType && (signals.branchType === 'switch' || signals.branchType === 'if_else')
+        ? signals.branchType
+        : ('if_else' as const);
+
+    const cases = [];
+    const caseCount = effectiveBranchKind === 'switch' ? Math.max(3, estimatedCount) : Math.max(2, estimatedCount);
+
+    for (let idx = 0; idx < caseCount; idx++) {
+      const label =
+        distinctDescriptors[idx] ||
+        (effectiveBranchKind === 'switch' ? `case_${idx + 1}` : idx === 0 ? 'true' : 'false');
+
+      const condition =
+        effectiveBranchKind === 'switch'
+          ? {
+              type: 'equality' as const,
+              left: signals.discriminatorField,
+              matchValue: label,
+            }
+          : {
+              type: 'equality' as const,
+              left: signals.discriminatorField,
+              matchValue: label,
+            };
+
+      const targetType = downstreamOutputs[idx];
+
+      cases.push({
+        id: `${effectiveBranchKind}_${idx + 1}`,
+        label,
+        condition,
+        targetNodeTypes: targetType ? [targetType] : [],
+        isDefault: false,
+      });
+    }
+
+    return {
+      branchKind: effectiveBranchKind,
+      discriminatorField: signals.discriminatorField,
+      cases,
+      estimatedBranchCount: caseCount,
+      confidence: signals.confidence,
+    };
+  }
+
+  private classifyNodeRole(nodeType: string): 'trigger' | 'branching' | 'data_source' | 'transformation' | 'output' | 'other' {
+    if (this.isTriggerNodeType(nodeType)) return 'trigger';
+    if (this.isBranchingNodeType(nodeType)) return 'branching';
+    if (nodeCapabilityRegistryDSL.isDataSource(nodeType) || nodeCapabilityRegistryDSL.canReadData(nodeType)) {
+      return 'data_source';
+    }
+    if (nodeCapabilityRegistryDSL.isTransformation(nodeType)) return 'transformation';
+    if (nodeCapabilityRegistryDSL.canServeAsOutput(nodeType)) return 'output';
+    return 'other';
+  }
+
+  private sequenceNodesByIntent(userPrompt: string, extractedNodeTypes: string[]): string[] {
+    const signals = extractBranchIntentSignals(userPrompt);
+    const conditionalIntent = signals.hasBranchingIntent;
+    const branchNode =
+      extractedNodeTypes.find((t) => t === 'if_else' || t === 'switch') ||
+      (conditionalIntent && unifiedNodeRegistry.has('if_else') ? 'if_else' : null);
+    const triggerCandidates = extractedNodeTypes.filter((t) => this.isTriggerNodeType(t));
+    const selectedTrigger = triggerCandidates[0] || 'manual_trigger';
+
+    const dataSources: string[] = [];
+    const transformations: string[] = [];
+    const outputs: string[] = [];
+    const others: string[] = [];
+    for (const nodeType of extractedNodeTypes) {
+      if (nodeType === selectedTrigger || nodeType === 'log_output') continue;
+      if (branchNode && nodeType === branchNode) continue;
+      const role = this.classifyNodeRole(nodeType);
+      if (role === 'data_source') dataSources.push(nodeType);
+      else if (role === 'transformation') transformations.push(nodeType);
+      else if (role === 'output') outputs.push(nodeType);
+      else others.push(nodeType);
+    }
+
+    // Keep intent-fidelity for linear prompts: source -> transform -> output.
+    const candidate = [selectedTrigger, ...dataSources, ...transformations, ...others, ...(branchNode ? [branchNode] : []), ...outputs];
+    return this.normalizeAndEnsureLogOutput(candidate);
+  }
+
+  private buildOrderingDiagnostics(
+    chain: string[],
+    userPrompt: string,
+    branching?: BranchMetadata
+  ): { confidence: number; hopRationales: string[] } {
+    const edges = this.buildConnectionPlanEdges(chain, userPrompt, branching);
+    const hopRationales = edges.map(
+      (e) =>
+        `${e.fromType} → ${e.toType}${e.via ? ` [${e.via}]` : ''}: ${e.intent}`
+    );
+    let penalties = 0;
+    for (const e of edges) {
+      const fromRole = this.classifyNodeRole(e.fromType);
+      const toRole = this.classifyNodeRole(e.toType);
+      if (fromRole === 'transformation' && toRole === 'data_source') penalties += 0.2;
+      if (fromRole === 'output' && toRole !== 'output' && e.toType !== 'log_output') penalties += 0.1;
+    }
+    const confidence = Math.max(0.4, Number((1 - penalties).toFixed(2)));
+    return { confidence, hopRationales };
+  }
+
   private buildIntentMinimalNodeSelection(
     userPrompt: string,
     extractedNodeTypes: string[]
-  ): { selectedNodeTypes: string[]; reasons: Record<string, string> } {
+  ): {
+    selectedNodeTypes: string[];
+    reasons: Record<string, string>;
+    rankedSelectionDiagnostics: {
+      kept: Array<{ nodeType: string; score: number; reason: string }>;
+      dropped: Array<{ nodeType: string; score: number; reason: string }>;
+    };
+  } {
     const lower = userPrompt.toLowerCase();
     const signals = extractBranchIntentSignals(userPrompt);
     const reasons: Record<string, string> = {};
@@ -6255,7 +6434,7 @@ Rules:
     add(selectedTrigger, triggerFromPrompt ? 'explicit trigger in prompt' : 'default trigger fallback');
 
     // Branch node: preserve explicit switch, else if_else for conditional prompts.
-    if (signals.hasBranchingIntent || /\bif\b|\belse\b|\bcondition\b/.test(lower)) {
+    if (signals.hasBranchingIntent || /\bif\b|\belse\b|\bcondition\b|\bswitch\b|\bcase\b/.test(lower)) {
       const branchNode = /\bswitch\b|\bcase\b/.test(lower) ? 'switch' : 'if_else';
       add(branchNode, 'branching intent detected');
     }
@@ -6303,6 +6482,9 @@ Rules:
       }
     }
 
+    // Canonical output channel exclusivity for email transport.
+    this.applyEmailChannelExclusivity(selected, lower, reasons);
+
     // Ensure branching prompts have enough output targets.
     if (signals.hasBranchingIntent) {
       const branchTargetsRequired = Math.max(2, expectedBranchTargetCount(signals));
@@ -6311,8 +6493,7 @@ Rules:
         const explicitOutputs = signals.mentionedOutputNodeTypes.filter((t) => unifiedNodeRegistry.get(t));
         const fallbackOutputPool = explicitOutputs.length > 0
           ? explicitOutputs
-          : ['google_gmail', 'slack_message', 'email', 'log_output']
-              .filter((t) => t !== 'log_output' && unifiedNodeRegistry.get(t));
+          : extractedNodeTypes.filter((t) => t !== 'log_output' && nodeCapabilityRegistryDSL.isOutput(t));
         for (const fallback of fallbackOutputPool) {
           if (selected.filter((t) => t !== 'log_output' && nodeCapabilityRegistryDSL.isOutput(t)).length >= branchTargetsRequired) break;
           if (!selected.includes(fallback)) {
@@ -6322,7 +6503,54 @@ Rules:
       }
     }
 
-    return { selectedNodeTypes: selected, reasons };
+    this.applyEmailChannelExclusivity(selected, lower, reasons);
+    const rankedSelectionDiagnostics = this.rankNodesByIntent(userPrompt, extractedNodeTypes, reasons);
+    return { selectedNodeTypes: selected, reasons, rankedSelectionDiagnostics };
+  }
+
+  private applyEmailChannelExclusivity(selected: string[], lowerPrompt: string, reasons: Record<string, string>): void {
+    const hasGmail = selected.includes('google_gmail');
+    const hasEmail = selected.includes('email');
+    if (!hasGmail || !hasEmail) return;
+
+    const mentionsGmail = /\bgmail\b|google\s+mail|google\s+email/.test(lowerPrompt);
+    const explicitMultiChannel = /\bboth\b|\bseparate\b|\balso\b|\banother\b|\btwo channels\b/.test(lowerPrompt);
+    if (explicitMultiChannel) return;
+    const keepType = mentionsGmail ? 'google_gmail' : 'email';
+    const dropType = keepType === 'google_gmail' ? 'email' : 'google_gmail';
+
+    const idx = selected.indexOf(dropType);
+    if (idx >= 0) {
+      selected.splice(idx, 1);
+      reasons[dropType] = `removed by exclusivity guard: prefer ${keepType}`;
+    }
+  }
+
+  private rankNodesByIntent(
+    userPrompt: string,
+    candidates: string[],
+    reasons: Record<string, string>
+  ): {
+    kept: Array<{ nodeType: string; score: number; reason: string }>;
+    dropped: Array<{ nodeType: string; score: number; reason: string }>;
+  } {
+    const lower = userPrompt.toLowerCase();
+    const scored = candidates.map((nodeType) => {
+      let score = 0.2;
+      const role = this.classifyNodeRole(nodeType);
+      if (role === 'trigger') score += 0.35;
+      if (role === 'branching' && /\bif\b|\belse\b|\bcondition\b|\bcase\b/.test(lower)) score += 0.35;
+      if (role === 'data_source' && /\bfetch|get|read|from|sheet|database|supabase\b/.test(lower)) score += 0.3;
+      if (role === 'transformation' && /\bsummari[sz]e|analy[sz]e|classif|transform\b/.test(lower)) score += 0.3;
+      if (role === 'output' && /\bgmail|email|slack|discord|telegram|notify|send\b/.test(lower)) score += 0.3;
+      if (nodeType === 'email' && /\bgmail\b/.test(lower)) score -= 0.25;
+      if (reasons[nodeType]) score += 0.2;
+      return { nodeType, score: Number(score.toFixed(2)), reason: reasons[nodeType] || `ranked by ${role}` };
+    });
+    const kept = scored.filter((s) => s.score >= 0.35).sort((a, b) => b.score - a.score || a.nodeType.localeCompare(b.nodeType));
+    const keptSet = new Set(kept.map((k) => k.nodeType));
+    const dropped = scored.filter((s) => !keptSet.has(s.nodeType)).sort((a, b) => b.score - a.score || a.nodeType.localeCompare(b.nodeType));
+    return { kept, dropped };
   }
 
   private isTriggerNodeType(nodeType: string): boolean {
@@ -6406,131 +6634,107 @@ Rules:
     }
   }
 
-  private buildStructuredSummaryFromChain(
+  /**
+   * Canonical DAG edges for the proposed chain (branch-aware). Used for both the editable summary
+   * and orderingDiagnostics.hopRationales so narration never disagrees with execution order.
+   */
+  private buildConnectionPlanEdges(
     chain: string[],
     userPrompt: string,
-    branchingOverview?: string
-  ): string {
-    const steps = chain.map((nodeType, i) => {
-      const def = unifiedNodeRegistry.get(nodeType);
-      const label = def?.label || nodeType;
-      return `${i + 1}. ${label} (${nodeType})`;
-    });
-    const edges = this.buildConnectionPlanLines(chain, userPrompt);
-
-    let text =
-      `Planned workflow for: ${userPrompt.slice(0, 200)}${userPrompt.length > 200 ? '…' : ''}\n\n` +
-      `Node chain:\n${steps.join('\n')}\n\n` +
-      `Connection plan (execution order):\n${edges.join('\n')}`;
-    if (branchingOverview) {
-      text += `\n\nBranching:\n${branchingOverview}`;
-    }
-    text += `\n\nThe graph ends with log_output so you can inspect the final result.`;
-    return text;
-  }
-
-  private buildConnectionPlanLines(chain: string[], userPrompt: string): string[] {
-    const edges: string[] = [];
-    const pushEdge = (
-      idx: number,
-      fromType: string,
-      toType: string,
-      intent: string,
-      via?: string
-    ) => {
-      const fromDef = unifiedNodeRegistry.get(fromType);
-      const toDef = unifiedNodeRegistry.get(toType);
-      const fromLabel = fromDef?.label || fromType;
-      const toLabel = toDef?.label || toType;
-      const viaSuffix = via ? ` [${via}]` : '';
-      edges.push(
-        `${idx}. ${fromLabel} (${fromType}) -> ${toLabel} (${toType})${viaSuffix} | intent: ${intent}`
-      );
+    branching?: BranchMetadata
+  ): Array<{ fromType: string; toType: string; via?: string; intent: string }> {
+    const edges: Array<{ fromType: string; toType: string; via?: string; intent: string }> = [];
+    const push = (fromType: string, toType: string, intent: string, via?: string) => {
+      edges.push(via ? { fromType, toType, intent, via } : { fromType, toType, intent });
     };
 
     const branchingIdx = chain.findIndex((t) => this.isBranchingNodeType(t));
-    if (branchingIdx < 0) {
+    if (branchingIdx < 0 || !branching || !branching.cases || branching.cases.length === 0) {
       for (let i = 0; i < chain.length - 1; i++) {
-        const fromType = chain[i];
-        const toType = chain[i + 1];
-        const hopIntent = this.describeHopIntent(fromType, toType, userPrompt);
-        pushEdge(i + 1, fromType, toType, hopIntent);
+        push(chain[i], chain[i + 1], this.describeHopIntent(chain[i], chain[i + 1], userPrompt));
       }
       return edges;
     }
 
-    // Prefix up to branching node remains linear.
-    let lineNo = 1;
     for (let i = 0; i < branchingIdx; i++) {
-      const fromType = chain[i];
-      const toType = chain[i + 1];
-      const hopIntent = this.describeHopIntent(fromType, toType, userPrompt);
-      pushEdge(lineNo++, fromType, toType, hopIntent);
+      push(chain[i], chain[i + 1], this.describeHopIntent(chain[i], chain[i + 1], userPrompt));
     }
 
     const branchType = chain[branchingIdx];
     const downstream = chain.slice(branchingIdx + 1).filter((t) => t !== 'log_output');
     const outputTargets = downstream.filter((t) => nodeCapabilityRegistryDSL.isOutput(t));
 
-    if (branchType === 'if_else' && outputTargets.length >= 2) {
-      // Deterministic branch narration: first output = true path, second output = false path.
-      pushEdge(
-        lineNo++,
-        branchType,
-        outputTargets[0],
-        'route to positive/qualified outcome',
-        'true'
-      );
-      pushEdge(
-        lineNo++,
-        branchType,
-        outputTargets[1],
-        'route to fallback/non-qualified outcome',
-        'false'
-      );
-      if (chain.includes('log_output')) {
-        pushEdge(
-          lineNo++,
-          outputTargets[0],
-          'log_output',
-          'persist true-path observable output'
-        );
-        pushEdge(
-          lineNo++,
-          outputTargets[1],
-          'log_output',
-          'persist false-path observable output'
-        );
+    // Branch-aware edges driven by BranchMetadata.
+    const uniqueLogTargets = new Set<string>();
+    const caseCount = branching.cases.length;
+    for (let idx = 0; idx < caseCount; idx++) {
+      const branchCase = branching.cases[idx];
+      const preferredTargetType = branchCase.targetNodeTypes[0];
+      const fallbackTargetType = outputTargets[idx] || outputTargets[0];
+      const targetType = preferredTargetType || fallbackTargetType;
+      if (!targetType) {
+        continue;
       }
-      return edges;
+
+      let via: string | undefined;
+      if (branchType === 'if_else') {
+        via = idx === 0 ? 'true' : idx === 1 ? 'false' : branchCase.label || `case_${idx + 1}`;
+      } else if (branchType === 'switch') {
+        via = `case_${idx + 1}`;
+      } else {
+        via = branchCase.label || undefined;
+      }
+
+      let intent: string;
+      const disc = branching.discriminatorField || 'value';
+      if (branchType === 'if_else') {
+        intent = `route when ${disc} matches "${branchCase.label}"`;
+      } else if (branchType === 'switch') {
+        const matchValue =
+          branchCase.condition?.matchValue !== undefined
+            ? String(branchCase.condition.matchValue)
+            : branchCase.label;
+        intent = `route when ${disc} = ${matchValue}`;
+      } else {
+        intent = this.describeHopIntent(branchType, targetType, userPrompt);
+      }
+
+      push(branchType, targetType, intent, via);
+      uniqueLogTargets.add(targetType);
     }
 
-    if (branchType === 'switch' && outputTargets.length >= 2) {
-      outputTargets.forEach((target, idx) => {
-        pushEdge(
-          lineNo++,
-          branchType,
-          target,
-          `route by matched switch case ${idx + 1}`,
-          `case_${idx + 1}`
-        );
+    // Attach log_output as terminal observability for each branch target when present in chain.
+    if (chain.includes('log_output')) {
+      uniqueLogTargets.forEach((targetType) => {
+        push(targetType, 'log_output', 'persist branch-path observable output');
       });
-      if (chain.includes('log_output')) {
-        outputTargets.forEach((target) => {
-          pushEdge(lineNo++, target, 'log_output', 'persist case-path observable output');
-        });
-      }
-      return edges;
-    }
-
-    // Fallback to linear if branching outputs are incomplete.
-    for (let i = branchingIdx; i < chain.length - 1; i++) {
-      const fromType = chain[i];
-      const toType = chain[i + 1];
-      const hopIntent = this.describeHopIntent(fromType, toType, userPrompt);
-      pushEdge(lineNo++, fromType, toType, hopIntent);
     }
     return edges;
+  }
+
+  /** Compact, non-repetitive plan text: goal + numbered execution edges only. */
+  private buildStructuredSummaryFromChain(
+    chain: string[],
+    userPrompt: string,
+    branching?: BranchMetadata
+  ): string {
+    const edgeSpecs = this.buildConnectionPlanEdges(chain, userPrompt, branching);
+    const goal = userPrompt.trim();
+    const goalDisplay = goal.length > 220 ? `${goal.slice(0, 220)}…` : goal;
+    const lines = edgeSpecs.map((e, i) => {
+      const fromDef = unifiedNodeRegistry.get(e.fromType);
+      const toDef = unifiedNodeRegistry.get(e.toType);
+      const fl = fromDef?.label || e.fromType;
+      const tl = toDef?.label || e.toType;
+      const via = e.via ? ` [${e.via}]` : '';
+      return `${i + 1}. ${fl} (${e.fromType}) → ${tl} (${e.toType})${via} — ${e.intent}`;
+    });
+    const logTerminalCount = edgeSpecs.filter((e) => e.toType === 'log_output').length;
+    const terminalLine =
+      logTerminalCount <= 1
+        ? 'Terminal: log_output.'
+        : `Terminals: ${logTerminalCount} separate log_output nodes (one per branch path; the graph must not merge them).`;
+    return `Goal:\n${goalDisplay}\n\nExecution:\n${lines.join('\n')}\n\n${terminalLine}`;
   }
 
   private describeHopIntent(fromType: string, toType: string, userPrompt: string): string {
@@ -6631,12 +6835,20 @@ Rules:
     const first = fb.promptVariations[0];
     const chain = first?.nodes?.length ? [...first.nodes] : [];
     const normalized = this.normalizeAndEnsureLogOutput(chain.length ? chain : ['manual_trigger']);
+    const fallbackBranching = this.buildBranchMetadataForPlan(userPrompt, normalized);
     const plan: WorkflowIntentPlan = {
       structuredSummary: first?.prompt || fb.clarifiedIntent || userPrompt,
       proposedNodeChain: normalized,
+      rankedSelectionDiagnostics: this.rankNodesByIntent(userPrompt, normalized, {}),
+      orderingDiagnostics: this.buildOrderingDiagnostics(
+        normalized,
+        userPrompt,
+        fallbackBranching
+      ),
       mandatoryNodeTypes: fb.mandatoryNodeTypes,
       mandatoryNodesWithOperations: fb.mandatoryNodesWithOperations,
       registryTags: fb.registryTags,
+      branching: fallbackBranching,
       branchingOverview: undefined,
       originalPrompt: userPrompt,
     };

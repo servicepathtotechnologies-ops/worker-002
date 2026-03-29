@@ -8,7 +8,12 @@
  * - Missing schema throws during discover_credentials phase
  */
 
-import { credentialDiscoveryPhase } from '../credential-discovery-phase';
+import {
+  credentialDiscoveryPhase,
+  mapDiscoveryMissingToWizardDiscoveredCredentials,
+  mapDiscoveryResultToCredentialStatusResolution,
+  type CredentialDiscoveryResult,
+} from '../credential-discovery-phase';
 import { Workflow, WorkflowNode, WorkflowEdge } from '../../../core/types/ai-types';
 import { nodeLibrary } from '../../nodes/node-library';
 
@@ -633,6 +638,89 @@ describe('CredentialDiscoveryPhase', () => {
       expect(result.valid).toBe(false);
       expect(result.missing.length).toBeGreaterThan(0);
       expect(result.missing.some(c => c.provider === 'google')).toBe(true);
+    });
+  });
+
+  describe('wizard payload mappers', () => {
+    it('mapDiscoveryResultToCredentialStatusResolution uses vaultKey as credentialId', () => {
+      const discovery: CredentialDiscoveryResult = {
+        requiredCredentials: [
+          {
+            provider: 'slack',
+            type: 'webhook',
+            vaultKey: 'slack',
+            displayName: 'Slack',
+            required: true,
+            nodeTypes: ['slack_message'],
+            nodeIds: ['n1'],
+          },
+        ],
+        satisfiedCredentials: [],
+        missingCredentials: [
+          {
+            provider: 'slack',
+            type: 'webhook',
+            vaultKey: 'slack',
+            displayName: 'Slack',
+            required: true,
+            nodeTypes: ['slack_message'],
+            nodeIds: ['n1'],
+          },
+        ],
+        allDiscovered: true,
+        errors: [],
+        warnings: [],
+      };
+      const m = mapDiscoveryResultToCredentialStatusResolution(discovery);
+      expect(m.missing?.[0]).toMatchObject({ credentialId: 'slack', nodeIds: ['n1'] });
+      expect(m.required?.[0]).toMatchObject({ credentialId: 'slack' });
+    });
+
+    it('mapDiscoveryMissingToWizardDiscoveredCredentials adds webhookUrl hint for Slack', () => {
+      const discovery: CredentialDiscoveryResult = {
+        requiredCredentials: [],
+        satisfiedCredentials: [],
+        missingCredentials: [
+          {
+            provider: 'slack',
+            type: 'webhook',
+            vaultKey: 'slack',
+            displayName: 'Slack',
+            required: true,
+            nodeTypes: ['slack_message'],
+            nodeIds: ['n1'],
+          },
+        ],
+        allDiscovered: true,
+        errors: [],
+        warnings: [],
+      };
+      const rows = mapDiscoveryMissingToWizardDiscoveredCredentials(discovery);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].primaryFieldName).toBe('webhookUrl');
+      expect(rows[0].vaultKey).toBe('slack');
+    });
+
+    it('mapDiscoveryMissingToWizardDiscoveredCredentials filters Google OAuth from vault list', () => {
+      const discovery: CredentialDiscoveryResult = {
+        requiredCredentials: [],
+        satisfiedCredentials: [],
+        missingCredentials: [
+          {
+            provider: 'google',
+            type: 'oauth',
+            vaultKey: 'google',
+            displayName: 'Google',
+            required: true,
+            nodeTypes: ['google_gmail'],
+            nodeIds: ['g1'],
+          },
+        ],
+        allDiscovered: true,
+        errors: [],
+        warnings: [],
+      };
+      expect(mapDiscoveryMissingToWizardDiscoveredCredentials(discovery)).toHaveLength(0);
     });
   });
 });

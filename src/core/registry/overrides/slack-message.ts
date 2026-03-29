@@ -14,11 +14,14 @@ export function overrideSlackMessage(
 ): UnifiedNodeDefinition {
   const inputSchema = {
     ...def.inputSchema,
-    // Webhook URL is a user-provided secret at build time; Field Ownership treats it as value (not vault OAuth).
+    // Webhook URL is a secret and should be treated as a credential-like field.
+    // Keeping this as `credential` ensures it appears only once in the Credentials step
+    // and is not duplicated as both config + credential.
     webhookUrl: def.inputSchema.webhookUrl
       ? {
           ...def.inputSchema.webhookUrl,
-          ownership: 'value' as const,
+          ownership: 'credential' as const,
+          credentialTogglePolicy: 'unlockable' as const,
           fillMode: {
             default: 'manual_static' as const,
             supportsRuntimeAI: false,

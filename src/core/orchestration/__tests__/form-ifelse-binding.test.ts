@@ -84,4 +84,36 @@ describe('validateIfElseConditionsAgainstUpstreamForm', () => {
     const { errors } = validateIfElseConditionsAgainstUpstreamForm(wf);
     expect(errors).toEqual([]);
   });
+
+  it('handles long form keys without false validation errors', () => {
+    const wf = {
+      nodes: [
+        {
+          id: 'f1',
+          data: {
+            type: 'form',
+            config: { fields: [{ name: 'details_through_a_form_including_age', type: 'number' }] },
+          },
+        },
+        {
+          id: 'i1',
+          data: {
+            type: 'if_else',
+            config: {
+              conditions: [
+                {
+                  field: '$json.details_through_a_form_including_age',
+                  operator: 'greater_than',
+                  value: 18,
+                },
+              ],
+            },
+          },
+        },
+      ],
+      edges: [{ source: 'f1', target: 'i1' }],
+    } as any;
+    const { errors } = validateIfElseConditionsAgainstUpstreamForm(wf);
+    expect(errors).toEqual([]);
+  });
 });

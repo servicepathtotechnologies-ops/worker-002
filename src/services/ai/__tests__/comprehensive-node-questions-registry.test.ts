@@ -47,7 +47,7 @@ describe('generateComprehensiveNodeQuestions + registry helpCategory', () => {
     expect(spreadsheetQ).toBeUndefined();
   });
 
-  it('does not treat webhookUrl as credential question category', () => {
+  it('treats webhookUrl as credential (vault) for slack_webhook when empty', () => {
     const wf: Workflow = {
       nodes: [
         {
@@ -64,7 +64,8 @@ describe('generateComprehensiveNodeQuestions + registry helpCategory', () => {
       edges: [],
     };
     const { questions } = generateComprehensiveNodeQuestions(wf, {}, { categories: ['credential'] });
-    const webhookQ = questions.find((q) => q.fieldName.toLowerCase().includes('webhook'));
-    expect(webhookQ).toBeUndefined();
+    const webhookQ = questions.find((q) => q.fieldName === 'webhookUrl');
+    expect(webhookQ).toBeDefined();
+    expect(webhookQ?.category).toBe('credential');
   });
 });

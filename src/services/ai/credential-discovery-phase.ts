@@ -203,6 +203,25 @@ export class CredentialDiscoveryPhase {
               console.log(`[CredentialDiscovery] ✅ Slack webhook URL found in node config for ${nodeId}`);
             }
           }
+          // OAuth: vault tokens are not stored in config, but we persist a reference (e.g. credentialId=google)
+          // after attach-inputs auto-inject. Treat non-placeholder refs as satisfied even when userId is absent.
+          else if (contract.type === 'oauth') {
+            const cid = String((config as Record<string, unknown>).credentialId ?? '').trim();
+            const cref = String((config as Record<string, unknown>).credentialRef ?? '').trim();
+            const ref = cid || cref;
+            const lower = ref.toLowerCase();
+            if (
+              ref &&
+              lower !== 'none' &&
+              !ref.includes('{{') &&
+              !lower.includes('placeholder')
+            ) {
+              satisfied = true;
+              console.log(
+                `[CredentialDiscovery] ✅ OAuth vault reference in node config for ${nodeId} (${nodeType})`
+              );
+            }
+          }
           // For other credential types, check schema required fields
           else if (schema && schema.configSchema) {
             const requiredFields = schema.configSchema.required || [];
@@ -442,6 +461,57 @@ export class CredentialDiscoveryPhase {
       errors,
     };
   }
+}
+
+/** Aligns discovery output with `buildCredentialStatuses` / wizard filtering (uses vaultKey as credentialId). */
+export function mapDiscoveryResultToCredentialStatusResolution(discovery: CredentialDiscoveryResult): {
+  required?: Array<{ credentialId?: string; displayName?: string; nodeIds?: string[] }>;
+  missing?: Array<{ credentialId?: string; displayName?: string; nodeIds?: string[] }>;
+  satisfied?: Array<{ credentialId?: string; displayName?: string; nodeIds?: string[] }>;
+} {
+  const toRow = (c: CredentialRequirement) => ({
+    credentialId: String(c.vaultKey || c.displayName || 'credential'),
+    displayName: c.displayName,
+    nodeIds: Array.isArray(c.nodeIds) ? c.nodeIds : [],
+  });
+  return {
+    required: discovery.requiredCredentials.filter((c) => c.required).map(toRow),
+    missing: (discovery.missingCredentials || []).map(toRow),
+    satisfied: (discovery.satisfiedCredentials || []).map(toRow),
+  };
+}
+
+/** Same shape as legacy `discoveredCredentials` entries from generate-workflow (Slack webhook field hint). */
+export function mapDiscoveryMissingToWizardDiscoveredCredentials(discovery: CredentialDiscoveryResult): Array<{
+  credentialId: string;
+  displayName: string;
+  provider: string;
+  type: string;
+  resolved: boolean;
+  required: boolean;
+  vaultKey: string;
+  nodeIds: string[];
+  primaryFieldName?: string;
+}> {
+  return (discovery.missingCredentials || [])
+    .filter((c) => {
+      const isGoogleOAuth =
+        (String(c.provider || '').toLowerCase() === 'google' && c.type === 'oauth') ||
+        (String(c.vaultKey || '').toLowerCase() === 'google' && c.type === 'oauth');
+      return !isGoogleOAuth;
+    })
+    .map((c) => ({
+      credentialId: c.vaultKey,
+      displayName: c.displayName,
+      provider: c.provider,
+      type: c.type,
+      resolved: false,
+      required: c.required !== false,
+      vaultKey: c.vaultKey,
+      nodeIds: c.nodeIds || [],
+      primaryFieldName:
+        c.type === 'webhook' && String(c.provider || '').toLowerCase() === 'slack' ? 'webhookUrl' : undefined,
+    }));
 }
 
 // Export singleton instance

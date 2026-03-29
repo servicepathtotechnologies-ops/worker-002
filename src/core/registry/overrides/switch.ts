@@ -108,11 +108,22 @@ export function overrideSwitch(
 
       const casesMode = resolveEffectiveFieldFillMode('cases', inputSchema, config);
       const rawCases = config.cases ?? config.rules;
+      let parsedCases: unknown = rawCases;
+      if (typeof parsedCases === 'string') {
+        try {
+          parsedCases = JSON.parse(parsedCases);
+        } catch {
+          parsedCases = null;
+        }
+      }
       if (casesMode !== 'runtime_ai') {
-        if (!Array.isArray(rawCases) || rawCases.length === 0) {
+        if (!Array.isArray(parsedCases) || parsedCases.length === 0) {
           extraErrors.push("Switch: 'cases' must contain at least one case unless fill mode is runtime_ai");
         } else {
-          const values = rawCases.map((c: any) => (c?.value != null ? String(c.value) : '')).filter(Boolean);
+          const values = parsedCases
+            .map((c: any) => (typeof c === 'string' ? c : c?.value != null ? String(c.value) : ''))
+            .map((v: string) => v.trim())
+            .filter(Boolean);
           const seen = new Set<string>();
           for (const v of values) {
             if (seen.has(v)) {

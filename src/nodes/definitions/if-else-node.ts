@@ -5,6 +5,7 @@
  */
 
 import { NodeDefinition, NodeInputSchema, NodeOutputSchema } from '../../core/types/node-definition';
+import { normalizeIfElseConfig, validateCanonicalIfElseConditions } from '../../core/utils/if-else-conditions';
 
 export const ifElseNodeDefinition: NodeDefinition = {
   type: 'if_else',
@@ -16,29 +17,16 @@ export const ifElseNodeDefinition: NodeDefinition = {
   inputSchema: {
     conditions: {
       type: 'array',
-      description: 'Conditions to evaluate. Each condition must have an expression.',
+      description: 'Conditions to evaluate. Each condition must include field, operator, and value.',
       required: true,
-      default: [{ expression: '' }],
+      default: [{ field: '$json.value', operator: 'equals', value: '' }],
       examples: [
-        [{ expression: '{{input.age}} >= 18' }],
-        [{ expression: '{{input.status}} === "active"' }],
+        [{ field: '$json.age', operator: 'greater_than_or_equal', value: 18 }],
+        [{ field: '$json.status', operator: 'equals', value: 'active' }],
       ],
       validation: (value) => {
-        if (!Array.isArray(value)) {
-          return 'Conditions must be an array';
-        }
-        if (value.length === 0) {
-          return 'At least one condition is required';
-        }
-        for (const cond of value) {
-          if (typeof cond !== 'object' || !cond.expression) {
-            return 'Each condition must have an expression field';
-          }
-          if (typeof cond.expression !== 'string' || cond.expression.trim() === '') {
-            return 'Condition expression cannot be empty';
-          }
-        }
-        return true;
+        const errors = validateCanonicalIfElseConditions(value);
+        return errors.length > 0 ? errors[0] : true;
       },
     },
     combineOperation: {
@@ -83,14 +71,7 @@ export const ifElseNodeDefinition: NodeDefinition = {
     } else if (inputs.conditions.length === 0) {
       errors.push('At least one condition is required');
     } else {
-      for (let i = 0; i < inputs.conditions.length; i++) {
-        const cond = inputs.conditions[i];
-        if (typeof cond !== 'object' || !cond.expression) {
-          errors.push(`Condition ${i + 1} must have an expression field`);
-        } else if (typeof cond.expression !== 'string' || cond.expression.trim() === '') {
-          errors.push(`Condition ${i + 1} expression cannot be empty`);
-        }
-      }
+      errors.push(...validateCanonicalIfElseConditions(inputs.conditions));
     }
 
     // Validate combineOperation if provided
@@ -105,7 +86,7 @@ export const ifElseNodeDefinition: NodeDefinition = {
   },
 
   defaultInputs: () => ({
-    conditions: [{ expression: '' }],
+    conditions: [{ field: '$json.value', operator: 'equals', value: '' }],
     combineOperation: 'AND',
   }),
 
@@ -113,22 +94,7 @@ export const ifElseNodeDefinition: NodeDefinition = {
     {
       version: 2,
       migrate: (oldInputs: Record<string, any>) => {
-        // Migration from v1 (condition string) to v2 (conditions array)
-        if (oldInputs.condition && !oldInputs.conditions) {
-          const conditionStr = typeof oldInputs.condition === 'string' 
-            ? oldInputs.condition 
-            : String(oldInputs.condition);
-          
-          if (conditionStr.trim()) {
-            return {
-              ...oldInputs,
-              conditions: [{ expression: conditionStr.trim() }],
-              // Keep condition for backward compatibility during transition
-              condition: conditionStr,
-            };
-          }
-        }
-        return oldInputs;
+        return normalizeIfElseConfig(oldInputs);
       },
     },
   ],

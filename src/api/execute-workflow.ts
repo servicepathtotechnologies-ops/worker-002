@@ -15,6 +15,7 @@ import { safeParse, safeDeepClone } from '../shared/safe-json';
 import { getNodeOutputSchema, getNodeOutputType } from '../core/types/node-output-types';
 // TypeConverter removed - not used in this file
 import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../core/utils/unified-node-type-normalizer';
+import { resolveNodeType } from '../core/utils/node-type-resolver-util';
 import { getMemoryManager } from '../memory';
 import { ErrorCode } from '../core/utils/error-codes';
 // Enterprise Architecture - Multi-tier state management
@@ -28,6 +29,11 @@ import { normalizeNodeOutput as normalizeNodeOutputContract } from '../core/exec
 import { resolveTypedValue, resolveWithSchema } from '../core/execution/typed-value-resolver';
 import { evaluateSwitchRoutingExpression } from '../core/utils/switch-expression-eval';
 import { getNestedValue } from '../core/utils/object-utils';
+import {
+  normalizeIfElseConfig as normalizeIfElseConfigCanonical,
+  normalizeIfElseConditions as normalizeIfElseConditionsCanonical,
+  validateCanonicalIfElseConditions,
+} from '../core/utils/if-else-conditions';
 import { executeClickUpNode } from '../executors/clickup.executor';
 import Airtable from 'airtable';
 import FormData from 'form-data';
@@ -42,6 +48,13 @@ import { executeDatabaseNode } from '../services/database/database-node-handler'
 import { EXECUTION_OBSERVABILITY_KEYS } from '../core/execution/dynamic-node-executor';
 
 const EXECUTION_RUNTIME_MARKER = 'runtime-marker-2026-03-20-v1';
+const EXECUTION_SYSTEM_ALLOWED_TYPES = new Set<string>(['manual_trigger', 'log_output']);
+
+function getIntentAuthorityExecutionMode(): 'shadow' | 'warn' | 'strict' {
+  const raw = String(process.env.INTENT_AUTHORITY_ENFORCEMENT_MODE || 'strict').toLowerCase();
+  if (raw === 'shadow' || raw === 'warn' || raw === 'strict') return raw;
+  return 'strict';
+}
 
 interface WorkflowNode {
   id: string;
@@ -118,28 +131,7 @@ function topologicalSort(nodes: WorkflowNode[], edges: WorkflowEdge[]): Workflow
  * Converts string or object formats to the expected array format
  */
 function normalizeIfElseConditions(config: Record<string, unknown>): Record<string, unknown> {
-  const normalized = { ...config };
-  
-  if (config.condition && !config.conditions) {
-    // Old format: condition (string) -> convert to conditions array
-    const conditionStr = typeof config.condition === 'string' ? config.condition : String(config.condition);
-    if (conditionStr.trim()) {
-      normalized.conditions = [{ expression: conditionStr.trim() }];
-    }
-  } else if (config.conditions && !Array.isArray(config.conditions)) {
-    // Handle case where conditions is sent as string or object
-    if (typeof config.conditions === 'string') {
-      normalized.conditions = [{ expression: config.conditions }];
-    } else if (typeof config.conditions === 'object' && config.conditions !== null) {
-      const conditionsObj = config.conditions as Record<string, unknown>;
-      if (conditionsObj.expression) {
-        // Single condition object - wrap in array
-        normalized.conditions = [config.conditions];
-      }
-    }
-  }
-  
-  return normalized;
+  return normalizeIfElseConfigCanonical(config);
 }
 
 /**
@@ -493,26 +485,7 @@ export async function executeNodeLegacy(
 
   // ✅ FIX: Normalize If/Else config before validation
   // Convert condition (string) to conditions (array) format for validation
-  const normalizedConfig = { ...config };
-  if (type === 'if_else') {
-    if (config.condition && !config.conditions) {
-      // Old format: condition (string) -> convert to conditions array
-      const conditionStr = typeof config.condition === 'string' ? config.condition : String(config.condition);
-      if (conditionStr.trim()) {
-        normalizedConfig.conditions = [{ expression: conditionStr.trim() }];
-      }
-    } else if (config.conditions && !Array.isArray(config.conditions)) {
-      // Handle case where conditions is sent as string or object
-      if (typeof config.conditions === 'string') {
-        normalizedConfig.conditions = [{ expression: config.conditions }];
-      } else if (typeof config.conditions === 'object' && config.conditions !== null) {
-        const conditionsObj = config.conditions as Record<string, unknown>;
-        if (conditionsObj.expression) {
-          normalizedConfig.conditions = [config.conditions];
-        }
-      }
-    }
-  }
+  const normalizedConfig = type === 'if_else' ? normalizeIfElseConditions(config) : { ...config };
 
   // Phase 3: Validate node configuration before execution (using normalized config)
   const configValidation = validationMiddleware.validateConfig(type, normalizedConfig, node.id);
@@ -10611,76 +10584,25 @@ export async function executeNodeLegacy(
         });
       }
       
-      // ✅ FIX: Handle both formats - normalize condition/conditions before extraction
-      // Runtime-first contract: consume resolved runtime inputs before falling back to static config.
-      // Support: condition (string), conditions (array), or conditions (string - needs conversion)
+      // Canonical condition handling: normalize all legacy/runtime variants first.
       let condition: Condition | string | null = null;
       const runtimeConditions = (inputObj as any)?.conditions ?? (mergedInput as any)?.conditions;
       const runtimeCondition = (inputObj as any)?.condition ?? (mergedInput as any)?.condition;
       const sourceConditions = runtimeConditions ?? config.conditions;
       const sourceCondition = runtimeCondition ?? config.condition;
-      
-      // Normalize: Convert condition (string) to conditions (array) format
-      let normalizedConditions: any[] | null = null;
-      if (sourceConditions) {
-        if (Array.isArray(sourceConditions)) {
-          normalizedConditions = sourceConditions;
-        } else if (typeof sourceConditions === 'string') {
-          // Frontend sometimes sends conditions as string - convert to array
-          normalizedConditions = [{ expression: sourceConditions }];
-        } else if (typeof sourceConditions === 'object' && sourceConditions !== null) {
-          const conditionsObj = sourceConditions as Record<string, unknown>;
-          if (conditionsObj.expression) {
-            // Single condition object - wrap in array
-            normalizedConditions = [sourceConditions];
-          }
-        }
-      } else if (sourceCondition) {
-        // Old format: condition (string) -> convert to conditions array
-        const conditionStr = typeof sourceCondition === 'string' ? sourceCondition : String(sourceCondition);
-        if (conditionStr.trim()) {
-          normalizedConditions = [{ expression: conditionStr.trim() }];
-        }
+      const normalizedConditions = normalizeIfElseConditionsCanonical(sourceConditions ?? sourceCondition);
+      const canonicalErrors = validateCanonicalIfElseConditions(normalizedConditions);
+      if (canonicalErrors.length > 0) {
+        console.warn('[If/Else] Canonical condition validation failed:', canonicalErrors);
       }
-      
-      // Extract condition from normalized array
-      if (normalizedConditions && normalizedConditions.length > 0) {
+
+      if (normalizedConditions.length > 0) {
         const firstCondition = normalizedConditions[0];
-        if (typeof firstCondition === 'string') {
-          condition = firstCondition;
-        } else if (firstCondition && typeof firstCondition === 'object' && firstCondition.expression) {
-          condition = firstCondition.expression;
-        } else if (firstCondition && typeof firstCondition === 'object') {
-          // Structured condition format - support both old (leftValue) and new (field) formats
-          const validOperations: Condition['operation'][] = ['equals', 'not_equals', 'greater_than', 'less_than', 'greater_than_or_equal', 'less_than_or_equal', 'contains', 'not_contains'];
-          
-          // New format: { field, operator, value }
-          if ('field' in firstCondition && 'operator' in firstCondition) {
-            const operation = firstCondition.operator || 'equals';
-            const validOperation: Condition['operation'] = validOperations.includes(operation as Condition['operation']) 
-              ? (operation as Condition['operation'])
-              : 'equals';
-            
-            condition = {
-              leftValue: firstCondition.field,
-              operation: validOperation,
-              rightValue: firstCondition.value,
-            };
-          }
-          // Old format: { leftValue, operation, rightValue }
-          else if ('leftValue' in firstCondition) {
-            const operation = firstCondition.operation || 'equals';
-            const validOperation: Condition['operation'] = validOperations.includes(operation as Condition['operation']) 
-              ? (operation as Condition['operation'])
-              : 'equals';
-            
-            condition = {
-              leftValue: firstCondition.leftValue,
-              operation: validOperation,
-              rightValue: firstCondition.rightValue,
-            };
-          }
-        }
+        condition = {
+          leftValue: firstCondition.field,
+          operation: firstCondition.operator,
+          rightValue: firstCondition.value,
+        };
       }
       
       if (!condition) {
@@ -12818,6 +12740,32 @@ export default async function executeWorkflowHandler(req: Request, res: Response
     // This ensures workflows with multiple triggers or fan-out are converted to linear chains
     const { normalizeWorkflowGraph } = await import('../core/utils/workflow-graph-normalizer');
     const linearizedGraph = normalizeWorkflowGraph({ nodes: normalized.nodes, edges: normalized.edges });
+
+    // Intent-authority execution guard: prevent semantic drift at execution time.
+    const authoritativeNodeTypes: string[] = Array.isArray((workflow as any)?.planMandatoryNodeTypes)
+      ? ((workflow as any).planMandatoryNodeTypes as string[]).filter((t) => typeof t === 'string')
+      : Array.isArray((workflow as any)?.mandatoryNodeTypes)
+      ? ((workflow as any).mandatoryNodeTypes as string[]).filter((t) => typeof t === 'string')
+      : Array.isArray((workflow as any)?.metadata?.mandatoryNodeTypes)
+      ? ((workflow as any).metadata.mandatoryNodeTypes as string[]).filter((t) => typeof t === 'string')
+      : [];
+    if (authoritativeNodeTypes.length > 0) {
+      const authoritativeSet = new Set(authoritativeNodeTypes.map((t) => resolveNodeType(t)));
+      const unexpected = linearizedGraph.nodes
+        .map((n: any) => resolveNodeType(unifiedNormalizeNodeType(n) || n.data?.type || n.type || ''))
+        .filter((t) => !authoritativeSet.has(t) && !EXECUTION_SYSTEM_ALLOWED_TYPES.has(t));
+      if (unexpected.length > 0) {
+        const message = `Execution blocked by intent-authority guard: unexpected semantic node(s): ${[...new Set(unexpected)].join(', ')}`;
+        console.warn(`[ExecuteWorkflow] ${message}`);
+        if (getIntentAuthorityExecutionMode() !== 'shadow') {
+          return res.status(409).json({
+            error: 'intent_authority_violation',
+            message,
+            workflowId,
+          });
+        }
+      }
+    }
     
     // ✅ TELEMETRY: Log normalization fixes for auditing
     if (normalized.migrationsApplied.length > 0 || linearizedGraph.nodes.length !== normalized.nodes.length) {
@@ -12986,6 +12934,14 @@ export default async function executeWorkflowHandler(req: Request, res: Response
                 nodeLabel: node.data?.label || node.id,
                 fieldName: requiredField,
                 fieldType: expectedType,
+                inputType:
+                  expectedType === 'number'
+                    ? 'number'
+                    : expectedType === 'boolean'
+                      ? 'select'
+                      : (expectedType === 'array' || expectedType === 'object' || expectedType === 'json')
+                        ? 'textarea'
+                        : 'text',
                 description: fieldSchema.description || requiredField,
                 required: true,
               });

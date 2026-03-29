@@ -103,7 +103,14 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     for (const schema of allSchemas) {
       try {
         const baseDefinition = this.convertNodeLibrarySchemaToUnified(schema);
-        const definition = applyNodeDefinitionOverrides(baseDefinition, schema);
+        const overridden = applyNodeDefinitionOverrides(baseDefinition, schema);
+        // ✅ Universal fix: overrides can change inputSchema ownership/helpCategory.
+        // Credential schema must be derived from the final (post-override) inputSchema,
+        // otherwise the UI may ask twice (config + credential) for the same field.
+        const definition: UnifiedNodeDefinition = {
+          ...overridden,
+          credentialSchema: this.extractCredentialSchema(schema, overridden.inputSchema),
+        };
         this.register(definition);
       } catch (error: any) {
         console.error(`[UnifiedNodeRegistry] ⚠️  Failed to convert schema for ${schema.type}:`, error?.message || error);
@@ -120,7 +127,11 @@ export class UnifiedNodeRegistry implements INodeRegistry {
         try {
           console.log(`[UnifiedNodeRegistry] 🔄 Attempting explicit registration of log_output...`);
           const baseDefinition = this.convertNodeLibrarySchemaToUnified(logOutputSchema);
-          const definition = applyNodeDefinitionOverrides(baseDefinition, logOutputSchema);
+          const overridden = applyNodeDefinitionOverrides(baseDefinition, logOutputSchema);
+          const definition: UnifiedNodeDefinition = {
+            ...overridden,
+            credentialSchema: this.extractCredentialSchema(logOutputSchema, overridden.inputSchema),
+          };
           this.register(definition);
           console.log(`[UnifiedNodeRegistry] ✅ Successfully registered log_output after retry`);
           

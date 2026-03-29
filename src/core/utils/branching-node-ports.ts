@@ -14,15 +14,24 @@ export function extractSwitchCasePortNames(config?: Record<string, any>): string
   if (!config) return [];
   try {
     const casesRaw = config.cases ?? config.rules ?? [];
-    let cases: Array<{ value?: string }> = [];
+    let cases: Array<{ value?: string } | string> = [];
     if (typeof casesRaw === 'string') {
-      cases = JSON.parse(casesRaw);
+      const parsed = JSON.parse(casesRaw);
+      if (Array.isArray(parsed)) {
+        cases = parsed;
+      }
     } else if (Array.isArray(casesRaw)) {
       cases = casesRaw;
     }
-    return cases
-      .map((c: any) => (c?.value != null ? String(c.value) : ''))
-      .filter((v: string) => v.length > 0);
+    const seen = new Set<string>();
+    for (const c of cases) {
+      const raw = typeof c === 'string' ? c : c?.value != null ? String(c.value) : '';
+      const value = raw.trim();
+      if (!value) continue;
+      seen.add(value);
+    }
+    // Ensure stable unique output handles for deterministic edge mapping.
+    return Array.from(seen);
   } catch {
     return [];
   }

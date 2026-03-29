@@ -8,6 +8,7 @@ import { getSupabaseClient } from '../core/database/supabase-compat';
 import { executeNodeDynamically } from '../core/execution/dynamic-node-executor';
 import { resolveConfigTemplates } from '../core/utils/universal-template-resolver';
 import { SupabaseClient } from '@supabase/supabase-js';
+import { normalizeIfElseConfig } from '../core/utils/if-else-conditions';
 
 export type FixAgentStatus = 'skipped' | 'processing' | 'completed' | 'failed';
 
@@ -308,57 +309,13 @@ export class FixAgent {
     const audit: FixAuditEntry[] = [];
     const now = Date.now();
 
-    const normalizeExpression = (expr: any): string => {
-      if (typeof expr !== 'string') return String(expr ?? '').trim();
-      const trimmed = expr.trim();
-      if (!trimmed) return trimmed;
-
-      // If already a {{ ... }} template, keep as is.
-      if (trimmed.startsWith('{{') && trimmed.endsWith('}}')) {
-        return trimmed;
-      }
-
-      // If it looks like a bare path (e.g. $json.field or json.field), wrap it.
-      if (
-        trimmed.startsWith('$json.') ||
-        trimmed.startsWith('json.') ||
-        trimmed.startsWith('input.') ||
-        trimmed.startsWith('trigger.')
-      ) {
-        return `{{${trimmed}}}`;
-      }
-
-      return trimmed;
-    };
-
     w.nodes = w.nodes.map((node) => {
       const canonicalType = unifiedNormalizeNodeType(node);
       if (canonicalType !== 'if_else') return node;
 
       const originalConfig = (node.data?.config || {}) as any;
-      const config = { ...originalConfig };
-      let changed = false;
-
-      // Old format: single condition string.
-      if (config.condition && !config.conditions) {
-        const expr = normalizeExpression(config.condition);
-        config.conditions = [{ expression: expr }];
-        changed = true;
-      } else if (config.conditions && !Array.isArray(config.conditions)) {
-        const single = config.conditions;
-        const expr = normalizeExpression((single as any).expression ?? single);
-        config.conditions = [{ ...(single as any), expression: expr }];
-        changed = true;
-      } else if (Array.isArray(config.conditions)) {
-        const normalizedArray = config.conditions.map((c: any) => {
-          const expr = normalizeExpression(c?.expression ?? '');
-          return { ...c, expression: expr };
-        });
-        if (JSON.stringify(normalizedArray) !== JSON.stringify(config.conditions)) {
-          config.conditions = normalizedArray;
-          changed = true;
-        }
-      }
+      const config = normalizeIfElseConfig(originalConfig);
+      const changed = JSON.stringify(originalConfig) !== JSON.stringify(config);
 
       if (!changed) return node;
 

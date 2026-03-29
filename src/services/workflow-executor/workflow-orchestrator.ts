@@ -12,6 +12,9 @@ import { LRUNodeOutputsCache } from '../../core/cache/lru-node-outputs-cache';
 import { executionReliability, RetryConfig } from '../execution-reliability';
 import { workflowCheckpoint } from '../workflow-checkpoint';
 import { getWorkflowLogger } from '../workflow-logger';
+import { createExecutionContext, setNodeOutput } from '../../core/execution/typed-execution-context';
+import { evaluateCondition as evaluateTypedCondition, Condition } from '../../core/execution/typed-condition-evaluator';
+import { normalizeIfElseConditions } from '../../core/utils/if-else-conditions';
 
 export interface WorkflowNode {
   id: string;
@@ -499,33 +502,38 @@ export class WorkflowOrchestrator extends EventEmitter {
    * Evaluate if-else condition
    */
   private evaluateCondition(node: WorkflowNode, context: ExecutionContext): boolean {
-    const config = node.data.config as any;
-    const condition = config?.condition || '';
-    
-    if (!condition) return true;
+    const config = (node.data.config || {}) as Record<string, unknown>;
+    const conditions = normalizeIfElseConditions(config.conditions ?? config.condition);
+    if (conditions.length === 0) return false;
 
-    // Simple condition evaluation
-    // In production, use a proper expression evaluator
-    try {
-      const input = this.getNodeInput(node, [], context);
-      const inputObj = typeof input === 'object' && input !== null ? input : { value: input };
-      
-      // Replace variables in condition
-      let evaluatedCondition = condition;
-      const allOutputs = context.nodeOutputs.getAll();
-      Object.keys(allOutputs).forEach(key => {
-        const value = allOutputs[key];
-        evaluatedCondition = evaluatedCondition.replace(
-          new RegExp(`\\$\\{${key}\\}`, 'g'),
-          JSON.stringify(value)
-        );
-      });
-
-      // Evaluate condition (simplified - use proper evaluator in production)
-      return eval(evaluatedCondition);
-    } catch {
-      return false;
+    const execContext = createExecutionContext(context.input);
+    const allOutputs = context.nodeOutputs.getAll();
+    Object.entries(allOutputs).forEach(([nodeId, output]) => {
+      setNodeOutput(execContext, nodeId, output);
+      if (output && typeof output === 'object' && !Array.isArray(output)) {
+        Object.assign(execContext.variables, output as Record<string, unknown>);
+      }
+    });
+    if (execContext.lastOutput && typeof execContext.lastOutput === 'object') {
+      execContext.variables.$json = execContext.lastOutput as Record<string, unknown>;
+      execContext.variables.json = execContext.lastOutput as Record<string, unknown>;
     }
+
+    const combine =
+      typeof config.combineOperation === 'string' && config.combineOperation.toUpperCase() === 'OR'
+        ? 'OR'
+        : 'AND';
+    const results = conditions.map((condition) =>
+      evaluateTypedCondition(
+        {
+          leftValue: condition.field,
+          operation: condition.operator as Condition['operation'],
+          rightValue: condition.value,
+        },
+        execContext
+      )
+    );
+    return combine === 'OR' ? results.some(Boolean) : results.every(Boolean);
   }
 
   /**
