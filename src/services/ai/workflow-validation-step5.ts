@@ -2,6 +2,8 @@
 // Implements the 5 mandatory validation layers and self-healing engine
 
 import { Workflow, WorkflowNode, WorkflowEdge } from '../../core/types/ai-types';
+import { resolveEffectiveFieldFillMode } from '../../core/utils/fill-mode-resolver';
+import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 
 export enum ValidationLayer {
   LAYER_1_STRUCTURAL_VALIDATION = 'LAYER_1_STRUCTURAL_VALIDATION',
@@ -307,7 +309,13 @@ export class WorkflowValidationStep5 {
 
       // Check required fields
       const requiredFields = this.getRequiredFields(nodeType);
+      const nodeDef = unifiedNodeRegistry.get(nodeType);
       requiredFields.forEach(field => {
+        // Skip fields deferred to runtime_ai — intentionally empty until execution
+        if (nodeDef?.inputSchema) {
+          const mode = resolveEffectiveFieldFillMode(field, nodeDef.inputSchema, config as Record<string, any>);
+          if (mode === 'runtime_ai') return;
+        }
         if (!this.hasField(config, field)) {
           errors.push({
             type: 'missing_required_field',

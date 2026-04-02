@@ -2122,67 +2122,11 @@ export class ProductionWorkflowBuilder {
             ? unifiedNormalizeNodeTypeString(sourceNode.type || sourceNode.data?.type || '')
             : undefined;
 
+          // ✅ UNIVERSAL FIX: Use planSwitchCasesFromPrompt exclusively — no hardcoded fallback patterns.
+          // All case extraction is intent-driven via switch-case-plan.ts (registry-driven, no hardcoding).
           const plan = planSwitchCasesFromPrompt(originalPrompt, upstreamType, intent);
           const switchCases: Array<{ value: string; label: string }> = plan.cases.map(c => ({ ...c }));
           const caseToNodeMapping: Map<string, string> = new Map();
-
-          const casePattern =
-            /(\w+)\s+statuses?\s+(?:send|trigger|route|go to|use)\s+(?:notifications?|alerts?|messages?|emails?|logs?)?\s*(?:via|through|to|using)\s+(\w+)/gi;
-          let match: RegExpExecArray | null;
-          while ((match = casePattern.exec(originalPrompt)) !== null) {
-            const caseValue = match[1].toLowerCase();
-            const targetNodeType = match[2].toLowerCase();
-            let normalizedNodeType = targetNodeType;
-            if (targetNodeType.includes('slack')) normalizedNodeType = 'slack_message';
-            else if (targetNodeType.includes('gmail') || targetNodeType.includes('email')) normalizedNodeType = 'google_gmail';
-            else if (targetNodeType.includes('log')) normalizedNodeType = 'log_output';
-            if (!switchCases.some(c => c.value === caseValue)) {
-              switchCases.push({
-                value: caseValue,
-                label: caseValue.charAt(0).toUpperCase() + caseValue.slice(1),
-              });
-            }
-            caseToNodeMapping.set(caseValue, normalizedNodeType);
-          }
-
-          if (switchCases.length === 0) {
-            const ifPattern =
-              /(?:if|when)\s+(?:\w+\s+)?(?:is|equals|==)\s+["']?(\w+)["']?\s+(?:route|send|go|use)\s+(?:to|via|through)\s+(\w+)/gi;
-            while ((match = ifPattern.exec(originalPrompt)) !== null) {
-              const caseValue = match[1].toLowerCase();
-              const targetNodeType = match[2].toLowerCase();
-              let normalizedNodeType = targetNodeType;
-              if (targetNodeType.includes('slack')) normalizedNodeType = 'slack_message';
-              else if (targetNodeType.includes('gmail') || targetNodeType.includes('email')) normalizedNodeType = 'google_gmail';
-              else if (targetNodeType.includes('log')) normalizedNodeType = 'log_output';
-              switchCases.push({
-                value: caseValue,
-                label: caseValue.charAt(0).toUpperCase() + caseValue.slice(1),
-              });
-              caseToNodeMapping.set(caseValue, normalizedNodeType);
-            }
-          }
-
-          if (switchCases.length === 0 && intent.actions) {
-            const statusKeywords = ['active', 'pending', 'completed', 'success', 'failed', 'error', 'new', 'old'];
-            for (const action of intent.actions) {
-              const actionType = action.type.toLowerCase();
-              const actionConfig = action.config || {};
-              for (const keyword of statusKeywords) {
-                if (actionType.includes(keyword) && !switchCases.some(c => c.value === keyword)) {
-                  switchCases.push({ value: keyword, label: keyword.charAt(0).toUpperCase() + keyword.slice(1) });
-                  caseToNodeMapping.set(keyword, actionType);
-                }
-              }
-              const configStr = JSON.stringify(actionConfig).toLowerCase();
-              for (const keyword of statusKeywords) {
-                if (configStr.includes(keyword) && !switchCases.some(c => c.value === keyword)) {
-                  switchCases.push({ value: keyword, label: keyword.charAt(0).toUpperCase() + keyword.slice(1) });
-                  caseToNodeMapping.set(keyword, actionType);
-                }
-              }
-            }
-          }
 
           if (switchCases.length === 0) {
             const outputNodes = workflow.nodes.filter(n => {
@@ -2199,18 +2143,9 @@ export class ProductionWorkflowBuilder {
             });
           }
 
-          let expressionTemplate = plan.expressionTemplate;
-          const expressionPatterns = [
-            /(?:route|switch|based|by|on)\s+(?:by|on)?\s+(\w+)/i,
-            /(\w+)\s+(?:status|field|value|type|category)/i,
-          ];
-          for (const pattern of expressionPatterns) {
-            const m = originalPrompt.match(pattern);
-            if (m && m[1]) {
-              expressionTemplate = `{{$json.${m[1].toLowerCase()}}}`;
-              break;
-            }
-          }
+          // ✅ UNIVERSAL FIX: Use expressionTemplate from planSwitchCasesFromPrompt directly.
+          // No hardcoded regex overrides — the plan already derives the correct field from the registry.
+          const expressionTemplate = plan.expressionTemplate;
 
           if (switchCases.length > 0) {
             newNode.data.config.cases = switchCases;

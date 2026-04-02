@@ -297,7 +297,13 @@ export interface UnifiedNodeDefinition {
  * Used by WorkflowIntentPlan and Graph_Orchestrator switch edge wiring.
  */
 export interface CaseNodeMapping {
-  [caseValue: string]: string;
+  [caseValue: string]:
+    | string
+    | {
+        targetNodeType?: string;
+        targetNodeId?: string;
+        slot?: string;
+      };
 }
 
 /**

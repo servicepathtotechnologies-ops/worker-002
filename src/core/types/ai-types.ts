@@ -105,6 +105,11 @@ export interface Constraint {
 export interface WorkflowMetadata {
   /** Raw user textarea / API originalPrompt — used for form field extraction (not merged planner text). */
   originalUserPrompt?: string;
+  /**
+   * When true, skip pruning form fields to intent-derived keys (merge-on-missing-refs / placeholder-only).
+   * Use when users add ad-hoc fields in the editor that are not stated in the original prompt.
+   */
+  disableFormFieldIntentPrune?: boolean;
   generatedFrom?: string;
   requirements?: string;
   validation?: WorkflowValidation;

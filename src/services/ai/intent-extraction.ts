@@ -7,6 +7,7 @@ import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 import { unifiedNormalizeNodeType } from '../../core/utils/unified-node-type-normalizer';
 import { normalizeIfElseConfig } from '../../core/utils/if-else-conditions';
 import { normalizeFormFieldsIdentity } from '../../core/utils/form-field-identity';
+import { inferFormFieldTypeFromKey } from './form-field-type-resolver';
 
 export const FORM_FIELDS_PLACEHOLDER_FIELD_ID = 'field_response_placeholder';
 
@@ -46,6 +47,11 @@ export function sanitizeIntentTextForFormFieldExtraction(raw: string): string {
   for (const line of lines) {
     const t = line.trim();
     if (
+      /^detected\s+nodes\s*:/i.test(t) ||
+      /^branch\s+slots\s*:/i.test(t) ||
+      /^execution\s*:/i.test(t) ||
+      /^terminals?\s*:/i.test(t) ||
+      /^intent\s+alignment\s*:/i.test(t) ||
       /ownership\s*=\s*(structural|credential|value)/i.test(t) ||
       /\b(buildtime_ai_once|manual_static|runtime_ai)\b/i.test(t) ||
       /\brole\s*=\s*(title_like|raw_json|content|long_body)/i.test(t) ||
@@ -66,7 +72,10 @@ export function sanitizeIntentTextForFormFieldExtraction(raw: string): string {
 function isBoilerplateOrDocFormKey(k: string): boolean {
   if (!k) return true;
   if (k.length > 28) return true;
+  if (/^\d+_/.test(k)) return true;
   if (/^(default_|from_the_|buildtime_|manual_|runtime_)/.test(k)) return true;
+  if (/(^|_)(total|detected|unique|types|slots|execution|terminal|terminals|alignment)($|_)/.test(k)) return true;
+  if (/^\d+_unique_types$/.test(k)) return true;
   if (/(^|_)(conditions|cases)$/.test(k) && (k.includes('if_else') || k.includes('switch'))) return true;
   if (k === 'etc' || k === 'universal' || k === 'when_shown') return true;
   if (k === 'are_filled' || k === 'from_the_narrative' || k === 'default_fill_mode') return true;
@@ -104,6 +113,15 @@ function isExecutionLineNodeSlug(k: string): boolean {
   return EXECUTION_LINE_NODE_SLUGS.has(k);
 }
 
+export function isLikelyContaminatedFieldKey(raw: string): boolean {
+  const k = normalizeFieldKey(raw || '');
+  if (!k) return true;
+  if (isBoilerplateOrDocFormKey(k)) return true;
+  if (isExecutionLineNodeSlug(k)) return true;
+  if (/(^|_)(detected|nodes|branch|slots|execution|terminal|terminals|unique|types|total)($|_)/.test(k)) return true;
+  return false;
+}
+
 export function normalizeFieldKey(label: string): string {
   return label
     .toLowerCase()
@@ -130,6 +148,23 @@ const FIELD_HEAD_ALIASES: Record<string, string> = {
   comment: 'comment',
   description: 'description',
   details: 'details',
+  // Extended aliases for common intent-driven field names
+  category: 'category',
+  date: 'date',
+  url: 'url',
+  quantity: 'quantity',
+  price: 'price',
+  amount: 'amount',
+  cost: 'cost',
+  subject: 'subject',
+  title: 'title',
+  rating: 'rating',
+  score: 'score',
+  priority: 'priority',
+  type: 'type',
+  ticket: 'ticket',
+  vip: 'ticket_type',
+  regular: 'ticket_type',
 };
 
 const FIELD_NOISE_TOKENS = new Set([
@@ -156,6 +191,11 @@ const FIELD_NOISE_TOKENS = new Set([
   'semantic',
   'semantics',
   'narrative',
+  // Ownership/contract vocabulary should never become field keys.
+  'ownership',
+  'structural',
+  'credential',
+  'value',
 ]);
 
 function splitSemanticTokens(text: string): string[] {
@@ -200,14 +240,7 @@ export function toTitleLabel(key: string): string {
 }
 
 export function inferFieldTypeFromKey(key: string): string {
-  const k = key.toLowerCase();
-  if (k === 'age' || k.endsWith('_age') || k.startsWith('age_')) return 'number';
-  if (k.includes('email')) return 'email';
-  if (k.includes('age') || k.includes('count') || k.includes('qty') || k.includes('number')) return 'number';
-  if (k.includes('phone') || k.includes('mobile') || k.includes('contact')) return 'tel';
-  if (k.includes('message') || k.includes('description') || k.includes('comment') || k.includes('notes')) return 'textarea';
-  if (k.includes('file') || k.includes('attachment')) return 'file';
-  return 'text';
+  return inferFormFieldTypeFromKey(key);
 }
 
 function filterNodeTypeLikeFieldKeys(keys: string[]): string[] {
@@ -243,6 +276,7 @@ export function extractFieldNamesFromIntent(intentText: string): string[] {
         const nk = normalizeFieldKey(seg);
         if (isBoilerplateOrDocFormKey(nk)) return;
         if (isExecutionLineNodeSlug(nk)) return;
+        if (/\b(total|unique\s+types|branch\s+slots)\b/i.test(seg)) return;
         if (/success\s+path|fallback\s+path/i.test(seg)) return;
         push(seg);
       });
@@ -287,6 +321,15 @@ export function extractFieldNamesFromIntent(intentText: string): string[] {
           .trim();
         if (cleaned) push(cleaned);
       });
+  }
+
+  // Single-token "collects/captures <optional-modifier> <field> as input" pattern
+  // e.g. "collects order status as input" → "status"
+  //      "captures customer email as input" → "email"
+  const asInputPattern = /\b(?:collect|capture)s?\s+(?:\w+\s+){0,3}?(\w+)\s+as\s+(?:an?\s+)?input\b/gi;
+  let asInputMatch: RegExpExecArray | null;
+  while ((asInputMatch = asInputPattern.exec(sanitized)) !== null) {
+    push(asInputMatch[1]);
   }
 
   return out;

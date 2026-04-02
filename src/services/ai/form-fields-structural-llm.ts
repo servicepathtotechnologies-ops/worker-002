@@ -8,8 +8,8 @@ import { LLMAdapter } from '../../shared/llm-adapter';
 import { unifiedNormalizeNodeType } from '../../core/utils/unified-node-type-normalizer';
 import { getFormStructuralIntentText } from './structure-materializer';
 import { normalizeFormFieldsIdentity } from '../../core/utils/form-field-identity';
-
-const ALLOWED_TYPES = new Set(['text', 'email', 'number', 'tel', 'textarea', 'file', 'select', 'checkbox']);
+import { FORM_ALLOWED_TYPES, inferFormFieldTypeDecision } from './form-field-type-resolver';
+import { buildFormFieldTypeEvidence } from './form-field-type-evidence';
 
 function normalizeFieldKey(label: string): string {
   return label
@@ -17,16 +17,6 @@ function normalizeFieldKey(label: string): string {
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '')
     .slice(0, 32);
-}
-
-function inferType(key: string): string {
-  const k = key.toLowerCase();
-  if (k.includes('email')) return 'email';
-  if (k.includes('age') || k.includes('count') || k.includes('qty')) return 'number';
-  if (k.includes('phone') || k.includes('mobile')) return 'tel';
-  if (k.includes('message') || k.includes('description') || k.includes('comment')) return 'textarea';
-  if (k.includes('file') || k.includes('attachment')) return 'file';
-  return 'text';
 }
 
 /**
@@ -53,6 +43,7 @@ export async function hydrateFormFieldsFromLlmIfEnabled(workflow: Workflow): Pro
 
   try {
     const adapter = new LLMAdapter();
+    const evidenceByField = buildFormFieldTypeEvidence(workflow, intent);
     const userContent = `User request (form fields only, no workflow nodes):\n${intent.slice(0, 4000)}\n\nReturn a JSON array of objects: [{"key":"snake_case","label":"Human Label","type":"text|email|number|tel|textarea|file|select|checkbox"}]. Only fields the user should fill on a form. No explanation.`;
 
     const response = await adapter.chat(
@@ -65,7 +56,11 @@ export async function hydrateFormFieldsFromLlmIfEnabled(workflow: Workflow): Pro
         },
         { role: 'user', content: userContent },
       ],
-      { model: 'gemini-2.5-flash', apiKey: process.env.GEMINI_API_KEY, temperature: 0.2 }
+      {
+        model: process.env.STRUCTURAL_FORM_FIELDS_MODEL || 'gemini-2.5-flash',
+        apiKey: process.env.GEMINI_API_KEY,
+        temperature: 0.2,
+      }
     );
 
     let jsonStr = response.content.trim();
@@ -79,9 +74,18 @@ export async function hydrateFormFieldsFromLlmIfEnabled(workflow: Workflow): Pro
       .map((row) => {
         const key = normalizeFieldKey(String(row.key || row.label || ''));
         if (!key) return null;
-        const type = ALLOWED_TYPES.has(String(row.type || '').toLowerCase())
+        const llmType = FORM_ALLOWED_TYPES.has(String(row.type || '').toLowerCase())
           ? String(row.type).toLowerCase()
-          : inferType(key);
+          : '';
+        const decision = inferFormFieldTypeDecision({
+          key,
+          currentType: llmType || undefined,
+          intentText: intent,
+          workflow,
+          evidenceByField,
+          preserveExplicit: true,
+        });
+        const type = decision.type;
         const label = String(row.label || key).slice(0, 200);
         return {
           id: `field_${key}`,

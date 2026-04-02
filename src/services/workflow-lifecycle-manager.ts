@@ -1435,7 +1435,12 @@ export class WorkflowLifecycleManager {
    * Keeps the first occurrence and removes subsequent duplicates
    */
   private deduplicateNodesByCanonicalType(workflow: Workflow): Workflow {
-    const seenCanonicalTypes = new Map<string, string>(); // canonicalType -> nodeId (first occurrence)
+    const hasBranchingNode = workflow.nodes.some((n) => {
+      const nodeType = unifiedNormalizeNodeType(n);
+      const def = unifiedNodeRegistry.get(resolveNodeType(nodeType || ''));
+      return def?.isBranching === true;
+    });
+    const seenCanonicalTypes = new Map<string, string>(); // dedupeKey -> nodeId (first occurrence)
     const nodesToKeep: WorkflowNode[] = [];
     const nodesToRemove: string[] = [];
     let duplicateCount = 0;
@@ -1450,19 +1455,35 @@ export class WorkflowLifecycleManager {
 
       // Resolve to canonical type (handles aliases like "gmail" → "google_gmail")
       const canonicalType = resolveNodeType(nodeType);
+      const incomingBranchEdges = hasBranchingNode
+        ? workflow.edges.filter((e: any) => e.target === node.id).filter((e: any) => {
+            const edgeType = String(e.type || e.sourceHandle || '').toLowerCase();
+            return edgeType === 'true' || edgeType === 'false' || edgeType.startsWith('case_');
+          })
+        : [];
+      // Branch-aware dedupe key:
+      // - In branching workflows, allow same canonical node type on different branch ports.
+      // - In linear workflows (or non-branch edges), keep original canonical dedupe behavior.
+      const dedupeKey =
+        incomingBranchEdges.length > 0
+          ? `${canonicalType}::${incomingBranchEdges
+              .map((e: any) => `${e.source}:${String(e.type || e.sourceHandle || 'main').toLowerCase()}`)
+              .sort()
+              .join('|')}`
+          : canonicalType;
       
-      if (seenCanonicalTypes.has(canonicalType)) {
+      if (seenCanonicalTypes.has(dedupeKey)) {
         // Duplicate found - mark for removal
-        const firstNodeId = seenCanonicalTypes.get(canonicalType)!;
+        const firstNodeId = seenCanonicalTypes.get(dedupeKey)!;
         nodesToRemove.push(node.id);
         duplicateCount++;
         console.log(
-          `[WorkflowLifecycle] 🚫 Removing duplicate node: ${node.id} (type: "${nodeType}" → canonical: "${canonicalType}") ` +
+          `[WorkflowLifecycle] 🚫 Removing duplicate node: ${node.id} (type: "${nodeType}" → canonical: "${canonicalType}", key: "${dedupeKey}") ` +
           `- keeping first occurrence: ${firstNodeId}`
         );
       } else {
         // First occurrence of this canonical type - keep it
-        seenCanonicalTypes.set(canonicalType, node.id);
+        seenCanonicalTypes.set(dedupeKey, node.id);
         nodesToKeep.push(node);
       }
     }

@@ -454,4 +454,42 @@ describe('structure materializer', () => {
     expect(ageField?.type).toBe('number');
     expect(formConfig.fields.some((f: any) => String(f.key).startsWith('details_through_a_form'))).toBe(false);
   });
+
+  it('does not derive diagnostics artifacts as form fields when prompt metadata is contaminated', () => {
+    const workflow: any = {
+      nodes: [
+        {
+          id: 'form_1',
+          type: 'form',
+          data: {
+            type: 'form',
+            label: 'Form',
+            config: {
+              fields: [],
+              _fillMode: { fields: 'runtime_ai' },
+            },
+          },
+        },
+      ],
+      edges: [],
+      metadata: {
+        generatedFrom: [
+          'Goal: Create workflow with age form.',
+          'Detected nodes: 6 total (4 unique types).',
+          'Branch slots: age, false.',
+          'Execution:',
+          '1. Form Trigger (form) -> If/Else (if_else)',
+        ].join('\n'),
+        originalUserPrompt:
+          'Create an autonomous workflow where a user submits details through a form including age.',
+      },
+    };
+
+    const out = materializeStructuralFields(workflow);
+    const formConfig: any = out.nodes[0].data.config;
+    const keys = (formConfig.fields || []).map((f: any) => String(f.key));
+    expect(keys).toContain('age');
+    expect(keys).not.toContain('4_unique_types');
+    expect(keys).not.toContain('unique_types');
+  });
 });

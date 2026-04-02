@@ -17,8 +17,9 @@ import { ExecutionOrder, executionOrderManager } from './execution-order-manager
 import { edgeReconciliationEngine } from './edge-reconciliation-engine';
 import { nodeInjectionCoordinator, InjectionContext } from './node-injection-coordinator';
 import { unifiedNodeRegistry } from '../registry/unified-node-registry';
-import { unifiedNormalizeNodeTypeString } from '../utils/unified-node-type-normalizer';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../utils/unified-node-type-normalizer';
 import { validateIfElseConditionsAgainstUpstreamForm } from './form-ifelse-binding';
+import { evaluateTerminalMode } from './terminal-mode-policy';
 import type { CaseNodeMapping } from '../types/unified-node-contract';
 
 /**
@@ -29,7 +30,7 @@ import type { CaseNodeMapping } from '../types/unified-node-contract';
 export interface SwitchContext {
   /** The node ID of the switch node in the workflow. */
   switchNodeId: string;
-  /** Maps case values to downstream node types (from WorkflowIntentPlan.caseNodeMapping). */
+  /** Maps case values to downstream target descriptors (from WorkflowIntentPlan.caseNodeMapping). */
   caseNodeMapping: CaseNodeMapping;
 }
 
@@ -139,6 +140,9 @@ export interface UnifiedGraphOrchestrator {
 }
 
 class UnifiedGraphOrchestratorImpl implements UnifiedGraphOrchestrator {
+  private getNodeType(node: WorkflowNode): string {
+    return unifiedNormalizeNodeType(node);
+  }
   /**
    * Initialize workflow graph with execution order
    * ✅ TIER 1: Uses DSL execution order if available (primary source of truth)
@@ -164,22 +168,42 @@ class UnifiedGraphOrchestratorImpl implements UnifiedGraphOrchestrator {
     // Pass DSL execution order to execution order manager (primary source of truth)
     const executionOrder = initialExecutionOrder || executionOrderManager.initialize(workflow, dslExecutionOrder);
     
-    // Create edges from execution order
+    // For switch workflows, pre-wire case edges before reconciliation so branch target nodes
+    // are reachable and not pruned as orphaned during reconciliation.
+    const seedWorkflow =
+      switchContext && switchContext.switchNodeId && switchContext.caseNodeMapping
+        ? this.wireSwitchCaseEdges(workflow, switchContext)
+        : workflow;
+
+    // Create/reconcile edges from execution order using orchestrator core engine.
     const reconciliationResult = edgeReconciliationEngine.reconcileEdges(
-      workflow,
+      seedWorkflow,
       executionOrder
     );
 
-    let finalWorkflow = reconciliationResult.workflow;
+    const finalWorkflow = reconciliationResult.workflow;
+    const terminalNodes = finalWorkflow.nodes.filter((n) => {
+      const nodeType = unifiedNormalizeNodeTypeString((n.data as any)?.type || n.type || '');
+      const def = unifiedNodeRegistry.get(nodeType);
+      return def?.workflowBehavior?.alwaysTerminal === true;
+    });
+    const hasBranchingNode = finalWorkflow.nodes.some((n) => {
+      const nodeType = unifiedNormalizeNodeTypeString((n.data as any)?.type || n.type || '');
+      const def = unifiedNodeRegistry.get(nodeType);
+      return def?.isBranching === true;
+    });
+    const shouldEnforceBranchTerminalLineage = hasBranchingNode && terminalNodes.length >= 2;
 
-    // ── Switch case edge wiring (spec task 4) ────────────────────────────
-    // When a switchContext is provided, create one labeled edge per case value
-    // connecting the switch node to the correct downstream node.
-    // All edge creation goes through edgeReconciliationEngine — no direct push.
-    if (switchContext && switchContext.switchNodeId && switchContext.caseNodeMapping) {
-      finalWorkflow = this.wireSwitchCaseEdges(finalWorkflow, switchContext);
+    const postWireValidation = this.validateWorkflow(finalWorkflow, executionOrder);
+    if (!postWireValidation.valid && shouldEnforceBranchTerminalLineage) {
+      const terminalLineageErrors = postWireValidation.errors.filter(e =>
+        e.toLowerCase().includes('orphan') ||
+        e.toLowerCase().includes('terminal lineage')
+      );
+      if (terminalLineageErrors.length > 0) {
+        throw new Error(`Post-wiring validation failed: ${terminalLineageErrors.join(' | ')}`);
+      }
     }
-    // ─────────────────────────────────────────────────────────────────────
     
     return {
       workflow: finalWorkflow,
@@ -205,47 +229,100 @@ class UnifiedGraphOrchestratorImpl implements UnifiedGraphOrchestrator {
       return workflow;
     }
 
-    const switchNodeType = unifiedNormalizeNodeTypeString(switchNode.type || switchNode.data?.type || '');
+    const switchNodeType = this.getNodeType(switchNode);
     const switchDef = unifiedNodeRegistry.get(switchNodeType);
     const outgoingPorts: string[] = switchDef?.outgoingPorts ?? [];
 
     const caseEntries = Object.entries(caseNodeMapping);
     if (caseEntries.length === 0) return workflow;
 
-    // Build an ordered list of downstream node IDs that are NOT the switch node itself
-    // and NOT the trigger. We match by position (index) so multiple nodes of the same
-    // type each get their own case edge.
-    const downstreamNodeIds = workflow.nodes
-      .filter((n) => {
-        if (n.id === switchNodeId) return false;
-        const nt = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
-        const def = unifiedNodeRegistry.get(nt);
-        return def?.category !== 'trigger';
-      })
-      .map((n) => n.id);
+    // Build an ordered list of non-trigger/non-switch downstream nodes.
+    // Used as fallback when type-based lookup finds no match.
+    // Note: do NOT exclude log_output here. Switch branches may legitimately
+    // terminate directly into per-branch log_output nodes.
+    const downstreamNodes = workflow.nodes.filter((n) => {
+      if (n.id === switchNodeId) return false;
+      const nt = this.getNodeType(n);
+      const def = unifiedNodeRegistry.get(nt);
+      return def?.category !== 'trigger';
+    });
+
+    // Track which node IDs have already been assigned to a case (prevent double-wiring).
+    const assignedNodeIds = new Set<string>();
 
     // Remove any existing edges from the switch node (they will be replaced by case edges)
     const edgesWithoutSwitch = workflow.edges.filter((e) => e.source !== switchNodeId);
 
-    // Create one labeled edge per case
+    // Create one labeled edge per case.
+    // Resolution order:
+    // (1) descriptor.targetNodeId (exact),
+    // (2) descriptor.targetNodeType (type match),
+    // (3) legacy string target type,
+    // (4) positional fallback among unassigned downstream nodes.
     const caseEdges: WorkflowEdge[] = [];
-    caseEntries.forEach(([caseValue, _downstreamNodeType], index) => {
-      const portLabel = outgoingPorts[index] ?? `case_${index + 1}`;
-      const targetId = downstreamNodeIds[index];
-      if (!targetId) {
+    caseEntries.forEach(([caseValue, targetSpec], index) => {
+      const explicitSlot =
+        targetSpec && typeof targetSpec === 'object' && !Array.isArray(targetSpec)
+          ? targetSpec.slot
+          : undefined;
+      const portLabel = explicitSlot || outgoingPorts[index] || `case_${index + 1}`;
+      const targetNodeId =
+        targetSpec && typeof targetSpec === 'object' && !Array.isArray(targetSpec)
+          ? targetSpec.targetNodeId
+          : undefined;
+      const targetNodeType =
+        targetSpec && typeof targetSpec === 'object' && !Array.isArray(targetSpec)
+          ? targetSpec.targetNodeType
+          : typeof targetSpec === 'string'
+            ? targetSpec
+            : undefined;
+
+      // (1) Node ID lookup — find explicit node id target first.
+      let targetNode = targetNodeId
+        ? downstreamNodes.find((n) => n.id === targetNodeId && !assignedNodeIds.has(n.id))
+        : undefined;
+
+      // (2) Type-based lookup — find the first unassigned node whose type matches.
+      if (!targetNode && targetNodeType) {
+        targetNode = downstreamNodes.find(
+          (n) => !assignedNodeIds.has(n.id) && this.getNodeType(n) === targetNodeType
+        );
+      }
+
+      // (3) Bounded positional fallback — prefer next unassigned non-terminal node first.
+      if (!targetNode) {
+        targetNode = downstreamNodes.find((n) => {
+          if (assignedNodeIds.has(n.id)) return false;
+          const def = unifiedNodeRegistry.get(this.getNodeType(n));
+          return def?.workflowBehavior?.alwaysTerminal !== true;
+        });
+      }
+
+      // (4) Final fallback — use any remaining unassigned downstream node.
+      if (!targetNode) {
+        targetNode = downstreamNodes.find((n) => !assignedNodeIds.has(n.id));
+      }
+
+      if (!targetNode) {
         console.warn(
-          `[UnifiedGraphOrchestrator] wireSwitchCaseEdges: no downstream node at index ${index} for case "${caseValue}"`
+          `[UnifiedGraphOrchestrator] wireSwitchCaseEdges: no downstream node for case "${caseValue}" (type: ${targetNodeType || 'unknown'}, id: ${targetNodeId || 'none'})`
         );
         return;
       }
+
+      assignedNodeIds.add(targetNode.id);
       caseEdges.push({
-        id: `${switchNodeId}-${portLabel}-${targetId}`,
+        id: `${switchNodeId}-${portLabel}-${targetNode.id}`,
         source: switchNodeId,
-        target: targetId,
+        target: targetNode.id,
         type: portLabel,
         sourceHandle: portLabel,
         targetHandle: 'default',
       } as WorkflowEdge);
+
+      console.log(
+        `[UnifiedGraphOrchestrator] wireSwitchCaseEdges: case "${caseValue}" → ${(targetNodeType || this.getNodeType(targetNode))}(${targetNode.id.substring(0, 8)}) via port ${portLabel}`
+      );
     });
 
     return {
@@ -434,7 +511,7 @@ class UnifiedGraphOrchestratorImpl implements UnifiedGraphOrchestrator {
     
     // Check if workflow has trigger
     const hasTrigger = currentWorkflow.nodes.some(n => {
-      const nodeType = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
+      const nodeType = this.getNodeType(n);
       const nodeDef = unifiedNodeRegistry.get(nodeType);
       return nodeDef?.category === 'trigger';
     });
@@ -491,7 +568,7 @@ class UnifiedGraphOrchestratorImpl implements UnifiedGraphOrchestrator {
     const connectedNodeIds = new Set(currentWorkflow.edges.map(e => e.target));
     
     const orphanedNodes = currentWorkflow.nodes.filter(n => {
-      const nodeType = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
+      const nodeType = this.getNodeType(n);
       const nodeDef = unifiedNodeRegistry.get(nodeType);
       const isTrigger = nodeDef?.category === 'trigger';
       
@@ -504,7 +581,7 @@ class UnifiedGraphOrchestratorImpl implements UnifiedGraphOrchestrator {
       const nonRequiredOrphanedNodes: WorkflowNode[] = [];
       
       orphanedNodes.forEach(n => {
-        const nodeType = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
+        const nodeType = this.getNodeType(n);
         const nodeDef = unifiedNodeRegistry.get(nodeType);
         const isRequired = 
           nodeDef?.workflowBehavior?.alwaysRequired === true ||
@@ -519,8 +596,14 @@ class UnifiedGraphOrchestratorImpl implements UnifiedGraphOrchestrator {
       
       // Required orphaned nodes = real error (edge creation failed)
       if (requiredOrphanedNodes.length > 0) {
+        const orphanDiagnostics = requiredOrphanedNodes.map(n => {
+          const normalizedType = this.getNodeType(n);
+          const incomingCount = currentWorkflow.edges.filter(e => e.target === n.id).length;
+          const outgoingCount = currentWorkflow.edges.filter(e => e.source === n.id).length;
+          return `${normalizedType} (${n.id}) [incoming=${incomingCount}, outgoing=${outgoingCount}]`;
+        });
         errors.push(
-          `Found ${requiredOrphanedNodes.length} required orphaned node(s) (edge creation may have failed): ${requiredOrphanedNodes.map(n => `${n.type || 'unknown'} (${n.id})`).join(', ')}`
+          `Found ${requiredOrphanedNodes.length} required orphaned node(s) (edge creation may have failed): ${orphanDiagnostics.join(', ')}`
         );
       }
       
@@ -551,7 +634,7 @@ class UnifiedGraphOrchestratorImpl implements UnifiedGraphOrchestrator {
     };
 
     for (const n of currentWorkflow.nodes) {
-      const nodeType = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
+      const nodeType = this.getNodeType(n);
       if (nodeType !== 'google_gmail') continue;
       const cfg = (n.data as { config?: Record<string, unknown> })?.config || {};
       const op = typeof cfg.operation === 'string' ? cfg.operation : 'send';
@@ -563,7 +646,7 @@ class UnifiedGraphOrchestratorImpl implements UnifiedGraphOrchestrator {
       for (const aid of ancestors) {
         const an = currentWorkflow.nodes.find((x) => x.id === aid);
         if (!an) continue;
-        const at = unifiedNormalizeNodeTypeString(an.type || an.data?.type || '');
+        const at = this.getNodeType(an);
         if (at === 'google_sheets') {
           hasSheetsUpstream = true;
           break;
@@ -576,8 +659,39 @@ class UnifiedGraphOrchestratorImpl implements UnifiedGraphOrchestrator {
       }
     }
 
+    // Switch case count invariant: out-degree must equal cases.length.
+    // Registry-driven — no hardcoded node type strings; uses unifiedNodeRegistry to detect
+    // switch-like nodes (those whose effective outgoing ports are derived from cases config).
+    for (const n of currentWorkflow.nodes) {
+      const nodeType = this.getNodeType(n);
+      const nodeDef = unifiedNodeRegistry.get(nodeType);
+      if (!nodeDef) continue;
+      // Only check nodes whose ports are case-driven (switch family).
+      // getBranchOutgoingPortsForNode returns case values for switch nodes.
+      const cfg = (n.data as { config?: Record<string, unknown> })?.config ?? {};
+      const effectivePorts = unifiedNodeRegistry.getOutgoingPortsForWorkflowNode(n);
+      const isCaseDriven = effectivePorts.length > 0 && effectivePorts.every(p => p !== 'output' && p !== 'true' && p !== 'false');
+      if (!isCaseDriven) continue;
+      const caseCount = Array.isArray((cfg as any).cases) ? (cfg as any).cases.length : 0;
+      if (caseCount === 0) continue; // No cases configured yet — skip (not a structural error)
+      const outDegree = currentWorkflow.edges.filter(e => e.source === n.id).length;
+      if (outDegree !== caseCount) {
+        errors.push(
+          `Switch node "${n.id}": out-degree ${outDegree} does not match cases.length ${caseCount} — DAG structural invariant violated`
+        );
+      }
+    }
+
     const ifElseFormBinding = validateIfElseConditionsAgainstUpstreamForm(currentWorkflow);
     errors.push(...ifElseFormBinding.errors);
+
+    // Terminal mode compatibility:
+    // - log_output_preferred (default): keep backward compatibility, but allow workflows that end at output sinks.
+    // - gmail_terminal: require at least one Gmail leaf terminal.
+    // - mixed: allow either log_output or sink output leaves.
+    const terminalPolicy = evaluateTerminalMode(currentWorkflow);
+    errors.push(...terminalPolicy.errors);
+    warnings.push(...terminalPolicy.warnings);
 
     return {
       valid: errors.length === 0,
@@ -605,7 +719,7 @@ class UnifiedGraphOrchestratorImpl implements UnifiedGraphOrchestrator {
     
     // Find nodes in workflow that should be terminal
     const terminalNodesInWorkflow = workflow.nodes.filter(node => {
-      const nodeType = unifiedNormalizeNodeTypeString(node.type || node.data?.type || '');
+      const nodeType = this.getNodeType(node);
       return alwaysTerminalTypes.has(nodeType);
     });
     
@@ -616,7 +730,7 @@ class UnifiedGraphOrchestratorImpl implements UnifiedGraphOrchestrator {
       if (outgoingEdges.length > 0) {
         // Registry says this node must be terminal, but it has outgoing edges
         warnings.push(
-          `Node ${node.id} (${unifiedNormalizeNodeTypeString(node.type || node.data?.type || '')}) should be terminal but has ${outgoingEdges.length} outgoing edge(s)`
+          `Node ${node.id} (${this.getNodeType(node)}) should be terminal but has ${outgoingEdges.length} outgoing edge(s)`
         );
         
         // Remove outgoing edges (registry-driven enforcement)

@@ -14001,21 +14001,91 @@ Identify what needs to be changed. Respond with JSON:
     });
   }
 
+  /**
+   * Registry-driven output node selection.
+   *
+   * Uses OutputDefinition semantics (description/type) to choose a node type
+   * based on registry metadata (category, tags, workflowBehavior), not
+   * hardcoded node-type strings.
+   */
   private mapOutputTypeToNodeType(output: OutputDefinition): string {
-    // PERMANENT FIX: Handle undefined/null description
-    if (!output || !output.description) {
-      // Default to log_output if no description provided
-      return 'log_output';
+    const allTypes = unifiedNodeRegistry.getAllTypes();
+    const candidates = allTypes
+      .map((t) => unifiedNodeRegistry.get(t))
+      .filter((def): def is NonNullable<ReturnType<typeof unifiedNodeRegistry.get>> => !!def);
+
+    // Fallback: any alwaysTerminal node (typically log_output)
+    const pickAnyTerminal = () => {
+      const terminal = candidates.find((def) => def.workflowBehavior?.alwaysTerminal === true);
+      return terminal ? terminal.type : 'log_output';
+    };
+
+    if (!output) {
+      return pickAnyTerminal();
     }
-    
+
     const desc = (output.description || '').toLowerCase();
-    
-    if (desc.includes('slack')) return 'slack_message';
-    if (desc.includes('email') || desc.includes('gmail')) return 'google_gmail';
-    if (desc.includes('webhook') || desc.includes('http')) return 'http_post';
-    if (desc.includes('log') || desc.includes('console')) return 'log_output';
-    
-    // Default fallback
+    const typeHint = (output.type || '').toLowerCase();
+
+    // Derive a high-level behavior hint from the description/type.
+    const isSlackLike =
+      /slack|channel/.test(desc) || /slack/.test(typeHint);
+    const isEmailLike =
+      /email|gmail|mail/.test(desc) || /email|gmail/.test(typeHint);
+    const isWebhookLike =
+      /webhook|http|request|callback/.test(desc) || /webhook|http/.test(typeHint);
+    const isLogLike =
+      /log|console|trace|debug/.test(desc) || /log/.test(typeHint);
+
+    const byCategory = (category: string) =>
+      candidates.filter((def) => def.category === category);
+
+    const withTag = (defs: typeof candidates, tag: string) =>
+      defs.filter((def) =>
+        (def.tags || []).some((t) => t.toLowerCase() === tag.toLowerCase())
+      );
+
+    // 1) Slack/chat-style outputs
+    if (isSlackLike) {
+      const comms = byCategory('communication');
+      const slackish = withTag(comms, 'slack');
+      const picked = slackish[0] || comms[0];
+      if (picked) return picked.type;
+    }
+
+    // 2) Email-style outputs
+    if (isEmailLike) {
+      const comms = byCategory('communication');
+      const emailish = withTag(comms, 'email');
+      const picked = emailish[0] || comms[0];
+      if (picked) return picked.type;
+    }
+
+    // 3) Webhook / HTTP-style outputs
+    if (isWebhookLike) {
+      const utility = byCategory('utility');
+      const httpish = withTag(utility, 'http');
+      const picked = httpish[0] || utility[0];
+      if (picked) return picked.type;
+    }
+
+    // 4) Logging / terminal outputs
+    if (isLogLike) {
+      const terminals = candidates.filter(
+        (def) => def.workflowBehavior?.alwaysTerminal === true
+      );
+      if (terminals[0]) return terminals[0].type;
+    }
+
+    // Default: any alwaysTerminal node, else best-effort communication sink.
+    const terminal = candidates.find(
+      (def) => def.workflowBehavior?.alwaysTerminal === true
+    );
+    if (terminal) return terminal.type;
+
+    const comms = byCategory('communication');
+    if (comms[0]) return comms[0].type;
+
     return 'log_output';
   }
   

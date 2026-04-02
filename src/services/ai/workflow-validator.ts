@@ -8,6 +8,8 @@ import { isTransformationNode } from './transformation-templates';
 import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 import { randomUUID } from 'crypto';
 import { nodeDefinitionRegistry } from '../../core/types/node-definition';
+import { resolveEffectiveFieldFillMode } from '../../core/utils/fill-mode-resolver';
+import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 
 export interface ValidationResult {
   valid: boolean;
@@ -304,7 +306,14 @@ export class WorkflowValidator {
       // Check required fields
       const canonicalType = this.getCanonicalNodeType(node);
       const requiredFields = this.getRequiredFields(canonicalType);
+      const nodeDef = unifiedNodeRegistry.get(canonicalType);
+      const config = (node.data?.config || {}) as Record<string, any>;
       requiredFields.forEach(field => {
+        // Skip fields deferred to runtime_ai — they are intentionally empty until execution
+        if (nodeDef?.inputSchema) {
+          const mode = resolveEffectiveFieldFillMode(field, nodeDef.inputSchema, config);
+          if (mode === 'runtime_ai') return;
+        }
         if (!this.hasField(node, field)) {
           result.errors.push({
             type: 'missing_required_field',

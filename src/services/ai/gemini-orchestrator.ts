@@ -88,7 +88,13 @@ export class GeminiOrchestrator {
     
     try {
       // Check cache first
-      if (options?.cache !== false) {
+      // NOTE: workflow-generation and workflow-analysis are never cached — each prompt is unique
+      // and caching causes stale switch cases / form fields to be served on re-generation.
+      const isCacheable = options?.cache !== false &&
+        type !== 'workflow-generation' &&
+        type !== 'workflow-analysis';
+
+      if (isCacheable) {
         const cacheKey = this.getCacheKey(type, input);
         const cached = this.cache.get(cacheKey);
         if (cached && Date.now() - cached.timestamp < this.cacheTTL) {
@@ -123,8 +129,8 @@ export class GeminiOrchestrator {
       const duration = Date.now() - startTime;
       this.updateModelPerformance(selectedModel, duration, true);
 
-      // Cache result
-      if (options?.cache !== false) {
+      // Cache result (only for cacheable request types)
+      if (isCacheable) {
         const cacheKey = this.getCacheKey(type, input);
         this.cache.set(cacheKey, {
           result: processedResult,

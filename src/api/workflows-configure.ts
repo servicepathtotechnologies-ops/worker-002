@@ -46,13 +46,14 @@ export default async function configureWorkflowHandler(req: Request, res: Respon
 
     const missingItems = await getUnifiedMissingItems(workflowId, userId);
 
-    // Validate that all required credentials are provided
-    const missingCredProviders = missingItems.credentials
+    // Validate required credentials by credential id/vault key (not provider-level).
+    // Provider-only checks are ambiguous when multiple credentials share the same provider.
+    const missingCredentialKeys = missingItems.credentials
       .filter(cred => !cred.satisfied)
-      .map(cred => cred.provider);
-    
-    const providedCredProviders = credentials ? Object.keys(credentials) : [];
-    const missingCreds = missingCredProviders.filter(provider => !providedCredProviders.includes(provider));
+      .map(cred => String(cred.vaultKey || cred.provider))
+      .filter(Boolean);
+    const providedCredentialKeys = credentials ? Object.keys(credentials) : [];
+    const missingCreds = missingCredentialKeys.filter(key => !providedCredentialKeys.includes(key));
 
     if (missingCreds.length > 0) {
       return res.status(400).json({
@@ -100,6 +101,13 @@ export default async function configureWorkflowHandler(req: Request, res: Respon
       ? JSON.parse(workflowData.graph) 
       : workflowData.graph || {};
     
+    const persistedMeta =
+      (graphData &&
+        typeof graphData === 'object' &&
+        graphData.metadata &&
+        typeof graphData.metadata === 'object' &&
+        graphData.metadata) ||
+      {};
     let workflow: Workflow = {
       nodes: workflowData.nodes || graphData.nodes || [],
       edges: workflowData.edges || graphData.edges || [],
@@ -108,6 +116,7 @@ export default async function configureWorkflowHandler(req: Request, res: Respon
         updated_at: workflowData.updated_at,
         workflowId,
         name: workflowData.name || 'Untitled Workflow',
+        ...(persistedMeta as Record<string, unknown>),
       },
     };
 

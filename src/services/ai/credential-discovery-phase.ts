@@ -10,8 +10,9 @@
 
 import { WorkflowNode, Workflow } from '../../core/types/ai-types';
 import { nodeLibrary } from '../nodes/node-library';
-import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
+import { unifiedNormalizeNodeType } from '../../core/utils/unified-node-type-normalizer';
 import { CredentialResolver } from './credential-resolver';
+import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 
 export interface CredentialRequirement {
   provider: string;
@@ -162,6 +163,7 @@ export class CredentialDiscoveryPhase {
     userId?: string
   ): Promise<CredentialRequirement[]> {
     const credentials: CredentialRequirement[] = [];
+    const registryDescriptor = unifiedNodeRegistry.getCredentialPreflightDescriptor(nodeType);
 
     // Use CredentialResolver to get credential contracts for this node type
     const contracts = this.credentialResolver.getCredentialContracts(nodeType);
@@ -264,6 +266,11 @@ export class CredentialDiscoveryPhase {
         });
       }
     } else {
+      // Registry is authoritative: if credential requirements are declared there,
+      // do not fall back to legacy schema heuristics for this node.
+      if (registryDescriptor?.requiresCheck === true) {
+        return credentials;
+      }
       // ✅ ENHANCED: No credential contracts defined - check schema for credential fields
       // This handles nodes that don't have connectors registered but still need credentials
       const schema = nodeLibrary.getSchema(nodeType);
@@ -305,7 +312,7 @@ export class CredentialDiscoveryPhase {
           
           // ✅ FIXED: Check if this is a credential field
           // Credentials = API keys / OAuth / tokens only
-          // Exclude configuration fields like maxTokens
+          // Exclude configuration fields like maxTokens and webhook URLs (those are config values)
           const isCredentialField = fieldLower.includes('apikey') || 
                                    fieldLower.includes('api_key') ||
                                    fieldLower.includes('api-key') ||
@@ -330,7 +337,7 @@ export class CredentialDiscoveryPhase {
                                    fieldLower.includes('credential_id') ||
                                    fieldLower === 'credentialid' ||
                                    fieldLower === 'credential_id' ||
-                                   fieldLower.includes('webhook') ||
+                                   // webhook URLs are config values, not secrets — excluded
                                    fieldLower.includes('oauth') ||
                                    fieldLower.includes('client_id') ||
                                    fieldLower.includes('client_secret') ||

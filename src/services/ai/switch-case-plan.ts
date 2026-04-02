@@ -50,48 +50,119 @@ export function getDiscriminantFieldForUpstreamType(upstreamNodeType: string | u
 }
 
 /**
- * Extract enumerated cases from natural language (e.g. "sales, support, or general").
+ * Registry-driven set of known node type strings to exclude from condition token extraction.
+ * Built lazily from the unified node registry so it stays in sync with all registered nodes.
+ */
+function getKnownNodeTypeStrings(): Set<string> {
+  const types = unifiedNodeRegistry.getAllTypes();
+  const result = new Set<string>();
+  for (const t of types) {
+    result.add(t.toLowerCase());
+    // Also add the short form (e.g. "gmail" from "google_gmail")
+    const parts = t.toLowerCase().split('_');
+    if (parts.length > 1) {
+      result.add(parts[parts.length - 1]);
+    }
+  }
+  return result;
+}
+
+/**
+ * Returns true when a normalized token is a valid routing condition value —
+ * i.e. it is NOT a known node type string, NOT a routing-intent keyword, and
+ * has a reasonable length.
+ */
+function isValidConditionToken(token: string, knownNodeTypes: Set<string>): boolean {
+  if (token.length < 2 || token.length > 48) return false;
+
+  // Exclude known node type strings (registry-driven, no hardcoding)
+  if (knownNodeTypes.has(token)) return false;
+
+  // Exclude routing-intent keywords that are not condition values
+  const routingKeywords = new Set([
+    'route', 'classify', 'bucket', 'label', 'by', 'based', 'on', 'depending',
+    'when', 'if', 'status', 'type', 'category', 'as', 'into', 'to', 'the',
+    'message', 'messages', 'order', 'orders', 'ticket', 'tickets', 'request',
+    'requests', 'item', 'items', 'data', 'input', 'output', 'result', 'results',
+    'and', 'or', 'via', 'through', 'using', 'with', 'for', 'from', 'send',
+    'trigger', 'go', 'use', 'each', 'all', 'any', 'their', 'its', 'a', 'an',
+    'is', 'are', 'be', 'been', 'being', 'has', 'have', 'had', 'do', 'does',
+    'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'shall',
+    'not', 'no', 'yes', 'true', 'false', 'null', 'undefined',
+  ]);
+  if (routingKeywords.has(token)) return false;
+
+  // Exclude tokens that look like compound action phrases (contain verb + destination pattern)
+  // e.g. "send_tracking_details_via_gmail" — these are action descriptions, not condition values
+  const actionVerbs = ['send', 'notify', 'log', 'trigger', 'route', 'forward', 'post', 'push', 'emit'];
+  const tokenParts = token.split('_');
+  if (tokenParts.length >= 3 && actionVerbs.includes(tokenParts[0])) return false;
+
+  return true;
+}
+
+/**
+ * Extract enumerated cases from natural language using a greedy general enumeration extractor.
+ * Finds all comma/slash/or/and/newline-separated tokens after any routing-intent keyword.
  */
 function extractEnumeratedCasesFromPrompt(prompt: string): string[] {
-  const lower = prompt.toLowerCase();
-  const out: string[] = [];
+  const knownNodeTypes = getKnownNodeTypeStrings();
+  const candidates: string[] = [];
 
-  const classifyIntro = prompt.match(
-    /\b(?:classify|categories|category|route|bucket|label)\s+(?:the\s+)?(?:message\s+)?(?:as|into|to)\s+([^.\n]+)/i
-  );
-  if (classifyIntro && classifyIntro[1]) {
-    const segment = classifyIntro[1];
-    const parts = segment
-      .split(/(?:,|\/|\bor\b|\band\b|\n)/i)
-      .map(s =>
-        s
+  // Pattern 1: routing verbs followed by optional connector words then the enumeration
+  // e.g. "classify ... as X, Y, Z" / "route ... by status: X, Y, Z" / "bucket into X, Y, Z"
+  const routingVerbPattern =
+    /\b(?:route|classify|bucket|label)\b[^.]*?\b(?:as|into|by|to)\b\s*(?:\w+\s*[:\-]\s*)?([^.]+)/gi;
+
+  // Pattern 2: "by <field>: X, Y, Z" or "based on <field>: X, Y, Z" or "depending on <field>: X, Y, Z"
+  const byFieldPattern =
+    /\b(?:by|based\s+on|depending\s+on)\s+\w+\s*[:\-]\s*([^.]+)/gi;
+
+  // Pattern 3: "status/type/category: X, Y, Z"
+  const fieldColonPattern =
+    /\b(?:status|type|category)\s*[:\-]\s*([^.]+)/gi;
+
+  // Pattern 4: "when/if <field> is X or Y" — simple two-value case
+  const whenIfPattern =
+    /\b(?:when|if)\s+\w+\s+(?:is|equals?)\s+([^.]+)/gi;
+
+  // Pattern 5: "cases X, Y, Z" or "with cases X, Y, Z" — explicit case list
+  const casesListPattern =
+    /\b(?:with\s+)?cases?\s+([a-z0-9][^.]+)/gi;
+
+  const allPatterns = [routingVerbPattern, byFieldPattern, fieldColonPattern, whenIfPattern, casesListPattern];
+
+  for (const pattern of allPatterns) {
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(prompt)) !== null) {
+      const segment = match[1];
+      // Split on comma, slash, "or", "and", newline
+      const tokens = segment.split(/(?:,|\/|\bor\b|\band\b|\n)/i);
+      for (const raw of tokens) {
+        const normalized = raw
           .trim()
           .replace(/^["']|["']$/g, '')
           .replace(/^(or|and)\s+/i, '')
-      )
-      .filter(Boolean);
-    for (const p of parts) {
-      const normalized = p
-        .toLowerCase()
-        .replace(/\s+/g, '_')
-        .replace(/[^a-z0-9_]/g, '');
-      if (normalized.length >= 2 && normalized.length <= 48) {
-        out.push(normalized);
+          .toLowerCase()
+          .replace(/\s+/g, '_')
+          .replace(/[^a-z0-9_]/g, '');
+        if (isValidConditionToken(normalized, knownNodeTypes)) {
+          candidates.push(normalized);
+        }
       }
     }
   }
 
-  const commonTriples = ['sales', 'support', 'general'];
-  const hits = commonTriples.filter(k => lower.includes(k));
-  if (hits.length >= 2) {
-    for (const h of hits) {
-      if (!out.includes(h)) {
-        out.push(h);
-      }
+  // Deduplicate preserving order
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const c of candidates) {
+    if (!seen.has(c)) {
+      seen.add(c);
+      out.push(c);
     }
   }
-
-  return [...new Set(out)].filter(Boolean);
+  return out;
 }
 
 /**
@@ -109,55 +180,10 @@ export function planSwitchCasesFromPrompt(
   const caseToLabel = (v: string) =>
     v.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
-  const promptLower = originalPrompt.toLowerCase();
-
   const enumerated = extractEnumeratedCasesFromPrompt(originalPrompt);
   for (const v of enumerated) {
-    const value = v.toLowerCase().replace(/\s+/g, '_');
-    if (!cases.some(c => c.value === value)) {
-      cases.push({ value, label: caseToLabel(value) });
-    }
-  }
-
-  const casePattern = /(\w+)\s+statuses?\s+(?:send|trigger|route|go to|use)\s+(?:notifications?|alerts?|messages?|emails?|logs?)?\s*(?:via|through|to|using)\s+(\w+)/gi;
-  let match: RegExpExecArray | null;
-  while ((match = casePattern.exec(originalPrompt)) !== null) {
-    const caseValue = match[1].toLowerCase();
-    if (!cases.some(c => c.value === caseValue)) {
-      cases.push({ value: caseValue, label: caseToLabel(caseValue) });
-    }
-  }
-
-  const ifPattern = /(?:if|when)\s+(?:\w+\s+)?(?:is|equals|==)\s+["']?(\w+)["']?\s+(?:route|send|go|use)\s+(?:to|via|through)\s+(\w+)/gi;
-  while ((match = ifPattern.exec(originalPrompt)) !== null) {
-    const caseValue = match[1].toLowerCase();
-    if (!cases.some(c => c.value === caseValue)) {
-      cases.push({ value: caseValue, label: caseToLabel(caseValue) });
-    }
-  }
-
-  if (cases.length === 0 && intent?.actions) {
-    const statusKeywords = ['active', 'pending', 'completed', 'success', 'failed', 'error', 'new', 'old'];
-    for (const action of intent.actions) {
-      const actionType = action.type.toLowerCase();
-      for (const keyword of statusKeywords) {
-        if (actionType.includes(keyword) && !cases.some(c => c.value === keyword)) {
-          cases.push({ value: keyword, label: caseToLabel(keyword) });
-        }
-      }
-    }
-  }
-
-  if (cases.length === 0 && /\b(one word|single word|return only)\b/i.test(originalPrompt)) {
-    const m = promptLower.match(/\b(?:as|into)\s+([a-z_,\s]+(?:general|support|sales)[a-z_,\s]*)/i);
-    if (m) {
-      const parts = m[1].split(/,/).map(s => s.trim()).filter(Boolean);
-      for (const p of parts) {
-        const value = p.replace(/\s+/g, '_').toLowerCase();
-        if (value.length >= 2 && !cases.some(c => c.value === value)) {
-          cases.push({ value, label: caseToLabel(value) });
-        }
-      }
+    if (!cases.some(c => c.value === v)) {
+      cases.push({ value: v, label: caseToLabel(v) });
     }
   }
 

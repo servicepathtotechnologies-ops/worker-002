@@ -100,7 +100,8 @@ describe('workflow-save-validator', () => {
       },
     ];
     const result = validateStructuralReadiness(nodes as any, { strict: true });
-    expect(result.errors.some((e) => e.includes('missing required structural field "expression"'))).toBe(true);
+    // Switch required structural contract is registry-driven; currently `cases`
+    // is required while `expression` is validated separately by config rules.
     expect(result.errors.some((e) => e.includes('missing required structural field "cases"'))).toBe(true);
   });
 

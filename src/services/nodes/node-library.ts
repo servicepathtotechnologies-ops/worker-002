@@ -3971,6 +3971,7 @@ export class NodeLibrary {
             type: 'string',
             description:
               'How recipients are chosen when sending. Manual: type addresses in Recipient emails. Extract from sheet: runtime uses upstream row data first (typically from a Google Sheets node before Gmail). If upstream has no usable emails, optional inline spreadsheet ID + sheet/range on this node fetches via Google Sheets API (same Google account as Gmail). Precedence: upstream wins; inline fetch is only a fallback.',
+            default: 'manual_entry',
             examples: ['manual_entry', 'extract_from_sheet'],
             // UI hint: render as select/radio-style choice
             options: [
@@ -3993,16 +3994,16 @@ export class NodeLibrary {
           recipientEmails: {
             type: 'string',
             description:
-              'Used only when Recipient source is Manual entry: one or more recipient addresses, comma- or newline-separated (e.g. a@x.com, b@y.com). This is the primary field for multiple manual recipients. If you use Extract from sheet, this field is hidden and not used—the workflow supplies emails from prior nodes.',
+              'Recipient email address(es), comma- or newline-separated (e.g. a@x.com, b@y.com). Active when Recipient source is Manual entry. If Extract from sheet is selected, this field is optional — the workflow supplies emails from upstream nodes.',
             examples: ['john@example.com', 'john@example.com, jane@example.com'],
-            // Generic conditional-required contract (handled by input discovery layer)
+            // Required only when recipientSource is manual_entry
             requiredIf: { field: 'recipientSource', equals: 'manual_entry' },
           },
           /** Fallback when upstream outputs have no extractable emails; same names as google_sheets for consistency. */
           spreadsheetId: {
             type: 'string',
             description:
-              'Optional fallback: Google Spreadsheet ID to read when Recipient source is Extract from sheet and upstream data has no usable recipient rows. Leave empty if a Google Sheets node upstream already supplies rows. Runtime order: upstream outputs first; this field only if that fails.',
+              'Optional fallback Spreadsheet ID — active when Recipient source is Extract from sheet and upstream data has no usable recipient rows. Leave empty if a Google Sheets node upstream already supplies rows.',
             examples: ['1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms'],
             visibleIf: { field: 'recipientSource', equals: 'extract_from_sheet' },
           },

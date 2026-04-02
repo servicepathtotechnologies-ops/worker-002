@@ -299,6 +299,14 @@ app.get('/health', asyncHandler(async (req: Request, res: Response) => {
 }));
 console.log('[ServerStartup] ✅ /health endpoint registered');
 
+// Cache-clear endpoint — clears the Gemini in-memory cache so fresh prompts are re-analyzed
+app.post('/api/admin/clear-cache', asyncHandler(async (req: Request, res: Response) => {
+  const { geminiOrchestrator } = require('./services/ai/gemini-orchestrator');
+  geminiOrchestrator.clearCache();
+  console.log('[AdminAPI] 🧹 Gemini cache cleared via /api/admin/clear-cache');
+  res.json({ success: true, message: 'Gemini cache cleared. Next workflow generation will re-analyze from scratch.' });
+}));
+
 // Connection test endpoint (more detailed than health)
 app.get('/api/test-connection', asyncHandler(async (req: Request, res: Response) => {
   const origins = getAllowedOrigins();

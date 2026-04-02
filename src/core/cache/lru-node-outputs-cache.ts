@@ -220,6 +220,21 @@ export class LRUNodeOutputsCache {
   }
 
   /**
+   * Returns all non-excluded entries sorted by setTimestamp descending (most recent first).
+   * Used by the executor to find the first non-empty upstream payload when the most-recent
+   * entry is a meta/trigger-only payload.
+   */
+  getAllEntries(excludeKeys: string[] = []): Array<{ key: string; value: unknown }> {
+    const exclude = new Set(excludeKeys);
+    const entries: Array<{ key: string; value: unknown; ts: number }> = [];
+    for (const [key, entry] of this.cache.entries()) {
+      if (exclude.has(key)) continue;
+      entries.push({ key, value: entry.value, ts: entry.setTimestamp ?? entry.timestamp });
+    }
+    return entries.sort((a, b) => b.ts - a.ts).map(({ key, value }) => ({ key, value }));
+  }
+
+  /**
    * Clear all entries from cache
    * 
    * Resets statistics and frees memory.

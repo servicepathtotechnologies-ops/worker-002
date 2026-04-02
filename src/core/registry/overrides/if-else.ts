@@ -28,6 +28,8 @@ export function overrideIfElse(def: UnifiedNodeDefinition, schema: NodeSchema): 
         supportsRuntimeAI: false,
         supportsBuildtimeAI: true,
       },
+      // Structural JSON that defines branching shape; planner/AI own this at build time.
+      ownership: 'structural',
       role: 'raw_json',
     },
     ...(def.inputSchema.combineOperation
@@ -39,6 +41,8 @@ export function overrideIfElse(def: UnifiedNodeDefinition, schema: NodeSchema): 
               supportsRuntimeAI: false,
               supportsBuildtimeAI: false,
             },
+            ownership: 'value',
+            role: 'content',
           },
         }
       : {}),

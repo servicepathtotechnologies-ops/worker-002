@@ -1,7 +1,9 @@
 import { resolveCanonicalNodeTypeStrict } from '../core/utils/node-type-resolver-util';
 import { unifiedNodeRegistry } from '../core/registry/unified-node-registry';
-import { extractBranchIntentSignals, expectedBranchTargetCount } from '../core/utils/branch-intent-model';
+import { extractBranchIntentSignals } from '../core/utils/branch-intent-model';
 import { nodeCapabilityRegistryDSL } from '../services/ai/node-capability-registry-dsl';
+import { unifiedNormalizeNodeTypeString } from '../core/utils/unified-node-type-normalizer';
+import { buildBranchSlotContract } from '../core/utils/branch-slot-contract';
 
 export interface PlanChainIssue {
   input: string;
@@ -80,30 +82,20 @@ function hasExplicitCue(promptLower: string, nodeType: string): boolean {
   return matcher ? matcher.test(promptLower) : false;
 }
 
-function expectedTargetsFromRegistry(branchingNodeTypes: string[]): number {
-  let required = 1;
-  for (const nodeType of branchingNodeTypes) {
-    const ports = unifiedNodeRegistry.getOutgoingPortsForWorkflowNode({
-      type: nodeType,
-      data: { type: nodeType, config: {} as Record<string, unknown> },
-    });
-    if (Array.isArray(ports) && ports.length > 1) {
-      required = Math.max(required, ports.length);
-    }
-  }
-  return required;
-}
-
 /**
  * `google_gmail` and generic `email` (SMTP) both send mail; plans often list both unnecessarily.
  * Drop `email` when Gmail is already in the chain unless the user explicitly asks for SMTP / non-Gmail.
+ * Also handles the case where `email` was normalized to `google_gmail` by pruneProposedPlanChain.
  */
 function dedupeRedundantEmailFamilyNodes(
   chain: string[],
   userPrompt: string
 ): { chain: string[]; dropped: string[] } {
   const dropped: string[] = [];
-  if (!chain.includes('google_gmail') || !chain.includes('email')) {
+  // Normalize: treat 'email' and 'google_gmail' as the same family
+  const hasGmail = chain.includes('google_gmail');
+  const hasEmail = chain.includes('email');
+  if (!hasGmail || !hasEmail) {
     return { chain, dropped };
   }
   const pl = userPrompt.toLowerCase();
@@ -117,12 +109,24 @@ function dedupeRedundantEmailFamilyNodes(
   return { chain: next, dropped };
 }
 
-function normalizeChainWithTerminal(canonical: string[]): string[] {
+function normalizeChainWithTerminal(canonical: string[], options?: { preserveOutputRepeats?: boolean }): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   let triggerSeen = false;
+  const preserveOutputRepeats = options?.preserveOutputRepeats === true;
   for (const nodeType of canonical) {
-    if (!nodeType || seen.has(nodeType)) continue;
+    if (!nodeType) continue;
+    // Branch workflows may intentionally repeat the same output type
+    // across multiple slots (e.g., Slack on case_2 and case_3).
+    if (
+      preserveOutputRepeats &&
+      isOutputNodeType(nodeType) &&
+      nodeType !== 'log_output'
+    ) {
+      out.push(nodeType);
+      continue;
+    }
+    if (seen.has(nodeType)) continue;
     if (isTriggerNodeType(nodeType)) {
       if (triggerSeen) continue;
       triggerSeen = true;
@@ -144,11 +148,13 @@ export function autoRepairCanonicalChainForIntent(
   userPrompt: string = ''
 ): AutoRepairResult {
   const repairs: string[] = [];
-  let chain = normalizeChainWithTerminal(canonical);
+  const initialBranching = canonical.filter((n) => isBranchingNodeType(n));
+  const preserveOutputRepeats = initialBranching.length > 0;
+  let chain = normalizeChainWithTerminal(canonical, { preserveOutputRepeats });
   const emailDedup = dedupeRedundantEmailFamilyNodes(chain, userPrompt);
   if (emailDedup.dropped.length > 0) {
     repairs.push(`deduped_email_family:${emailDedup.dropped.join(',')}`);
-    chain = normalizeChainWithTerminal(emailDedup.chain);
+    chain = normalizeChainWithTerminal(emailDedup.chain, { preserveOutputRepeats });
   }
   const branchingNodeTypes = chain.filter((n) => isBranchingNodeType(n));
   if (branchingNodeTypes.length === 0) {
@@ -156,11 +162,8 @@ export function autoRepairCanonicalChainForIntent(
   }
 
   const signals = extractBranchIntentSignals(userPrompt || '');
-  const registryTargetFloor = expectedTargetsFromRegistry(branchingNodeTypes);
-  const intentTargetFloor = expectedBranchTargetCount(signals);
-  const requiredTargets = signals.hasBranchingIntent
-    ? Math.max(registryTargetFloor, intentTargetFloor)
-    : registryTargetFloor;
+  const slotContract = buildBranchSlotContract(branchingNodeTypes, signals);
+  const requiredTargets = slotContract.requiredSlotCount;
 
   const currentOutputs = chain.filter((n) => isOutputNodeType(n));
   if (currentOutputs.length >= requiredTargets) {
@@ -168,20 +171,23 @@ export function autoRepairCanonicalChainForIntent(
   }
 
   const missingCount = requiredTargets - currentOutputs.length;
-  const preferredOutputs = signals.mentionedOutputNodeTypes.filter(
-    (n) => isOutputNodeType(n) && !chain.includes(n)
-  );
-  const fallbackOutputs = preferredOutputs.length > 0
-    ? []
-    : unifiedNodeRegistry
-        .getAllTypes()
-        .filter((n) => isOutputNodeType(n) && !chain.includes(n));
-  const additions = [...preferredOutputs, ...fallbackOutputs].slice(0, missingCount);
+  const preferredOutputs = signals.mentionedOutputNodeTypes
+    .map((n) => unifiedNormalizeNodeTypeString(n) || n)
+    .filter((n) => isOutputNodeType(n) && !chain.includes(n));
+
+  // When preferredOutputs is empty it means all mentioned outputs are already in the chain.
+  // The same output type serves multiple branches (e.g. gmail on both true and false).
+  // Repeat the existing output type instead of pulling random registry nodes.
+  // NEVER fall back to the full registry — that injects unrelated nodes (http_request, postgresql, etc.)
+  const additions =
+    preferredOutputs.length > 0
+      ? preferredOutputs.slice(0, missingCount)
+      : currentOutputs.slice(0, missingCount); // repeat existing output for each missing branch
   if (additions.length > 0) {
     chain = chain.filter((n) => n !== 'log_output').concat(additions, ['log_output']);
     repairs.push(`added_output_targets:${additions.join(',')}`);
   }
-  return { canonical: normalizeChainWithTerminal(chain), repairs };
+  return { canonical: normalizeChainWithTerminal(chain, { preserveOutputRepeats: true }), repairs };
 }
 
 export function validateCanonicalChainCompleteness(
@@ -207,21 +213,24 @@ export function validateCanonicalChainCompleteness(
   const branchingNodeTypes = canonical.filter((n) => isBranchingNodeType(n));
   if (branchingNodeTypes.length > 0) {
     const signals = extractBranchIntentSignals(options?.userPrompt || '');
-    const registryTargetFloor = expectedTargetsFromRegistry(branchingNodeTypes);
-    const intentTargetFloor = expectedBranchTargetCount(signals);
-    const requiredTargets = signals.hasBranchingIntent
-      ? Math.max(registryTargetFloor, intentTargetFloor)
-      : registryTargetFloor;
+    const slotContract = buildBranchSlotContract(branchingNodeTypes, signals);
+    const requiredTargets = slotContract.requiredSlotCount;
     const foundTargets = canonical.filter((n) => isOutputNodeType(n)).length;
     if (foundTargets < requiredTargets) {
       issues.push({
         input: canonical.join(' -> '),
-        reason: `branch_downstream_outputs_insufficient:required=${requiredTargets},found=${foundTargets}`,
+        reason: `branch_slots_insufficient:required=${requiredTargets},mapped=${foundTargets}`,
       });
     }
 
     if (signals.hasBranchingIntent && signals.mentionedOutputNodeTypes.length > 0) {
-      const overlap = signals.mentionedOutputNodeTypes.filter((n) => canonical.includes(n));
+      // Normalize mentioned output types before checking overlap — the chain may contain
+      // the canonical form (e.g. google_gmail) while the signal contains the category alias (e.g. email).
+      const normalizedMentioned = signals.mentionedOutputNodeTypes.map(
+        (n) => unifiedNormalizeNodeTypeString(n) || n
+      );
+      const canonicalSet = new Set(canonical);
+      const overlap = normalizedMentioned.filter((n) => canonicalSet.has(n));
       if (overlap.length === 0) {
         issues.push({
           input: canonical.join(' -> '),
@@ -259,8 +268,22 @@ export function validateCanonicalChainSemantics(
 ): PlanChainIssue[] {
   const issues: PlanChainIssue[] = [];
   const promptLower = String(options?.userPrompt || '').toLowerCase();
+
+  // Semantic ordering rules (data_source → transformation → output) only apply to
+  // linear pipelines. Branching workflows (if_else, switch) have a fundamentally
+  // different structure where outputs appear on each branch — not after a data source.
+  // Skip semantic ordering checks entirely when the chain contains a branching node.
+  const hasBranchingNode = canonical.some((n) => isBranchingNodeType(n));
+  if (hasBranchingNode) {
+    return issues; // No semantic ordering violations for branching chains
+  }
+
+  // "from" as a preposition (e.g. "send email from X") must not trigger data-fetch intent.
+  // Only match "from" when preceded by a data-fetch verb.
   const hasTransformIntent = /\bsummari[sz]e|classif|analy[sz]e|transform|rewrite|extract\b/.test(promptLower);
-  const hasDataFetchIntent = /\bfetch|get|read|from\b/.test(promptLower);
+  const hasDataFetchIntent =
+    /\bfetch|get|read\b/.test(promptLower) ||
+    /\b(fetch|get|read|pull|load|import)\s+from\b/.test(promptLower);
 
   let seenDataSource = false;
   let seenTransformation = false;

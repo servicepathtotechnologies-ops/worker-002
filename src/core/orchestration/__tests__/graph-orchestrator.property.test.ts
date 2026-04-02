@@ -4,6 +4,7 @@
  */
 
 import * as fc from 'fast-check';
+import { test, expect } from '@jest/globals';
 import { unifiedGraphOrchestrator } from '../unified-graph-orchestrator';
 import { unifiedNodeRegistry } from '../../registry/unified-node-registry';
 import { unifiedNormalizeNodeTypeString } from '../../utils/unified-node-type-normalizer';
@@ -155,4 +156,34 @@ test('Property 32: alwaysTerminal nodes have out-degree 0', () => {
     ),
     { numRuns: 100 }
   );
+});
+
+test('switch case mapping with repeated output types keeps terminal lineage valid', () => {
+  const nodes: WorkflowNode[] = [
+    makeNode('trigger-1', 'form'),
+    makeNode('switch-1', 'switch'),
+    makeNode('gmail-1', 'google_gmail'),
+    makeNode('slack-1', 'slack_message'),
+    makeNode('slack-2', 'slack_message'),
+    makeNode('log-1', 'log_output'),
+    makeNode('log-2', 'log_output'),
+    makeNode('log-3', 'log_output'),
+  ];
+
+  const caseNodeMapping: CaseNodeMapping = {
+    success: { targetNodeType: 'google_gmail', targetNodeId: 'gmail-1', slot: 'case_1' },
+    pending: { targetNodeType: 'slack_message', targetNodeId: 'slack-1', slot: 'case_2' },
+    failed: { targetNodeType: 'slack_message', targetNodeId: 'slack-2', slot: 'case_3' },
+  };
+
+  const result = unifiedGraphOrchestrator.initializeWorkflow(
+    nodes,
+    undefined,
+    undefined,
+    { switchNodeId: 'switch-1', caseNodeMapping }
+  );
+  const validation = unifiedGraphOrchestrator.validateWorkflow(result.workflow, result.executionOrder);
+  const errorText = validation.errors.join(' | ').toLowerCase();
+  expect(errorText.includes('required orphaned')).toBe(false);
+  expect(errorText.includes('non-branching node already has outgoing edge')).toBe(false);
 });

@@ -14,7 +14,7 @@
 
 import { Workflow, WorkflowNode } from '../types/ai-types';
 import { unifiedNodeRegistry } from '../registry/unified-node-registry';
-import { unifiedNormalizeNodeTypeString } from '../utils/unified-node-type-normalizer';
+import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../utils/unified-node-type-normalizer';
 
 /**
  * Raw metadata type that includes AI-determined properties
@@ -83,6 +83,9 @@ export interface ExecutionOrderManager {
 }
 
 class ExecutionOrderManagerImpl implements ExecutionOrderManager {
+  private getNodeType(node: WorkflowNode): string {
+    return unifiedNormalizeNodeType(node);
+  }
   /**
    * Initialize execution order from workflow graph
    * ✅ 3-TIER ORDER-FIRST APPROACH: DSL → Registry → Array Order
@@ -139,7 +142,7 @@ class ExecutionOrderManagerImpl implements ExecutionOrderManager {
     positionHint: 'before' | 'after' | 'replace' = 'after',
     referenceNodeId?: string
   ): ExecutionOrder {
-    const nodeType = unifiedNormalizeNodeTypeString(node.type || node.data?.type || '');
+    const nodeType = this.getNodeType(node);
     const nodeDef = unifiedNodeRegistry.get(nodeType);
     const category = nodeDef?.category || '';
     
@@ -240,7 +243,7 @@ class ExecutionOrderManagerImpl implements ExecutionOrderManager {
     const node = workflow.nodes.find(n => n.id === nodeId);
     if (!node) return [];
     
-    const nodeType = unifiedNormalizeNodeTypeString(node.type || node.data?.type || '');
+    const nodeType = this.getNodeType(node);
     const nodeDef = unifiedNodeRegistry.get(nodeType);
     const category = nodeDef?.category || '';
     
@@ -255,7 +258,7 @@ class ExecutionOrderManagerImpl implements ExecutionOrderManager {
     // Data sources depend on triggers
     if (category === 'data') {
       const triggers = workflow.nodes.filter(n => {
-        const t = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
+        const t = this.getNodeType(n);
         return unifiedNodeRegistry.get(t)?.category === 'trigger';
       });
       dependencies.push(...triggers.map(n => n.id));
@@ -264,7 +267,7 @@ class ExecutionOrderManagerImpl implements ExecutionOrderManager {
     // Transformations depend on data sources (or previous transformations)
     if (category === 'transformation' || category === 'ai') {
       const dataSources = workflow.nodes.filter(n => {
-        const t = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
+        const t = this.getNodeType(n);
         const def = unifiedNodeRegistry.get(t);
         return def?.category === 'data' || def?.category === 'transformation' || def?.category === 'ai';
       });
@@ -274,7 +277,7 @@ class ExecutionOrderManagerImpl implements ExecutionOrderManager {
     // Outputs depend on transformations/data sources
     if (category === 'communication' || nodeType === 'log_output') {
       const sources = workflow.nodes.filter(n => {
-        const t = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
+        const t = this.getNodeType(n);
         const def = unifiedNodeRegistry.get(t);
         return def?.category === 'transformation' || def?.category === 'ai' || def?.category === 'data';
       });
@@ -296,8 +299,8 @@ class ExecutionOrderManagerImpl implements ExecutionOrderManager {
    * Registry-driven: Check if edge should create dependency
    */
   private shouldCreateDependency(source: WorkflowNode, target: WorkflowNode): boolean {
-    const sourceType = unifiedNormalizeNodeTypeString(source.type || source.data?.type || '');
-    const targetType = unifiedNormalizeNodeTypeString(target.type || target.data?.type || '');
+    const sourceType = this.getNodeType(source);
+    const targetType = this.getNodeType(target);
     
     const sourceDef = unifiedNodeRegistry.get(sourceType);
     const targetDef = unifiedNodeRegistry.get(targetType);
@@ -333,7 +336,7 @@ class ExecutionOrderManagerImpl implements ExecutionOrderManager {
    * Lower number = higher priority (executes first)
    */
   private getNodePriority(node: WorkflowNode): number {
-    const nodeType = unifiedNormalizeNodeTypeString(node.type || node.data?.type || '');
+    const nodeType = this.getNodeType(node);
     const nodeDef = unifiedNodeRegistry.get(nodeType);
     const category = nodeDef?.category || '';
     
@@ -355,7 +358,7 @@ class ExecutionOrderManagerImpl implements ExecutionOrderManager {
    * Find insertion position for node based on registry category
    */
   private findInsertionPosition(order: ExecutionOrder, node: WorkflowNode, category: string): number {
-    const nodeType = unifiedNormalizeNodeTypeString(node.type || node.data?.type || '');
+    const nodeType = this.getNodeType(node);
     const nodeDef = unifiedNodeRegistry.get(nodeType);
     const priority = this.getNodePriority(node);
     
@@ -389,7 +392,7 @@ class ExecutionOrderManagerImpl implements ExecutionOrderManager {
     const outputNodes: WorkflowNode[] = [];
     
     nodes.forEach(node => {
-      const nodeType = unifiedNormalizeNodeTypeString(node.type || node.data?.type || '');
+      const nodeType = this.getNodeType(node);
       const nodeDef = unifiedNodeRegistry.get(nodeType);
       const category = nodeDef?.category || '';
 
@@ -512,12 +515,12 @@ class ExecutionOrderManagerImpl implements ExecutionOrderManager {
     // 3. Output nodes depend on transformation nodes (or data if no transformation, or trigger if neither)
     // ✅ CRITICAL: Separate log_output from other outputs - log_output depends on ALL other outputs
     const logOutputNodes = outputNodes.filter(n => {
-      const nodeType = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
+      const nodeType = this.getNodeType(n);
       return nodeType === 'log_output';
     });
     
     const nonLogOutputNodes = outputNodes.filter(n => {
-      const nodeType = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
+      const nodeType = this.getNodeType(n);
       return nodeType !== 'log_output';
     });
     
@@ -579,7 +582,7 @@ class ExecutionOrderManagerImpl implements ExecutionOrderManager {
     
     // Map trigger node
     const triggerNode = nodes.find(n => {
-      const nodeType = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
+      const nodeType = this.getNodeType(n);
       const nodeDef = unifiedNodeRegistry.get(nodeType);
       return nodeDef?.category === 'trigger';
     });
@@ -618,12 +621,12 @@ class ExecutionOrderManagerImpl implements ExecutionOrderManager {
     // ✅ FIX: Ensure log_output is always last (safety check even if DSL order is wrong)
     const logOutputNodeIds = orderedNodeIds.filter(id => {
       const node = nodes.find(n => n.id === id);
-      const nodeType = unifiedNormalizeNodeTypeString(node?.type || node?.data?.type || '');
+      const nodeType = node ? this.getNodeType(node) : '';
       return nodeType === 'log_output';
     });
     const nonLogOutputNodeIds = orderedNodeIds.filter(id => {
       const node = nodes.find(n => n.id === id);
-      const nodeType = unifiedNormalizeNodeTypeString(node?.type || node?.data?.type || '');
+      const nodeType = node ? this.getNodeType(node) : '';
       return nodeType !== 'log_output';
     });
     // Reorder: non-log_output nodes first, then log_output nodes
@@ -650,20 +653,20 @@ class ExecutionOrderManagerImpl implements ExecutionOrderManager {
     });
     
     const terminalNodes = nodes.filter(n => {
-      const nodeType = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
+      const nodeType = this.getNodeType(n);
       const nodeDef = unifiedNodeRegistry.get(nodeType);
       const tags = nodeDef?.tags || [];
       return tags.includes('terminal') || nodeDef?.category === 'utility';
     });
     
     const branchingNodes = nodes.filter(n => {
-      const nodeType = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
+      const nodeType = this.getNodeType(n);
       const nodeDef = unifiedNodeRegistry.get(nodeType);
       return nodeDef?.isBranching === true;
     });
     
     const mergeNodes = nodes.filter(n => {
-      const nodeType = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
+      const nodeType = this.getNodeType(n);
       return nodeType === 'merge' || (unifiedNodeRegistry.get(nodeType)?.tags || []).includes('merge');
     });
     
@@ -687,20 +690,38 @@ class ExecutionOrderManagerImpl implements ExecutionOrderManager {
     const nodes = workflow.nodes || [];
     const dependencies = new Map<string, string[]>();
     
-    // Category priority: trigger (0) → data (1) → transformation (2) → output (3) → utility (4)
+    // Category priority: trigger (0) → data (1) → logic/branching (2) → http_api (3) → transformation (4) → output (5) → utility (6)
+    // ✅ FIX: logic nodes (switch, if_else) must come BEFORE output/http_api nodes so branch targets
+    // never appear before the branching node in execution order.
     // ✅ FIX: log_output gets special priority (999) to ensure it's always last
     const categoryPriority: Record<string, number> = {
       trigger: 0,
       data: 1,
-      transformation: 2,
-      output: 3,
-      utility: 4,
+      logic: 2,       // switch, if_else — must precede their branch targets
+      http_api: 3,    // http_request — branch target, comes after switch
+      transformation: 4,
+      output: 5,
+      utility: 6,
+      google: 5,      // google_gmail, google_sheets — output category
+      ai: 4,
+      crm: 5,
+      social: 5,
+      devops: 5,
+      ecommerce: 5,
+      productivity: 5,
+      database: 3,
+      file: 3,
+      queue: 3,
+      cache: 3,
+      auth: 1,
+      flow: 2,
+      microsoft: 5,
     };
     
     // Sort nodes by category priority, with log_output always last
     const sortedNodes = [...nodes].sort((a, b) => {
-      const nodeTypeA = unifiedNormalizeNodeTypeString(a.type || a.data?.type || '');
-      const nodeTypeB = unifiedNormalizeNodeTypeString(b.type || b.data?.type || '');
+      const nodeTypeA = this.getNodeType(a);
+      const nodeTypeB = this.getNodeType(b);
       
       // ✅ FIX: log_output always goes to the end
       if (nodeTypeA === 'log_output' && nodeTypeB !== 'log_output') {
@@ -745,26 +766,26 @@ class ExecutionOrderManagerImpl implements ExecutionOrderManager {
     
     // Build metadata
     const triggerNode = sortedNodes.find(n => {
-      const nodeType = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
+      const nodeType = this.getNodeType(n);
       const nodeDef = unifiedNodeRegistry.get(nodeType);
       return nodeDef?.category === 'trigger';
     });
     
     const terminalNodes = sortedNodes.filter(n => {
-      const nodeType = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
+      const nodeType = this.getNodeType(n);
       const nodeDef = unifiedNodeRegistry.get(nodeType);
       const tags = nodeDef?.tags || [];
       return tags.includes('terminal') || nodeDef?.category === 'utility';
     });
     
     const branchingNodes = sortedNodes.filter(n => {
-      const nodeType = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
+      const nodeType = this.getNodeType(n);
       const nodeDef = unifiedNodeRegistry.get(nodeType);
       return nodeDef?.isBranching === true;
     });
     
     const mergeNodes = sortedNodes.filter(n => {
-      const nodeType = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
+      const nodeType = this.getNodeType(n);
       return nodeType === 'merge' || (unifiedNodeRegistry.get(nodeType)?.tags || []).includes('merge');
     });
     
@@ -794,7 +815,7 @@ class ExecutionOrderManagerImpl implements ExecutionOrderManager {
     const otherNodes: WorkflowNode[] = [];
     
     for (const node of nodes) {
-      const nodeType = unifiedNormalizeNodeTypeString(node.type || node.data?.type || '');
+      const nodeType = this.getNodeType(node);
       if (nodeType === 'log_output') {
         logOutputNodes.push(node);
       } else {
@@ -816,26 +837,26 @@ class ExecutionOrderManagerImpl implements ExecutionOrderManager {
     
     // Build metadata
     const triggerNode = nodes.find(n => {
-      const nodeType = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
+      const nodeType = this.getNodeType(n);
       const nodeDef = unifiedNodeRegistry.get(nodeType);
       return nodeDef?.category === 'trigger';
     });
     
     const terminalNodes = nodes.filter(n => {
-      const nodeType = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
+      const nodeType = this.getNodeType(n);
       const nodeDef = unifiedNodeRegistry.get(nodeType);
       const tags = nodeDef?.tags || [];
       return tags.includes('terminal') || nodeDef?.category === 'utility';
     });
     
     const branchingNodes = nodes.filter(n => {
-      const nodeType = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
+      const nodeType = this.getNodeType(n);
       const nodeDef = unifiedNodeRegistry.get(nodeType);
       return nodeDef?.isBranching === true;
     });
     
     const mergeNodes = nodes.filter(n => {
-      const nodeType = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
+      const nodeType = this.getNodeType(n);
       return nodeType === 'merge' || (unifiedNodeRegistry.get(nodeType)?.tags || []).includes('merge');
     });
     
@@ -854,3 +875,40 @@ class ExecutionOrderManagerImpl implements ExecutionOrderManager {
 
 // Export singleton instance
 export const executionOrderManager: ExecutionOrderManager = new ExecutionOrderManagerImpl();
+
+/**
+ * ✅ UNIVERSAL STARTUP VALIDATION: Warn if any registered node category is absent from the
+ * TIER 2 priority map. This ensures new node types added to the registry are never silently
+ * mis-ordered. Runs once at module load time — zero runtime cost during execution.
+ */
+(function validateCategoryPriorityCoverage() {
+  // The canonical priority map (must match buildOrderFromCategories exactly)
+  const KNOWN_PRIORITIES: Record<string, number> = {
+    trigger: 0, data: 1, auth: 1, logic: 2, flow: 2,
+    http_api: 3, database: 3, file: 3, queue: 3, cache: 3,
+    ai: 4, transformation: 4,
+    output: 5, communication: 5, google: 5, crm: 5, social: 5,
+    devops: 5, ecommerce: 5, productivity: 5, microsoft: 5,
+    utility: 6,
+  };
+  try {
+    const allTypes = unifiedNodeRegistry.getAllTypes();
+    const unseenCategories = new Set<string>();
+    for (const t of allTypes) {
+      const def = unifiedNodeRegistry.get(t);
+      const cat = def?.category?.toLowerCase();
+      if (cat && !(cat in KNOWN_PRIORITIES) && cat !== 'log_output') {
+        unseenCategories.add(cat);
+      }
+    }
+    if (unseenCategories.size > 0) {
+      console.warn(
+        `[ExecutionOrderManager] ⚠️  TIER 2 category priority map is missing entries for: ` +
+        `[${Array.from(unseenCategories).join(', ')}]. ` +
+        `These categories will fall back to priority 99. Add them to categoryPriority in buildOrderFromCategories.`
+      );
+    }
+  } catch {
+    // Registry may not be initialized yet at module load — skip silently
+  }
+})();

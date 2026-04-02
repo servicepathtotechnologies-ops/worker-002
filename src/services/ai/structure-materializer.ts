@@ -25,6 +25,8 @@ type StructuralIssue = {
   nodeType: string;
   fieldName: string;
   reason: 'missing_structural_value';
+  confidence: 'high' | 'low';
+  requiresUserConfirmation: boolean;
 };
 
 type StructuralDiagnostics = {
@@ -79,6 +81,20 @@ function minimalPlaceholderFormFields(): Array<Record<string, unknown>> {
   ] as Array<Record<string, unknown>>) as Array<Record<string, unknown>>;
 }
 
+function isLikelyPlannerNarrative(text: string): boolean {
+  const t = String(text || '').toLowerCase();
+  if (!t) return false;
+  return (
+    t.includes('detected nodes:') ||
+    t.includes('branch slots:') ||
+    t.includes('execution:') ||
+    t.includes('terminal:') ||
+    t.includes('terminals:') ||
+    t.includes('configuration contract') ||
+    t.includes('planner rules:')
+  );
+}
+
 /** User-only text for form field extraction — never the merged planner blob when original is set. */
 export function getFormStructuralIntentText(workflow: Workflow): string {
   const metadata = (workflow as any)?.metadata || {};
@@ -87,12 +103,11 @@ export function getFormStructuralIntentText(workflow: Workflow): string {
   if (originalUserPrompt) return originalUserPrompt;
   const userOnly = String(metadata.userPrompt || metadata.prompt || '').trim();
   if (userOnly) return userOnly;
-  return String(
-    requirements.originalPrompt ||
-      requirements.primaryGoal ||
-      getWorkflowIntentText(workflow) ||
-      ''
-  );
+  const reqOriginal = String(requirements.originalPrompt || '').trim();
+  if (reqOriginal && !isLikelyPlannerNarrative(reqOriginal)) return reqOriginal;
+  const reqGoal = String(requirements.primaryGoal || '').trim();
+  if (reqGoal && !isLikelyPlannerNarrative(reqGoal)) return reqGoal;
+  return '';
 }
 
 export function getWorkflowIntentText(workflow: Workflow): string {
@@ -119,11 +134,12 @@ export function mergeOriginalUserPromptMetadata(
   originalPrompt?: string | null
 ): Workflow | undefined {
   if (!workflow || !originalPrompt?.trim()) return workflow;
+  const cleanPrompt = originalPrompt.trim();
   return {
     ...(workflow as any),
     metadata: {
       ...((workflow as any).metadata || {}),
-      originalUserPrompt: originalPrompt.trim(),
+      originalUserPrompt: cleanPrompt,
     },
   } as Workflow;
 }
@@ -252,67 +268,10 @@ function bindIfElseConditionsToUpstreamForms(workflow: Workflow): Workflow {
 
 function deriveSwitchCasesFromIntent(intentText: string): Array<Record<string, unknown>> {
   if (!intentText) return [];
-  const lower = intentText.toLowerCase();
-
-  // Pattern: "if color is blue / black / red"
-  const conditionList = lower.match(/\bif\s+([a-z_][a-z0-9_]*)\s*(?:is|equals?|==|=)\s*([a-z0-9 _-]+(?:\s*(?:,|\/|\bor\b)\s*[a-z0-9 _-]+)+)/i);
-  if (conditionList) {
-    const values = conditionList[2]
-      .split(/,|\/|\bor\b/gi)
-      .map((s) => normalizeFieldKey(s))
-      .filter(Boolean);
-    const uniq = [...new Set(values)];
-    if (uniq.length >= 2) {
-      return uniq.map((value) => ({ value, label: toTitleLabel(value) }));
-    }
-  }
-
-  const categoryMatch = lower.match(/\b(classify|categorize|category|route)\b[\s\S]{0,140}\b(as|into)\s+([^.\n]+)/i);
-  const extractedList = categoryMatch?.[3] || '';
-  const rawCandidates = extractedList
-    .split(/,|\/|\bor\b/g)
-    .map((s) => s.replace(/[^a-zA-Z0-9 _-]/g, '').trim())
-    .filter(Boolean)
-    .slice(0, 6);
-
-  const normalized = rawCandidates
-    .map((v) => normalizeFieldKey(v))
-    .filter((v, idx, arr) => v.length > 0 && arr.indexOf(v) === idx);
-
-  if (normalized.length >= 2) {
-    return normalized.map((value) => ({
-      value,
-      label: value.replace(/_/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase()),
-    }));
-  }
-
-  // Pattern: "cases blue, black, red"
-  const caseListMatch = lower.match(/\bcases?\b[\s:=-]*([^\n.]+)/i);
-  if (caseListMatch?.[1]) {
-    const values = caseListMatch[1]
-      .split(/,|\/|\bor\b|\band\b/gi)
-      .map((s) => normalizeFieldKey(s))
-      .filter(Boolean);
-    const uniq = [...new Set(values)];
-    if (uniq.length >= 2) {
-      return uniq.map((value) => ({ value, label: toTitleLabel(value) }));
-    }
-  }
-
-  // Common intent fallback for triage/routing.
-  if (
-    lower.includes('sales') ||
-    lower.includes('support') ||
-    lower.includes('general')
-  ) {
-    return ['sales', 'support', 'general'].map((value) => ({
-      value,
-      label: value.charAt(0).toUpperCase() + value.slice(1),
-    }));
-  }
-
-  // No reliable intent-derived cases -> leave unresolved instead of hardcoded defaults.
-  return [];
+  // Delegate to the canonical, registry-driven extractor — single source of truth.
+  const { planSwitchCasesFromPrompt } = require('./switch-case-plan');
+  const plan = planSwitchCasesFromPrompt(intentText, undefined);
+  return plan.cases as Array<Record<string, unknown>>;
 }
 
 function deriveSwitchExpressionFromIntent(intentText: string, cases: Array<Record<string, unknown>>): string {
@@ -383,11 +342,14 @@ function deriveStructuralValueFromIntent(
     return deriveIfElseConditionsFromIntent(intentText);
   }
   if (nodeType === 'switch' && fieldName === 'cases') {
-    return deriveSwitchCasesFromIntent(intentText);
+    // Use the clean user-only prompt for switch case extraction — never the full generated blob.
+    const switchIntentText = getFormStructuralIntentText(workflow);
+    return deriveSwitchCasesFromIntent(switchIntentText || intentText);
   }
   if (nodeType === 'switch' && fieldName === 'expression') {
-    const cases = deriveSwitchCasesFromIntent(intentText);
-    return deriveSwitchExpressionFromIntent(intentText, cases);
+    const switchIntentText = getFormStructuralIntentText(workflow);
+    const cases = deriveSwitchCasesFromIntent(switchIntentText || intentText);
+    return deriveSwitchExpressionFromIntent(switchIntentText || intentText, cases);
   }
   return undefined;
 }
@@ -414,7 +376,33 @@ export function materializeStructuralFields(workflow: Workflow): Workflow {
       const normalizedCases =
         normalizedCasesPrimary.length > 0 ? normalizedCasesPrimary : normalizedCasesFallback;
       const currentCases = normalizeSwitchCasesValue(config.cases);
-      if (normalizedCases.length > 0 && JSON.stringify(currentCases) !== JSON.stringify(normalizedCases)) {
+
+      // ✅ UNIVERSAL FIX: Detect contaminated or truncated cases.
+      // Always use the clean user-only prompt — never the full generated blob which contains
+      // configuration contract boilerplate that would pollute case extraction.
+      const switchIntentText = getFormStructuralIntentText(workflow) || combinedIntentText;
+      const { planSwitchCasesFromPrompt } = require('./switch-case-plan');
+      const freshPlan = planSwitchCasesFromPrompt(switchIntentText, undefined);
+
+      const hasContaminatedCases = currentCases.some((c) => {
+        const v = String(c?.value || '');
+        return v.includes('_via_') || v.length > 32;
+      });
+      // Only consider truncation when there are actual saved cases to compare against.
+      // If currentCases is empty but normalizedCases (from rules fallback) is valid, use that instead.
+      const effectiveSavedCases = currentCases.length > 0 ? currentCases : normalizedCases;
+      const isTruncated =
+        effectiveSavedCases.length > 0 &&
+        freshPlan.cases.length > effectiveSavedCases.length &&
+        freshPlan.cases.length >= 2;
+
+      // Re-derive from intent if cases are contaminated, truncated, or structurally wrong
+      if ((hasContaminatedCases || isTruncated) && freshPlan.cases.length > 0) {
+        config.cases = freshPlan.cases;
+        config.rules = freshPlan.cases;
+        changed = true;
+        console.log(`[StructureMaterializer] ✅ Replaced ${hasContaminatedCases ? 'contaminated' : 'truncated'} switch cases with intent-derived: ${freshPlan.cases.map((c: any) => c.value).join(', ')}`);
+      } else if (normalizedCases.length > 0 && JSON.stringify(currentCases) !== JSON.stringify(normalizedCases)) {
         config.cases = normalizedCases;
         changed = true;
       }
@@ -449,6 +437,8 @@ export function materializeStructuralFields(workflow: Workflow): Workflow {
               nodeType,
               fieldName,
               reason: 'missing_structural_value',
+              confidence: 'low',
+              requiresUserConfirmation: true,
             });
           }
           changed = true;

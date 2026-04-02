@@ -27,6 +27,7 @@ import { resolveCanonicalNodeTypeStrict } from '../../core/utils/node-type-resol
 import { extractBranchIntentSignals, expectedBranchTargetCount } from '../../core/utils/branch-intent-model';
 import { BranchMetadata } from '../../core/types/branching';
 import { pruneProposedPlanChain } from './plan-chain-prune';
+import { unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 import { buildRegistryStructuralFillContractSection } from './registry-structural-fill-contract';
 import { buildWorkflowIntentModel, formatWorkflowIntentModelDigest } from './workflow-intent-model';
 import type { Workflow } from '../../core/types/ai-types';
@@ -104,7 +105,13 @@ export interface DetectionResult {
  * e.g. { "sales": "slack", "support": "google_gmail", "general": "log_output" }
  */
 export interface CaseNodeMapping {
-  [caseValue: string]: string;
+  [caseValue: string]:
+    | string
+    | {
+        targetNodeType?: string;
+        targetNodeId?: string;
+        slot?: string;
+      };
 }
 
 /**
@@ -142,6 +149,16 @@ export interface WorkflowIntentPlan {
    * Used by Graph_Orchestrator.initializeWorkflow to wire case edges.
    */
   caseNodeMapping?: CaseNodeMapping;
+  /**
+   * When true, the plan has a pipeline contract gap (e.g. chain too short for switch cases)
+   * and must not be passed to the graph orchestrator without user confirmation / repair.
+   */
+  requires_confirmation?: boolean;
+  /**
+   * Describes pipeline contract gaps that must be resolved before compilation.
+   * e.g. ['chain_too_short: switch needs 3 downstream nodes but chain has 1']
+   */
+  missing_fields?: string[];
 }
 
 export interface SummarizeLayerResult {
@@ -6068,7 +6085,7 @@ The "variations" array MUST contain exactly 4 items, each with a detailed prompt
       branchingOverview,
       originalPrompt: userPrompt,
       intentModelDigest: intentModelDigest || undefined,
-      caseNodeMapping: this.buildCaseNodeMappingForPlan(proposedNodeChain, userPrompt),
+      ...this._resolveCaseNodeMappingOrError(proposedNodeChain, userPrompt),
     };
 
     this.assertPlanConsistency(plan, userPrompt, extractedNodeTypes);
@@ -6213,8 +6230,21 @@ Rules:
       intentModelDigest: formatWorkflowIntentModelDigest(
         buildWorkflowIntentModel({ nodes: [], edges: [] } as Workflow, userPrompt)
       ),
-      caseNodeMapping: this.buildCaseNodeMappingForPlan(proposedNodeChain, userPrompt),
+      ...this._resolveCaseNodeMappingOrError(proposedNodeChain, userPrompt),
     };
+  }
+
+  /**
+   * Helper: resolve caseNodeMapping and surface pipeline contract errors.
+   * Returns `{ caseNodeMapping }` (valid mapping or undefined).
+   * Slot coverage for repeated output types is valid; do not fail when
+   * downstream distinct node types are fewer than switch case count.
+   */
+  private _resolveCaseNodeMappingOrError(
+    proposedNodeChain: string[],
+    userPrompt: string
+  ): Pick<WorkflowIntentPlan, 'caseNodeMapping' | 'requires_confirmation' | 'missing_fields'> {
+    return { caseNodeMapping: this.buildCaseNodeMappingForPlan(proposedNodeChain, userPrompt) };
   }
 
   /**
@@ -6222,8 +6252,9 @@ Rules:
    * Maps each case value (case_1, case_2, …) to the downstream node type that follows
    * the switch node in the chain.
    *
-   * If fewer downstream nodes exist than cases, the gap is logged (caller should record
-   * in PipelineContext.missing_fields).
+   * Repeated target node types across different cases are valid.
+   * If chain has fewer downstream outputs than cases, mapping may intentionally
+   * reuse the same output type for multiple case slots.
    */
   private buildCaseNodeMappingForPlan(
     proposedNodeChain: string[],
@@ -6247,17 +6278,38 @@ Rules:
       .slice(switchIdx + 1)
       .filter((t) => t !== 'log_output');
 
+    if (downstreamNodes.length === 0) return undefined;
+
     const mapping: CaseNodeMapping = {};
+    const parseTargetDescriptor = (
+      raw: string
+    ): { targetNodeType: string; targetNodeId?: string } => {
+      // Backward compatible: tokens are usually plain node types.
+      // Optional descriptor formats supported for deterministic disambiguation:
+      //   nodeType#nodeId
+      //   nodeType@nodeId
+      const hashIdx = raw.indexOf('#');
+      const atIdx = raw.indexOf('@');
+      const sepIdx =
+        hashIdx > 0 && atIdx > 0 ? Math.min(hashIdx, atIdx) : Math.max(hashIdx, atIdx);
+      if (sepIdx > 0 && sepIdx < raw.length - 1) {
+        return {
+          targetNodeType: raw.slice(0, sepIdx),
+          targetNodeId: raw.slice(sepIdx + 1),
+        };
+      }
+      return { targetNodeType: raw };
+    };
+
     for (let i = 0; i < switchPlan.cases.length; i++) {
       const caseValue = switchPlan.cases[i].value;
-      const targetNode = downstreamNodes[i];
-      if (targetNode) {
-        mapping[caseValue] = targetNode;
-      } else {
-        console.warn(
-          `[AIIntentClarifier] caseNodeMapping gap: case "${caseValue}" has no downstream node in proposedNodeChain`
-        );
-      }
+      const targetNode = downstreamNodes[i] ?? downstreamNodes[i % downstreamNodes.length];
+      const descriptor = parseTargetDescriptor(targetNode);
+      mapping[caseValue] = {
+        targetNodeType: descriptor.targetNodeType,
+        targetNodeId: descriptor.targetNodeId,
+        slot: `case_${i + 1}`,
+      };
     }
 
     return Object.keys(mapping).length > 0 ? mapping : undefined;
@@ -6267,12 +6319,29 @@ Rules:
     const out: string[] = [];
     const seen = new Set<string>();
     let triggerAdded = false;
+    const normalizedPreview = chain
+      .map((raw) => this.resolveRegistryNodeType(raw))
+      .filter((t): t is string => !!t);
+    const hasBranchingNode = normalizedPreview.some((t) => this.isBranchingNodeType(t));
+    const passedBranchNode = { value: false };
+
     for (const raw of chain) {
       const normalized = this.resolveRegistryNodeType(raw);
       if (!normalized) continue;
 
       // Multiple log_output entries are valid (one terminal per branch path); do not dedupe them.
       if (normalized === 'log_output') {
+        out.push(normalized);
+        continue;
+      }
+
+      if (this.isBranchingNodeType(normalized)) {
+        passedBranchNode.value = true;
+      }
+
+      // In branching chains, repeated output/action node types after the branch
+      // represent distinct branch instances and must not be collapsed.
+      if (hasBranchingNode && passedBranchNode.value && nodeCapabilityRegistryDSL.isOutput(normalized)) {
         out.push(normalized);
         continue;
       }
@@ -6317,14 +6386,36 @@ Rules:
       );
       if (currentOutputs.length < requiredTargets) {
         const missingCount = requiredTargets - currentOutputs.length;
-        const preferred = signals.mentionedOutputNodeTypes.filter((t) => !working.includes(t));
-        const shouldUseGenericFallbacks = preferred.length === 0;
+
+        // Normalize mentionedOutputNodeTypes so aliases (e.g. 'email') don't get
+        // added as a second output when the canonical form (e.g. 'google_gmail') is
+        // already in working. This prevents the dedup step from collapsing two
+        // "different" outputs back to one.
+        const normalizedMentioned = signals.mentionedOutputNodeTypes.map(
+          (t) => unifiedNormalizeNodeTypeString(t) || t
+        );
+        const preferred = normalizedMentioned.filter((t) => !working.includes(t));
+
+        // If preferred is empty it means all mentioned outputs are already in the
+        // chain — the same output type serves both branches (e.g. gmail on true AND
+        // false). Repeat the existing output type to fill the required slots.
+        const preferredWithRepeats =
+          preferred.length >= missingCount
+            ? preferred
+            : preferred.length > 0
+              ? [
+                  ...preferred,
+                  ...normalizedMentioned.slice(0, missingCount - preferred.length),
+                ]
+              : currentOutputs.slice(0, missingCount); // repeat existing output
+
+        const shouldUseGenericFallbacks = preferredWithRepeats.length === 0;
         const fallbackOutputTypes = shouldUseGenericFallbacks
           ? unifiedNodeRegistry
               .getAllTypes()
               .filter((t) => t !== 'log_output' && !working.includes(t) && nodeCapabilityRegistryDSL.isOutput(t))
           : [];
-        const additions = [...preferred, ...fallbackOutputTypes].slice(0, missingCount);
+        const additions = [...preferredWithRepeats, ...fallbackOutputTypes].slice(0, missingCount);
         working = working.concat(additions);
       }
       const selectedTrigger = working.find((t) => this.isTriggerNodeType(t)) || 'manual_trigger';
@@ -6332,9 +6423,38 @@ Rules:
         (t) => t !== selectedTrigger && t !== branchNode && nodeCapabilityRegistryDSL.isOutput(t)
       );
       // One log_output after each branch output (single-input terminal contract).
+      // Allow duplicate output types (e.g. google_gmail on both true and false branches).
       const branchChainBody =
         branchOutputs.length > 0 ? branchOutputs.flatMap((o) => [o, 'log_output'] as const) : [];
-      normalized = this.normalizeAndEnsureLogOutput([selectedTrigger, branchNode, ...branchChainBody]);
+      // Use a custom normalizer that preserves duplicate output entries (one per branch)
+      // instead of deduplicating them.
+      const rawChain = [selectedTrigger, branchNode, ...branchChainBody];
+      const out: string[] = [];
+      const seen = new Set<string>();
+      let triggerAdded = false;
+      for (const raw of rawChain) {
+        const nt = this.resolveRegistryNodeType(raw);
+        if (!nt) continue;
+        // log_output: allow repeats (one per branch)
+        if (nt === 'log_output') { out.push(nt); continue; }
+        // Output nodes: allow repeats for branch targets
+        if (nodeCapabilityRegistryDSL.isOutput(nt) && nt !== 'log_output') { out.push(nt); continue; }
+        // Triggers: only one
+        if (this.isTriggerNodeType(nt)) {
+          if (triggerAdded) continue;
+          triggerAdded = true;
+        }
+        if (seen.has(nt)) continue;
+        seen.add(nt);
+        out.push(nt);
+      }
+      if (!out.some((t) => this.isTriggerNodeType(t)) && unifiedNodeRegistry.has('manual_trigger')) {
+        out.unshift('manual_trigger');
+      }
+      if (out[out.length - 1] !== 'log_output' && unifiedNodeRegistry.has('log_output')) {
+        out.push('log_output');
+      }
+      normalized = pruneProposedPlanChain(out);
     }
 
     return normalized;
@@ -6652,6 +6772,40 @@ Rules:
     return !!def.isBranching || nodeType === 'if_else' || nodeType === 'switch';
   }
 
+  private extractCanonicalNodeMentionsFromExecutionSummary(summary: string): string[] {
+    if (!summary) return [];
+
+    const executionHeader = 'Execution:\n';
+    const startIdx = summary.indexOf(executionHeader);
+    if (startIdx < 0) return [];
+
+    const executionStart = startIdx + executionHeader.length;
+    const sectionTail = summary.slice(executionStart);
+    const stopMarkers = ['\n\nTerminal:', '\n\nTerminals:', '\n\n## Configuration contract'];
+    let sectionEnd = sectionTail.length;
+    for (const marker of stopMarkers) {
+      const idx = sectionTail.indexOf(marker);
+      if (idx >= 0 && idx < sectionEnd) {
+        sectionEnd = idx;
+      }
+    }
+    const executionSection = sectionTail.slice(0, sectionEnd);
+    const mentions: string[] = [];
+    const seen = new Set<string>();
+    for (const rawLine of executionSection.split('\n')) {
+      const line = rawLine.trim();
+      // Only parse numbered execution edges emitted by buildStructuredSummaryFromChain.
+      if (!/^\d+\.\s+/.test(line)) continue;
+      const ids = Array.from(line.matchAll(/\(([a-z0-9_]+)\)/gi), (m) => m[1].toLowerCase());
+      for (const id of ids) {
+        if (!unifiedNodeRegistry.get(id) || seen.has(id)) continue;
+        seen.add(id);
+        mentions.push(id);
+      }
+    }
+    return mentions;
+  }
+
   private assertPlanConsistency(
     plan: WorkflowIntentPlan,
     userPrompt: string,
@@ -6660,10 +6814,7 @@ Rules:
     const chain = plan.proposedNodeChain || [];
     const chainSet = new Set(chain);
     const summary = plan.structuredSummary || '';
-    const summaryMentionedCanonical = Array.from(
-      summary.matchAll(/\(([a-z0-9_]+)\)/gi),
-      (m) => m[1].toLowerCase()
-    ).filter((n) => !!unifiedNodeRegistry.get(n));
+    const summaryMentionedCanonical = this.extractCanonicalNodeMentionsFromExecutionSummary(summary);
     const summaryMissingFromChain = summaryMentionedCanonical.filter((n) => !chainSet.has(n));
     if (summaryMissingFromChain.length > 0) {
       throw new Error(
@@ -6671,7 +6822,15 @@ Rules:
       );
     }
 
-    const strictMissingFromChain = strictSelectedNodes.filter((n) => !chainSet.has(n));
+    // A selected node is satisfied if either its original form OR its normalized form
+    // appears in the chain. This handles cases where pruneProposedPlanChain normalizes
+    // a type (e.g. 'email' → 'google_gmail' via category resolution) so the chain
+    // contains the canonical form while strictSelectedNodes still holds the pre-normalization form.
+    const strictMissingFromChain = strictSelectedNodes.filter((n) => {
+      if (chainSet.has(n)) return false;
+      const normalized = unifiedNormalizeNodeTypeString(n);
+      return !chainSet.has(normalized);
+    });
     if (strictMissingFromChain.length > 0) {
       throw new Error(
         `Strict-selection mismatch: selected canonical nodes missing in chain: ${strictMissingFromChain.join(', ')}`
@@ -6701,7 +6860,13 @@ Rules:
     if (branchingNodes.length > 0) {
       const selectedOutputs = strictSelectedNodes.filter((n) => nodeCapabilityRegistryDSL.isOutput(n));
       if (selectedOutputs.length > 0) {
-        const missingSelectedOutputs = selectedOutputs.filter((n) => !chainSet.has(n));
+        // Apply the same normalization check as the strict-selection block above:
+        // a selected output is satisfied if its raw form OR its normalized form is in the chain.
+        const missingSelectedOutputs = selectedOutputs.filter((n) => {
+          if (chainSet.has(n)) return false;
+          const normalized = unifiedNormalizeNodeTypeString(n);
+          return !chainSet.has(normalized);
+        });
         if (missingSelectedOutputs.length > 0) {
           throw new Error(
             `Branching intent detected but selected output targets are missing: ${missingSelectedOutputs.join(', ')}`
@@ -6896,12 +7061,18 @@ Rules:
       return `${i + 1}. ${fl} (${e.fromType}) → ${tl} (${e.toType})${via} — ${e.intent}`;
     });
     const logTerminalCount = edgeSpecs.filter((e) => e.toType === 'log_output').length;
+    const detectedNodeCount = chain.length;
+    const uniqueNodeCount = new Set(chain).size;
+    const branchLine =
+      branching && branching.cases && branching.cases.length > 0
+        ? `Branch slots: ${branching.cases.map((c) => c.label || c.id).join(', ')}.`
+        : 'Branch slots: none (linear flow).';
     const terminalLine =
       logTerminalCount <= 1
         ? 'Terminal: log_output.'
         : `Terminals: ${logTerminalCount} separate log_output nodes (one per branch path; the graph must not merge them).`;
     const fillContract = buildRegistryStructuralFillContractSection(chain);
-    return `Goal:\n${goalDisplay}\n\n${alignmentBlock}Execution:\n${lines.join('\n')}\n\n${terminalLine}\n\n${fillContract}`;
+    return `Goal:\n${goalDisplay}\n\nDetected nodes: ${detectedNodeCount} total (${uniqueNodeCount} unique types).\n${branchLine}\n\n${alignmentBlock}Execution:\n${lines.join('\n')}\n\n${terminalLine}\n\n${fillContract}`;
   }
 
   private describeHopIntent(fromType: string, toType: string, userPrompt: string): string {

@@ -160,13 +160,17 @@ export default async function attachInputsHandler(req: Request, res: Response) {
   try {
     // ✅ CRITICAL: Get workflowId from URL params (not body)
     const workflowId = req.params.workflowId || req.body.workflowId;
-    const { inputs } = req.body;
+    const { inputs, originalUserPrompt: originalUserPromptFromBody } = req.body;
+
+    const trimmedOriginalFromRequest =
+      typeof originalUserPromptFromBody === 'string' ? originalUserPromptFromBody.trim() : '';
 
     // ✅ CRITICAL: Log request for debugging
     console.log('[AttachInputs] Request received:', {
       workflowId,
       inputsKeys: inputs ? Object.keys(inputs) : [],
       inputsCount: inputs ? Object.keys(inputs).length : 0,
+      hasOriginalUserPromptHint: trimmedOriginalFromRequest.length > 0,
     });
 
     if (!workflowId) {
@@ -197,6 +201,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     // Supported prefixes:
     // - input_ (current unified wizard format)
     // - cred_ / op_ / config_ / resource_ (comprehensive question IDs)
+    // - ownership_ (field-ownership wizard questions — recipientSource, recipientEmails, etc.)
     const sanitizedInputs: Record<string, any> = {};
     for (const [key, value] of Object.entries(inputs)) {
       // ✅ COMPREHENSIVE: Allow comprehensive question IDs - these are handled specially
@@ -205,7 +210,8 @@ export default async function attachInputsHandler(req: Request, res: Response) {
         key.startsWith('cred_') ||
         key.startsWith('op_') ||
         key.startsWith('config_') ||
-        key.startsWith('resource_');
+        key.startsWith('resource_') ||
+        key.startsWith('ownership_');
       
       if (isComprehensiveQuestionId) {
         // Allow comprehensive question IDs - they will be processed correctly later
@@ -714,6 +720,9 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       } else if (key.startsWith('resource_')) {
         prefix = 'resource_';
         isFromComprehensiveQuestion = true;
+      } else if (key.startsWith('ownership_')) {
+        prefix = 'ownership_';
+        isFromComprehensiveQuestion = true;
       }
       
       if (isFromComprehensiveQuestion && prefix) {
@@ -1175,6 +1184,14 @@ export default async function attachInputsHandler(req: Request, res: Response) {
           metadata: {
             ...((workflow as any)?.metadata || {}),
             ...((finalWorkflow as any)?.metadata || {}),
+            originalUserPrompt:
+              trimmedOriginalFromRequest ||
+              ((finalWorkflow as any)?.metadata?.originalUserPrompt as string) ||
+              ((workflow as any)?.metadata?.originalUserPrompt as string) ||
+              undefined,
+            disableFormFieldIntentPrune:
+              (finalWorkflow as any)?.metadata?.disableFormFieldIntentPrune ??
+              (workflow as any)?.metadata?.disableFormFieldIntentPrune,
             generatedFrom:
               ((finalWorkflow as any)?.metadata?.generatedFrom as string) ||
               ((workflow as any)?.metadata?.generatedFrom as string) ||
@@ -1184,6 +1201,15 @@ export default async function attachInputsHandler(req: Request, res: Response) {
         } as any) as any
       ) as any
     );
+
+    const metadataToPersist = {
+      ...((workflow as any)?.metadata || {}),
+      ...((materializedWorkflow as any)?.metadata || {}),
+      ...(trimmedOriginalFromRequest
+        ? { originalUserPrompt: trimmedOriginalFromRequest }
+        : {}),
+    };
+
     const structuralDiagnostics = getStructuralDiagnostics(materializedWorkflow as any);
     const finalNormalizedForSave = normalizeBeforeSave(
       materializedWorkflow.nodes,
@@ -1254,12 +1280,47 @@ export default async function attachInputsHandler(req: Request, res: Response) {
         edges: reconciled.workflow.edges as any,
       };
 
-      const validationResult = unifiedGraphOrchestrator.validateWorkflow(
+      let validationResult = unifiedGraphOrchestrator.validateWorkflow(
         {
           nodes: finalNormalizedGraph.nodes as any,
           edges: finalNormalizedGraph.edges as any,
         } as any
       );
+
+      // ✅ SELF-HEAL: If reconcile still leaves structural errors (e.g. orphaned log_output from
+      // a stale branching graph saved before an edge-reconciliation fix), rebuild edges from
+      // scratch via initializeWorkflow. This guarantees correct branch wiring regardless of
+      // what was persisted in the database.
+      // NOTE: log_output is classified as non-required so orphan appears in warnings, not errors.
+      // Check both errors AND warnings for orphan/disconnected signals.
+      const allValidationMessages = [
+        ...(validationResult.errors || []),
+        ...(validationResult.warnings || []),
+      ];
+      const hasOrphanAfterReconcile = allValidationMessages.some((e: string) => {
+        const lower = String(e || '').toLowerCase();
+        return lower.includes('orphan') || lower.includes('no input connection') || lower.includes('disconnected');
+      });
+      if (hasOrphanAfterReconcile) {
+        console.warn('[AttachInputs] ⚠️  Reconcile left orphaned nodes — rebuilding edges from scratch via initializeWorkflow');
+        try {
+          const rebuilt = unifiedGraphOrchestrator.initializeWorkflow(finalNormalizedGraph.nodes as any);
+          finalNormalizedGraph = {
+            ...finalNormalizedGraph,
+            nodes: rebuilt.workflow.nodes as any,
+            edges: rebuilt.workflow.edges as any,
+          };
+          validationResult = unifiedGraphOrchestrator.validateWorkflow(
+            {
+              nodes: finalNormalizedGraph.nodes as any,
+              edges: finalNormalizedGraph.edges as any,
+            } as any
+          );
+          console.log(`[AttachInputs] ✅ Edge rebuild complete — valid=${validationResult.valid}, errors=${(validationResult.errors || []).length}, warnings=${(validationResult.warnings || []).length}`);
+        } catch (rebuildErr) {
+          console.error('[AttachInputs] ❌ Edge rebuild failed:', rebuildErr);
+        }
+      }
 
       contractDiagnostics.validationValid = validationResult.valid;
       contractDiagnostics.validationErrors = validationResult.errors || [];
@@ -1492,6 +1553,12 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       .update({
         nodes: nodesToSave,
         edges: edgesToSave,
+        metadata: metadataToPersist,
+        graph: {
+          nodes: nodesToSave,
+          edges: edgesToSave,
+          metadata: metadataToPersist,
+        },
         status: nextStatus, // ✅ CRITICAL: Use valid enum value ('active')
         phase: nextPhase, // ✅ CRITICAL: Use TEXT field for execution phase
         updated_at: new Date().toISOString(),

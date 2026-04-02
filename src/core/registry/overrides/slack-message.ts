@@ -106,6 +106,9 @@ export function overrideSlackMessage(
   return {
     ...def,
     inputSchema,
+    tags: Array.from(
+      new Set([...(def.tags || []), 'communication', 'output', 'slack'])
+    ),
     execute: async (context) => {
       // Use legacy executor for now (complex Slack API integration)
       // TODO: Port full Slack message logic to registry when time permits

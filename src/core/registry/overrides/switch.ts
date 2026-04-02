@@ -46,6 +46,7 @@ export function overrideSwitch(
             supportsRuntimeAI: false,
             supportsBuildtimeAI: true,
           },
+          ownership: 'value',
           role: 'config',
         }
       : def.inputSchema.expression,
@@ -57,6 +58,8 @@ export function overrideSwitch(
             supportsRuntimeAI: false,
             supportsBuildtimeAI: true,
           },
+          // Structural JSON that defines branch ports/case values.
+          ownership: 'structural',
           role: 'raw_json',
         }
       : def.inputSchema.cases,
@@ -81,6 +84,7 @@ export function overrideSwitch(
               supportsRuntimeAI: false,
               supportsBuildtimeAI: false,
             },
+            ownership: 'structural',
             role: 'raw_json',
           },
         }
@@ -92,7 +96,11 @@ export function overrideSwitch(
     inputSchema,
     version: '1.1.0',
     isBranching: true,
-    outgoingPorts: [],
+    // Default to a generic 'output' port when no branch-specific ports
+    // have been defined yet. Branch-aware helpers (getOutgoingPortsForWorkflowNode)
+    // will derive case_* ports from config.cases when available; this fallback
+    // only applies to minimal flows where the switch behaves like a linear step.
+    outgoingPorts: def.outgoingPorts && def.outgoingPorts.length > 0 ? def.outgoingPorts : ['output'],
     migrations: [...(def.migrations || []), ...switchMigrations],
     validateConfig: (config: Record<string, any>) => {
       const base = baseValidate(config);

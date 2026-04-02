@@ -31,15 +31,16 @@ export function overrideLogOutput(def: UnifiedNodeDefinition, schema: NodeSchema
     ...def,
     tags: Array.from(new Set([...(def.tags || []), 'output', 'sink', 'terminal', 'logging'])),
     defaultConfig: enhancedDefaultConfig,
-    // ✅ UNIVERSAL: Define workflow-level behavior in registry (single source of truth)
-    // ✅ FIX: Only auto-inject if no explicit output nodes exist (HubSpot, Gmail, etc.)
-    // log_output is a fallback output node, not a required node
+    // ✅ UNIVERSAL: log_output is REQUIRED on every branch path.
+    // Each branch (true/false for if_else, case_N for switch) must terminate with its own
+    // log_output so the execution console shows the correct output per branch.
+    // An orphaned log_output means edge wiring failed — treat it as a hard error, not a warning.
     workflowBehavior: {
-      alwaysRequired: false,       // ✅ FIX: Not always required - only if no explicit outputs
+      alwaysRequired: true,         // Required: every branch needs its own log_output terminal
       alwaysTerminal: true,         // Must be last node (no outgoing edges)
-      exemptFromRemoval: false,     // ✅ FIX: Can be removed if explicit outputs exist
-      autoInject: true,             // Auto-inject if missing AND no explicit outputs
-      injectionPriority: 10,        // ✅ FIX: Lower priority - inject AFTER explicit outputs
+      exemptFromRemoval: true,      // Never auto-remove — orphan = edge wiring bug, not surplus node
+      autoInject: true,             // Auto-inject if missing
+      injectionPriority: 10,
     },
     // ✅ CRITICAL: Use legacy executor for log_output (simple logging logic)
     execute: async (context) => {

@@ -1202,29 +1202,18 @@ export class WorkflowDSLCompiler {
           }
         }
         
-        // ✅ STEP 3: Extract case values from prompt (enhanced patterns)
-        const caseValuePatterns = [
-          // "active leads route to", "pending statuses are routed", "completed items go to"
-          /(\w+)\s+(?:leads?|statuses?|items?|records?|entries?|rows?|cases?|values?)\s+(?:are\s+)?(?:routed|route|send|go|trigger|use|receive|logged)/gi,
-          // "if status is 'active' route", "when value equals 'pending' send"
-          /(?:if|when)\s+(?:\w+\s+)?(?:is|equals|==)\s+["']?(\w+)["']?\s+(?:route|send|go|use|trigger)/gi,
-          // "case 'active'", "value 'pending'", "status 'completed'"
-          /(?:case|value|status|type)\s+["']?(\w+)["']?/gi,
-          // "active -> slack", "pending -> gmail"
-          /(\w+)\s*->\s*\w+/gi,
-        ];
-        
-        const extractedCaseValues = new Set<string>();
-        for (const pattern of caseValuePatterns) {
-          let match;
-          while ((match = pattern.exec(originalPrompt)) !== null) {
-            const caseValue = match[1].toLowerCase();
-            // Filter out common non-case words
-            if (!['the', 'a', 'an', 'is', 'are', 'to', 'for', 'with', 'from', 'and', 'or', 'if', 'when', 'route', 'send'].includes(caseValue)) {
-              extractedCaseValues.add(caseValue);
-            }
-          }
-        }
+        // ✅ UNIVERSAL FIX: Use planSwitchCasesFromPrompt exclusively for case extraction.
+        // This is the single source of truth — no duplicate regex patterns here.
+        const { planSwitchCasesFromPrompt } = require('./switch-case-plan');
+        const upstreamNodeForSwitch = allNodesForEdges.find((n: any) => {
+          const nt = (n.type || n.data?.type || '').toLowerCase();
+          return nt !== 'switch' && nt !== 'log_output';
+        });
+        const upstreamTypeForSwitch = upstreamNodeForSwitch
+          ? (upstreamNodeForSwitch.type || upstreamNodeForSwitch.data?.type || '')
+          : undefined;
+        const switchPlanResult = planSwitchCasesFromPrompt(originalPrompt, upstreamTypeForSwitch);
+        const extractedCaseValues = new Set<string>(switchPlanResult.cases.map((c: any) => c.value));
         
         console.log(`[WorkflowDSLCompiler] 🔍 Extracted ${extractedCaseValues.size} case value(s) from prompt: ${Array.from(extractedCaseValues).join(', ')}`);
         
@@ -1301,53 +1290,33 @@ export class WorkflowDSLCompiler {
           }
         }
         
-        // ✅ STEP 4: Enhanced fallback - analyze input data to generate cases if prompt extraction fails
-        // This uses AI intelligence to generate cases from available input fields
+        // ✅ UNIVERSAL FIX: If planSwitchCasesFromPrompt returned no cases, use generic case_N fallback.
+        // No hardcoded semantic guesses (active/pending/completed) — those are wrong for domain-specific prompts.
         if (switchCases.length === 0 && sortedOutputs.length > 0) {
-          console.log(`[WorkflowDSLCompiler] ⚠️  No cases extracted from prompt, analyzing input data structure...`);
-          
-          // Try to infer cases from available input fields
-          // If we have a field like "status" with common values, generate cases
-          if (availableInputFields.length > 0) {
-            // Common status/type values that might exist in data
-            const commonCaseValues = ['active', 'pending', 'completed', 'inactive', 'success', 'error', 'failed', 'new', 'old'];
-            
-            // Match output nodes to case values based on node type semantics
-            sortedOutputs.forEach((outputNode, index) => {
-              const nodeType = (outputNode.type || outputNode.data?.type || '').toLowerCase();
-              
-              // Try to infer case value from node type or use common values
-              let caseValue: string;
-              if (nodeType.includes('slack') || nodeType.includes('notification')) {
-                caseValue = 'active'; // Active items -> notifications
-              } else if (nodeType.includes('gmail') || nodeType.includes('email')) {
-                caseValue = 'pending'; // Pending items -> emails
-              } else if (nodeType.includes('log')) {
-                caseValue = 'completed'; // Completed items -> logs
-              } else if (index < commonCaseValues.length) {
-                caseValue = commonCaseValues[index];
-              } else {
-                caseValue = `case_${index + 1}`;
-              }
-              
-              switchCases = [...switchCases, { // ✅ PHASE 3: Immutable add
-                value: caseValue, 
-                label: caseValue.charAt(0).toUpperCase() + caseValue.slice(1) 
-              }];
-              caseToNodeMapping.set(caseValue, outputNode);
-              console.log(`[WorkflowDSLCompiler] ✅ Generated case "${caseValue}" from input analysis -> ${nodeType}`);
-            });
-          } else {
-            // Ultimate fallback: create generic cases from output nodes
-            sortedOutputs.forEach((outputNode, index) => {
-              const caseValue = `case_${index + 1}`;
-              switchCases = [...switchCases, { // ✅ PHASE 3: Immutable add
-                value: caseValue, 
-                label: `Case ${index + 1}` 
-              }];
-              caseToNodeMapping.set(caseValue, outputNode);
-            });
-          }
+          console.log(`[WorkflowDSLCompiler] ⚠️  No cases extracted from prompt, using generic case_N fallback`);
+          sortedOutputs.forEach((outputNode, index) => {
+            const caseValue = `case_${index + 1}`;
+            switchCases = [...switchCases, { value: caseValue, label: `Case ${index + 1}` }];
+            caseToNodeMapping.set(caseValue, outputNode);
+          });
+        }
+
+        // ✅ SILENT-DROP GUARD: If proximity matching produced fewer cases than planSwitchCasesFromPrompt
+        // extracted, fill the remaining cases by mapping them to remaining output nodes by index.
+        // This prevents truncation when a case value doesn't appear near a node mention in the prompt.
+        if (switchCases.length < extractedCaseValues.size && sortedOutputs.length > switchCases.length) {
+          const mappedCaseValues = new Set(switchCases.map(c => c.value));
+          const unmappedCases = switchPlanResult.cases.filter((c: any) => !mappedCaseValues.has(c.value));
+          const usedNodes = new Set(Array.from(caseToNodeMapping.values()).map(n => n.id));
+          const remainingOutputs = sortedOutputs.filter(n => !usedNodes.has(n.id));
+          unmappedCases.forEach((c: any, idx: number) => {
+            const targetNode = remainingOutputs[idx];
+            if (targetNode) {
+              switchCases = [...switchCases, { value: c.value, label: c.label }];
+              caseToNodeMapping.set(c.value, targetNode);
+              console.log(`[WorkflowDSLCompiler] ✅ Filled unmatched case "${c.value}" -> ${targetNode.type} (index fallback)`);
+            }
+          });
         }
         
         // ✅ N8N APPROACH: Set switch node's outgoingPorts immediately (cases are known)

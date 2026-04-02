@@ -1,7 +1,9 @@
 import { describe, expect, it } from '@jest/globals';
 import type { Workflow } from '../../../core/types/ai-types';
 import {
+  buildFormFieldRecordsFromKeys,
   deriveOrderedFieldKeysForForm,
+  inferFieldTypeFromKey,
   sanitizeIntentTextForFormFieldExtraction,
 } from '../intent-extraction';
 
@@ -24,6 +26,21 @@ Execution:
     expect(out).not.toContain('Planner rules');
     expect(out).not.toContain('ownership=structural');
     expect(out).toContain('Goal:');
+  });
+
+  it('strips diagnostics summary lines before field extraction', () => {
+    const raw = `Goal:
+Create workflow
+Detected nodes: 6 total (4 unique types).
+Branch slots: age, false.
+Execution:
+1. Form Trigger (form) → If/Else (if_else)
+Terminal: log_output.`;
+    const out = sanitizeIntentTextForFormFieldExtraction(raw);
+    expect(out).not.toContain('Detected nodes:');
+    expect(out).not.toContain('Branch slots:');
+    expect(out).not.toContain('Execution:');
+    expect(out).not.toContain('Terminal:');
   });
 });
 
@@ -74,5 +91,32 @@ Terminals: 2 separate log_output nodes
     expect(keys).toContain('experience');
     expect(keys.filter((k) => k.includes('conditions') || k === 'form')).toEqual([]);
     expect(keys.length).toBeLessThan(8);
+  });
+
+  it('rejects synthetic diagnostics token like 4_unique_types', () => {
+    const text = `Goal:
+Create flow with form including age.
+Detected nodes: 6 total (4 unique types).
+Branch slots: age, false.`;
+    const wf: Workflow = { nodes: [], edges: [] };
+    const keys = deriveOrderedFieldKeysForForm(text, wf);
+    expect(keys).toContain('age');
+    expect(keys).not.toContain('4_unique_types');
+    expect(keys).not.toContain('unique_types');
+  });
+});
+
+describe('inferFieldTypeFromKey', () => {
+  it('defaults to text when no semantic evidence exists', () => {
+    expect(inferFieldTypeFromKey('experience')).toBe('text');
+    expect(inferFieldTypeFromKey('message')).toBe('text');
+  });
+});
+
+describe('buildFormFieldRecordsFromKeys', () => {
+  it('uses safe default type before evidence-based self-heal', () => {
+    const fields = buildFormFieldRecordsFromKeys(['experience']);
+    expect(fields).toHaveLength(1);
+    expect(String((fields[0] as any).type)).toBe('text');
   });
 });

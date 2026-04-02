@@ -68,17 +68,32 @@ export function extractBranchIntentSignals(userPrompt: string): BranchIntentSign
   const raw = userPrompt || '';
   const prompt = raw.toLowerCase();
 
+  const hasTemporalLead = /\b(when|once|after|upon|as soon as)\b/.test(prompt);
+  const hasAlternativeCue = /\b(else|otherwise|either|or|fallback|alternatively|instead)\b/.test(prompt);
+  const hasConditionLead = /\b(if|unless|provided that|in case)\b/.test(prompt);
+
   const hasIfElse =
     /\bif\b/.test(prompt) &&
     (/\belse\b/.test(prompt) || /\botherwise\b/.test(prompt) || /\bif not\b/.test(prompt));
+  const ifClauseCount = (prompt.match(/\bif\b/g) || []).length;
+  const hasMultipleIfClauses = ifClauseCount >= 2;
   const hasOutcomeLanguage =
     /\b(eligible|ineligible|approve|reject|success|failure|pass|fail|yes|no|true|false)\b/.test(prompt);
   const hasComparisonBranch =
-    /\b(>|<|>=|<=|greater than|less than|equals|equal to)\b/.test(prompt);
+    /(>=|<=|>|<|≥|≤|\bgreater than\b|\bless than\b|\bequals\b|\bequal to\b)/.test(prompt);
   const hasSwitchKeywords =
-    /\bswitch\b/.test(prompt) || /\bcase\b/.test(prompt) || /\bwhen\b/.test(prompt);
+    /\bswitch\b/.test(prompt) || /\bcase\b/.test(prompt);
 
-  const hasBranchingIntent = hasIfElse || hasOutcomeLanguage || hasComparisonBranch || hasSwitchKeywords;
+  // Universal compositional rule: avoid single-token false positives
+  // (e.g. temporal "when I submit..." in linear prompts).
+  const hasCompositionalBranchIntent =
+    hasIfElse ||
+    hasMultipleIfClauses ||
+    hasSwitchKeywords ||
+    (hasComparisonBranch && (hasAlternativeCue || hasConditionLead)) ||
+    (hasOutcomeLanguage && hasAlternativeCue);
+
+  const hasBranchingIntent = hasCompositionalBranchIntent && !(hasTemporalLead && !hasConditionLead && !hasAlternativeCue);
 
   // Backward-compatible explicit outcome floor.
   let explicitOutcomeCount = 0;
@@ -107,27 +122,75 @@ export function extractBranchIntentSignals(userPrompt: string): BranchIntentSign
     }
   }
 
+  // Sort mentionedOutputNodeTypes by their first appearance position in the prompt
+  // so the branch chain body order matches the prompt's case order.
+  mentionedOutputNodeTypes.sort((a, b) => {
+    const defA = unifiedNodeRegistry.get(a);
+    const defB = unifiedNodeRegistry.get(b);
+    const labelA = (defA?.label || '').toLowerCase();
+    const labelB = (defB?.label || '').toLowerCase();
+    const posA = Math.min(
+      prompt.includes(a.toLowerCase()) ? prompt.indexOf(a.toLowerCase()) : Infinity,
+      labelA.length >= 3 && prompt.includes(labelA) ? prompt.indexOf(labelA) : Infinity
+    );
+    const posB = Math.min(
+      prompt.includes(b.toLowerCase()) ? prompt.indexOf(b.toLowerCase()) : Infinity,
+      labelB.length >= 3 && prompt.includes(labelB) ? prompt.indexOf(labelB) : Infinity
+    );
+    return posA - posB;
+  });
+
   // --- NEW: richer signals for universal branching ---
 
-  // 1. Outcome descriptors from repeated "if X" patterns (common in switch-style prompts).
+  // 1. Outcome descriptors — extract all condition VALUES from the prompt.
+  //    Strategy: run both patterns and merge, deduplicating.
+  //    The field name (e.g. "status") is excluded from values.
   const outcomeDescriptors: string[] = [];
-  const ifOutcomeRegex = /\bif\s+([a-z0-9_]+)\b/g;
-  let ifMatch: RegExpExecArray | null;
-  while ((ifMatch = ifOutcomeRegex.exec(prompt)) !== null) {
-    const candidate = ifMatch[1];
-    // Filter out obvious non-outcome words (e.g. "age", "score") by heuristic:
-    if (candidate && candidate.length <= 20 && !/\d/.test(candidate)) {
+  const seenDescriptors = new Set<string>();
+
+  // Detect the discriminator field first (used to exclude it from values below)
+  // Quick pre-scan: "if <field> is <value>" — the field is the word before "is"
+  let detectedField: string | undefined;
+  const fieldPreScan = /\bif\s+([a-z0-9_]+)\s+is\s+[a-z0-9_]+/i.exec(prompt);
+  if (fieldPreScan) detectedField = fieldPreScan[1].toLowerCase();
+
+  // Pattern A: "if <field> is <value>" — capture the VALUE
+  // e.g. "if status is shipped" → "shipped"
+  const ifFieldIsValueRegex = /\bif\s+[a-z0-9_]+\s+is\s+([a-z0-9_]+)\b/g;
+  let ifFivMatch: RegExpExecArray | null;
+  while ((ifFivMatch = ifFieldIsValueRegex.exec(prompt)) !== null) {
+    const candidate = ifFivMatch[1].toLowerCase();
+    if (candidate && candidate.length <= 20 && !/\d/.test(candidate) && !seenDescriptors.has(candidate)) {
+      seenDescriptors.add(candidate);
       outcomeDescriptors.push(candidate);
     }
   }
 
-  // 2. Discriminator field from phrases like "switch on X", "route by X", "based on X".
+  // Pattern B: "if <value>" with no "is" following — captures standalone condition values
+  // e.g. "if processing, send..." → "processing", "if cancelled, send..." → "cancelled"
+  // Skip the field name itself (e.g. "status") and words already captured by Pattern A
+  const ifOutcomeRegex = /\bif\s+([a-z0-9_]+)\b(?!\s+is\b)/g;
+  let ifMatch: RegExpExecArray | null;
+  while ((ifMatch = ifOutcomeRegex.exec(prompt)) !== null) {
+    const candidate = ifMatch[1].toLowerCase();
+    // Skip: field name, already seen, too short/long, contains digits
+    if (!candidate || candidate.length > 20 || /\d/.test(candidate)) continue;
+    if (detectedField && candidate === detectedField) continue;
+    if (seenDescriptors.has(candidate)) continue;
+    seenDescriptors.add(candidate);
+    outcomeDescriptors.push(candidate);
+  }
+
+  // 2. Discriminator field from phrases like "switch on X", "route by X", "based on X",
+  //    or "if <field> is <value>" patterns.
   let discriminatorField: string | undefined;
   const discriminatorRegexes = [
     /\bswitch\s+(?:on|by|using)\s+([a-z_][a-z0-9_]*)/i,
     /\bbased\s+on\s+([a-z_][a-z0-9_]*)/i,
     /\bdepending\s+on\s+([a-z_][a-z0-9_]*)/i,
     /\broute\s+by\s+([a-z_][a-z0-9_]*)/i,
+    // "if <field> is <value>" — extract the field name
+    /\bif\s+([a-z_][a-z0-9_]*)\s+is\s+[a-z0-9_]+/i,
   ];
   for (const re of discriminatorRegexes) {
     const m = re.exec(raw);

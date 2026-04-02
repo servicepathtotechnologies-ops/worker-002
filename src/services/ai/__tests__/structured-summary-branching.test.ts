@@ -70,4 +70,23 @@ describe('structured summary branching connection plan', () => {
     expect(selected.selectedNodeTypes).toContain('slack_message');
     expect(selected.selectedNodeTypes).not.toContain('email');
   });
+
+  it('does not treat intent-alignment field labels as canonical node mentions', () => {
+    const clarifier = new AIIntentClarifier() as any;
+    const chain = ['form', 'google_gmail', 'log_output'];
+    const summary: string = clarifier.buildStructuredSummaryFromChain(
+      chain,
+      'When I submit a form with name and email, send a welcome email, then write a log entry.',
+      undefined,
+      'Collected inputs aligned to form/conditions: name (Name), email (Email).'
+    );
+
+    expect(() =>
+      clarifier.assertPlanConsistency(
+        { proposedNodeChain: chain, structuredSummary: summary },
+        'When I submit a form with name and email, send a welcome email, then write a log entry.',
+        ['form', 'google_gmail']
+      )
+    ).not.toThrow();
+  });
 });

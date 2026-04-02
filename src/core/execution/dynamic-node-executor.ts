@@ -758,9 +758,21 @@ async function resolveInputsWithAI(
     previousOutput = overridePreviousOutput;
     (global as any).lastPreviousOutputNodeId = null;
   } else {
+    // ✅ UNIVERSAL FIX: Skip entries that are effectively empty (meta/trigger-only payloads).
+    // getMostRecentOutputEntry returns the entry with the highest setTimestamp, but meta keys
+    // (e.g. $json, trigger) may be refreshed after the real node output, shadowing it.
+    // We iterate from most-recent to least-recent and return the first non-empty real entry.
     const entry = nodeOutputs.getMostRecentOutputEntry(['$json', 'json', 'trigger', 'input']);
-    previousOutput = entry?.value;
-    (global as any).lastPreviousOutputNodeId = entry?.key ?? null;
+    if (entry && !isEffectivelyEmptyUpstreamPayload(entry.value)) {
+      previousOutput = entry.value;
+      (global as any).lastPreviousOutputNodeId = entry.key ?? null;
+    } else {
+      // Fall back: try all entries (excluding meta keys) and pick the first non-empty one
+      const allEntries = nodeOutputs.getAllEntries?.(['$json', 'json', 'trigger', 'input']) ?? [];
+      const nonEmptyEntry = allEntries.find(e => !isEffectivelyEmptyUpstreamPayload(e.value));
+      previousOutput = nonEmptyEntry?.value ?? entry?.value;
+      (global as any).lastPreviousOutputNodeId = (nonEmptyEntry?.key ?? entry?.key) ?? null;
+    }
   }
 
   // Store previous output globally for body mapping (and node id for registry-driven narrative pick).
@@ -862,13 +874,24 @@ async function resolveInputsWithAI(
 }
 
 /**
- * Get previous node output from nodeOutputs cache
+ * Get previous node output from nodeOutputs cache.
+ * ✅ UNIVERSAL FIX: Returns the most recently set non-empty, non-meta entry.
+ * Skips entries where isEffectivelyEmptyUpstreamPayload returns true so that
+ * meta/trigger-only payloads set after real node output do not shadow the real output.
  */
 function getPreviousNodeOutput(nodeOutputs: LRUNodeOutputsCache): any {
-  // ✅ Use timestamp-based most-recent output and ignore meta keys.
-  // This makes AI input resolution deterministic and ensures it sees the actual
-  // upstream node output (e.g., Limit output), not $json/json/trigger/input.
-  return nodeOutputs.getMostRecentOutput(['$json', 'json', 'trigger', 'input']);
+  const META_KEYS = ['$json', 'json', 'trigger', 'input'];
+  // First try: most recent non-meta entry
+  const entry = nodeOutputs.getMostRecentOutputEntry(META_KEYS);
+  if (entry && !isEffectivelyEmptyUpstreamPayload(entry.value)) {
+    return entry.value;
+  }
+  // Second try: scan all non-meta entries for the first non-empty one
+  const allEntries = nodeOutputs.getAllEntries(META_KEYS);
+  const nonEmpty = allEntries.find(e => !isEffectivelyEmptyUpstreamPayload(e.value));
+  if (nonEmpty) return nonEmpty.value;
+  // Final fallback: return whatever the most recent entry has (let caller decide)
+  return entry?.value;
 }
 
 /**

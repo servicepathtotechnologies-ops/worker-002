@@ -198,7 +198,9 @@ export class NodeCapabilityRegistryDSL {
     // ✅ CRITICAL FIX: http_post can be both data_source (retrieve data) and output (send data)
     // Support both use cases - has both capabilities so it can be used in either role
     this.setCapabilities('http_post', ['read_data', 'data_source', 'send_request', 'output', 'write_data', 'http']);
-    this.setCapabilities('http_request', ['send_request', 'output', 'http']);
+    // http_request is a utility/data-source node — NOT a branch terminal output.
+    // Removing 'output' prevents it from being injected as a fallback branch target.
+    this.setCapabilities('http_request', ['send_request', 'http']);
     
     // CRM/Write operations (outputs)
     // ✅ CRITICAL FIX: Add write_data capability for validation compatibility

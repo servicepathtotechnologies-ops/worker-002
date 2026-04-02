@@ -44,11 +44,28 @@ export interface PlanDrivenBuildResult {
   diagnostics: PlanBuildDiagnostics;
 }
 
+function parsePlanNodeToken(raw: string): { nodeTypeToken: string; explicitNodeId?: string } {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) return { nodeTypeToken: '' };
+  const hashIdx = trimmed.indexOf('#');
+  const atIdx = trimmed.indexOf('@');
+  const sepIdx =
+    hashIdx > 0 && atIdx > 0 ? Math.min(hashIdx, atIdx) : Math.max(hashIdx, atIdx);
+  if (sepIdx > 0 && sepIdx < trimmed.length - 1) {
+    return {
+      nodeTypeToken: trimmed.slice(0, sepIdx).trim(),
+      explicitNodeId: trimmed.slice(sepIdx + 1).trim(),
+    };
+  }
+  return { nodeTypeToken: trimmed };
+}
+
 /**
  * Normalize a node type from the structured plan to a registry-backed type.
  */
 export function resolvePlanNodeType(raw: string): { normalized: string; error?: string } {
-  const trimmed = (raw || '').trim();
+  const { nodeTypeToken } = parsePlanNodeToken(raw);
+  const trimmed = nodeTypeToken.trim();
   if (!trimmed) {
     return { normalized: '', error: 'Empty node type in plan chain' };
   }
@@ -84,8 +101,10 @@ export function buildWorkflowFromPlanChain(planChain: string[]): PlanDrivenBuild
   }
 
   const nodes: WorkflowNode[] = [];
+  const usedNodeIds = new Set<string>();
 
   for (const raw of planChain) {
+    const { explicitNodeId } = parsePlanNodeToken(raw);
     const { normalized, error } = resolvePlanNodeType(raw);
     if (error || !normalized) {
       canonicalization.push({
@@ -126,7 +145,12 @@ export function buildWorkflowFromPlanChain(planChain: string[]): PlanDrivenBuild
       }
     }
 
-    const id = `node_${randomUUID()}`;
+    let id = explicitNodeId || `node_${randomUUID()}`;
+    if (usedNodeIds.has(id)) {
+      id = `${id}_${randomUUID().slice(0, 8)}`;
+      warnings.push(`Duplicate explicit node id in plan token; using generated id "${id}"`);
+    }
+    usedNodeIds.add(id);
     const label = def.label || normalized;
 
     nodes.push({

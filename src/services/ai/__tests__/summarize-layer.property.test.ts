@@ -4,11 +4,13 @@
  */
 
 import * as fc from 'fast-check';
+import { AIIntentClarifier } from '../summarize-layer';
 import {
   planSwitchCasesFromPrompt,
   getDiscriminantFieldForUpstreamType,
 } from '../switch-case-plan';
 import { sanitizeIntentTextForFormFieldExtraction } from '../intent-extraction';
+import { extractBranchIntentSignals, expectedBranchTargetCount } from '../../../core/utils/branch-intent-model';
 import { unifiedNodeRegistry } from '../../../core/registry/unified-node-registry';
 
 // ─── Property 13: Switch_Planner produces at least two cases ────────────────
@@ -123,5 +125,77 @@ test('Property 1: Intent structurer produces non-null output for any non-empty p
       }
     ),
     { numRuns: 100 }
+  );
+});
+
+test('Property: parenthesized field labels in intent-alignment text never trigger summary-chain mismatch', () => {
+  const clarifier = new AIIntentClarifier() as any;
+  const chain = ['form', 'google_gmail', 'log_output'];
+  fc.assert(
+    fc.property(
+      fc.string({ minLength: 1, maxLength: 24 }).filter((s) => /^[a-zA-Z_ ]+$/.test(s)),
+      fc.string({ minLength: 1, maxLength: 24 }).filter((s) => /^[a-zA-Z_ ]+$/.test(s)),
+      (fieldA, fieldB) => {
+        const digest = `Collected inputs aligned to form/conditions: ${fieldA.toLowerCase()} (${fieldA}), ${fieldB.toLowerCase()} (${fieldB}).`;
+        const summary: string = clarifier.buildStructuredSummaryFromChain(
+          chain,
+          'When I submit a form, send a welcome email, then write a log entry.',
+          undefined,
+          digest
+        );
+        expect(() =>
+          clarifier.assertPlanConsistency(
+            { proposedNodeChain: chain, structuredSummary: summary },
+            'When I submit a form, send a welcome email, then write a log entry.',
+            ['form', 'google_gmail']
+          )
+        ).not.toThrow();
+      }
+    ),
+    { numRuns: 100 }
+  );
+});
+
+test('Property: temporal prompts remain linear without explicit branching cues', () => {
+  const temporalWord = fc.constantFrom('when', 'once', 'after');
+  fc.assert(
+    fc.property(
+      temporalWord,
+      fc.string({ minLength: 3, maxLength: 20 }).filter((s) => /^[a-zA-Z ]+$/.test(s)),
+      (prefix, noun) => {
+        const prompt = `${prefix} i submit a ${noun.toLowerCase()} form, send a welcome email and write a log entry`;
+        const signals = extractBranchIntentSignals(prompt);
+        expect(signals.hasBranchingIntent).toBe(false);
+        expect(expectedBranchTargetCount(signals)).toBe(1);
+      }
+    ),
+    { numRuns: 100 }
+  );
+});
+
+test('Property: temporal/opening phrase prompts branch only with explicit alternatives', () => {
+  const openingWord = fc.constantFrom('when', 'once', 'after', 'upon', 'as soon as');
+  const subject = fc
+    .string({ minLength: 3, maxLength: 18 })
+    .filter((s) => /^[a-zA-Z ]+$/.test(s))
+    .map((s) => s.trim().toLowerCase())
+    .filter((s) => s.length >= 3);
+
+  fc.assert(
+    fc.property(openingWord, subject, fc.boolean(), (prefix, noun, withAlternative) => {
+      const linearPrompt = `${prefix} a user submits ${noun}, send gmail and then write a log entry`;
+      const branchPrompt = `${prefix} a user submits ${noun}, if amount is greater than 100 send gmail, otherwise send slack`;
+      const prompt = withAlternative ? branchPrompt : linearPrompt;
+
+      const signals = extractBranchIntentSignals(prompt);
+      if (withAlternative) {
+        expect(signals.hasBranchingIntent).toBe(true);
+        expect(expectedBranchTargetCount(signals)).toBeGreaterThanOrEqual(2);
+      } else {
+        expect(signals.hasBranchingIntent).toBe(false);
+        expect(expectedBranchTargetCount(signals)).toBe(1);
+      }
+    }),
+    { numRuns: 120 }
   );
 });

@@ -11,8 +11,9 @@ const STRICT_CREDENTIAL_CATEGORIES = new Set<FieldHelpCategory>([
   'credential_id',
   'bearer_token',
   'webhook_secret',
-  /** Incoming webhooks (Slack, Discord, etc.) — vault/attach-credentials, not normal config. */
-  'webhook_url',
+  // webhook_url is intentionally NOT here — incoming webhook URLs (Slack, Discord, etc.)
+  // are configuration values the user provides, not secrets. They appear inline with
+  // other node config fields on the unified configuration page.
   'smtp_password',
   'db_password',
   'private_key',

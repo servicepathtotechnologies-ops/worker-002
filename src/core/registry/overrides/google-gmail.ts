@@ -434,6 +434,8 @@ export function overrideGoogleGmail(def: UnifiedNodeDefinition, schema: NodeSche
             supportsBuildtimeAI: true,
           },
           role: 'title_like',
+          // Gmail cannot send without a subject; runtime_ai must guarantee this.
+          essentialForExecution: true,
         }
       : baseSchema.subject,
     body: baseSchema.body
@@ -446,6 +448,8 @@ export function overrideGoogleGmail(def: UnifiedNodeDefinition, schema: NodeSche
             supportsBuildtimeAI: true,
           },
           role: 'long_body',
+          // Body is required for a meaningful email; enforced at runtime.
+          essentialForExecution: true,
         }
       : baseSchema.body,
     from: baseSchema.from

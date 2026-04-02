@@ -63,6 +63,57 @@ export interface UnifiedMissingItems {
   };
 }
 
+export function normalizeUnifiedMissingItems(items: UnifiedMissingItems): UnifiedMissingItems {
+  const credentialMap = new Map<string, UnifiedMissingCredential>();
+  for (const cred of items.credentials || []) {
+    const nodeKey = (cred.nodes || []).slice().sort().join(',');
+    const key = `${cred.vaultKey || cred.provider}::${cred.type}::${nodeKey}`;
+    if (!credentialMap.has(key)) credentialMap.set(key, cred);
+  }
+
+  const inputMap = new Map<string, UnifiedMissingInput>();
+  for (const input of items.inputs || []) {
+    const key = `${input.nodeId}::${input.fieldName}`;
+    if (!inputMap.has(key)) inputMap.set(key, input);
+  }
+
+  const credentials = Array.from(credentialMap.values()).sort((a, b) =>
+    `${a.vaultKey}:${a.provider}:${a.type}`.localeCompare(`${b.vaultKey}:${b.provider}:${b.type}`)
+  );
+  const inputs = Array.from(inputMap.values()).sort((a, b) =>
+    `${a.nodeId}:${a.fieldName}`.localeCompare(`${b.nodeId}:${b.fieldName}`)
+  );
+
+  const inputsByNodeMap = new Map<
+    string,
+    { nodeId: string; nodeType: string; nodeLabel: string; fields: UnifiedMissingInput[] }
+  >();
+  for (const inp of inputs) {
+    const key = inp.nodeId;
+    if (!inputsByNodeMap.has(key)) {
+      inputsByNodeMap.set(key, {
+        nodeId: inp.nodeId,
+        nodeType: inp.nodeType,
+        nodeLabel: inp.nodeLabel,
+        fields: [],
+      });
+    }
+    inputsByNodeMap.get(key)!.fields.push(inp);
+  }
+
+  return {
+    credentials,
+    inputs,
+    display: {
+      summary: {
+        missingCredentialCount: credentials.length,
+        missingInputCount: inputs.length,
+      },
+      inputsByNode: Array.from(inputsByNodeMap.values()),
+    },
+  };
+}
+
 /**
  * Get unified list of missing credentials and sensitive inputs for a workflow
  */
@@ -167,32 +218,8 @@ export async function getUnifiedMissingItems(
 
   console.log(`[UnifiedDiscovery] Discovered ${unifiedCredentials.length} missing credential(s) and ${unifiedInputs.length} missing input(s)`);
 
-  const inputsByNodeMap = new Map<
-    string,
-    { nodeId: string; nodeType: string; nodeLabel: string; fields: UnifiedMissingInput[] }
-  >();
-  for (const inp of unifiedInputs) {
-    const key = inp.nodeId;
-    if (!inputsByNodeMap.has(key)) {
-      inputsByNodeMap.set(key, {
-        nodeId: inp.nodeId,
-        nodeType: inp.nodeType,
-        nodeLabel: inp.nodeLabel,
-        fields: [],
-      });
-    }
-    inputsByNodeMap.get(key)!.fields.push(inp);
-  }
-
-  return {
+  return normalizeUnifiedMissingItems({
     credentials: unifiedCredentials,
     inputs: unifiedInputs,
-    display: {
-      summary: {
-        missingCredentialCount: unifiedCredentials.length,
-        missingInputCount: unifiedInputs.length,
-      },
-      inputsByNode: Array.from(inputsByNodeMap.values()),
-    },
-  };
+  });
 }
