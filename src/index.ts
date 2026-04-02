@@ -169,6 +169,7 @@ import executeWorkflowRoute from './api/execute-workflow';
 import webhookTriggerRoute from './api/webhook-trigger';
 import chatApiRoute from './api/chat-api';
 import adminTemplatesRoute from './api/admin-templates';
+import adminUsersRoute from './api/admin-users';
 import copyTemplateRoute from './api/copy-template';
 import formTriggerRoute from './api/form-trigger';
 import chatTriggerRoute from './api/chat-trigger';
@@ -565,6 +566,18 @@ app.post('/admin-templates', asyncHandler(adminTemplatesRoute));
 app.put('/admin-templates/:id', asyncHandler(adminTemplatesRoute));
 app.delete('/admin-templates/:id', asyncHandler(adminTemplatesRoute));
 app.patch('/admin-templates/:id', asyncHandler(adminTemplatesRoute));
+
+// Admin users routes (with /api prefix)
+app.get('/api/admin-users', asyncHandler(adminUsersRoute));
+app.get('/api/admin-users/:id', asyncHandler(adminUsersRoute));
+app.patch('/api/admin-users/:id', asyncHandler(adminUsersRoute));
+app.delete('/api/admin-users/:id', asyncHandler(adminUsersRoute));
+
+// Admin users routes (without /api prefix for frontend compatibility)
+app.get('/admin-users', asyncHandler(adminUsersRoute));
+app.get('/admin-users/:id', asyncHandler(adminUsersRoute));
+app.patch('/admin-users/:id', asyncHandler(adminUsersRoute));
+app.delete('/admin-users/:id', asyncHandler(adminUsersRoute));
 
 // Copy template routes
 app.post('/api/copy-template', asyncHandler(copyTemplateRoute));

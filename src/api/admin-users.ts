@@ -1,0 +1,344 @@
+import { Request, Response } from 'express';
+import { getSupabaseClient } from '../core/database/supabase-compat';
+
+type AppRole = 'admin' | 'moderator' | 'user';
+type WorkflowStatus = 'active' | 'inactive';
+
+function normalizeStatus(user: any): 'active' | 'pending' | 'disabled' {
+  const now = Date.now();
+  const bannedUntil = user?.banned_until ? new Date(user.banned_until).getTime() : 0;
+
+  if (bannedUntil > now) {
+    return 'disabled';
+  }
+
+  if (!user?.email_confirmed_at) {
+    return 'pending';
+  }
+
+  return 'active';
+}
+
+function getDisplayName(user: any, profile?: { full_name: string | null } | null): string {
+  const profileName = profile?.full_name?.trim();
+  if (profileName) {
+    return profileName;
+  }
+
+  const metadataName =
+    (typeof user?.user_metadata?.full_name === 'string' && user.user_metadata.full_name.trim()) ||
+    (typeof user?.user_metadata?.name === 'string' && user.user_metadata.name.trim());
+
+  if (metadataName) {
+    return metadataName;
+  }
+
+  const email = typeof user?.email === 'string' ? user.email : '';
+  return email.split('@')[0] || 'Unknown';
+}
+
+function isSubscriptionTaken(user: any): boolean {
+  const metadataCandidates = [user?.app_metadata, user?.user_metadata];
+
+  for (const metadata of metadataCandidates) {
+    if (!metadata || typeof metadata !== 'object') {
+      continue;
+    }
+
+    const value =
+      metadata.subscription_taken ??
+      metadata.subscriptionTaken ??
+      metadata.is_subscribed ??
+      metadata.isSubscribed ??
+      metadata.subscription_active ??
+      metadata.subscriptionActive ??
+      metadata.has_subscription ??
+      metadata.hasSubscription ??
+      metadata.plan;
+
+    if (typeof value === 'boolean') {
+      return value;
+    }
+
+    if (typeof value === 'string') {
+      const normalized = value.trim().toLowerCase();
+      if (['true', 'yes', 'active', 'pro', 'premium'].includes(normalized)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function parseNumber(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.max(0, Math.floor(value));
+  }
+
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return Math.max(0, Math.floor(parsed));
+    }
+  }
+
+  return 0;
+}
+
+function getWorkflowBuildTokens(workflow: any): number {
+  const metadata = workflow?.metadata && typeof workflow.metadata === 'object' ? workflow.metadata : {};
+
+  const candidates = [
+    workflow?.tokens_used_to_build,
+    workflow?.build_tokens,
+    workflow?.token_usage,
+    metadata?.tokensUsedToBuild,
+    metadata?.tokens_used_to_build,
+    metadata?.buildTokens,
+    metadata?.tokenUsage?.totalTokens,
+    metadata?.tokenUsage?.total_tokens,
+    metadata?.ai_usage?.totalTokens,
+    metadata?.ai_usage?.total_tokens,
+    metadata?.usage?.totalTokens,
+    metadata?.usage?.total_tokens,
+  ];
+
+  for (const candidate of candidates) {
+    const value = parseNumber(candidate);
+    if (value > 0) {
+      return value;
+    }
+  }
+
+  return 0;
+}
+
+async function requireAdminUser(supabase: ReturnType<typeof getSupabaseClient>, req: Request) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) {
+    return { ok: false as const, error: 'Unauthorized', status: 401 };
+  }
+
+  const token = authHeader.replace('Bearer ', '').trim();
+  const { data: authData, error: authError } = await supabase.auth.getUser(token);
+  if (authError || !authData?.user) {
+    return { ok: false as const, error: 'Unauthorized', status: 401 };
+  }
+
+  const requester = authData.user;
+  const { data: roleData, error: roleError } = await supabase
+    .from('user_roles')
+    .select('role')
+    .eq('user_id', requester.id)
+    .eq('role', 'admin')
+    .maybeSingle();
+
+  if (roleError || !roleData) {
+    return { ok: false as const, error: 'Admin access required', status: 403 };
+  }
+
+  return { ok: true as const, requester };
+}
+
+export default async function adminUsersHandler(req: Request, res: Response) {
+  const supabase = getSupabaseClient();
+
+  try {
+    const auth = await requireAdminUser(supabase, req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({ error: auth.error });
+    }
+
+    const method = req.method;
+    const userId = req.params.id;
+
+    if (method === 'GET') {
+      if (userId) {
+        const { data: userData, error: userError } = await supabase.auth.admin.getUserById(userId);
+        if (userError || !userData?.user) {
+          return res.status(404).json({ error: 'User not found' });
+        }
+
+        const user = userData.user;
+
+        const { data: profileRow, error: profileError } = await supabase
+          .from('profiles')
+          .select('user_id, full_name, email')
+          .eq('user_id', userId)
+          .maybeSingle();
+        if (profileError) {
+          throw profileError;
+        }
+
+        const { data: roleRows, error: rolesError } = await supabase
+          .from('user_roles')
+          .select('role')
+          .eq('user_id', userId);
+        if (rolesError) {
+          throw rolesError;
+        }
+
+        const rolePriority: Record<AppRole, number> = { admin: 3, moderator: 2, user: 1 };
+        const primaryRole = (roleRows || []).reduce<AppRole>(
+          (acc, row) => {
+            const nextRole = row.role as AppRole;
+            return rolePriority[nextRole] > rolePriority[acc] ? nextRole : acc;
+          },
+          'user'
+        );
+
+        const { data: workflowRows, error: workflowsError } = await supabase
+          .from('workflows')
+          .select('id, name, status, metadata')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: false });
+        if (workflowsError) {
+          throw workflowsError;
+        }
+
+        const workflowIds = (workflowRows || []).map((workflow) => workflow.id);
+        let executionCountsByWorkflow = new Map<string, number>();
+
+        if (workflowIds.length > 0) {
+          const { data: executionRows, error: executionsError } = await supabase
+            .from('executions')
+            .select('workflow_id')
+            .in('workflow_id', workflowIds);
+          if (executionsError) {
+            throw executionsError;
+          }
+
+          executionCountsByWorkflow = new Map<string, number>();
+          for (const execution of executionRows || []) {
+            const workflowId = execution.workflow_id;
+            executionCountsByWorkflow.set(workflowId, (executionCountsByWorkflow.get(workflowId) || 0) + 1);
+          }
+        }
+
+        const workflowItems = (workflowRows || []).map((workflow) => ({
+          id: workflow.id,
+          title: workflow.name,
+          apiCalls: executionCountsByWorkflow.get(workflow.id) || 0,
+          tokensUsedToBuild: getWorkflowBuildTokens(workflow),
+          status: workflow.status === 'active' ? ('active' as WorkflowStatus) : ('inactive' as WorkflowStatus),
+        }));
+
+        return res.json({
+          user: {
+            id: user.id,
+            name: getDisplayName(user, profileRow),
+            email: profileRow?.email || user.email || '',
+            status: normalizeStatus(user),
+            role: primaryRole,
+            subscriptionTaken: isSubscriptionTaken(user),
+            firstSignInAt: user.created_at,
+            lastSignInAt: user.last_sign_in_at,
+            totalWorkflowsBuilt: workflowItems.length,
+            workflows: workflowItems,
+          },
+        });
+      }
+
+      const { data: usersData, error: usersError } = await supabase.auth.admin.listUsers();
+      if (usersError) {
+        throw usersError;
+      }
+
+      const users = usersData?.users ?? [];
+      const userIds = users.map((user) => user.id);
+
+      const { data: profileRows, error: profilesError } = await supabase
+        .from('profiles')
+        .select('user_id, full_name, email')
+        .in('user_id', userIds);
+      if (profilesError) {
+        throw profilesError;
+      }
+
+      const { data: roleRows, error: rolesError } = await supabase
+        .from('user_roles')
+        .select('user_id, role')
+        .in('user_id', userIds);
+      if (rolesError) {
+        throw rolesError;
+      }
+
+      const profileMap = new Map((profileRows || []).map((row) => [row.user_id, row]));
+      const rolePriority: Record<AppRole, number> = { admin: 3, moderator: 2, user: 1 };
+      const roleMap = new Map<string, AppRole>();
+
+      for (const row of roleRows || []) {
+        const existing = roleMap.get(row.user_id);
+        if (!existing || rolePriority[row.role as AppRole] > rolePriority[existing]) {
+          roleMap.set(row.user_id, row.role as AppRole);
+        }
+      }
+
+      const formattedUsers = users.map((user) => {
+        const profile = profileMap.get(user.id);
+        const role = roleMap.get(user.id) ?? 'user';
+
+        return {
+          id: user.id,
+          name: getDisplayName(user, profile),
+          email: profile?.email || user.email || '',
+          status: normalizeStatus(user),
+          role,
+        };
+      });
+
+      return res.json({ users: formattedUsers });
+    }
+
+    if (method === 'PATCH' && userId) {
+      const requestedRole = req.body?.role as AppRole | undefined;
+      const validRoles: AppRole[] = ['admin', 'moderator', 'user'];
+
+      if (!requestedRole || !validRoles.includes(requestedRole)) {
+        return res.status(400).json({ error: 'role must be one of: admin, moderator, user' });
+      }
+
+      const { error: deleteRolesError } = await supabase
+        .from('user_roles')
+        .delete()
+        .eq('user_id', userId);
+      if (deleteRolesError) {
+        throw deleteRolesError;
+      }
+
+      const { data: roleData, error: insertRoleError } = await supabase
+        .from('user_roles')
+        .insert({ user_id: userId, role: requestedRole })
+        .select('user_id, role')
+        .single();
+      if (insertRoleError) {
+        throw insertRoleError;
+      }
+
+      return res.json({
+        success: true,
+        role: roleData.role,
+      });
+    }
+
+    if (method === 'DELETE' && userId) {
+      if (userId === auth.requester.id) {
+        return res.status(400).json({ error: 'You cannot delete your own account from admin panel' });
+      }
+
+      const { error } = await supabase.auth.admin.deleteUser(userId);
+      if (error) {
+        throw error;
+      }
+
+      return res.json({ success: true });
+    }
+
+    return res.status(405).json({ error: 'Method not allowed' });
+  } catch (error) {
+    console.error('Admin users error:', error);
+    const message = error instanceof Error ? error.message : String(error);
+    return res.status(500).json({ error: message });
+  }
+}
