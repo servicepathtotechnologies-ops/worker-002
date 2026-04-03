@@ -1,4 +1,4 @@
-/**
+  /**
  * ✅ EDGE RECONCILIATION ENGINE
  * 
  * Automatically reconciles edges after ANY graph modification (node injection, removal, etc.).
@@ -20,7 +20,7 @@ import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../uti
 import { universalHandleResolver } from '../error-prevention';
 import { universalEdgeCreationService } from '../../services/edges/universal-edge-creation-service';
 import { nodeCapabilityRegistryDSL } from '../../services/ai/node-capability-registry-dsl';
-import { isOutputNode } from '../utils/universal-node-type-checker';
+import { hasPrimaryDataRole, isOutputNode } from '../utils/universal-node-type-checker';
 import { randomUUID } from 'crypto';
 
 export interface EdgeReconciliationResult {
@@ -112,26 +112,16 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
 
       const targetNodeForLinear = workflow.nodes.find((n) => n.id === targetId);
       if (sourceNodeForLinear && targetNodeForLinear) {
-        if (isOutputNode(targetNodeForLinear)) {
-          // Universal linear guard:
-          // allow trigger -> first output when output has no incoming edge yet.
-          const sourceType = unifiedNormalizeNodeTypeString(
-            sourceNodeForLinear.type || sourceNodeForLinear.data?.type || '',
-          );
-          const sourceDef = unifiedNodeRegistry.get(sourceType);
-          const targetHasIncoming = workingEdges.some((e) => e.target === targetId);
-          const allowTriggerToFirstOutput = sourceDef?.category === 'trigger' && !targetHasIncoming;
-          if (!allowTriggerToFirstOutput) {
-            continue;
-          }
-        }
+        // Throughput outputs (Gmail, Slack send, etc.) must accept linear edges from data/transform predecessors.
+        // Only terminal sinks (alwaysTerminal / terminal tag) skip here — Step 7 wires log_output branch-aware.
         const targetLinearType = unifiedNormalizeNodeTypeString(
           targetNodeForLinear.type || targetNodeForLinear.data?.type || '',
         );
         const sourceLinearType = unifiedNormalizeNodeTypeString(
           sourceNodeForLinear.type || sourceNodeForLinear.data?.type || '',
         );
-        if (sourceLinearType === 'log_output' && targetLinearType === 'log_output') {
+        // log_output: inbound wiring is Step 7 (branch-aware); never linear backbone in/out of log terminals
+        if (targetLinearType === 'log_output' || sourceLinearType === 'log_output') {
           continue;
         }
         const targetLinearDef = unifiedNodeRegistry.get(targetLinearType);
@@ -340,8 +330,8 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
         // Skip trigger nodes
         if (candidateDef?.category === 'trigger') continue;
 
-        // For non-terminal output nodes: skip other output nodes to find the last data/transform node
-        if (isOutputNode(candidateNode)) continue;
+        // Skip pure output nodes, but NOT primary data nodes (e.g. google_sheets has output capability)
+        if (isOutputNode(candidateNode) && !hasPrimaryDataRole(candidateNode)) continue;
         
         // Found a valid predecessor - connect from here
         lastTransformationNodeId = candidateId;
@@ -687,7 +677,8 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
   }
 
   private cloneLogOutputForSplit(sourceLog: WorkflowNode, splitIndex: number): WorkflowNode {
-    const newId = `${sourceLog.id}_split_${splitIndex}_${randomUUID().slice(0, 8)}`;
+    // Deterministic id so reconcileWorkflow is idempotent (no random UUIDs per §P1 tests)
+    const newId = `${sourceLog.id}_split_${splitIndex}`;
     const baseLabel =
       (sourceLog.data && (sourceLog.data as any).label) ||
       (sourceLog as any).label ||
@@ -723,6 +714,11 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
     });
 
     for (const log of logNodes) {
+      // Split only base terminals; clones from a prior split use deterministic ids containing "_split_"
+      // and must not be split again (idempotent reconcile — see workflow-graph-correctness-preservation P1).
+      if (String(log.id).includes('_split_')) {
+        continue;
+      }
       const incoming = outEdges.filter(e => e.target === log.id);
       if (incoming.length <= 1) continue;
 

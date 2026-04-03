@@ -1,0 +1,117 @@
+{
+  "version_id": "bf19723931fa",
+  "full_hash": "bf19723931fa134c6d750b78b4001cb49b5a75afa5e3ba87349c0aa298ea2af0",
+  "created_at": "2026-04-02T14:57:25.293Z",
+  "workflow": {
+    "nodes": [
+      {
+        "id": "node_1193f620-f5f4-4c1e-8783-f75c1dd2352c",
+        "type": "manual_trigger",
+        "position": {
+          "x": 100,
+          "y": 200
+        },
+        "data": {
+          "label": "Manual Trigger",
+          "type": "manual_trigger",
+          "category": "trigger",
+          "config": {}
+        }
+      },
+      {
+        "id": "node_4989343e-eea1-41c3-bcdd-740508e63414",
+        "type": "text_formatter",
+        "position": {
+          "x": 390,
+          "y": 360
+        },
+        "data": {
+          "label": "Text Formatter (2)",
+          "type": "text_formatter",
+          "category": "data",
+          "config": {
+            "template": "Write a short, positive affirmation."
+          }
+        }
+      },
+      {
+        "id": "node_c634dc24-0d43-465b-a830-413d33e0ba46",
+        "type": "ollama",
+        "position": {
+          "x": 680,
+          "y": 520
+        },
+        "data": {
+          "label": "Ai Chat Model (3)",
+          "type": "ollama",
+          "category": "ai",
+          "config": {}
+        }
+      },
+      {
+        "id": "node_eebfc579-1e15-4453-9ff7-52af7d1e9e92",
+        "type": "log_output",
+        "position": {
+          "x": 970,
+          "y": 680
+        },
+        "data": {
+          "label": "Log Output (4)",
+          "type": "log_output",
+          "category": "output",
+          "config": {}
+        }
+      }
+    ],
+    "edges": [
+      {
+        "id": "edge_node_1193f620-f5f4-4c1e-8783-f75c1dd2352c_node_4989343e-eea1-41c3-bcdd-740508e63414_68cf8332-4e95-4dc0-b0c2-f1f6ab8b7ba9",
+        "source": "node_1193f620-f5f4-4c1e-8783-f75c1dd2352c",
+        "target": "node_4989343e-eea1-41c3-bcdd-740508e63414",
+        "sourceHandle": "output",
+        "targetHandle": "input",
+        "type": "default"
+      },
+      {
+        "id": "edge_node_4989343e-eea1-41c3-bcdd-740508e63414_node_c634dc24-0d43-465b-a830-413d33e0ba46_e7b16db1-524c-4a19-97c0-9b7b614753df",
+        "source": "node_4989343e-eea1-41c3-bcdd-740508e63414",
+        "target": "node_c634dc24-0d43-465b-a830-413d33e0ba46",
+        "sourceHandle": "output",
+        "targetHandle": "input",
+        "type": "default"
+      },
+      {
+        "id": "edge_node_c634dc24-0d43-465b-a830-413d33e0ba46_node_eebfc579-1e15-4453-9ff7-52af7d1e9e92_0378c366-0432-4d64-aaf2-65508fe1d5a4",
+        "source": "node_c634dc24-0d43-465b-a830-413d33e0ba46",
+        "target": "node_eebfc579-1e15-4453-9ff7-52af7d1e9e92",
+        "sourceHandle": "output",
+        "targetHandle": "input",
+        "type": "default"
+      }
+    ],
+    "metadata": {
+      "id": "c919a117-b431-4869-9765-e1c39cbc767a",
+      "workflow_id": "c919a117-b431-4869-9765-e1c39cbc767a"
+    }
+  },
+  "metadata": {
+    "source": "ai_editor",
+    "workflowId": "c919a117-b431-4869-9765-e1c39cbc767a",
+    "actor": "b4edf5df-b307-489e-86af-ba370772a636",
+    "prompt": "i want it to start with manualtrigger"
+  },
+  "dependencies": {
+    "node_library_version": "1.0.0",
+    "assembler_version": "1.0.0"
+  },
+  "compatibility": {
+    "backward_compatible": true,
+    "breaking_changes": [],
+    "deprecated_nodes": [],
+    "migration_path": {
+      "automated": true,
+      "steps": [],
+      "estimated_time": "5 minutes"
+    }
+  }
+}

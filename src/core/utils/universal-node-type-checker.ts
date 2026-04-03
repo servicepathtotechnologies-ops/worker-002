@@ -137,6 +137,66 @@ export function isOutputNode(node: WorkflowNode | string): boolean {
 }
 
 /**
+ * Registry-driven terminal sink (e.g. log_output): must not use generic linear chain; Step 7 wires branch-aware.
+ * See edge-reconciliation-engine: throughput outputs (Gmail, etc.) are NOT terminal sinks.
+ */
+export function isTerminalSinkNode(node: WorkflowNode | string): boolean {
+  const nodeType =
+    typeof node === 'string'
+      ? unifiedNormalizeNodeTypeString(node)
+      : unifiedNormalizeNodeTypeString(node.type || (node as WorkflowNode).data?.type || '');
+  const nodeDef = unifiedNodeRegistry.get(nodeType);
+  if (nodeDef?.workflowBehavior?.alwaysTerminal === true) {
+    return true;
+  }
+  if ((nodeDef?.tags || []).includes('terminal')) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Primary data/read role: fetch or read path even if node also has write_data / output capability (e.g. google_sheets).
+ * Used by edge reconciliation Step 6 to not skip data nodes when scanning backward from a throughput output.
+ */
+export function hasPrimaryDataRole(node: WorkflowNode | string): boolean {
+  if (isTerminalSinkNode(node)) {
+    return false;
+  }
+  const nodeType =
+    typeof node === 'string'
+      ? unifiedNormalizeNodeTypeString(node)
+      : unifiedNormalizeNodeTypeString(node.type || (node as WorkflowNode).data?.type || '');
+  const nodeDef = unifiedNodeRegistry.get(nodeType);
+  if (nodeDef?.category === 'data') {
+    return true;
+  }
+  return isDataSourceNode(node);
+}
+
+/**
+ * Throughput send/write node that accepts upstream payload (not a terminal sink): communication-style outputs.
+ * Excludes primary data nodes (e.g. google_sheets) even when they have write_data capability.
+ */
+export function isThroughputSendNode(node: WorkflowNode | string): boolean {
+  if (isTerminalSinkNode(node)) {
+    return false;
+  }
+  if (hasPrimaryDataRole(node)) {
+    return false;
+  }
+  const nodeType =
+    typeof node === 'string'
+      ? unifiedNormalizeNodeTypeString(node)
+      : unifiedNormalizeNodeTypeString(node.type || (node as WorkflowNode).data?.type || '');
+  const nodeDef = unifiedNodeRegistry.get(nodeType);
+  if (nodeDef?.category === 'communication') {
+    return true;
+  }
+  return isOutputNode(node);
+}
+
+/**
  * ✅ UNIVERSAL: Check if a node is a transformation using registry
  */
 export function isTransformationNode(node: WorkflowNode | string): boolean {

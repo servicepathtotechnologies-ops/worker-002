@@ -4,6 +4,14 @@ import { getSupabaseClient } from '../core/database/supabase-compat';
 type AppRole = 'admin' | 'moderator' | 'user';
 type WorkflowStatus = 'active' | 'inactive';
 
+/** Supabase Auth ban: blocks sign-in and refresh; reversible via ban_duration: 'none'. */
+const ADMIN_SUSPEND_BAN_DURATION = '876000h'; // ~100 years — effectively indefinite until admin reinstates
+
+function isUserBanned(user: any): boolean {
+  const bannedUntil = user?.banned_until ? new Date(user.banned_until).getTime() : 0;
+  return bannedUntil > Date.now();
+}
+
 function normalizeStatus(user: any): 'active' | 'pending' | 'disabled' {
   const now = Date.now();
   const bannedUntil = user?.banned_until ? new Date(user.banned_until).getTime() : 0;
@@ -230,6 +238,7 @@ export default async function adminUsersHandler(req: Request, res: Response) {
             name: getDisplayName(user, profileRow),
             email: profileRow?.email || user.email || '',
             status: normalizeStatus(user),
+            suspended: isUserBanned(user),
             role: primaryRole,
             subscriptionTaken: isSubscriptionTaken(user),
             firstSignInAt: user.created_at,
@@ -284,6 +293,7 @@ export default async function adminUsersHandler(req: Request, res: Response) {
           name: getDisplayName(user, profile),
           email: profile?.email || user.email || '',
           status: normalizeStatus(user),
+          suspended: isUserBanned(user),
           role,
         };
       });
@@ -292,33 +302,86 @@ export default async function adminUsersHandler(req: Request, res: Response) {
     }
 
     if (method === 'PATCH' && userId) {
-      const requestedRole = req.body?.role as AppRole | undefined;
+      const body = req.body ?? {};
+      const hasSuspended = typeof body.suspended === 'boolean';
+      const requestedRole = body.role as AppRole | undefined;
       const validRoles: AppRole[] = ['admin', 'moderator', 'user'];
 
-      if (!requestedRole || !validRoles.includes(requestedRole)) {
-        return res.status(400).json({ error: 'role must be one of: admin, moderator, user' });
+      if (
+        !hasSuspended &&
+        (requestedRole === undefined || !validRoles.includes(requestedRole))
+      ) {
+        return res.status(400).json({
+          error: 'Provide suspended (boolean) and/or role (admin | moderator | user)',
+        });
       }
 
-      const { error: deleteRolesError } = await supabase
-        .from('user_roles')
-        .delete()
-        .eq('user_id', userId);
-      if (deleteRolesError) {
-        throw deleteRolesError;
+      if (hasSuspended) {
+        if (userId === auth.requester.id) {
+          return res.status(400).json({
+            error: 'You cannot suspend or reinstate your own account',
+          });
+        }
+
+        if (body.suspended === true) {
+          const { data: adminRoleRow, error: adminCheckError } = await supabase
+            .from('user_roles')
+            .select('user_id')
+            .eq('user_id', userId)
+            .eq('role', 'admin')
+            .maybeSingle();
+
+          if (adminCheckError) {
+            throw adminCheckError;
+          }
+
+          if (adminRoleRow) {
+            return res.status(400).json({
+              error: 'Cannot suspend an administrator account',
+            });
+          }
+        }
+
+        const { error: banError } = await supabase.auth.admin.updateUserById(userId, {
+          ban_duration: body.suspended ? ADMIN_SUSPEND_BAN_DURATION : 'none',
+        });
+
+        if (banError) {
+          throw banError;
+        }
       }
 
-      const { data: roleData, error: insertRoleError } = await supabase
-        .from('user_roles')
-        .insert({ user_id: userId, role: requestedRole })
-        .select('user_id, role')
-        .single();
-      if (insertRoleError) {
-        throw insertRoleError;
+      let updatedRole: AppRole | undefined;
+
+      if (requestedRole !== undefined) {
+        if (!validRoles.includes(requestedRole)) {
+          return res.status(400).json({ error: 'role must be one of: admin, moderator, user' });
+        }
+
+        const { error: deleteRolesError } = await supabase
+          .from('user_roles')
+          .delete()
+          .eq('user_id', userId);
+        if (deleteRolesError) {
+          throw deleteRolesError;
+        }
+
+        const { data: roleData, error: insertRoleError } = await supabase
+          .from('user_roles')
+          .insert({ user_id: userId, role: requestedRole })
+          .select('user_id, role')
+          .single();
+        if (insertRoleError) {
+          throw insertRoleError;
+        }
+
+        updatedRole = roleData.role as AppRole;
       }
 
       return res.json({
         success: true,
-        role: roleData.role,
+        ...(hasSuspended ? { suspended: body.suspended as boolean } : {}),
+        ...(updatedRole !== undefined ? { role: updatedRole } : {}),
       });
     }
 

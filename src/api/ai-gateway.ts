@@ -7,9 +7,21 @@ import { aiWorkflowEditor } from '../services/ai/workflow-editor';
 import { aiPerformanceMonitor } from '../services/ai/performance-monitor';
 import { config } from '../core/config';
 import { LLMAdapter } from '../shared/llm-adapter';
+import { unifiedGraphOrchestrator } from '../core/orchestration/unified-graph-orchestrator';
+import type { AiEditorRequest, AiEditorResponse } from '../core/types/ai-editor-contracts';
+import type { Workflow } from '../core/types/ai-types';
+import { WorkflowVersioning } from '../services/ai/workflow-versioning';
+import {
+  resolveAiEditorPrincipal,
+  requireCapability,
+  fetchWorkflowLifecyclePhase,
+  canApplyForPhase,
+} from '../services/ai/ai-editor-rbac';
+import { logAiEditorEvent, hashDiff, readAiEditorAuditForWorkflow } from '../services/ai/ai-editor-audit';
 
 const router = Router();
 const llmAdapter = new LLMAdapter();
+const aiEditorVersioning = new WorkflowVersioning();
 
 let initialized = false;
 
@@ -89,6 +101,435 @@ router.post('/audio/transcribe', (req: Request, res: Response) => {
 });
 
 // ==================== AI WORKFLOW EDITOR ====================
+router.get('/editor/capabilities', async (req: Request, res: Response) => {
+  const t0 = Date.now();
+  const principalResult = await resolveAiEditorPrincipal(req);
+  if (!principalResult.ok) {
+    return res.status(principalResult.status).json({ success: false, error: principalResult.error });
+  }
+  const { principal } = principalResult;
+  const workflowId = typeof req.query.workflowId === 'string' ? req.query.workflowId : undefined;
+  const phase = await fetchWorkflowLifecyclePhase(workflowId);
+  const applyCheck = canApplyForPhase(principal, phase);
+  logAiEditorEvent({
+    action: 'capabilities',
+    userId: principal.userId,
+    workflowId,
+    capabilities: Array.from(principal.capabilities),
+    telemetryMs: Date.now() - t0,
+    operationsSummary: 'get_capabilities',
+  });
+  res.json({
+    success: true,
+    role: principal.role,
+    capabilities: Array.from(principal.capabilities),
+    workflowId: workflowId || null,
+    lifecyclePhase: phase,
+    canApply: applyCheck.ok,
+    applyBlockedReason: applyCheck.ok ? undefined : applyCheck.reason,
+  });
+});
+
+router.get('/editor/audit/:workflowId', async (req: Request, res: Response) => {
+  const principalResult = await resolveAiEditorPrincipal(req);
+  if (!principalResult.ok) {
+    return res.status(principalResult.status).json({ success: false, error: principalResult.error });
+  }
+  const cap = requireCapability(principalResult.principal, 'ai_editor:analyze');
+  if (!cap.ok) {
+    return res.status(cap.status).json({ success: false, error: cap.error });
+  }
+  const { workflowId } = req.params;
+  const entries = readAiEditorAuditForWorkflow(workflowId, 200);
+  res.json({ success: true, workflowId, entries });
+});
+
+router.post('/editor/suggest', async (req: Request, res: Response) => {
+  const t0 = Date.now();
+  try {
+    const principalResult = await resolveAiEditorPrincipal(req);
+    if (!principalResult.ok) {
+      return res.status(principalResult.status).json({ success: false, error: principalResult.error });
+    }
+    const cap = requireCapability(principalResult.principal, 'ai_editor:suggest');
+    if (!cap.ok) {
+      return res.status(cap.status).json({ success: false, error: cap.error });
+    }
+
+    const body = req.body as {
+      workflowId?: string;
+      workflow: Workflow;
+      nodeId?: string;
+      prompt: string;
+      conversationHistory?: Array<{ role: string; content: string }>;
+    };
+
+    if (!body || typeof body.prompt !== 'string' || !body.prompt.trim()) {
+      return res.status(400).json({ success: false, error: 'prompt is required' });
+    }
+    if (!body.workflow || !Array.isArray(body.workflow.nodes) || !Array.isArray(body.workflow.edges)) {
+      return res.status(400).json({ success: false, error: 'workflow with nodes[] and edges[] is required' });
+    }
+
+    if (!config.geminiApiKey) {
+      return res.status(503).json({ success: false, error: 'GEMINI_API_KEY not configured' });
+    }
+
+    const workflowId = body.workflowId || body.workflow.metadata?.id || 'unsaved';
+    const conversationHistory = Array.isArray(body.conversationHistory) ? body.conversationHistory : [];
+    const { message, operations, dryRun } = await aiWorkflowEditor.suggestWorkflowEdits(body.workflow, body.prompt, {
+      focusedNodeId: body.nodeId,
+      conversationHistory,
+    });
+
+    const previewValid = dryRun.errors.length === 0;
+    const response: AiEditorResponse = {
+      message,
+      operations: operations as any,
+      diff: dryRun.diff,
+      updatedWorkflow: previewValid ? { workflow: dryRun.workflow } : undefined,
+    };
+
+    logAiEditorEvent({
+      action: 'suggest',
+      userId: principalResult.principal.userId,
+      workflowId: String(workflowId),
+      validationPassed: previewValid,
+      operationsCount: operations.length,
+      operationsSummary: operations.map((o) => o.kind).join(','),
+      errors: dryRun.errors,
+      warnings: dryRun.warnings,
+      diffHash: hashDiff(dryRun.diff),
+      promptPreview: body.prompt.slice(0, 500),
+      telemetryMs: Date.now() - t0,
+    });
+
+    res.json({
+      success: true,
+      previewValid,
+      previewErrors: dryRun.errors,
+      previewWarnings: dryRun.warnings,
+      result: response,
+    });
+  } catch (error) {
+    console.error('AI Editor suggest error:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+router.post('/editor/apply', async (req: Request, res: Response) => {
+  const t0 = Date.now();
+  try {
+    const principalResult = await resolveAiEditorPrincipal(req);
+    if (!principalResult.ok) {
+      return res.status(principalResult.status).json({ success: false, error: principalResult.error });
+    }
+    const { principal } = principalResult;
+
+    const body = req.body as {
+      workflowId?: string;
+      workflow: Workflow;
+      operations: any[];
+      actor?: string;
+      prompt?: string;
+    };
+
+    if (!body || !body.workflow || !Array.isArray(body.workflow.nodes) || !Array.isArray(body.workflow.edges)) {
+      return res.status(400).json({ success: false, error: 'workflow with nodes[] and edges[] is required' });
+    }
+    if (!Array.isArray(body.operations) || body.operations.length === 0) {
+      return res.status(400).json({ success: false, error: 'operations[] is required' });
+    }
+
+    const phase = await fetchWorkflowLifecyclePhase(body.workflowId || body.workflow.metadata?.id);
+    const applyGate = canApplyForPhase(principal, phase);
+    if (!applyGate.ok) {
+      logAiEditorEvent({
+        action: 'apply',
+        userId: principal.userId,
+        workflowId: body.workflowId,
+        errors: [applyGate.reason],
+        operationsSummary: 'blocked_rbac',
+        telemetryMs: Date.now() - t0,
+      });
+      return res.status(403).json({ success: false, error: applyGate.reason });
+    }
+
+    const workflow: Workflow = body.workflow;
+    const result = await aiWorkflowEditor.applyOperations(workflow, body.operations as any);
+
+    const postValidate = unifiedGraphOrchestrator.validateWorkflow(
+      result.workflow,
+      result.executionOrder
+    );
+    if (!postValidate.valid) {
+      result.errors.push(...postValidate.errors);
+    }
+
+    const response: AiEditorResponse = {
+      message:
+        result.errors.length === 0
+          ? 'Applied AI editor operations successfully.'
+          : 'Applied AI editor operations with validation errors.',
+      operations: body.operations as any,
+      diff: result.diff,
+      updatedWorkflow: {
+        workflow: result.workflow,
+      },
+    };
+
+    if (result.errors.length > 0) {
+      logAiEditorEvent({
+        action: 'apply',
+        userId: principal.userId,
+        workflowId: body.workflowId || result.workflow.metadata?.id,
+        validationPassed: false,
+        operationsCount: body.operations.length,
+        operationsSummary: body.operations.map((o: any) => o?.kind).join(','),
+        errors: result.errors,
+        warnings: result.warnings,
+        diffHash: hashDiff(result.diff),
+        promptPreview: body.prompt?.slice(0, 500),
+        telemetryMs: Date.now() - t0,
+      });
+      return res.status(400).json({
+        success: false,
+        errors: result.errors,
+        warnings: result.warnings,
+        result: response,
+      });
+    }
+
+    let versionId: string | undefined;
+    try {
+      const versionMetadata = {
+        source: 'ai_editor',
+        workflowId: body.workflowId || result.workflow.metadata?.id,
+        actor: principal.userId,
+        prompt: body.prompt,
+      };
+      const versionWorkflowPayload: Workflow = {
+        ...result.workflow,
+        metadata: {
+          ...(result.workflow.metadata || {}),
+          workflow_id: body.workflowId || result.workflow.metadata?.id,
+        },
+      };
+      const ver = aiEditorVersioning.versionWorkflow(versionWorkflowPayload as any, versionMetadata);
+      versionId = ver?.version_id;
+    } catch (versionError) {
+      console.warn('AI Editor versioning failed (non-fatal):', versionError);
+    }
+
+    logAiEditorEvent({
+      action: 'apply',
+      userId: principal.userId,
+      workflowId: body.workflowId || result.workflow.metadata?.id,
+      versionIdOrHash: versionId,
+      validationPassed: true,
+      operationsCount: body.operations.length,
+      operationsSummary: body.operations.map((o: any) => o?.kind).join(','),
+      warnings: result.warnings,
+      diffHash: hashDiff(result.diff),
+      promptPreview: body.prompt?.slice(0, 500),
+      telemetryMs: Date.now() - t0,
+    });
+
+    res.json({
+      success: true,
+      warnings: result.warnings,
+      workflow: result.workflow,
+      diff: result.diff,
+      versionId,
+      result: response,
+    });
+  } catch (error) {
+    console.error('AI Editor apply error:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+router.post('/editor/analyze', async (req: Request, res: Response) => {
+  const t0 = Date.now();
+  try {
+    const principalResult = await resolveAiEditorPrincipal(req);
+    if (!principalResult.ok) {
+      return res.status(principalResult.status).json({ success: false, error: principalResult.error });
+    }
+    const cap = requireCapability(principalResult.principal, 'ai_editor:analyze');
+    if (!cap.ok) {
+      return res.status(cap.status).json({ success: false, error: cap.error });
+    }
+
+    const body = req.body as {
+      workflowId?: string;
+      workflow: Workflow;
+      nodeId?: string;
+      prompt: string;
+      conversationHistory?: Array<{ role: string; content: string }>;
+    };
+
+    if (!body || typeof body.prompt !== 'string' || !body.prompt.trim()) {
+      return res.status(400).json({ success: false, error: 'prompt is required' });
+    }
+    if (!body.workflow || !Array.isArray(body.workflow.nodes) || !Array.isArray(body.workflow.edges)) {
+      return res.status(400).json({ success: false, error: 'workflow with nodes[] and edges[] is required' });
+    }
+
+    const workflow: Workflow = body.workflow;
+    const workflowId = body.workflowId || workflow.metadata?.id || 'unsaved';
+    const focusedNodeId = body.nodeId;
+
+    // Build registry context (safe projection of schemas, no secrets)
+    const registryContext = aiWorkflowEditor.buildRegistryContextForWorkflow(workflow);
+
+    // Validate workflow structure via orchestrator (DAG + edge invariants)
+    const validation = unifiedGraphOrchestrator.validateWorkflow(workflow);
+
+    const focusedNode = focusedNodeId
+      ? workflow.nodes.find((n) => n.id === focusedNodeId)
+      : undefined;
+
+    const systemPrompt = [
+      'You are an AI workflow editor assistant.',
+      'You MUST operate in read-only analysis mode for this endpoint:',
+      '- Explain what the workflow does.',
+      '- Highlight structural or configuration issues.',
+      '- Suggest high-level improvements.',
+      'Do NOT propose raw edge lists; reason in terms of nodes and intent.',
+      'Respect these invariants: single-source-of-truth registry, unified graph orchestrator, deterministic DAG, no manual edge wiring.',
+    ].join(' ');
+
+    const summaryContext = {
+      workflowId,
+      nodeCount: workflow.nodes.length,
+      edgeCount: workflow.edges.length,
+      nodeTypes: Array.from(
+        new Set(
+          workflow.nodes.map(
+            (n) => (n.data as any)?.type || n.type,
+          ),
+        ),
+      ),
+      focusedNode: focusedNode
+        ? {
+            id: focusedNode.id,
+            type: (focusedNode.data as any)?.type || focusedNode.type,
+            label: (focusedNode.data as any)?.label,
+          }
+        : undefined,
+      validation: {
+        valid: validation.valid,
+        errorCount: validation.errors.length,
+        warningCount: validation.warnings.length,
+      },
+    };
+
+    const historyBlock =
+      Array.isArray(body.conversationHistory) && body.conversationHistory.length > 0
+        ? [
+            '',
+            '=== RECENT CONVERSATION (continuity for follow-up questions) ===',
+            'Use earlier turns when the latest user message is short or refers to prior discussion.',
+            JSON.stringify(
+              body.conversationHistory.map((t) => ({
+                role: t.role,
+                content:
+                  typeof t.content === 'string' && t.content.length > 12000
+                    ? `${t.content.slice(0, 12000)}\n...[truncated]`
+                    : t.content,
+              })),
+              null,
+              2
+            ),
+          ].join('\n')
+        : '';
+
+    const llmInput = [
+      systemPrompt,
+      '',
+      '=== WORKFLOW SUMMARY ===',
+      JSON.stringify(summaryContext, null, 2),
+      '',
+      '=== NODE SCHEMAS (REGISTRY PROJECTION) ===',
+      JSON.stringify(registryContext.nodeSchemas, null, 2),
+      historyBlock,
+      '',
+      '=== USER REQUEST (latest turn) ===',
+      body.prompt,
+    ].join('\n');
+
+    if (!config.geminiApiKey) {
+      return res.status(503).json({
+        success: false,
+        error: 'GEMINI_API_KEY not configured',
+      });
+    }
+
+    const rawResult = await geminiOrchestrator.processRequest('chat-generation', llmInput, {
+      model: 'gemini-2.5-flash',
+      temperature: 0.4,
+    });
+
+    const message =
+      typeof rawResult === 'string'
+        ? rawResult
+        : (rawResult as any)?.content || JSON.stringify(rawResult);
+
+    const response: AiEditorResponse = {
+      message,
+      operations: [],
+      updatedWorkflow: {
+        workflow,
+      },
+    };
+
+    logAiEditorEvent({
+      action: 'analyze',
+      userId: principalResult.principal.userId,
+      workflowId,
+      validationPassed: validation.valid,
+      operationsSummary: 'analyze_llm',
+      errors: validation.valid ? undefined : validation.errors,
+      warnings: validation.warnings,
+      promptPreview: body.prompt.slice(0, 500),
+      telemetryMs: Date.now() - t0,
+    });
+
+    const apiResponse: AiEditorRequest = {
+      // Not strictly needed by client, but kept for contract completeness if they log it
+      mode: 'analyze',
+      intent: focusedNode ? 'explain_workflow' : 'suggest_improvements',
+      scope: {
+        workflowId,
+        focusedNodeId,
+      },
+      prompt: body.prompt,
+      workflowSnapshot: {
+        workflow,
+      },
+    };
+
+    res.json({
+      success: true,
+      request: apiResponse,
+      result: response,
+    });
+  } catch (error) {
+    console.error('AI Editor analyze error:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
 router.post('/editor/suggest-improvements', async (req: Request, res: Response) => {
   try {
     const { workflow, nodeId } = req.body;
@@ -112,6 +553,32 @@ router.post('/editor/replace-node', async (req: Request, res: Response) => {
     res.json({ ...result });
   } catch (error) {
     res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+  }
+});
+
+// Registry context for a given workflow – lightweight projection from unified-node-registry
+router.post('/editor/registry-context', async (req: Request, res: Response) => {
+  try {
+    const principalResult = await resolveAiEditorPrincipal(req);
+    if (!principalResult.ok) {
+      return res.status(principalResult.status).json({ success: false, error: principalResult.error });
+    }
+    const cap = requireCapability(principalResult.principal, 'ai_editor:analyze');
+    if (!cap.ok) {
+      return res.status(cap.status).json({ success: false, error: cap.error });
+    }
+    const { workflow } = req.body;
+    if (!workflow || !Array.isArray(workflow.nodes)) {
+      return res.status(400).json({ success: false, error: 'workflow with nodes[] is required' });
+    }
+    const context = aiWorkflowEditor.buildRegistryContextForWorkflow(workflow);
+    res.json({ success: true, context });
+  } catch (error) {
+    console.error('AI Editor registry-context error:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
   }
 });
 
