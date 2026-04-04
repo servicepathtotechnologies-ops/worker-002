@@ -86,3 +86,23 @@ test('Property 9: Fill_Contract output is deterministic', () => {
     { numRuns: 100 }
   );
 });
+
+test('Property 10: requiredInputs are always present in inputSchema', () => {
+  const allTypes = unifiedNodeRegistry.getAllTypes();
+  if (allTypes.length === 0) return;
+
+  fc.assert(
+    fc.property(
+      fc.constantFrom(...allTypes),
+      (nodeType) => {
+        const def = unifiedNodeRegistry.get(nodeType);
+        if (!def) return;
+        const schemaKeys = new Set(Object.keys((def.inputSchema || {}) as Record<string, unknown>));
+        for (const req of def.requiredInputs || []) {
+          expect(schemaKeys.has(req)).toBe(true);
+        }
+      }
+    ),
+    { numRuns: 100 }
+  );
+});

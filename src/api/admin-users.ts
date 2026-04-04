@@ -94,10 +94,17 @@ function parseNumber(value: unknown): number {
   return 0;
 }
 
+function getAiBuildCallsFromWorkflow(workflow: any): number {
+  const metadata = workflow?.metadata && typeof workflow.metadata === 'object' ? workflow.metadata : {};
+  const fromBuild = (metadata as any)?.buildAiUsage?.totals?.callCount;
+  return parseNumber(fromBuild);
+}
+
 function getWorkflowBuildTokens(workflow: any): number {
   const metadata = workflow?.metadata && typeof workflow.metadata === 'object' ? workflow.metadata : {};
 
   const candidates = [
+    (metadata as any)?.buildAiUsage?.totals?.totalTokens,
     workflow?.tokens_used_to_build,
     workflow?.build_tokens,
     workflow?.token_usage,
@@ -224,13 +231,19 @@ export default async function adminUsersHandler(req: Request, res: Response) {
           }
         }
 
-        const workflowItems = (workflowRows || []).map((workflow) => ({
-          id: workflow.id,
-          title: workflow.name,
-          apiCalls: executionCountsByWorkflow.get(workflow.id) || 0,
-          tokensUsedToBuild: getWorkflowBuildTokens(workflow),
-          status: workflow.status === 'active' ? ('active' as WorkflowStatus) : ('inactive' as WorkflowStatus),
-        }));
+        const workflowItems = (workflowRows || []).map((workflow) => {
+          const workflowRuns = executionCountsByWorkflow.get(workflow.id) || 0;
+          return {
+            id: workflow.id,
+            title: workflow.name,
+            /** @deprecated Use workflowRuns — kept for older admin clients */
+            apiCalls: workflowRuns,
+            workflowRuns,
+            aiBuildCalls: getAiBuildCallsFromWorkflow(workflow),
+            tokensUsedToBuild: getWorkflowBuildTokens(workflow),
+            status: workflow.status === 'active' ? ('active' as WorkflowStatus) : ('inactive' as WorkflowStatus),
+          };
+        });
 
         return res.json({
           user: {

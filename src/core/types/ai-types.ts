@@ -103,7 +103,10 @@ export interface Constraint {
 }
 
 export interface WorkflowMetadata {
-  /** Raw user textarea / API originalPrompt — used for form field extraction (not merged planner text). */
+  /**
+   * Canonical user intent for this workflow: persisted at build/save and read at execution via
+   * resolveWorkflowRuntimeIntent (runtime AI, AI input resolver, templates). Not merged planner text.
+   */
   originalUserPrompt?: string;
   /**
    * When true, skip pruning form fields to intent-derived keys (merge-on-missing-refs / placeholder-only).
@@ -150,6 +153,12 @@ export interface WorkflowEdge {
   type?: string;
   sourceHandle?: string; // Output field name from source node
   targetHandle?: string; // Input field name for target node
+  /** Optional: explicit branch label (matches switch string output) */
+  branchName?: string;
+  /** Optional: zero-based branch index (matches numeric output / port index) */
+  sourceIndex?: number;
+  /** Optional: route when no case matches */
+  isDefault?: boolean;
 }
 
 export interface Workflow {

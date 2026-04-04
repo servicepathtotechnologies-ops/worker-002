@@ -605,33 +605,37 @@ export class AgenticWorkflowBuilder {
    * Build a workflow from an ordered list of node types (registry-only).
    * Used for registry_minimal and registry_extended strategies.
    * All node types must exist in unifiedNodeRegistry; edges come from orchestrator.
+   * Tokens may be annotated with branch tags (e.g. `google_gmail[true]`).
    */
   private buildWorkflowFromNodeTypes(
     nodeTypes: string[],
     userPrompt?: string,
   ): Workflow {
-    const seen = new Set<string>();
+    const { stripPlanTokenToType: stripToken, extractBranchTag: getBranchTag } = require('./plan-chain-prune') as typeof import('./plan-chain-prune');
+    const { randomUUID: uuid } = require('crypto') as typeof import('crypto');
     const nodes: WorkflowNode[] = nodeTypes
-      .map((type) => unifiedNodeRegistry.get(type) ? type : null)
-      .filter((t): t is string => t != null)
-      .filter((type) => {
-        if (seen.has(type)) return false;
-        seen.add(type);
-        return true;
+      .map((rawToken) => {
+        const canonicalType = stripToken(rawToken);
+        return unifiedNodeRegistry.get(canonicalType) ? { rawToken, canonicalType } : null;
       })
-      .map((type, index) => {
-        const def = unifiedNodeRegistry.get(type);
-        const id = `${type}_${index + 1}`;
-        const label = (def as any)?.label ?? type.replace(/_/g, ' ');
+      .filter((t): t is { rawToken: string; canonicalType: string } => t != null)
+      .map(({ rawToken, canonicalType }, index) => {
+        const def = unifiedNodeRegistry.get(canonicalType);
+        const branchTag = getBranchTag(rawToken);
+        const id = branchTag
+          ? `${canonicalType}_${branchTag}_${index + 1}`
+          : `${canonicalType}_${index + 1}`;
+        const label = (def as any)?.label ?? canonicalType.replace(/_/g, ' ');
         const category = (def as any)?.category ?? 'action';
         return {
           id,
-          type,
+          type: canonicalType,
           data: {
             label,
-            type,
+            type: canonicalType,
             category,
-            config: this.normalizePlannedConfig(type, userPrompt ? { prompt: userPrompt } : {}),
+            config: this.normalizePlannedConfig(canonicalType, userPrompt ? { prompt: userPrompt } : {}),
+            ...(branchTag ? { meta: { branchTag } } : {}),
           },
         } as WorkflowNode;
       });

@@ -219,7 +219,17 @@ Return a JSON object mapping each target field to exactly one upstream key. Exam
     if (!def) return {};
 
     const prompt = `${enhancedPrompt || ''}\n\n${originalPrompt || ''}`.trim();
+
+    // Branch-aware context: when this node is on a specific branch of an if_else,
+    // append branch context to the prompt so the LLM can suggest branch-specific values.
+    const branchTag: string | undefined = (node.data as any)?.meta?.branchTag;
+    const branchAwarePrompt = branchTag
+      ? `${prompt}\n\nBranch context: This node is on the ${branchTag} branch of an if_else condition.`
+      : prompt;
     const upstreamKeys = Object.keys(upstreamSchema?.properties ?? {});
+
+    // Use branch-aware prompt for LLM suggestions when branchTag is present
+    const effectivePrompt = branchAwarePrompt;
 
     const mappingMetadata: Record<
       string,
@@ -250,7 +260,7 @@ Return a JSON object mapping each target field to exactly one upstream key. Exam
       }
 
       const fieldLower = fieldName.toLowerCase();
-      const promptLower = prompt.toLowerCase();
+      const promptLower = effectivePrompt.toLowerCase();
 
       // 1) Exact match
       const exact = upstreamKeys.find((k) => k.toLowerCase() === fieldLower);
@@ -291,7 +301,7 @@ Return a JSON object mapping each target field to exactly one upstream key. Exam
     ];
 
     // Optional: build-time LLM suggestion for field -> upstream key bindings (schema-only; runtime does intent filtering).
-    const llmBindings = await this.getLLMSuggestedBindings(prompt, upstreamKeys, candidateFields);
+    const llmBindings = await this.getLLMSuggestedBindings(effectivePrompt, upstreamKeys, candidateFields);
 
     for (const fieldName of candidateFields) {
       const fieldDef = (inputSchema as Record<string, any>)[fieldName];

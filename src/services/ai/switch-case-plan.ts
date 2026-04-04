@@ -122,15 +122,27 @@ function extractEnumeratedCasesFromPrompt(prompt: string): string[] {
   const fieldColonPattern =
     /\b(?:status|type|category)\s*[:\-]\s*([^.]+)/gi;
 
-  // Pattern 4: "when/if <field> is X or Y" — simple two-value case
+  // Pattern 4: repeated "when/if <field> is <value>" — capture one routing value per clause
+  // (avoid greedy [^.]+ which merges multiple sentences into one bogus token)
   const whenIfPattern =
-    /\b(?:when|if)\s+\w+\s+(?:is|equals?)\s+([^.]+)/gi;
+    /\b(?:when|if)\s+\w+\s+(?:is|equals?)\s+([a-z0-9_]+)/gi;
+
+  // Pattern 4b: abbreviated "If <value>," after a sentence boundary (e.g. ". If medium, ...")
+  // Comma is required so we do not capture "priority" from "If priority is high,".
+  const abbreviatedIfValuePattern = /(?:^|[.!?]\s+)if\s+([a-z0-9_]+)\s*,/gi;
 
   // Pattern 5: "cases X, Y, Z" or "with cases X, Y, Z" — explicit case list
   const casesListPattern =
     /\b(?:with\s+)?cases?\s+([a-z0-9][^.]+)/gi;
 
-  const allPatterns = [routingVerbPattern, byFieldPattern, fieldColonPattern, whenIfPattern, casesListPattern];
+  const allPatterns = [
+    routingVerbPattern,
+    byFieldPattern,
+    fieldColonPattern,
+    whenIfPattern,
+    abbreviatedIfValuePattern,
+    casesListPattern,
+  ];
 
   for (const pattern of allPatterns) {
     let match: RegExpExecArray | null;

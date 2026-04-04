@@ -149,7 +149,8 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
             workflow.nodes,
             orderedNodeIds,
             sourceId,
-            targetId
+            targetId,
+            workingEdges
           )
         ) {
           continue;
@@ -517,7 +518,8 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
               workflow.nodes,
               orderedNodeIds,
               lastNonTerminalNodeId,
-              logOutputNode.id
+              logOutputNode.id,
+              structuralEdgesSnapshot
             );
           if (wouldCrossForkFanIn) {
             console.log(
@@ -583,6 +585,48 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
                   usedTerminalPredecessors.add(lastNonTerminalNodeId);
                   console.log(
                     `[EdgeReconciliationEngine] ✅ Rewired terminal edge: ${lastNonTerminalNodeId.substring(0, 8)} → ${logOutputNode.id.substring(0, 8)}`
+                  );
+                  continue;
+                }
+              }
+              // Linear Step 3 can chain sibling branch heads (e.g. slack → gmail) when hypothetical
+              // ports were empty; universal edge service then blocks slack → log. Drop that spine.
+              const staleCrossBranchSpine = workingEdges.find((e) => {
+                if (e.source !== lastNonTerminalNodeId || e.target === logOutputNode.id) return false;
+                const tNode = workflow.nodes.find((n) => n.id === e.target);
+                if (!tNode) return false;
+                if (this.getNodeType(tNode) === 'log_output') return false;
+                return this.areConsecutivePairExclusiveBranchHeadsByOrder(
+                  workflow.nodes,
+                  orderedNodeIds,
+                  lastNonTerminalNodeId,
+                  e.target,
+                  structuralEdgesSnapshot
+                );
+              });
+              if (staleCrossBranchSpine) {
+                edgeIdsToDrop.add(staleCrossBranchSpine.id);
+                const spineIdx = workingEdges.findIndex((e) => e.id === staleCrossBranchSpine.id);
+                if (spineIdx >= 0) workingEdges.splice(spineIdx, 1);
+                console.warn(
+                  `[EdgeReconciliationEngine] ⚠️  Removed erroneous cross-branch spine ${lastNonTerminalNodeId.substring(0, 8)} → ` +
+                    `${staleCrossBranchSpine.target.substring(0, 8)} (sibling branch heads cannot linearly chain)`
+                );
+                const retriedSpine = this.createEdgeFromOrder(
+                  workflow,
+                  lastNonTerminalNodeId,
+                  logOutputNode.id,
+                  executionOrder,
+                  undefined,
+                  workingEdges
+                );
+                if (retriedSpine) {
+                  edgesToAdd.push(retriedSpine);
+                  workingEdges.push(retriedSpine);
+                  usedTerminalPredecessors.add(lastNonTerminalNodeId);
+                  console.log(
+                    `[EdgeReconciliationEngine] ✅ Rewired after spine removal: ${lastNonTerminalNodeId.substring(0, 8)} → ` +
+                      `${logOutputNode.id.substring(0, 8)}`
                   );
                   continue;
                 }
@@ -1337,6 +1381,43 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
   }
 
   /**
+   * Branch head node ids already wired from a fork (if_else / switch), in stable port order.
+   * Used when switch `cases` are not hydrated yet so hypothetical port mapping is empty,
+   * but `wireSwitchCaseEdges` already created case_* (or semantic) branch edges.
+   */
+  private getBranchHeadTargetsFromForkEdges(forkNode: WorkflowNode, edges: WorkflowEdge[]): string[] | null {
+    const forkType = this.getNodeType(forkNode);
+    if (!unifiedNodeRegistry.get(forkType)?.isBranching) return null;
+
+    const outs = edges.filter(e => {
+      if (e.source !== forkNode.id) return false;
+      // Prefer sourceHandle: some builders set type to "default" while branch port lives on sourceHandle.
+      const t = String(e.sourceHandle || e.type || '').toLowerCase();
+      if (!t || t === 'main' || t === 'default' || t === 'output') return false;
+      if (forkType === 'if_else') return t === 'true' || t === 'false';
+      if (forkType === 'switch') {
+        if (t.startsWith('case_')) return true;
+        // Semantic case id (e.g. "success") when not using case_N
+        return true;
+      }
+      return this.edgeUsesBranchPort(e);
+    });
+    if (outs.length < 2) return null;
+
+    const sorted = [...outs].sort((a, b) => {
+      const ta = String(a.type || a.sourceHandle || '').toLowerCase();
+      const tb = String(b.type || b.sourceHandle || '').toLowerCase();
+      const ma = /^case_(\d+)$/.exec(ta);
+      const mb = /^case_(\d+)$/.exec(tb);
+      if (ma && mb) return parseInt(ma[1], 10) - parseInt(mb[1], 10);
+      if (ma) return -1;
+      if (mb) return 1;
+      return ta.localeCompare(tb);
+    });
+    return sorted.map(e => e.target);
+  }
+
+  /**
    * True when source/target are consecutive in execution order and match two distinct branch head
    * targets under the same registry branching node (if_else true/false, switch case_*, …).
    */
@@ -1344,7 +1425,8 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
     workflowNodes: WorkflowNode[],
     orderedNodeIds: string[],
     sourceId: string,
-    targetId: string
+    targetId: string,
+    structuralEdges: WorkflowEdge[] = []
   ): boolean {
     const si = orderedNodeIds.indexOf(sourceId);
     const ti = orderedNodeIds.indexOf(targetId);
@@ -1354,10 +1436,18 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
       const nodeType = this.getNodeType(node);
       if (!unifiedNodeRegistry.get(nodeType)?.isBranching) continue;
 
+      let targets: string[] | null = null;
       const portMap = this.getHypotheticalBranchPortTargetsForFork(node, orderedNodeIds);
-      if (!portMap) continue;
+      if (portMap && portMap.size >= 2) {
+        targets = [...portMap.values()];
+      } else {
+        const fromEdges = this.getBranchHeadTargetsFromForkEdges(node, structuralEdges);
+        if (fromEdges && fromEdges.length >= 2) {
+          targets = fromEdges;
+        }
+      }
+      if (!targets) continue;
 
-      const targets = [...portMap.values()];
       for (let i = 0; i < targets.length; i++) {
         for (let j = i + 1; j < targets.length; j++) {
           const a = targets[i];
@@ -1620,7 +1710,8 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
           workflow.nodes,
           orderedNodeIds,
           sourceId,
-          targetId
+          targetId,
+          effectiveEdges
         )
       ) {
         continue;

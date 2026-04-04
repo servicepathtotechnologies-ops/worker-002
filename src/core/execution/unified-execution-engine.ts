@@ -11,28 +11,10 @@
  * - Context stability
  */
 
-// Workflow types (inline to avoid circular dependencies)
-interface WorkflowNode {
-  id: string;
-  type: string;
-  data: {
-    label: string;
-    type: string;
-    category: string;
-    config: Record<string, unknown>;
-  };
-}
-
-interface WorkflowEdge {
-  id: string;
-  source: string;
-  target: string;
-  sourceHandle?: string;
-  targetHandle?: string;
-}
+import type { WorkflowEdge, WorkflowNode } from '../types/ai-types';
+import { shouldSkipForSwitchIncomingEdge } from './switch-branch-router';
 import { ExecutionContext, createExecutionContext, setNodeOutput } from './typed-execution-context';
 import { LRUNodeOutputsCache } from '../cache/lru-node-outputs-cache';
-import { SupabaseClient } from '@supabase/supabase-js';
 
 export interface ExecutionPlan {
   nodes: WorkflowNode[];
@@ -248,9 +230,11 @@ export function shouldSkipNode(
   node: WorkflowNode,
   incomingEdges: WorkflowEdge[],
   nodes: WorkflowNode[],
+  edges: WorkflowEdge[],
   ifElseResults: Record<string, boolean>,
   switchResults: Record<string, string | null>,
-  skippedNodeIds: Set<string> = new Set() // Track skipped nodes to prevent infinite loops
+  skippedNodeIds: Set<string> = new Set(), // Track skipped nodes to prevent infinite loops
+  switchExpressionValues?: Record<string, unknown>
 ): boolean {
   // ✅ FIX: If this node was already determined to be skipped, return true
   if (skippedNodeIds && skippedNodeIds.has(node.id)) {
@@ -361,17 +345,23 @@ export function shouldSkipNode(
       console.log('[shouldSkipNode] ✅ Node should execute - on correct path');
     }
 
-    // Check Switch branches
+    // Check Switch branches (sourceHandle may be case_N while matchedCase is semantic, e.g. "success")
     if (sourceNode.data?.type === 'switch' && switchResults[edge.source] !== undefined) {
       const matchedCase = switchResults[edge.source];
-      // ✅ IMPORTANT:
-      // - If no case matched (matchedCase === null), skip ALL downstream branches.
-      // - If a case matched, only the matching sourceHandle branch should execute.
-      if (matchedCase === null) {
+      const exprVal = switchExpressionValues?.[edge.source];
+      if (
+        shouldSkipForSwitchIncomingEdge(
+          edge,
+          sourceNode,
+          edges,
+          matchedCase,
+          exprVal
+        )
+      ) {
+        if (skippedNodeIds) {
+          skippedNodeIds.add(node.id);
+        }
         return true;
-      }
-      if (edge.sourceHandle !== matchedCase) {
-        return true; // Skip - doesn't match switch case
       }
     }
   }

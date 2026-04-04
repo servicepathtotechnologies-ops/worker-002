@@ -37,6 +37,12 @@ import { getStructuralDiagnostics, materializeStructuralFields } from '../servic
 import { applyStructuralIntentAlignment } from '../services/ai/intent-structural-projection';
 import { hydrateRequiredConfigFromRegistryDefaults } from '../core/validation/workflow-config-hydrator';
 import { isCredentialOwnership, isStructuralOwnership } from '../core/utils/field-ownership';
+import {
+  runWithBuildUsageTracking,
+  snapshotBuildAiUsage,
+  mergePersistedBuildAiUsage,
+} from '../core/ai/build-usage-context';
+import { buildPositionSnapshotFromNodes, mergePreservedNodePositions } from '../core/utils/workflow-node-position';
 
 export function collectEffectiveFillModesForWizard(nodes: any[]): Record<string, string> {
   return (Array.isArray(nodes) ? nodes : []).reduce((acc: Record<string, string>, node: any) => {
@@ -157,6 +163,7 @@ export function normalizeSwitchCasesInput(raw: unknown): { value: Array<{ value:
 }
 
 export default async function attachInputsHandler(req: Request, res: Response) {
+  return runWithBuildUsageTracking(async () => {
   try {
     // ✅ CRITICAL: Get workflowId from URL params (not body)
     const workflowId = req.params.workflowId || req.body.workflowId;
@@ -337,6 +344,8 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     // ✅ CRITICAL: Use centralized graph normalizer
     // Handle both workflow.graph format and direct nodes/edges format
     let normalizedGraph: ReturnType<typeof normalizeWorkflowGraph>;
+    /** Snapshot of node positions from DB row before normalization (preserve manual layout on save). */
+    let attachInputsPositionSnapshot = new Map<string, { x: number; y: number }>();
     try {
       // ✅ CRITICAL: Parse nodes/edges if they are JSON strings
       // Supabase JSON columns can be returned as strings or objects
@@ -370,6 +379,10 @@ export default async function attachInputsHandler(req: Request, res: Response) {
             nodes: parsedNodes || [], 
             edges: parsedEdges || [] 
           };
+
+      attachInputsPositionSnapshot = buildPositionSnapshotFromNodes(
+        Array.isArray(graphToNormalize.nodes) ? graphToNormalize.nodes : []
+      );
       
       // ✅ DEBUG: Log node IDs BEFORE any normalization
       const nodeIdsBeforeAnyNormalization = (graphToNormalize.nodes || []).map((n: any) => n.id);
@@ -1202,13 +1215,20 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       ) as any
     );
 
-    const metadataToPersist = {
+    let metadataToPersist: Record<string, unknown> = {
       ...((workflow as any)?.metadata || {}),
       ...((materializedWorkflow as any)?.metadata || {}),
       ...(trimmedOriginalFromRequest
         ? { originalUserPrompt: trimmedOriginalFromRequest }
         : {}),
     };
+    const usageSnap = snapshotBuildAiUsage();
+    if (usageSnap.totals.callCount > 0) {
+      metadataToPersist = {
+        ...metadataToPersist,
+        buildAiUsage: mergePersistedBuildAiUsage(metadataToPersist.buildAiUsage, usageSnap),
+      };
+    }
 
     const structuralDiagnostics = getStructuralDiagnostics(materializedWorkflow as any);
     const finalNormalizedForSave = normalizeBeforeSave(
@@ -1500,7 +1520,10 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     
     // ✅ CRITICAL: Use linearized graph from normalizeWorkflowGraph (has single-trigger, single-chain enforcement)
     // This ensures workflows are saved with exactly one trigger and linear chain structure
-    const nodesToSave = finalNormalizedGraph.nodes;
+    const nodesToSave = mergePreservedNodePositions(
+      finalNormalizedGraph.nodes,
+      attachInputsPositionSnapshot
+    );
     const edgesToSave = finalNormalizedGraph.edges;
     
     console.log('[AttachInputs] 💾 Saving workflow with normalized structure:', {
@@ -1752,6 +1775,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
         effectiveFillModes,
         contract: contractDiagnostics,
       },
+      buildAiUsage: snapshotBuildAiUsage(),
     });
   } catch (error) {
     console.error('[AttachInputs] ❌ Unhandled error:', error);
@@ -1768,4 +1792,5 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       hint: 'Check server logs for detailed error information. This may be due to database connection issues, invalid workflow structure, or missing dependencies.',
     });
   }
+  });
 }

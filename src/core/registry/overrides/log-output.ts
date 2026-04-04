@@ -1,6 +1,9 @@
 import type { UnifiedNodeDefinition } from '../../types/unified-node-contract';
 import type { NodeSchema } from '../../../services/nodes/node-library';
-import { executeViaLegacyExecutor } from '../unified-node-registry-legacy-adapter';
+import { LRUNodeOutputsCache } from '../../cache/lru-node-outputs-cache';
+import { resolveConfigTemplates } from '../../utils/universal-template-resolver';
+import { filterPlaceholderValues, cleanOutputFromConfig } from '../../utils/placeholder-filter';
+import { executeLogOutputWithCache } from '../../execution/nodes/log-output-executor';
 
 /**
  * ✅ UNIVERSAL FIX: Log Output Node Override
@@ -10,7 +13,7 @@ import { executeViaLegacyExecutor } from '../unified-node-registry-legacy-adapte
  * 2. Executes via legacy executor (simple logging logic)
  * 3. Is properly registered in registry
  */
-export function overrideLogOutput(def: UnifiedNodeDefinition, schema: NodeSchema): UnifiedNodeDefinition {
+export function overrideLogOutput(def: UnifiedNodeDefinition, _schema: NodeSchema): UnifiedNodeDefinition {
   // ✅ CRITICAL: Ensure default config includes level
   const originalDefaultConfig = def.defaultConfig;
   const enhancedDefaultConfig = () => {
@@ -42,9 +45,42 @@ export function overrideLogOutput(def: UnifiedNodeDefinition, schema: NodeSchema
       autoInject: true,             // Auto-inject if missing
       injectionPriority: 10,
     },
-    // ✅ CRITICAL: Use legacy executor for log_output (simple logging logic)
     execute: async (context) => {
-      return await executeViaLegacyExecutor({ context, schema });
+      try {
+        const nodeOutputs = new LRUNodeOutputsCache(100, false);
+        context.upstreamOutputs.forEach((output, nodeId) => {
+          nodeOutputs.set(nodeId, output, true);
+        });
+        if (context.rawInput !== undefined && context.rawInput !== null) {
+          nodeOutputs.set('input', context.rawInput, true);
+          nodeOutputs.set('$json', context.rawInput, true);
+          nodeOutputs.set('json', context.rawInput, true);
+        }
+        const resolvedConfig = resolveConfigTemplates(
+          context.config || {},
+          nodeOutputs,
+          context.nodeType
+        );
+        const filteredConfig = filterPlaceholderValues(resolvedConfig);
+        const filteredBaseConfig = filterPlaceholderValues(context.config || {});
+        const mergedConfig = {
+          ...(context.inputs || {}),
+          ...filteredBaseConfig,
+          ...filteredConfig,
+        } as Record<string, unknown>;
+        const rawOut = executeLogOutputWithCache(mergedConfig, context.rawInput ?? {}, nodeOutputs);
+        const cleaned = cleanOutputFromConfig(rawOut, filteredConfig);
+        return { success: true, output: cleaned };
+      } catch (error: any) {
+        return {
+          success: false,
+          error: {
+            code: 'EXECUTION_ERROR',
+            message: error?.message || 'log_output execution failed',
+            details: error,
+          },
+        };
+      }
     },
   };
 }

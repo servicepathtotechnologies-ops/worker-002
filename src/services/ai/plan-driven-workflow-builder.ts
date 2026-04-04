@@ -17,6 +17,8 @@ import { applyStructuralIntentAlignment } from './intent-structural-projection';
 import { normalizeWorkflowFormFieldIdentities } from '../../core/utils/form-field-identity';
 import { isEmptyConfigValue } from '../../core/validation/registry-field-contract';
 import { hydrateRequiredConfigFromRegistryDefaults } from '../../core/validation/workflow-config-hydrator';
+import { computeSwitchContextForPlanChain } from './switch-case-node-mapping';
+import { formatPlanChainToken, stripPlanTokenToType, extractBranchTag } from './plan-chain-prune';
 
 export interface CanonicalizationEntry {
   input: string;
@@ -62,24 +64,30 @@ function parsePlanNodeToken(raw: string): { nodeTypeToken: string; explicitNodeI
 
 /**
  * Normalize a node type from the structured plan to a registry-backed type.
+ * Handles annotated tokens like `google_gmail[true]` by stripping the branch tag
+ * before registry lookup.
  */
 export function resolvePlanNodeType(raw: string): { normalized: string; error?: string } {
-  const { nodeTypeToken } = parsePlanNodeToken(raw);
-  const trimmed = nodeTypeToken.trim();
-  if (!trimmed) {
+  // Use stripPlanTokenToType which handles both [branchTag] and #id/@id annotations
+  const canonicalType = stripPlanTokenToType(raw);
+  if (!canonicalType) {
     return { normalized: '', error: 'Empty node type in plan chain' };
   }
   try {
-    return { normalized: resolveCanonicalNodeTypeStrict(trimmed) };
+    return { normalized: resolveCanonicalNodeTypeStrict(canonicalType) };
   } catch (e: any) {
     return {
-      normalized: trimmed,
-      error: e?.message || `Unknown or unregistered node type "${trimmed}"`,
+      normalized: canonicalType,
+      error: e?.message || `Unknown or unregistered node type "${canonicalType}"`,
     };
   }
 }
 
-export function buildWorkflowFromPlanChain(planChain: string[]): PlanDrivenBuildResult {
+/**
+ * @param planChain - Canonical registry node types in execution order.
+ * @param rawUserPrompt - Optional original user prompt (not the full structured plan blob). When set and the chain contains `switch`, case edges are wired deterministically before edge reconciliation.
+ */
+export function buildWorkflowFromPlanChain(planChain: string[], rawUserPrompt?: string): PlanDrivenBuildResult {
   const errors: string[] = [];
   const warnings: string[] = [];
   const resolvedChain: string[] = [];
@@ -117,7 +125,7 @@ export function buildWorkflowFromPlanChain(planChain: string[]): PlanDrivenBuild
       continue;
     }
     canonicalization.push({ input: raw, normalized, status: 'accepted' });
-    resolvedChain.push(normalized);
+    resolvedChain.push(formatPlanChainToken(raw, normalized));
 
     const def = unifiedNodeRegistry.get(normalized);
     if (!def) {
@@ -146,6 +154,12 @@ export function buildWorkflowFromPlanChain(planChain: string[]): PlanDrivenBuild
     }
 
     let id = explicitNodeId || `node_${randomUUID()}`;
+    // When a branchTag is present (e.g. google_gmail[true]), incorporate it into the ID
+    // so same-type branch nodes get distinct IDs.
+    const branchTag = extractBranchTag(raw);
+    if (branchTag && !explicitNodeId) {
+      id = `${normalized}_${branchTag}_${randomUUID().slice(0, 8)}`;
+    }
     if (usedNodeIds.has(id)) {
       id = `${id}_${randomUUID().slice(0, 8)}`;
       warnings.push(`Duplicate explicit node id in plan token; using generated id "${id}"`);
@@ -161,6 +175,8 @@ export function buildWorkflowFromPlanChain(planChain: string[]): PlanDrivenBuild
         type: normalized,
         category: def.category || 'utility',
         config: { ...config },
+        // Store branchTag in meta for downstream Config_Filler context
+        ...(branchTag ? { meta: { branchTag } } : {}),
       },
     });
   }
@@ -180,7 +196,19 @@ export function buildWorkflowFromPlanChain(planChain: string[]): PlanDrivenBuild
     };
   }
 
-  let { workflow, executionOrder } = unifiedGraphOrchestrator.initializeWorkflow(nodes);
+  const trimmedPrompt = typeof rawUserPrompt === 'string' ? rawUserPrompt.trim() : '';
+  const hasSwitch = resolvedChain.some((t) => stripPlanTokenToType(t) === 'switch');
+  const switchContext =
+    trimmedPrompt.length > 0 && hasSwitch
+      ? computeSwitchContextForPlanChain(nodes, resolvedChain, trimmedPrompt)
+      : undefined;
+
+  let { workflow, executionOrder } = unifiedGraphOrchestrator.initializeWorkflow(
+    nodes,
+    undefined,
+    undefined,
+    switchContext
+  );
   workflow = materializeStructuralFields(workflow);
   workflow = applyStructuralIntentAlignment(workflow);
   workflow = hydrateRequiredConfigFromRegistryDefaults(workflow);
@@ -188,16 +216,16 @@ export function buildWorkflowFromPlanChain(planChain: string[]): PlanDrivenBuild
   // Ensure branching nodes receive contract-valid branch fanout/typed edges before validation.
   const reconciled = unifiedGraphOrchestrator.reconcileWorkflow(workflow);
   workflow = reconciled.workflow;
-  const validation = unifiedGraphOrchestrator.validateWorkflow(workflow, executionOrder);
+  executionOrder = reconciled.executionOrder;
 
-  if (!validation.valid) {
-    errors.push(...validation.errors);
+  if (reconciled.errors.length > 0) {
+    errors.push(...reconciled.errors);
   }
-  if (validation.warnings?.length) {
-    warnings.push(...validation.warnings);
+  if (reconciled.warnings?.length) {
+    warnings.push(...reconciled.warnings);
   }
 
-  if (!validation.valid) {
+  if (reconciled.errors.length > 0) {
     return {
       success: false,
       errors,

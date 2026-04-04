@@ -25,6 +25,40 @@ export interface ValidationResult {
   warnings?: string[];
 }
 
+export function validateRegistryContractForNodeType(nodeType: string): ValidationResult {
+  const definition = unifiedNodeRegistry.get(nodeType);
+  if (!definition) {
+    return { valid: false, errors: [`Unknown node type: ${nodeType}`] };
+  }
+
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const inputSchema = (definition.inputSchema || {}) as Record<string, any>;
+  const keys = new Set(Object.keys(inputSchema));
+
+  for (const req of definition.requiredInputs || []) {
+    if (!keys.has(req)) {
+      errors.push(`Registry invariant failed: requiredInputs contains unknown field '${req}'`);
+    }
+  }
+
+  try {
+    const defaults = unifiedNodeRegistry.getDefaultConfig(nodeType);
+    const defaultValidation = definition.validateConfig(defaults || {});
+    if (!defaultValidation.valid) {
+      warnings.push(`Registry invariant warning: defaultConfig is incomplete (${defaultValidation.errors.join(', ')})`);
+    }
+  } catch (e: any) {
+    warnings.push(`Registry invariant warning: defaultConfig validation threw (${e?.message || String(e)})`);
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    warnings,
+  };
+}
+
 /**
  * Validate node config against schema from registry
  */
@@ -58,7 +92,12 @@ export function validateNodeConfig(node: WorkflowNode): ValidationResult {
   // Migrate config first (backward compatibility)
   const migratedConfig = unifiedNodeRegistry.migrateConfig(nodeType, config);
   
-  // Validate using node's validateConfig (from registry)
+  // Validate registry contracts first, then config.
+  const contract = validateRegistryContractForNodeType(nodeType);
+  if (!contract.valid) {
+    return contract;
+  }
+
   return definition.validateConfig(migratedConfig);
 }
 

@@ -8,6 +8,8 @@
  */
 
 import { SupabaseClient } from '@supabase/supabase-js';
+import type { WorkflowEdge } from '../../../core/types/ai-types';
+import { resolveWinningSwitchEdgeId } from '../../../core/execution/switch-branch-router';
 import { QueueClient, NodeJob } from './queue-client';
 import { StorageManager } from './storage-manager';
 
@@ -388,9 +390,10 @@ export class DistributedOrchestrator {
     completedNodeId: string,
     completedNodeOutput?: Record<string, unknown>
   ): Array<{ id: string; data: { type: string; label: string; config: Record<string, unknown> } }> {
-    // Find edges where source is the completed node
-    const nextEdges = definition.edges.filter(
-      (e) => e.source === completedNodeId && this.matchesBranchEdge(e.sourceHandle, completedNodeOutput)
+    const completedNode = definition.nodes.find(n => n.id === completedNodeId);
+    const nextEdges = definition.edges.filter((e) =>
+      e.source === completedNodeId &&
+      this.edgeFollowsFromCompletedNode(e, completedNode, completedNodeOutput, definition)
     );
     
     // Get target nodes
@@ -421,10 +424,33 @@ export class DistributedOrchestrator {
     return nextNodes;
   }
 
-  private matchesBranchEdge(
-    sourceHandle: string | undefined,
-    completedNodeOutput?: Record<string, unknown>
+  /**
+   * Whether `edge` (outgoing from `completedNode`) should run given `completedNodeOutput`.
+   */
+  private edgeFollowsFromCompletedNode(
+    edge: WorkflowDefinition['definition']['edges'][number],
+    completedNode: WorkflowDefinition['definition']['nodes'][number] | undefined,
+    completedNodeOutput: Record<string, unknown> | undefined,
+    definition: WorkflowDefinition['definition']
   ): boolean {
+    if (!completedNode) return true;
+
+    if (completedNode.data?.type === 'switch') {
+      if (!completedNodeOutput || typeof completedNodeOutput !== 'object') return true;
+      const matched =
+        (completedNodeOutput as any).matchedCase ??
+        (completedNodeOutput as any).result ??
+        null;
+      const winning = resolveWinningSwitchEdgeId({
+        switchNode: completedNode,
+        allEdges: definition.edges as WorkflowEdge[],
+        matchedCase: matched == null ? null : String(matched),
+        expressionValue: (completedNodeOutput as any).expressionValue,
+      });
+      return winning !== null && edge.id === winning;
+    }
+
+    const sourceHandle = edge.sourceHandle;
     if (!sourceHandle) return true;
     if (!completedNodeOutput || typeof completedNodeOutput !== 'object') return true;
 
@@ -436,15 +462,6 @@ export class DistributedOrchestrator {
         (completedNodeOutput as any).output;
       if (typeof raw !== 'boolean') return true;
       return sourceHandle === 'true' ? raw : !raw;
-    }
-
-    if (sourceHandle.startsWith('case_')) {
-      const matched =
-        (completedNodeOutput as any).matchedCase ??
-        (completedNodeOutput as any).result ??
-        null;
-      if (typeof matched !== 'string') return true;
-      return matched === sourceHandle;
     }
 
     return true;

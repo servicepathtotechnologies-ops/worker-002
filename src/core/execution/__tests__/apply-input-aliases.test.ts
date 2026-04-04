@@ -29,4 +29,17 @@ describe('applyInputAliasesFromSchema', () => {
     applyInputAliasesFromSchema(resolved, schema);
     expect(resolved.text).toBeUndefined();
   });
+
+  it('copies alias into empty canonical field (reverse)', () => {
+    const resolved: Record<string, unknown> = {
+      text: 'Plain text landed on alias first',
+    };
+    const schema = {
+      message: {},
+      text: { aliasOf: 'message' },
+    };
+    const filled = applyInputAliasesFromSchema(resolved, schema);
+    expect(resolved.message).toBe('Plain text landed on alias first');
+    expect(filled).toContain('message');
+  });
 });

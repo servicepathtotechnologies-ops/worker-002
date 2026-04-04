@@ -4,6 +4,12 @@ import { extractBranchIntentSignals } from '../core/utils/branch-intent-model';
 import { nodeCapabilityRegistryDSL } from '../services/ai/node-capability-registry-dsl';
 import { unifiedNormalizeNodeTypeString } from '../core/utils/unified-node-type-normalizer';
 import { buildBranchSlotContract } from '../core/utils/branch-slot-contract';
+import { planSwitchCasesFromPrompt } from '../services/ai/switch-case-plan';
+import {
+  explicitPlanIdSuffix,
+  formatPlanChainToken,
+  stripPlanTokenToType,
+} from '../services/ai/plan-chain-prune';
 
 export interface PlanChainIssue {
   input: string;
@@ -37,8 +43,10 @@ export function canonicalizePlanChainStrict(
   }
   for (const item of chainRaw) {
     const input = String(item ?? '');
+    const head = stripPlanTokenToType(input);
     try {
-      canonical.push(resolveCanonicalNodeTypeStrict(input));
+      const c = resolveCanonicalNodeTypeStrict(head);
+      canonical.push(formatPlanChainToken(input, c));
     } catch (e: any) {
       issues.push({ input, reason: e?.message || 'non_canonical_type' });
     }
@@ -143,6 +151,36 @@ function normalizeChainWithTerminal(canonical: string[], options?: { preserveOut
   return out;
 }
 
+/** Branch "slots" after switch: each run of non–log_output nodes until the next log_output (typical out→log per branch). */
+function countBranchSlotsAfterSwitch(canonical: string[], switchIdx: number): number {
+  let i = switchIdx + 1;
+  let slots = 0;
+  while (i < canonical.length) {
+    const typ = stripPlanTokenToType(canonical[i]);
+    if (typ === 'log_output') {
+      i++;
+      continue;
+    }
+    slots++;
+    while (i < canonical.length && stripPlanTokenToType(canonical[i]) !== 'log_output') {
+      i++;
+    }
+    if (i < canonical.length) i++;
+  }
+  return slots;
+}
+
+function countDistinctExplicitIdsAfterSwitch(canonical: string[], switchIdx: number): number {
+  const ids = new Set<string>();
+  for (let i = switchIdx + 1; i < canonical.length; i++) {
+    const raw = canonical[i];
+    if (stripPlanTokenToType(raw) === 'log_output') continue;
+    const suf = explicitPlanIdSuffix(raw);
+    if (suf) ids.add(suf);
+  }
+  return ids.size;
+}
+
 export function autoRepairCanonicalChainForIntent(
   canonical: string[],
   userPrompt: string = ''
@@ -196,26 +234,30 @@ export function validateCanonicalChainCompleteness(
 ): PlanChainIssue[] {
   const issues: PlanChainIssue[] = [];
   const promptLower = String(options?.userPrompt || '').toLowerCase();
-  const triggerCount = canonical.filter((n) => isTriggerNodeType(n)).length;
+  const triggerCount = canonical.filter((n) => isTriggerNodeType(stripPlanTokenToType(n))).length;
   if (triggerCount !== 1) {
     issues.push({
       input: canonical.join(' -> '),
       reason: `invalid_trigger_count:${triggerCount}`,
     });
   }
-  if (!canonical.includes('log_output')) {
+  if (!canonical.some((n) => stripPlanTokenToType(n) === 'log_output')) {
     issues.push({
       input: canonical.join(' -> '),
       reason: 'missing_terminal_log_output',
     });
   }
 
-  const branchingNodeTypes = canonical.filter((n) => isBranchingNodeType(n));
+  const branchingNodeTypes = [
+    ...new Set(
+      canonical.map((n) => stripPlanTokenToType(n)).filter((n) => isBranchingNodeType(n))
+    ),
+  ];
   if (branchingNodeTypes.length > 0) {
     const signals = extractBranchIntentSignals(options?.userPrompt || '');
     const slotContract = buildBranchSlotContract(branchingNodeTypes, signals);
     const requiredTargets = slotContract.requiredSlotCount;
-    const foundTargets = canonical.filter((n) => isOutputNodeType(n)).length;
+    const foundTargets = canonical.filter((n) => isOutputNodeType(stripPlanTokenToType(n))).length;
     if (foundTargets < requiredTargets) {
       issues.push({
         input: canonical.join(' -> '),
@@ -229,7 +271,7 @@ export function validateCanonicalChainCompleteness(
       const normalizedMentioned = signals.mentionedOutputNodeTypes.map(
         (n) => unifiedNormalizeNodeTypeString(n) || n
       );
-      const canonicalSet = new Set(canonical);
+      const canonicalSet = new Set(canonical.map((c) => stripPlanTokenToType(c)));
       const overlap = normalizedMentioned.filter((n) => canonicalSet.has(n));
       if (overlap.length === 0) {
         issues.push({
@@ -247,15 +289,43 @@ export function validateCanonicalChainCompleteness(
       !/\bdelay\b|\bwait\b/.test(promptLower) &&
       !/\bclassify|summari[sz]e|analy[sz]e|model|agent|ai\b/.test(promptLower);
     if (simpleBranchIntent) {
-      const suspicious = canonical.filter((n) =>
-        ['delay', 'wait', 'supabase', 'google_sheets', 'salesforce', 'ai_agent', 'ai_chat_model', 'ai_service'].includes(n) &&
-        !hasExplicitCue(promptLower, n)
-      );
+      const suspicious = canonical.filter((n) => {
+        const nt = stripPlanTokenToType(n);
+        return (
+          ['delay', 'wait', 'supabase', 'google_sheets', 'salesforce', 'ai_agent', 'ai_chat_model', 'ai_service'].includes(nt) &&
+          !hasExplicitCue(promptLower, nt)
+        );
+      });
       if (suspicious.length > 0) {
         issues.push({
           input: canonical.join(' -> '),
           reason: `over_broad_chain_non_intent_nodes:${suspicious.join(',')}`,
         });
+      }
+    }
+
+    // Switch (R4): branch slots and/or explicit plan ids must cover enumerated case count.
+    const switchIdx = canonical.findIndex((t) => stripPlanTokenToType(t) === 'switch');
+    if (switchIdx !== -1) {
+      const upstreamType = switchIdx > 0 ? stripPlanTokenToType(canonical[switchIdx - 1]) : undefined;
+      const switchPlan = planSwitchCasesFromPrompt(options?.userPrompt || '', upstreamType);
+      const caseCount = switchPlan.cases?.length ?? 0;
+      if (caseCount > 0) {
+        const slots = countBranchSlotsAfterSwitch(canonical, switchIdx);
+        const explicitIds = countDistinctExplicitIdsAfterSwitch(canonical, switchIdx);
+        const downstreamNonLog = canonical
+          .slice(switchIdx + 1)
+          .filter((n) => stripPlanTokenToType(n) !== 'log_output').length;
+        let covered = Math.max(slots, explicitIds);
+        if (covered === 0) {
+          covered = downstreamNonLog;
+        }
+        if (covered < caseCount) {
+          issues.push({
+            input: canonical.join(' -> '),
+            reason: `switch_downstream_actions_insufficient:cases=${caseCount},slots=${slots},explicit_ids=${explicitIds},non_log=${downstreamNonLog}`,
+          });
+        }
       }
     }
   }
@@ -273,7 +343,7 @@ export function validateCanonicalChainSemantics(
   // linear pipelines. Branching workflows (if_else, switch) have a fundamentally
   // different structure where outputs appear on each branch — not after a data source.
   // Skip semantic ordering checks entirely when the chain contains a branching node.
-  const hasBranchingNode = canonical.some((n) => isBranchingNodeType(n));
+  const hasBranchingNode = canonical.some((n) => isBranchingNodeType(stripPlanTokenToType(n)));
   if (hasBranchingNode) {
     return issues; // No semantic ordering violations for branching chains
   }
@@ -289,42 +359,43 @@ export function validateCanonicalChainSemantics(
   let seenTransformation = false;
   let seenOutput = false;
   for (const nodeType of canonical) {
-    const isDataSource = nodeCapabilityRegistryDSL.isDataSource(nodeType) || nodeCapabilityRegistryDSL.canReadData(nodeType);
-    const isTransformation = nodeCapabilityRegistryDSL.isTransformation(nodeType);
-    const isOutput = isOutputNodeType(nodeType) && !isDataSource;
+    const nt = stripPlanTokenToType(nodeType);
+    const isDataSource = nodeCapabilityRegistryDSL.isDataSource(nt) || nodeCapabilityRegistryDSL.canReadData(nt);
+    const isTransformation = nodeCapabilityRegistryDSL.isTransformation(nt);
+    const isOutput = isOutputNodeType(nt) && !isDataSource;
 
     if (isDataSource) seenDataSource = true;
     if (isTransformation) {
-      if (hasDataFetchIntent && !seenDataSource && canonical.some((n) => nodeCapabilityRegistryDSL.isDataSource(n))) {
+      if (hasDataFetchIntent && !seenDataSource && canonical.some((n) => nodeCapabilityRegistryDSL.isDataSource(stripPlanTokenToType(n)))) {
         issues.push({
           input: canonical.join(' -> '),
-          reason: `semantic_order_violation:transformation_before_data_source:${nodeType}`,
+          reason: `semantic_order_violation:transformation_before_data_source:${nt}`,
           expected_after: 'data_source',
         });
       }
       seenTransformation = true;
     }
     if (isOutput) {
-      if (hasTransformIntent && canonical.some((n) => nodeCapabilityRegistryDSL.isTransformation(n)) && !seenTransformation) {
+      if (hasTransformIntent && canonical.some((n) => nodeCapabilityRegistryDSL.isTransformation(stripPlanTokenToType(n))) && !seenTransformation) {
         issues.push({
           input: canonical.join(' -> '),
-          reason: `semantic_order_violation:output_before_transformation:${nodeType}`,
+          reason: `semantic_order_violation:output_before_transformation:${nt}`,
           expected_after: 'transformation',
         });
       }
-      if (hasDataFetchIntent && canonical.some((n) => nodeCapabilityRegistryDSL.isDataSource(n)) && !seenDataSource) {
+      if (hasDataFetchIntent && canonical.some((n) => nodeCapabilityRegistryDSL.isDataSource(stripPlanTokenToType(n))) && !seenDataSource) {
         issues.push({
           input: canonical.join(' -> '),
-          reason: `semantic_order_violation:output_before_data_source:${nodeType}`,
+          reason: `semantic_order_violation:output_before_data_source:${nt}`,
           expected_after: 'data_source',
         });
       }
       seenOutput = true;
     }
-    if (seenOutput && !isOutput && (isDataSource || isTransformation) && nodeType !== 'log_output') {
+    if (seenOutput && !isOutput && (isDataSource || isTransformation) && nt !== 'log_output') {
       issues.push({
         input: canonical.join(' -> '),
-        reason: `semantic_order_violation:post_output_processing:${nodeType}`,
+        reason: `semantic_order_violation:post_output_processing:${nt}`,
         expected_before: 'output',
       });
     }

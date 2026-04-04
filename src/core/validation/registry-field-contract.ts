@@ -77,6 +77,10 @@ export function computeFieldRequiredBeforeExecution(
     config as Record<string, any>
   );
   if (mode === 'runtime_ai' && fieldDef.fillMode?.supportsRuntimeAI !== false) {
+    // Runtime AI fields are normally not blocking pre-execution unless explicitly essential.
+    if (fieldDef.essentialForExecution === true) {
+      return true;
+    }
     return false;
   }
 

@@ -29,7 +29,10 @@ import { aiFieldDetector } from '../../services/ai/ai-field-detector';
 import { normalizeRuntimePayload } from '../runtime/runtime-input-adapter';
 import { validateResolvedInput, guaranteeInputForSchema } from './input-guarantee';
 import { buildEffectiveFillModes, isMeaningfulStaticValue } from '../utils/fill-mode-resolver';
-import { isEffectivelyEmptyUpstreamPayload } from '../utils/upstream-payload-signal';
+import {
+  isEffectivelyEmptyUpstreamPayload,
+  isUpstreamNarrativelyThinForRuntimeAi,
+} from '../utils/upstream-payload-signal';
 import {
   getUpstreamNodeTypeFromExecutionGlobal,
   pickPrimaryNarrativeStringFromUpstreamOutput,
@@ -44,6 +47,33 @@ export const EXECUTION_OBSERVABILITY_KEYS = {
   resolvedInputs: (nodeId: string) => `__resolved_inputs__:${nodeId}`,
   runtimeResolutionAudit: (nodeId: string) => `__runtime_resolution_audit__:${nodeId}`,
 } as const;
+
+type UniversalInputContractFlags = {
+  enabled: boolean;
+  strictValidation: boolean;
+  auditOnly: boolean;
+};
+
+function getUniversalInputContractFlags(): UniversalInputContractFlags {
+  return {
+    enabled: process.env.UNIVERSAL_INPUT_CONTRACT_V2 !== 'false',
+    strictValidation: process.env.UNIVERSAL_INPUT_CONTRACT_STRICT_VALIDATION === 'true',
+    auditOnly: process.env.UNIVERSAL_INPUT_CONTRACT_AUDIT_ONLY === 'true',
+  };
+}
+
+function looksPlaceholderLikeValue(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  const t = value.trim().toLowerCase();
+  if (!t) return true;
+  return (
+    t.includes('process the workflow') ||
+    t.includes('using the configured nodes') ||
+    t.includes('placeholder') ||
+    t.includes('lorem ipsum') ||
+    t === 'generated message'
+  );
+}
 
 /**
  * Registry role first; if role is missing (legacy defs), allow canonical text field names only.
@@ -67,6 +97,39 @@ function shouldFillRuntimeAiFromWorkflowIntent(fieldName: string, fieldDef: Node
   return f === 'prompt' || f === 'query' || f === 'text' || f === 'message';
 }
 
+/**
+ * Prefer canonical / essential body fields when mapping plain-text AI output (message mode).
+ * Avoids filling `text` while leaving `message` empty when both exist (e.g. slack_message alias pair).
+ */
+export function pickPrimaryMessageLikeField(inputSchema: Record<string, any>): string | undefined {
+  const keys = Object.keys(inputSchema);
+  const candidates = keys.filter((field) => {
+    const fl = field.toLowerCase();
+    return (
+      fl.includes('message') ||
+      fl.includes('text') ||
+      fl.includes('body') ||
+      fl.includes('content')
+    );
+  });
+  if (candidates.length === 0) return undefined;
+  const aliasTargets = new Set<string>();
+  for (const [, def] of Object.entries(inputSchema)) {
+    const ao = (def as { aliasOf?: string })?.aliasOf;
+    if (typeof ao === 'string') aliasTargets.add(ao);
+  }
+  const canonical = candidates.find((c) => aliasTargets.has(c));
+  if (canonical) return canonical;
+  const byRole = candidates.find((c) => (inputSchema[c] as { role?: string })?.role === 'long_body');
+  if (byRole) return byRole;
+  const essential = candidates.find(
+    (c) => (inputSchema[c] as { essentialForExecution?: boolean })?.essentialForExecution === true
+  );
+  if (essential) return essential;
+  if (candidates.includes('message')) return 'message';
+  return candidates[0];
+}
+
 export interface DynamicExecutionContext {
   node: WorkflowNode;
   input: unknown;
@@ -75,6 +138,24 @@ export interface DynamicExecutionContext {
   workflowId: string;
   userId?: string;
   currentUserId?: string;
+}
+
+interface UniversalContractParams {
+  definition: UnifiedNodeDefinition;
+  node: WorkflowNode;
+  nodeType: string;
+  migratedConfig: Record<string, any>;
+  nodeOutputs: LRUNodeOutputsCache;
+  upstreamPayload: unknown;
+}
+
+interface UniversalContractResult {
+  resolvedInputs: Record<string, any>;
+  runtimeFieldsAudit: string[];
+  resolvedRuntimeFieldsAudit: string[];
+  missingRuntimeFieldsAudit: string[];
+  outputFallbackUsed: boolean;
+  outputFallbackReason?: string;
 }
 
 function isSensitiveInputField(fieldName: string): boolean {
@@ -353,223 +434,86 @@ export async function executeNodeDynamically(
   // Empty-until-runtime: config input fields are left empty at build time; we fill them here from actual previous output.
   const upstreamPayload = input !== undefined && input !== null ? input : getPreviousNodeOutput(nodeOutputs);
 
-  // Step 6: Input resolution MUST combine (1) user prompt intent, (2) previous node JSON, (3) node responsibility (registry input schema),
-  // and MUST filter the previous JSON to only keys/values relevant to intent and responsibility. userIntent comes from currentWorkflowIntent set at execution start.
-  let resolvedInputs = await resolveInputsWithAI(
-    definition.inputSchema as any,
+  const universalFlags = getUniversalInputContractFlags();
+  // Step 6: Universal node input contract orchestration (intent + previous output + AI + deterministic fallback).
+  const contractResult = await resolveNodeInputsUniversalContract({
+    definition,
+    node,
+    nodeType,
     migratedConfig,
     nodeOutputs,
-    node.id,
-    nodeType,
-    node.data?.label,
-    upstreamPayload
-  );
-
-  // Guarantee: when validation fails or AI failed (fallback path), fill missing required fields from previous output so node always gets schema-valid input.
-  const requiredInputs = definition.requiredInputs || [];
+    upstreamPayload,
+  });
+  let resolvedInputs = contractResult.resolvedInputs;
   const runtimeInputSchema = definition.inputSchema as Record<string, any>;
-  if (
-    runtimeInputSchema &&
-    (upstreamPayload == null ||
-      typeof upstreamPayload === 'object' ||
-      typeof upstreamPayload === 'string')
-  ) {
-    let runtimeFieldsAudit: string[] = [];
-    let resolvedRuntimeFieldsAudit: string[] = [];
-    let missingRuntimeFieldsAudit: string[] = [];
-    let current = typeof resolvedInputs === 'object' && resolvedInputs !== null ? resolvedInputs : {};
-    let validation = validateResolvedInput(current, runtimeInputSchema, requiredInputs);
+  const requiredInputs = definition.requiredInputs || [];
 
-    // Optional retry: call AI once more with explicit required fields in the prompt.
-    if (!validation.valid) {
-      try {
-        const retried = await resolveInputsWithAI(
-          definition.inputSchema as any,
-          migratedConfig,
-          nodeOutputs,
-          node.id,
-          nodeType,
-          node.data?.label,
-          upstreamPayload,
-          requiredInputs
-        );
-        const retriedCurrent = typeof retried === 'object' && retried !== null ? retried : {};
-        const validation2 = validateResolvedInput(retriedCurrent, runtimeInputSchema, requiredInputs);
-        if (validation2.valid) {
-          resolvedInputs = retriedCurrent;
-          current = retriedCurrent;
-          validation = validation2;
-        }
-      } catch (_) {
-        // Fall through to guarantee layer.
-      }
-    }
+  // Strict runtime_ai enforcement for essential/required runtime fields.
+  const strictRuntimeFieldNames = Object.keys(runtimeInputSchema).filter((fieldName) => {
+    if (effectiveFillModes[fieldName] !== 'runtime_ai') return false;
+    const fd = runtimeInputSchema[fieldName] as NodeInputField | undefined;
+    const essential = fd?.essentialForExecution === true;
+    return requiredInputs.includes(fieldName) || essential;
+  });
+  const unresolvedRuntimeFields = strictRuntimeFieldNames.filter(
+    (fieldName) => !isMeaningfulStaticValue((resolvedInputs as Record<string, any>)[fieldName])
+  );
+  if (unresolvedRuntimeFields.length > 0 && (universalFlags.strictValidation || !universalFlags.auditOnly)) {
+    return {
+      _error: `Runtime input resolution failed for required field(s): ${unresolvedRuntimeFields.join(', ')}`,
+      _validationErrors: unresolvedRuntimeFields.map((f) => `Required runtime_ai field '${f}' is missing after runtime resolution`),
+      _nodeType: nodeType,
+    };
+  }
 
-    // UNIVERSAL: Always run guarantee layer after AI resolution.
-    // This ensures *all* schema keys (required + optional) get type-safe values at runtime,
-    // even when the AI only satisfied required fields.
-    resolvedInputs = guaranteeInputForSchema({
-      resolved: current,
-      previousOutput: upstreamPayload,
-      inputSchema: runtimeInputSchema,
-      requiredInputs,
-      mappingMetadata: (migratedConfig as Record<string, any>)?._mappingMetadata,
-      fieldFillModes: effectiveFillModes,
-    });
-
-    const rawWorkflowIntent = String((global as any).currentWorkflowIntent || '').trim();
-
-    fillMissingTitleLikeRuntimeAiFields({
-      resolvedInputs: resolvedInputs as Record<string, any>,
-      upstreamPayload,
-      inputSchema: runtimeInputSchema,
-      effectiveFillModes,
-      workflowIntent: rawWorkflowIntent,
-    });
-
-    // Thin upstream (e.g. manual trigger): AI mapping often leaves runtime_ai text fields empty;
-    // guarantee cannot lift from previous. Registry role + runtime_ai → last-resort workflow intent.
-    if (isEffectivelyEmptyUpstreamPayload(upstreamPayload)) {
-      const fallbackIntent =
-        rawWorkflowIntent.length > 0
-          ? rawWorkflowIntent
-          : 'Process the workflow using the configured nodes.';
-      const filledFromIntent: string[] = [];
-      for (const fieldName of Object.keys(runtimeInputSchema)) {
-        if (effectiveFillModes[fieldName] !== 'runtime_ai') continue;
-        const fieldDef = runtimeInputSchema[fieldName] as NodeInputField | undefined;
-        if (!shouldFillRuntimeAiFromWorkflowIntent(fieldName, fieldDef)) continue;
-        if (isMeaningfulStaticValue((resolvedInputs as Record<string, any>)[fieldName])) continue;
-        (resolvedInputs as Record<string, any>)[fieldName] = fallbackIntent;
-        filledFromIntent.push(fieldName);
-      }
-      if (filledFromIntent.length > 0) {
-        console.log(
-          `[DynamicExecutor] ✅ Filled runtime_ai fields from workflow intent for ${nodeType}: ${filledFromIntent.join(', ')}`
-        );
-      }
-    }
-
-    const contractResult = applyDeterministicFieldContracts(
-      (resolvedInputs as Record<string, unknown>),
-      {
-        nodeType,
-        userIntent: rawWorkflowIntent,
-        upstreamPayload,
-        config: migratedConfig as Record<string, unknown>,
-        inputSchema: runtimeInputSchema,
-      }
+  // Deterministic runtime fill-mode observability for debugging and rollout KPIs.
+  try {
+    const effectiveFillModesForSchema = Object.fromEntries(
+      Object.keys(runtimeInputSchema).map((fieldName) => [fieldName, effectiveFillModes[fieldName] ?? 'manual_static'])
     );
-    resolvedInputs = contractResult.resolvedInputs as Record<string, any>;
-    if (contractResult.repairs.length > 0) {
-      console.log(
-        `[DynamicExecutor] 🛠️ Applied ${contractResult.repairs.length} deterministic field contract repair(s) for ${nodeType}: ${contractResult.repairs.join('; ')}`
-      );
-    }
-    if (contractResult.warnings.length > 0) {
-      console.warn(
-        `[DynamicExecutor] ⚠️ Field contract warnings for ${nodeType}: ${contractResult.warnings.join('; ')}`
-      );
-    }
-
-    // Enforce mode contract: manual/build-time fields must come from config, not AI.
-    // Do NOT overwrite with empty static values; runtime-resolved values should survive.
-    for (const fieldName of Object.keys(runtimeInputSchema)) {
-      const mode = effectiveFillModes[fieldName];
-      if (mode === 'manual_static' || mode === 'buildtime_ai_once') {
-        const staticValue = (migratedConfig as Record<string, any>)[fieldName];
-        if (isMeaningfulStaticValue(staticValue)) {
-          (resolvedInputs as Record<string, any>)[fieldName] = staticValue;
-        }
-      }
-    }
-
-    // Registry aliasOf: copy canonical runtime_ai field into sibling alias (e.g. Slack text ← message).
-    applyInputAliasesFromSchema(resolvedInputs as Record<string, unknown>, runtimeInputSchema as Record<string, any>);
-
-    // Strict enforcement: requiredInputs OR schema essentialForExecution + runtime_ai (e.g. Gmail subject/body when library has empty requiredConfig).
-    const strictRuntimeFieldNames = Object.keys(runtimeInputSchema).filter((fieldName) => {
-      if (effectiveFillModes[fieldName] !== 'runtime_ai') return false;
-      const fd = runtimeInputSchema[fieldName] as NodeInputField | undefined;
-      const essential = fd?.essentialForExecution === true;
-      return requiredInputs.includes(fieldName) || essential;
+    console.log(`[DynamicExecutor] Fill-mode resolution summary for ${node.id} (${nodeType}):`, {
+      effectiveFillModes: effectiveFillModesForSchema,
+      runtimeFields: contractResult.runtimeFieldsAudit,
+      resolvedRuntimeFields: contractResult.resolvedRuntimeFieldsAudit,
+      missingRuntimeFields: contractResult.missingRuntimeFieldsAudit,
+      outputFallbackUsed: contractResult.outputFallbackUsed,
     });
 
-    const unresolvedRuntimeFields: string[] = [];
-    for (const fieldName of strictRuntimeFieldNames) {
-      const value = (resolvedInputs as Record<string, any>)[fieldName];
-      if (!isMeaningfulStaticValue(value)) {
-        unresolvedRuntimeFields.push(fieldName);
-      }
-    }
-    if (unresolvedRuntimeFields.length > 0) {
-      return {
-        _error: `Runtime input resolution failed for required field(s): ${unresolvedRuntimeFields.join(', ')}`,
-        _validationErrors: unresolvedRuntimeFields.map((f) => `Required runtime_ai field '${f}' is missing after runtime resolution`),
-        _nodeType: nodeType,
-        _runtimeDiagnostics: {
-          runtimeOwnedFields: strictRuntimeFieldNames,
-          runtimeResolvedFields: strictRuntimeFieldNames.filter((f) => !unresolvedRuntimeFields.includes(f)),
-          runtimeResolutionErrors: unresolvedRuntimeFields,
-          fallbackApplied: strictRuntimeFieldNames.length > 0,
-          schemaValidationFailures: unresolvedRuntimeFields.map((f) => `missing:${f}`),
-          canonicalizationIssues: [],
+    nodeOutputs.set(
+      EXECUTION_OBSERVABILITY_KEYS.runtimeResolutionAudit(node.id),
+      {
+        runtimeMarker,
+        nodeId: node.id,
+        nodeType,
+        rollout: {
+          contractV2: universalFlags.enabled,
+          strictValidation: universalFlags.strictValidation,
+          auditOnly: universalFlags.auditOnly,
         },
-      };
-    }
-
-    // Deterministic runtime fill-mode observability for debugging and auditing.
-    try {
-      const runtimeFields = Object.keys(runtimeInputSchema).filter(
-        (fieldName) => effectiveFillModes[fieldName] === 'runtime_ai'
-      );
-      const resolvedRuntimeFields = runtimeFields.filter((fieldName) =>
-        isMeaningfulValueForResolution((resolvedInputs as Record<string, any>)?.[fieldName])
-      );
-      const missingRuntimeFields = runtimeFields.filter(
-        (fieldName) => !resolvedRuntimeFields.includes(fieldName)
-      );
-
-      const effectiveFillModesForSchema = Object.fromEntries(
-        Object.keys(runtimeInputSchema).map((fieldName) => [fieldName, effectiveFillModes[fieldName] ?? 'manual_static'])
-      );
-
-      console.log(`[DynamicExecutor] Fill-mode resolution summary for ${node.id} (${nodeType}):`, {
-        effectiveFillModes: effectiveFillModesForSchema,
-        runtimeFields,
-        resolvedRuntimeFields,
-        missingRuntimeFields,
-      });
-      runtimeFieldsAudit = runtimeFields;
-      resolvedRuntimeFieldsAudit = resolvedRuntimeFields;
-      missingRuntimeFieldsAudit = missingRuntimeFields;
-    } catch (fillModeSummaryError) {
-      console.warn(`[DynamicExecutor] Failed fill-mode summary for ${node.id}:`, fillModeSummaryError);
-    }
-
-    try {
-      nodeOutputs.set(
-        EXECUTION_OBSERVABILITY_KEYS.runtimeResolutionAudit(node.id),
-        {
-          runtimeMarker,
-          nodeId: node.id,
-          nodeType,
-          runtimeFields: runtimeFieldsAudit,
-          resolvedRuntimeFields: resolvedRuntimeFieldsAudit,
-          unresolvedRuntimeFields: missingRuntimeFieldsAudit,
-          runtimeOwnedFields: runtimeFieldsAudit,
-          runtimeResolvedFields: resolvedRuntimeFieldsAudit,
-          runtimeResolutionErrors: missingRuntimeFieldsAudit,
-          fallbackApplied: runtimeFieldsAudit.length > 0,
-          schemaValidationFailures: missingRuntimeFieldsAudit.map((f) => `missing:${f}`),
-          canonicalizationIssues: [],
-          capturedAt: new Date().toISOString(),
+        runtimeFields: contractResult.runtimeFieldsAudit,
+        resolvedRuntimeFields: contractResult.resolvedRuntimeFieldsAudit,
+        unresolvedRuntimeFields: contractResult.missingRuntimeFieldsAudit,
+        runtimeOwnedFields: contractResult.runtimeFieldsAudit,
+        runtimeResolvedFields: contractResult.resolvedRuntimeFieldsAudit,
+        runtimeResolutionErrors: contractResult.missingRuntimeFieldsAudit,
+        fallbackApplied: contractResult.runtimeFieldsAudit.length > 0,
+        outputFallbackUsed: contractResult.outputFallbackUsed,
+        outputFallbackReason: contractResult.outputFallbackReason,
+        kpis: {
+          unresolvedRuntimeFieldsRate:
+            contractResult.runtimeFieldsAudit.length > 0
+              ? Number((contractResult.missingRuntimeFieldsAudit.length / contractResult.runtimeFieldsAudit.length).toFixed(4))
+              : 0,
+          fallbackPublishRate: contractResult.outputFallbackUsed ? 1 : 0,
         },
-        true
-      );
-    } catch (runtimeAuditError) {
-      console.warn(`[DynamicExecutor] Failed to persist runtime resolution audit for ${node.id}:`, runtimeAuditError);
-    }
+        schemaValidationFailures: contractResult.missingRuntimeFieldsAudit.map((f) => `missing:${f}`),
+        canonicalizationIssues: [],
+        capturedAt: new Date().toISOString(),
+      },
+      true
+    );
+  } catch (runtimeAuditError) {
+    console.warn(`[DynamicExecutor] Failed to persist runtime resolution audit for ${node.id}:`, runtimeAuditError);
   }
 
   // Capture resolved runtime inputs for execution observability without leaking secrets.
@@ -763,13 +707,20 @@ async function resolveInputsWithAI(
     // (e.g. $json, trigger) may be refreshed after the real node output, shadowing it.
     // We iterate from most-recent to least-recent and return the first non-empty real entry.
     const entry = nodeOutputs.getMostRecentOutputEntry(['$json', 'json', 'trigger', 'input']);
-    if (entry && !isEffectivelyEmptyUpstreamPayload(entry.value)) {
+    if (
+      entry &&
+      !isEffectivelyEmptyUpstreamPayload(entry.value) &&
+      !isUpstreamNarrativelyThinForRuntimeAi(entry.value)
+    ) {
       previousOutput = entry.value;
       (global as any).lastPreviousOutputNodeId = entry.key ?? null;
     } else {
-      // Fall back: try all entries (excluding meta keys) and pick the first non-empty one
+      // Fall back: try all entries (excluding meta keys) and pick the first with real narrative payload
       const allEntries = nodeOutputs.getAllEntries?.(['$json', 'json', 'trigger', 'input']) ?? [];
-      const nonEmptyEntry = allEntries.find(e => !isEffectivelyEmptyUpstreamPayload(e.value));
+      const nonEmptyEntry = allEntries.find(
+        (e) =>
+          !isEffectivelyEmptyUpstreamPayload(e.value) && !isUpstreamNarrativelyThinForRuntimeAi(e.value)
+      );
       previousOutput = nonEmptyEntry?.value ?? entry?.value;
       (global as any).lastPreviousOutputNodeId = (nonEmptyEntry?.key ?? entry?.key) ?? null;
     }
@@ -781,12 +732,13 @@ async function resolveInputsWithAI(
   // User intent from currentWorkflowIntent set at execution start in execute-workflow (single source for this run).
   const userIntent = (global as any).currentWorkflowIntent || 'Process workflow data';
   
-  // Fast path when there is no previous output OR upstream is trigger-only / empty inputData.
-  // Otherwise AI runs on useless keys (_trigger) and often returns empty mapped runtime_ai fields.
+  // Fast path when there is no previous output OR upstream is trigger-only / schedule timestamps only / empty inputData.
+  // Otherwise AI runs on useless keys (e.g. executed_at) and often maps runtime_ai fields to placeholders.
   if (
     previousOutput == null ||
     (typeof previousOutput === 'object' && Object.keys(previousOutput as object).length === 0) ||
-    isEffectivelyEmptyUpstreamPayload(previousOutput)
+    isEffectivelyEmptyUpstreamPayload(previousOutput) ||
+    isUpstreamNarrativelyThinForRuntimeAi(previousOutput)
   ) {
     console.log('[DynamicExecutor] ℹ️ Thin upstream payload detected, using config-first fallback input resolution', {
       nodeType,
@@ -874,6 +826,163 @@ async function resolveInputsWithAI(
 }
 
 /**
+ * Universal contract orchestrator for node input resolution.
+ * Order: static/template config -> previous-output extraction -> AI mapping ->
+ * deterministic contracts -> guarantee -> intent backfill -> output reliability fallback.
+ */
+async function resolveNodeInputsUniversalContract(
+  params: UniversalContractParams
+): Promise<UniversalContractResult> {
+  const { definition, node, nodeType, migratedConfig, nodeOutputs, upstreamPayload } = params;
+  const requiredInputs = definition.requiredInputs || [];
+  const runtimeInputSchema = definition.inputSchema as Record<string, any>;
+  const effectiveFillModes = buildEffectiveFillModes(definition.inputSchema, migratedConfig as Record<string, any>);
+  const rawWorkflowIntent = String((global as any).currentWorkflowIntent || '').trim();
+
+  let resolvedInputs = await resolveInputsWithAI(
+    definition.inputSchema as any,
+    migratedConfig,
+    nodeOutputs,
+    node.id,
+    nodeType,
+    node.data?.label,
+    upstreamPayload
+  );
+
+  let runtimeFieldsAudit: string[] = [];
+  let resolvedRuntimeFieldsAudit: string[] = [];
+  let missingRuntimeFieldsAudit: string[] = [];
+  let outputFallbackUsed = false;
+  let outputFallbackReason: string | undefined;
+
+  if (
+    runtimeInputSchema &&
+    (upstreamPayload == null || typeof upstreamPayload === 'object' || typeof upstreamPayload === 'string')
+  ) {
+    let current = typeof resolvedInputs === 'object' && resolvedInputs !== null ? resolvedInputs : {};
+    const validation = validateResolvedInput(current, runtimeInputSchema, requiredInputs);
+    if (!validation.valid && requiredInputs.length > 0) {
+      try {
+        const retried = await resolveInputsWithAI(
+          definition.inputSchema as any,
+          migratedConfig,
+          nodeOutputs,
+          node.id,
+          nodeType,
+          node.data?.label,
+          upstreamPayload,
+          requiredInputs
+        );
+        const retriedCurrent = typeof retried === 'object' && retried !== null ? retried : {};
+        if (validateResolvedInput(retriedCurrent, runtimeInputSchema, requiredInputs).valid) {
+          resolvedInputs = retriedCurrent;
+          current = retriedCurrent;
+        }
+      } catch {
+        // Keep original and continue through deterministic contract layers.
+      }
+    }
+
+    resolvedInputs = guaranteeInputForSchema({
+      resolved: current,
+      previousOutput: upstreamPayload,
+      inputSchema: runtimeInputSchema,
+      requiredInputs,
+      mappingMetadata: (migratedConfig as Record<string, any>)?._mappingMetadata,
+      fieldFillModes: effectiveFillModes,
+    });
+
+    fillMissingTitleLikeRuntimeAiFields({
+      resolvedInputs: resolvedInputs as Record<string, any>,
+      upstreamPayload,
+      inputSchema: runtimeInputSchema,
+      effectiveFillModes,
+      workflowIntent: rawWorkflowIntent,
+    });
+
+    if (
+      isEffectivelyEmptyUpstreamPayload(upstreamPayload) ||
+      isUpstreamNarrativelyThinForRuntimeAi(upstreamPayload)
+    ) {
+      const fallbackIntent =
+        rawWorkflowIntent.length > 0 ? rawWorkflowIntent : 'Process the workflow using the configured nodes.';
+      for (const fieldName of Object.keys(runtimeInputSchema)) {
+        if (effectiveFillModes[fieldName] !== 'runtime_ai') continue;
+        const fieldDef = runtimeInputSchema[fieldName] as NodeInputField | undefined;
+        if (!shouldFillRuntimeAiFromWorkflowIntent(fieldName, fieldDef)) continue;
+        if (isMeaningfulStaticValue((resolvedInputs as Record<string, any>)[fieldName])) continue;
+        (resolvedInputs as Record<string, any>)[fieldName] = fallbackIntent;
+      }
+    }
+
+    const contractResult = applyDeterministicFieldContracts(
+      resolvedInputs as Record<string, unknown>,
+      {
+        nodeType,
+        userIntent: rawWorkflowIntent,
+        upstreamPayload,
+        config: migratedConfig as Record<string, unknown>,
+        inputSchema: runtimeInputSchema,
+      }
+    );
+    resolvedInputs = contractResult.resolvedInputs as Record<string, any>;
+
+    for (const fieldName of Object.keys(runtimeInputSchema)) {
+      const mode = effectiveFillModes[fieldName];
+      if (mode === 'manual_static' || mode === 'buildtime_ai_once') {
+        const staticValue = (migratedConfig as Record<string, any>)[fieldName];
+        if (isMeaningfulStaticValue(staticValue)) {
+          (resolvedInputs as Record<string, any>)[fieldName] = staticValue;
+        }
+      }
+    }
+
+    applyInputAliasesFromSchema(resolvedInputs as Record<string, unknown>, runtimeInputSchema as Record<string, any>);
+
+    const runtimeFields = Object.keys(runtimeInputSchema).filter(
+      (fieldName) => effectiveFillModes[fieldName] === 'runtime_ai'
+    );
+    const resolvedRuntimeFields = runtimeFields.filter((fieldName) =>
+      isMeaningfulValueForResolution((resolvedInputs as Record<string, any>)?.[fieldName])
+    );
+    const missingRuntimeFields = runtimeFields.filter((fieldName) => !resolvedRuntimeFields.includes(fieldName));
+    runtimeFieldsAudit = runtimeFields;
+    resolvedRuntimeFieldsAudit = resolvedRuntimeFields;
+    missingRuntimeFieldsAudit = missingRuntimeFields;
+
+    // Generic output-node reliability: avoid publishing obvious placeholder AI text.
+    const outputNode =
+      String(definition.category) === 'output' || definition.category === 'communication';
+    if (outputNode && runtimeFields.length > 0) {
+      const fallbackIntent = rawWorkflowIntent || 'Generated content from workflow intent';
+      const replacedFields: string[] = [];
+      for (const fieldName of runtimeFields) {
+        const fieldDef = runtimeInputSchema[fieldName] as NodeInputField | undefined;
+        if (!shouldFillRuntimeAiFromWorkflowIntent(fieldName, fieldDef)) continue;
+        const val = (resolvedInputs as Record<string, unknown>)[fieldName];
+        if (looksPlaceholderLikeValue(val)) {
+          (resolvedInputs as Record<string, any>)[fieldName] = fallbackIntent;
+          replacedFields.push(fieldName);
+        }
+      }
+      if (replacedFields.length > 0) {
+        outputFallbackUsed = true;
+        outputFallbackReason = `placeholder_like_runtime_ai:${replacedFields.join(',')}`;
+      }
+    }
+  }
+
+  return {
+    resolvedInputs,
+    runtimeFieldsAudit,
+    resolvedRuntimeFieldsAudit,
+    missingRuntimeFieldsAudit,
+    outputFallbackUsed,
+    outputFallbackReason,
+  };
+}
+
+/**
  * Get previous node output from nodeOutputs cache.
  * ✅ UNIVERSAL FIX: Returns the most recently set non-empty, non-meta entry.
  * Skips entries where isEffectivelyEmptyUpstreamPayload returns true so that
@@ -905,13 +1014,7 @@ function mapResolvedValueToSchema(
   const mapped: Record<string, any> = {};
   
   if (mode === 'message') {
-    // For message mode, find the message/text/body field in schema
-    const messageField = Object.keys(inputSchema).find(field => 
-      field.toLowerCase().includes('message') ||
-      field.toLowerCase().includes('text') ||
-      field.toLowerCase().includes('body') ||
-      field.toLowerCase().includes('content')
-    );
+    const messageField = pickPrimaryMessageLikeField(inputSchema);
     
     if (messageField) {
       mapped[messageField] = resolvedValue;
@@ -925,12 +1028,7 @@ function mapResolvedValueToSchema(
   } else if (mode === 'message+json') {
     // For message+json mode, map message and data fields
     if (typeof resolvedValue === 'object' && resolvedValue !== null) {
-      // Map message field
-      const messageField = Object.keys(inputSchema).find(field => 
-        field.toLowerCase().includes('message') ||
-        field.toLowerCase().includes('text') ||
-        field.toLowerCase().includes('body')
-      );
+      const messageField = pickPrimaryMessageLikeField(inputSchema);
       
       if (messageField && resolvedValue.message) {
         mapped[messageField] = resolvedValue.message;

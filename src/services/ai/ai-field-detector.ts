@@ -8,6 +8,9 @@
 import { WorkflowNode } from '../../core/types/ai-types';
 import { nodeLibrary } from '../nodes/node-library';
 import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
+import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
+import { isCredentialOwnership } from '../../core/utils/field-ownership';
+import type { NodeInputField } from '../../core/types/unified-node-contract';
 
 export interface AIFieldDetection {
   fieldName: string;
@@ -119,24 +122,78 @@ export class AIFieldDetector {
    */
   detectAIFields(node: WorkflowNode): AIFieldDetection[] {
     const nodeType = unifiedNormalizeNodeType(node);
+    const unified = nodeType ? unifiedNodeRegistry.get(nodeType) : undefined;
+    if (unified?.inputSchema && Object.keys(unified.inputSchema).length > 0) {
+      const detections: AIFieldDetection[] = [];
+      const ntLower = (nodeType || '').toLowerCase();
+      for (const [fieldName, fieldDef] of Object.entries(unified.inputSchema)) {
+        const fd = fieldDef as NodeInputField;
+        if (isCredentialOwnership(fieldName, fd)) continue;
+        if (fd.ownership === 'credential') continue;
+        const fm = fd.fillMode;
+        if (!fm) continue;
+        if (fm.supportsBuildtimeAI === false) continue;
+        const allowEarly =
+          fm.supportsBuildtimeAI === true ||
+          fm.default === 'buildtime_ai_once' ||
+          fm.default === 'runtime_ai';
+        if (!allowEarly) continue;
+
+        const t = fd.type || 'string';
+        const fl = fieldName.toLowerCase();
+        if (t !== 'string' && t !== 'expression') {
+          const isHttp = ntLower.includes('http_request') || ntLower.includes('http_post');
+          const isHttpJsonField =
+            isHttp && (t === 'object' || t === 'json') && (fl === 'headers' || fl === 'body');
+          if (!isHttpJsonField) continue;
+        }
+        const uiOpts = fd.ui?.options;
+        if (uiOpts && Array.isArray(uiOpts) && uiOpts.length > 0) continue;
+        // Skip "dropdown-like" examples only when registry does not explicitly allow AI fill.
+        const registryWantsAi =
+          fm.supportsBuildtimeAI === true ||
+          fm.default === 'runtime_ai' ||
+          fm.default === 'buildtime_ai_once';
+        if (
+          !registryWantsAi &&
+          fd.examples &&
+          Array.isArray(fd.examples) &&
+          fd.examples.length > 0
+        ) {
+          const allShortStrings = fd.examples.every(
+            (ex: unknown) => typeof ex === 'string' && (ex as string).length < 50
+          );
+          if (allShortStrings && fd.examples.length <= 10) continue;
+        }
+        detections.push({
+          fieldName,
+          shouldAutoGenerate: true,
+          reason: `Registry fillMode (${String(fm.default)}) allows build-time AI`,
+          fieldType: t,
+        });
+      }
+      if (detections.length > 0) {
+        return detections;
+      }
+    }
+
     const schema = nodeLibrary.getSchema(nodeType);
-    
     if (!schema || !schema.configSchema) {
       return [];
     }
-    
+
     const requiredFields = schema.configSchema.required || [];
     const optionalFields = Object.keys(schema.configSchema.optional || {});
     const allFields = [...requiredFields, ...optionalFields];
-    
-    const detections: AIFieldDetection[] = [];
-    
+
+    const legacy: AIFieldDetection[] = [];
+
     for (const fieldName of allFields) {
       const fieldSchema = schema.configSchema.optional?.[fieldName];
       const shouldGenerate = this.shouldAutoGenerate(fieldName, nodeType, fieldSchema);
-      
+
       if (shouldGenerate) {
-        detections.push({
+        legacy.push({
           fieldName,
           shouldAutoGenerate: true,
           reason: `Field "${fieldName}" is a text field that benefits from AI generation`,
@@ -144,8 +201,8 @@ export class AIFieldDetector {
         });
       }
     }
-    
-    return detections;
+
+    return legacy;
   }
 }
 

@@ -16,6 +16,7 @@
 import { Workflow, WorkflowNode } from '../types/ai-types';
 import { validateAndFixEdgeHandles, getDefaultSourceHandle, getDefaultTargetHandle } from './node-handle-registry';
 import { logger } from '../logger';
+import { coerceWorkflowNodePosition } from './workflow-node-position';
 
 export interface NormalizedWorkflowGraph {
   nodes: WorkflowNode[];
@@ -81,11 +82,12 @@ export function normalizeWorkflowGraph(rawGraph: any): NormalizedWorkflowGraph {
 
     // Validate nodes structure (only process unique nodes)
     let normalizedNodes = Array.from(nodeMap.values()).map((node: any, index: number) => {
+      const pos = coerceWorkflowNodePosition(node.position) ?? { x: 0, y: 0 };
       // Ensure required fields
       return {
         id: node.id || `node_${index}_${Date.now()}`,
         type: node.type || node.data?.type || 'custom',
-        position: node.position || { x: 0, y: 0 },
+        position: pos,
         data: {
           ...node.data,
           type: node.data?.type || node.type || 'custom',

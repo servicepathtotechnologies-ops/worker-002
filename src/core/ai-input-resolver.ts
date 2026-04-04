@@ -187,6 +187,22 @@ DELIVERABLE CONTENT (email / message nodes — schema has subject + body):
 - "body" MUST be the actual text to deliver: the previous step's summary, analysis, or the string in previous output "response" when present. Copy that substantive text; do NOT output instructions like "The node has been configured to send" or "Please provide recipients".
 - "subject" MUST be a short subject line (ideally under 100 characters), not the entire first paragraph of the body. Derive a concise title from user intent or from the first short phrase of the content, not a full multi-sentence summary.`;
     }
+
+    const aliasHints: string[] = [];
+    for (const [k, def] of Object.entries(nodeInputSchema || {})) {
+      const ao = (def as { aliasOf?: string })?.aliasOf;
+      if (typeof ao === 'string' && ao.length > 0) {
+        aliasHints.push(
+          `Field "${ao}" is canonical; "${k}" duplicates the same value. In JSON mode you MUST set "${ao}" when delivering the main text.`
+        );
+      }
+    }
+    if (aliasHints.length > 0) {
+      specialInstructions += `
+
+ALIAS / DUPLICATE MESSAGE FIELDS (schema-defined):
+${aliasHints.map((h) => `- ${h}`).join('\n')}`;
+    }
     
     return `You are an AI Input Resolver for a workflow automation system.
 
@@ -329,7 +345,8 @@ IMPORTANT:
     
     // For JSON modes, validate against schema
     if (mode === 'json') {
-      return this.normalizeToSchema(aiResponse, inputSchema);
+      const normalized = this.normalizeToSchema(aiResponse, inputSchema);
+      return this.enforceMinimumAcceptance(normalized, inputSchema);
     }
     
     // For message+json, validate structure
@@ -342,17 +359,17 @@ IMPORTANT:
         if (!aiResponse.data) {
           aiResponse.data = {};
         }
-        return aiResponse;
+        return this.enforceMinimumAcceptance(aiResponse, inputSchema);
       }
       
       // If AI returned just a message, wrap it
-      return {
+      return this.enforceMinimumAcceptance({
         message: typeof aiResponse === 'string' ? aiResponse : String(aiResponse),
         data: {},
-      };
+      }, inputSchema);
     }
     
-    return aiResponse;
+    return this.enforceMinimumAcceptance(aiResponse, inputSchema);
   }
   
   /**
@@ -387,8 +404,107 @@ IMPORTANT:
         normalized[fieldName] = fieldDef.default;
       }
     }
+
+    // Registry role / semantics: fill empty long_body or primary message fields from common synonym keys
+    const synonymKeys = ['message', 'body', 'content', 'text', 'summary', 'msg', 'narrative'];
+    const narrative = this.pickFirstNonEmptyString(response, synonymKeys);
+    for (const [fieldName, fieldDef] of Object.entries(schema)) {
+      const cur = normalized[fieldName];
+      const hasValue =
+        cur !== undefined &&
+        cur !== null &&
+        !(typeof cur === 'string' && cur.trim() === '');
+      if (hasValue) continue;
+      const role = (fieldDef as { role?: string }).role;
+      const fl = fieldName.toLowerCase();
+      const wantsNarrative =
+        role === 'long_body' ||
+        role === 'content' ||
+        role === 'short_summary' ||
+        fl.includes('message') ||
+        fl.includes('body') ||
+        (fl.includes('text') && !fl.includes('context'));
+      if (wantsNarrative && narrative) {
+        normalized[fieldName] = narrative;
+      }
+    }
     
     return normalized;
+  }
+
+  private isPlaceholderLikeString(value: unknown): boolean {
+    if (typeof value !== 'string') return false;
+    const t = value.trim().toLowerCase();
+    if (!t) return true;
+    return (
+      t.includes('process the workflow') ||
+      t.includes('configured nodes') ||
+      t.includes('placeholder') ||
+      t === 'generated message'
+    );
+  }
+
+  /**
+   * Universal minimum acceptance checks for AI-mapped input:
+   * - required field presence
+   * - basic type compatibility
+   * - no placeholder-like values for content fields
+   */
+  private enforceMinimumAcceptance(candidate: any, schema: NodeInputSchema): any {
+    if (candidate == null || typeof candidate !== 'object' || Array.isArray(candidate)) {
+      return candidate;
+    }
+    const out = { ...(candidate as Record<string, unknown>) };
+    for (const [fieldName, fieldDef] of Object.entries(schema)) {
+      const value = out[fieldName];
+      const expectedType = (fieldDef.type || 'string') as string;
+      const required = !!fieldDef.required;
+
+      if (required && (value === undefined || value === null || (typeof value === 'string' && value.trim() === ''))) {
+        if (fieldDef.default !== undefined) out[fieldName] = fieldDef.default as unknown;
+      }
+
+      const next = out[fieldName];
+      if (next !== undefined && next !== null) {
+        if (expectedType === 'string' && typeof next !== 'string') out[fieldName] = String(next);
+        if (expectedType === 'number' && typeof next !== 'number') {
+          const parsed = Number(next);
+          if (!Number.isNaN(parsed)) out[fieldName] = parsed;
+        }
+        if (expectedType === 'boolean' && typeof next !== 'boolean') {
+          if (String(next).toLowerCase() === 'true') out[fieldName] = true;
+          if (String(next).toLowerCase() === 'false') out[fieldName] = false;
+        }
+      }
+
+      const role = (fieldDef as any).role as string | undefined;
+      const isContentField =
+        role === 'content' ||
+        role === 'long_body' ||
+        role === 'prompt' ||
+        fieldName.toLowerCase().includes('text') ||
+        fieldName.toLowerCase().includes('message') ||
+        fieldName.toLowerCase().includes('body');
+      if (isContentField && this.isPlaceholderLikeString(out[fieldName])) {
+        if (typeof fieldDef.default === 'string' && fieldDef.default.trim().length > 0) {
+          out[fieldName] = fieldDef.default;
+        } else {
+          out[fieldName] = '';
+        }
+      }
+    }
+    return out;
+  }
+
+  private pickFirstNonEmptyString(obj: Record<string, unknown>, keys: string[]): string | undefined {
+    for (const k of keys) {
+      const v = obj[k];
+      if (typeof v === 'string' && v.trim().length > 0) return v;
+    }
+    for (const v of Object.values(obj)) {
+      if (typeof v === 'string' && v.trim().length > 80) return v;
+    }
+    return undefined;
   }
 }
 

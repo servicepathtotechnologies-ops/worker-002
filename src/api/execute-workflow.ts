@@ -26,9 +26,12 @@ import { createObjectStorageService } from '../services/workflow-executor/object
 import { createExecutionContext, setNodeOutput } from '../core/execution/typed-execution-context';
 import { evaluateCondition, Condition } from '../core/execution/typed-condition-evaluator';
 import { normalizeNodeOutput as normalizeNodeOutputContract } from '../core/execution/node-output-contract';
+import { normalizeLegacyWrappedNodeOutput } from '../core/execution/legacy-node-output-normalize';
+import { executeLogOutputWithCache } from '../core/execution/nodes/log-output-executor';
 import { resolveTypedValue, resolveWithSchema } from '../core/execution/typed-value-resolver';
 import { evaluateSwitchRoutingExpression } from '../core/utils/switch-expression-eval';
 import { getNestedValue } from '../core/utils/object-utils';
+import { resolveWorkflowRuntimeIntent } from '../core/utils/workflow-runtime-intent';
 import {
   normalizeIfElseConfig as normalizeIfElseConfigCanonical,
   normalizeIfElseConditions as normalizeIfElseConditionsCanonical,
@@ -461,19 +464,6 @@ export async function executeNodeLegacy(
 
   console.log(`[ExecuteNodeLegacy] 🔄 Executing node using legacy executor: ${node.data?.label || node.id} (${type})`);
 
-  // ✅ REFACTORED: Removed output wrapping - nodes return their actual output type
-  // Nodes now return their contract type directly (number, string, boolean, object)
-  // No more generic { data, type } wrapping
-  const normalizeNodeOutput = (result: any, nodeType: string): any => {
-    // If result is already wrapped in old format, extract the data
-    if (result && typeof result === 'object' && 'data' in result && 'type' in result) {
-      return result.data;
-    }
-    
-    // Return as-is - nodes are responsible for returning correct types
-    return result;
-  };
-
   // ✅ Helper: Create typed execution context for all nodes
   const createTypedContext = () => {
     const execContext = createExecutionContext(input);
@@ -500,7 +490,7 @@ export async function executeNodeLegacy(
           _error: `Configuration validation failed: ${errorMessage}`,
           _validationError: true,
         };
-        return normalizeNodeOutput(errorResult, type);
+        return normalizeLegacyWrappedNodeOutput(errorResult);
       }
     // In non-strict mode, log warning and continue (backward compatibility)
   }
@@ -3194,54 +3184,7 @@ export async function executeNodeLegacy(
 
     case 'log':
     case 'log_output': {
-      // ✅ REFACTORED: Log node with typed resolution - returns string directly
-      // Log output node: Logs a message and returns it as string
-      // Config: { message: 'Debug: {{input}}', level: 'info' }
-      const message = getStringProperty(config, 'message', '');
-      const level = getStringProperty(config, 'level', 'info');
-      
-      // Use typed execution context
-      const execContext = createTypedContext();
-      
-      // Resolve the message template - get the actual value (could be string, object, array, etc.)
-      const resolvedValue = resolveTypedValue(message, execContext);
-      
-      // Convert to string properly - use JSON.stringify for objects/arrays, String() for primitives
-      let resolvedMessage: string;
-      if (resolvedValue === null || resolvedValue === undefined) {
-        resolvedMessage = String(resolvedValue);
-      } else if (typeof resolvedValue === 'object') {
-        // For objects and arrays, use JSON.stringify to get proper representation
-        try {
-          resolvedMessage = JSON.stringify(resolvedValue, null, 2);
-        } catch {
-          // Fallback if JSON.stringify fails
-          resolvedMessage = String(resolvedValue);
-        }
-      } else {
-        // For primitives (string, number, boolean), use String()
-        resolvedMessage = String(resolvedValue);
-      }
-      
-      // Log to console with appropriate level
-      const logPrefix = `[LOG ${level.toUpperCase()}]`;
-      switch (level) {
-        case 'error':
-          console.error(`${logPrefix} ${resolvedMessage}`);
-          break;
-        case 'warn':
-          console.warn(`${logPrefix} ${resolvedMessage}`);
-          break;
-        case 'debug':
-          console.debug(`${logPrefix} ${resolvedMessage}`);
-          break;
-        default:
-          console.log(`${logPrefix} ${resolvedMessage}`);
-      }
-      
-      // ✅ REFACTORED: Log node returns string, not generic object
-      // Log nodes output the message string directly
-      return resolvedMessage;
+      return executeLogOutputWithCache(normalizedConfig as Record<string, unknown>, inputObj, nodeOutputs);
     }
 
     case 'clickup': {
@@ -12498,7 +12441,7 @@ export async function executeNodeLegacy(
   }
 
   // ✅ REFACTORED: Return result directly - no wrapping
-  return normalizeNodeOutput(result, type);
+  return normalizeLegacyWrappedNodeOutput(result);
 }
 
 /**
@@ -13450,6 +13393,8 @@ export default async function executeWorkflowHandler(req: Request, res: Response
     
     const ifElseResults: Record<string, boolean> = {};
     const switchResults: Record<string, string | null> = {};
+    /** Raw expression value after switch runs (numeric / string index routing). */
+    const switchExpressionValues: Record<string, unknown> = {};
     const skippedNodeIds = new Set<string>(); // ✅ CORE ARCHITECTURE FIX: Track skipped nodes for recursive skipping
     
     // Track memory usage for monitoring
@@ -13660,62 +13605,11 @@ export default async function executeWorkflowHandler(req: Request, res: Response
       timestamp: new Date().toISOString(),
     }, null, 2));
 
-    // ✅ ARCHITECTURAL REFACTOR: Store user intent in global context for AI Input Resolver
-    // This allows AI resolver to understand user's original intent when generating inputs.
-    // IMPORTANT: Do not rely only on workflows.user_prompt (may not exist / may be empty).
-    // Fallback to workflow.description and execution input (trigger/inputData) deterministically.
-    try {
-      const workflowData = await supabase
-        .from('workflows')
-        .select('user_prompt, description, name')
-        .eq('id', workflowId)
-        .single();
-
-      const fromDb =
-        (workflowData.data as any)?.user_prompt ||
-        (workflowData.data as any)?.description ||
-        (workflowData.data as any)?.name ||
-        '';
-
-      const fromWorkflowRow =
-        (workflow as any)?.user_prompt ||
-        (workflow as any)?.description ||
-        (workflow as any)?.name ||
-        '';
-
-      const fromInput =
-        (executionInput as any)?.inputData?.workflowIntent ||
-        (executionInput as any)?.inputData?.description ||
-        (executionInput as any)?.description ||
-        (executionInput as any)?.workflowIntent ||
-        (executionInput as any)?.userIntent ||
-        (executionInput as any)?.user_prompt ||
-        (executionInput as any)?.prompt ||
-        '';
-
-      const userIntent = String(fromDb || fromWorkflowRow || fromInput || 'Process workflow data').trim();
-      // Single source of user intent for this run; set before the execution loop so every node sees the same intent (used by AI Input Resolver).
-        (global as any).currentWorkflowIntent = userIntent;
-        console.log(`[ExecuteWorkflow] ✅ Stored user intent for AI Input Resolver: "${userIntent.substring(0, 100)}..."`);
-    } catch (error) {
-      const fromWorkflowRow =
-        (workflow as any)?.user_prompt ||
-        (workflow as any)?.description ||
-        (workflow as any)?.name ||
-        '';
-      const fromInput =
-        (executionInput as any)?.inputData?.workflowIntent ||
-        (executionInput as any)?.inputData?.description ||
-        (executionInput as any)?.description ||
-        (executionInput as any)?.workflowIntent ||
-        (executionInput as any)?.userIntent ||
-        (executionInput as any)?.user_prompt ||
-        (executionInput as any)?.prompt ||
-        '';
-      const userIntent = String(fromWorkflowRow || fromInput || 'Process workflow data').trim();
-      console.warn('[ExecuteWorkflow] ⚠️  Could not retrieve user intent from DB, using fallback');
-      (global as any).currentWorkflowIntent = userIntent;
-    }
+    // ✅ ARCHITECTURAL REFACTOR: Store user intent in global context for AI Input Resolver.
+    // Uses fresh `workflow` row (select('*')): metadata.originalUserPrompt is canonical; per-run payload can override.
+    const userIntent = resolveWorkflowRuntimeIntent(workflow as any, executionInput);
+    (global as any).currentWorkflowIntent = userIntent;
+    console.log(`[ExecuteWorkflow] ✅ Stored user intent for AI Input Resolver: "${userIntent.substring(0, 100)}..."`);
 
     // ✅ FIX: Use executionInput (which may contain form submission data when resuming)
     let finalOutput: unknown = executionInput;
@@ -13756,7 +13650,16 @@ export default async function executeWorkflowHandler(req: Request, res: Response
         
         // ✅ CORE ARCHITECTURE FIX: Check if node should be skipped based on conditional branches
         // Pass skippedNodeIds to enable recursive skipping of downstream nodes
-        const skipNode = shouldSkipNode(node, incomingEdges, nodes, ifElseResults, switchResults, skippedNodeIds);
+        const skipNode = shouldSkipNode(
+          node,
+          incomingEdges,
+          nodes,
+          edges,
+          ifElseResults,
+          switchResults,
+          skippedNodeIds,
+          switchExpressionValues
+        );
         
         // ✅ CORE ARCHITECTURE FIX: Build node input from incoming edges FIRST
         // This merges outputs from all upstream nodes correctly
@@ -14536,8 +14439,10 @@ export default async function executeWorkflowHandler(req: Request, res: Response
 
           if (nodeType === 'switch' && typeof output === 'object' && output !== null) {
             const outputObj = output as Record<string, unknown>;
-            if (outputObj.matchedCase !== undefined) {
-              switchResults[node.id] = outputObj.matchedCase as string | null;
+            switchResults[node.id] =
+              outputObj.matchedCase !== undefined ? (outputObj.matchedCase as string | null) : null;
+            if (outputObj.expressionValue !== undefined) {
+              switchExpressionValues[node.id] = outputObj.expressionValue;
             }
           }
 

@@ -142,7 +142,32 @@ export default async function saveWorkflowHandler(req: Request, res: Response) {
       console.warn('[SaveWorkflow] Validation warnings:', validation.warnings);
     }
 
-    // 4. Prepare workflow data
+    // 4. Previous row (updates only): versioning + merge metadata so empty/partial client metadata does not wipe originalUserPrompt / buildAiUsage
+    let previousWorkflow: Record<string, unknown> | null = null;
+    if (workflowId) {
+      try {
+        const { data } = await supabase
+          .from('workflows')
+          .select('*')
+          .eq('id', workflowId)
+          .single();
+        previousWorkflow = data as Record<string, unknown> | null;
+      } catch (versionError) {
+        console.warn('[SaveWorkflow] Could not load previous workflow for update:', versionError);
+      }
+    }
+
+    const incomingMeta = req.body.metadata;
+    const incomingPlain =
+      incomingMeta && typeof incomingMeta === 'object' && !Array.isArray(incomingMeta)
+        ? (incomingMeta as Record<string, unknown>)
+        : {};
+
+    const mergedMetadata: Record<string, unknown> = previousWorkflow
+      ? { ...((previousWorkflow.metadata || {}) as Record<string, unknown>), ...incomingPlain }
+      : { ...incomingPlain };
+
+    // 5. Prepare workflow data
     const workflowData: Record<string, unknown> = {
       name,
       nodes: normalized.nodes,
@@ -152,41 +177,29 @@ export default async function saveWorkflowHandler(req: Request, res: Response) {
       // ✅ CRITICAL: Include settings, graph, and metadata with safe defaults
       settings: (req.body.settings || {}),
       graph: (req.body.graph || { nodes: normalized.nodes, edges: normalized.edges }),
-      metadata: (req.body.metadata || {}),
+      metadata: mergedMetadata,
     };
 
     if (user_id) {
       workflowData.user_id = user_id;
     }
 
-    // 5. Save or update workflow
+    // 6. Save or update workflow
     let savedWorkflow;
     let previousDefinition: any = null;
 
     if (workflowId) {
-      // 🆕 VERSIONING: Get previous definition before update
-      try {
-        const { data: previousWorkflow } = await supabase
-          .from('workflows')
-          .select('*')
-          .eq('id', workflowId)
-          .single();
-
-        if (previousWorkflow) {
-          previousDefinition = {
-            name: previousWorkflow.name,
-            nodes: previousWorkflow.nodes || [],
-            edges: previousWorkflow.edges || [],
-            status: previousWorkflow.status,
-            phase: previousWorkflow.phase,
-        settings: previousWorkflow.settings || {},
-        graph: previousWorkflow.graph || {},
-        metadata: previousWorkflow.metadata || {},
-          };
-        }
-      } catch (versionError) {
-        // Non-critical - continue without previous definition
-        console.warn('[SaveWorkflow] Could not load previous definition for versioning:', versionError);
+      if (previousWorkflow) {
+        previousDefinition = {
+          name: previousWorkflow.name,
+          nodes: previousWorkflow.nodes || [],
+          edges: previousWorkflow.edges || [],
+          status: previousWorkflow.status,
+          phase: previousWorkflow.phase,
+          settings: previousWorkflow.settings || {},
+          graph: previousWorkflow.graph || {},
+          metadata: previousWorkflow.metadata || {},
+        };
       }
 
       // Update existing workflow

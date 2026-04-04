@@ -26,11 +26,16 @@ import {
 import { resolveCanonicalNodeTypeStrict } from '../../core/utils/node-type-resolver-util';
 import { extractBranchIntentSignals, expectedBranchTargetCount } from '../../core/utils/branch-intent-model';
 import { BranchMetadata } from '../../core/types/branching';
-import { pruneProposedPlanChain } from './plan-chain-prune';
+import { formatPlanChainTokenWithBranchTag, extractBranchTag, formatPlanChainToken, pruneProposedPlanChain, stripPlanTokenToType } from './plan-chain-prune';
+import { buildCaseNodeMappingFromPlanChain } from './switch-case-node-mapping';
 import { unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 import { buildRegistryStructuralFillContractSection } from './registry-structural-fill-contract';
 import { buildWorkflowIntentModel, formatWorkflowIntentModelDigest } from './workflow-intent-model';
+import { buildNodeDescriptionBlocks } from './node-description-builder';
+import type { StructuredIntent } from './intent-structurer';
 import type { Workflow } from '../../core/types/ai-types';
+import { PipelineReasoningCoordinator } from './pipeline-reasoning-coordinator';
+import type { StageProposal, ValidationResult, PipelineFullContext } from './pipeline-reasoning-coordinator';
 
 export interface AliasKeyword {
   keyword: string;
@@ -159,6 +164,20 @@ export interface WorkflowIntentPlan {
    * e.g. ['chain_too_short: switch needs 3 downstream nodes but chain has 1']
    */
   missing_fields?: string[];
+  /**
+   * Per-node description blocks built by buildNodeDescriptionBlocks.
+   * Each entry describes one node in proposedNodeChain in plain English.
+   * Populated by task 17 integration; defined here for interface completeness.
+   */
+  nodeDescriptionBlocks?: import('./node-description-builder').NodeDescriptionBlock[];
+}
+
+/** Structural single-plan LLM defaults on outside production; set ENABLE_STRUCTURAL_LLM_SINGLE_PLAN=false to disable. */
+export function isStructuralLlmSinglePlanEnabled(): boolean {
+  const v = process.env.ENABLE_STRUCTURAL_LLM_SINGLE_PLAN;
+  if (v === 'false') return false;
+  if (v === 'true') return true;
+  return process.env.NODE_ENV !== 'production';
 }
 
 export interface SummarizeLayerResult {
@@ -467,10 +486,59 @@ export class AIIntentClarifier {
     // ✅ Path B (Gemini-first): optionally get node types from Gemini + registry; else Path A (keywords)
     let allExtractedNodeTypes: string[];
     if (config.useGeminiFirstNodeSelection) {
-      const geminiResult = await selectNodesFromIntent(userPrompt);
-      if (geminiResult.nodeTypes.length > 0) {
-        allExtractedNodeTypes = geminiResult.nodeTypes;
+      // Wrap Gemini node selection in PipelineReasoningCoordinator for Senior AI validation.
+      // The Senior validator is a synchronous registry check (no extra Gemini call) to avoid latency.
+      const pipelineContext: PipelineFullContext = {
+        originalPrompt: userPrompt,
+        structuredIntent: { trigger: 'manual_trigger', actions: [], requires_credentials: [] } as any,
+        registryKnowledgeSummary: PipelineReasoningCoordinator.buildRegistryKnowledgeSummary(),
+        priorStageOutputs: {},
+      };
+      const coordinator = new PipelineReasoningCoordinator('gemini-2.5-pro', 'gemini-2.5-flash', pipelineContext);
+
+      let geminiNodeTypes: string[] = [];
+      try {
+        geminiNodeTypes = await coordinator.executeStage<string[]>(
+          'node-selection',
+          async (): Promise<StageProposal<string[]>> => {
+            const geminiResult = await selectNodesFromIntent(userPrompt);
+            return {
+              stageName: 'node-selection',
+              proposal: geminiResult.nodeTypes,
+              rationale: `Gemini selected ${geminiResult.nodeTypes.length} node(s): ${geminiResult.nodeTypes.join(', ')}`,
+            };
+          },
+          async (proposal: StageProposal<string[]>): Promise<ValidationResult<string[]>> => {
+            // Synchronous registry check — no extra Gemini call
+            const allValid = proposal.proposal.every((t) => unifiedNodeRegistry.get(t) != null);
+            const tooMany = proposal.proposal.length > 8;
+            if (allValid && !tooMany) {
+              return { approved: true };
+            }
+            // Filter to valid registry types only
+            const filtered = proposal.proposal.filter((t) => unifiedNodeRegistry.get(t) != null).slice(0, 8);
+            return {
+              approved: false,
+              correctedValue: filtered,
+              rejectionReason: !allValid
+                ? 'Some node types not found in registry'
+                : 'Too many nodes for a simple prompt (>8)',
+            };
+          }
+        );
+      } catch {
+        // If coordinator fails, fall back to direct Gemini result
+        const geminiResult = await selectNodesFromIntent(userPrompt);
+        geminiNodeTypes = geminiResult.nodeTypes;
+      }
+
+      if (geminiNodeTypes.length > 0) {
+        allExtractedNodeTypes = geminiNodeTypes;
         console.log(`[AIIntentClarifier] ✅ Path B (Gemini-first): using ${allExtractedNodeTypes.length} node(s) from Gemini`);
+      } else if (config.useGeminiFirstExclusively) {
+        // When exclusively Gemini-first, skip keyword fallback entirely
+        console.log(`[AIIntentClarifier] Path B returned no nodes; useGeminiFirstExclusively=true, skipping keyword fallback`);
+        allExtractedNodeTypes = [];
       } else {
         console.log(`[AIIntentClarifier] Path B returned no nodes, falling back to Path A (keywords)...`);
         const extractedKeywords = this.extractKeywordsFromPrompt(userPrompt, allKeywordData);
@@ -531,7 +599,11 @@ export class AIIntentClarifier {
     // ✅ Logic-intent safeguard: if prompt describes verification/eligibility/conditional logic but no logic/code nodes were detected, add form + if_else + javascript so variations can include them
     const logicIntentPhrases = /\b(verify|eligible|vote|check|validate|age|condition|true or false|true false|if .+ then|branch|eligibility)\b/i;
     const hasLogicIntent = logicIntentPhrases.test(userPrompt);
-    const logicNodeTypes = ['form', 'javascript', 'if_else', 'function'];
+    // Registry-driven logic node detection (no hardcoded type strings)
+    const logicNodeTypes = unifiedNodeRegistry.getAllTypes().filter(type => {
+      const def = unifiedNodeRegistry.get(type);
+      return def?.tags?.includes('logic') || (def?.category as string) === 'conditional';
+    });
     const hasAnyLogicNode = logicNodeTypes.some(t => extractedNodeTypes.includes(t));
     if (hasLogicIntent && !hasAnyLogicNode) {
       const toAdd = logicNodeTypes.filter(t => nodeLibrary.isNodeTypeRegistered(t) && !extractedNodeTypes.includes(t));
@@ -6042,6 +6114,72 @@ The "variations" array MUST contain exactly 4 items, each with a detailed prompt
 
     const minimalSelection = this.buildIntentMinimalNodeSelection(userPrompt, allExtractedNodeTypes);
     const extractedNodeTypes = [...minimalSelection.selectedNodeTypes];
+
+    if (isStructuralLlmSinglePlanEnabled() && config.geminiApiKey) {
+      try {
+        const aiRaw = await geminiOrchestrator.processRequest(
+          'workflow-generation',
+          {
+            system: this.getSinglePlanSystemPrompt(extractedNodeTypes),
+            message: this.buildSinglePlanUserMessage(
+              userPrompt,
+              allKeywords,
+              extractedNodeTypes,
+              enrichedNodeMentions
+            ),
+          },
+          { cache: false, temperature: 0.2 }
+        );
+        const rawStr =
+          typeof aiRaw === 'string'
+            ? aiRaw
+            : aiRaw != null && typeof aiRaw === 'object'
+              ? JSON.stringify(aiRaw)
+              : String(aiRaw);
+        const aiPlan = this.parseSinglePlanAIResponse(
+          rawStr,
+          userPrompt,
+          allKeywordData,
+          extractedNodeTypes,
+          enrichedNodeMentions
+        );
+        const {
+          canonicalizePlanChainStrict,
+          validateCanonicalChainCompleteness,
+          validateCanonicalChainSemantics,
+        } = await import('../../api/plan-chain-guards');
+        const canon = canonicalizePlanChainStrict(aiPlan.proposedNodeChain);
+        if (canon.issues.length > 0) {
+          throw new Error(
+            `LLM plan chain non-canonical: ${canon.issues.map(i => i.reason).join('; ')}`
+          );
+        }
+        const guardIssues = [
+          ...validateCanonicalChainCompleteness(canon.canonical, { userPrompt }),
+          ...validateCanonicalChainSemantics(canon.canonical, { userPrompt }),
+        ];
+        if (guardIssues.length > 0) {
+          throw new Error(
+            `LLM plan failed structural guards: ${guardIssues.map(i => i.reason).join('; ')}`
+          );
+        }
+        this.assertPlanConsistency(aiPlan, userPrompt, extractedNodeTypes);
+        return this.summarizeLayerResultFromPlan(
+          aiPlan,
+          userPrompt,
+          allKeywords,
+          allKeywordData,
+          extractedNodeTypes,
+          enrichedNodeMentions
+        );
+      } catch (e) {
+        console.warn(
+          '[SinglePlan] Structural LLM path failed, using deterministic chain:',
+          e instanceof Error ? e.message : e
+        );
+      }
+    }
+
     const proposedNodeChain = this.buildDeterministicSinglePlanChain(userPrompt, extractedNodeTypes);
     const branching = this.buildBranchMetadataForPlan(userPrompt, proposedNodeChain);
     // Branching is primarily described in Execution lines / branch metadata; avoid duplicate prose.
@@ -6050,13 +6188,8 @@ The "variations" array MUST contain exactly 4 items, each with a detailed prompt
     const intentModelDigest = formatWorkflowIntentModelDigest(
       buildWorkflowIntentModel(syntheticWf, userPrompt)
     );
-    const structuredSummary = this.buildStructuredSummaryFromChain(
-      proposedNodeChain,
-      userPrompt,
-      branching,
-      intentModelDigest
-    );
-    const mandatoryNodeTypes = [...new Set([...extractedNodeTypes, ...proposedNodeChain])];
+    const chainBaseTypes = proposedNodeChain.map((t) => stripPlanTokenToType(t));
+    const mandatoryNodeTypes = [...new Set([...extractedNodeTypes, ...chainBaseTypes])];
     const mandatoryNodesWithOperations: NodeTypeWithOperation[] = [];
     for (const m of enrichedNodeMentions) {
       if (mandatoryNodeTypes.includes(m.nodeType)) {
@@ -6067,13 +6200,43 @@ The "variations" array MUST contain exactly 4 items, each with a detailed prompt
         });
       }
     }
+    // Compute caseNodeMapping BEFORE building the structured summary so switch nodes show their cases.
+    const caseNodeMappingResult = this._resolveCaseNodeMappingOrError(proposedNodeChain, userPrompt);
+
+    // Annotate same-type branch tokens (e.g. gmail[true], gmail[false]) before building descriptions.
+    const annotatedChain = this.annotateSameTypeBranchTokens(proposedNodeChain);
+
+    // Build the structured summary — passes caseNodeMapping so switch cases are shown.
+    const finalStructuredSummary = this.buildStructuredSummaryFromChain(
+      annotatedChain,
+      userPrompt,
+      branching,
+      intentModelDigest,
+      caseNodeMappingResult.caseNodeMapping
+    );
+
+    // Build per-node description blocks for UI rendering (stored on the plan).
+    let nodeDescriptionBlocks: import('./node-description-builder').NodeDescriptionBlock[] | undefined;
+    if (annotatedChain.length > 0) {
+      const minimalIntent: StructuredIntent = {
+        trigger: userPrompt,
+        actions: enrichedNodeMentions.map(m => ({ type: m.nodeType, operation: m.defaultOperation || m.operations[0] || '' })),
+        requires_credentials: [],
+      };
+      nodeDescriptionBlocks = buildNodeDescriptionBlocks(
+        minimalIntent,
+        annotatedChain,
+        caseNodeMappingResult.caseNodeMapping
+      );
+    }
+
     const plan: WorkflowIntentPlan = {
-      structuredSummary,
-      proposedNodeChain,
+      structuredSummary: finalStructuredSummary,
+      proposedNodeChain: annotatedChain,
       nodeInclusionReasons: minimalSelection.reasons,
       rankedSelectionDiagnostics: minimalSelection.rankedSelectionDiagnostics,
       orderingDiagnostics: this.buildOrderingDiagnostics(
-        proposedNodeChain,
+        annotatedChain,
         userPrompt,
         branching
       ),
@@ -6085,7 +6248,8 @@ The "variations" array MUST contain exactly 4 items, each with a detailed prompt
       branchingOverview,
       originalPrompt: userPrompt,
       intentModelDigest: intentModelDigest || undefined,
-      ...this._resolveCaseNodeMappingOrError(proposedNodeChain, userPrompt),
+      nodeDescriptionBlocks,
+      ...caseNodeMappingResult,
     };
 
     this.assertPlanConsistency(plan, userPrompt, extractedNodeTypes);
@@ -6118,6 +6282,7 @@ Rules:
 - Distinguish **build-time AI** (static config generated once) vs **runtime AI** (filled when the node executes from upstream data) in prose when relevant; call out required structural fields (form fields JSON, conditions, cases).
 - Do NOT collapse multiple branch terminals into one log_output in proposedNodeChain.
 - Do NOT output multiple variants, alternatives joined with "or", or multiple chains.
+- When the SAME registry node type appears on MORE THAN ONE branch (e.g. two Google Gmail paths), use distinct plan tokens: "google_gmail#branch_a" and "google_gmail#branch_b" (snake_case suffixes; stable per branch). Same rule for duplicate AI or data nodes per branch.
 - ${nodesHint}
 `;
   }
@@ -6196,8 +6361,9 @@ Rules:
     const mandatoryFromAi = Array.isArray(obj.mandatoryNodeTypes)
       ? (obj.mandatoryNodeTypes as unknown[]).filter((x): x is string => typeof x === 'string')
       : [];
+    const chainBaseForMandatory = proposedNodeChain.map((t) => stripPlanTokenToType(t));
     const mandatoryNodeTypes = [
-      ...new Set([...extractedNodeTypes, ...proposedNodeChain, ...mandatoryFromAi]),
+      ...new Set([...extractedNodeTypes, ...chainBaseForMandatory, ...mandatoryFromAi]),
     ];
     const mandatoryNodesWithOperations: NodeTypeWithOperation[] = [];
     for (const m of enrichedNodeMentions) {
@@ -6210,16 +6376,50 @@ Rules:
       }
     }
 
+    const caseNodeMappingResultAi = this._resolveCaseNodeMappingOrError(proposedNodeChain, userPrompt);
+
+    // Annotate same-type branch tokens (e.g. gmail[true], gmail[false]) before building descriptions.
+    const annotatedChainAi = this.annotateSameTypeBranchTokens(proposedNodeChain);
+
+    // Build per-node description blocks for UI rendering.
+    // The structuredSummary is rebuilt via buildStructuredSummaryFromChain so it always uses
+    // the canonical Goal:/Execution:/Terminals: format — no plain prose override.
+    let nodeDescriptionBlocksAi: import('./node-description-builder').NodeDescriptionBlock[] | undefined;
+    if (annotatedChainAi.length > 0) {
+      const minimalIntentAi: StructuredIntent = {
+        trigger: userPrompt, // pass full prompt so condition extraction works
+        actions: enrichedNodeMentions.map(m => ({ type: m.nodeType, operation: m.defaultOperation || m.operations[0] || '' })),
+        requires_credentials: [],
+      };
+      nodeDescriptionBlocksAi = buildNodeDescriptionBlocks(
+        minimalIntentAi,
+        annotatedChainAi,
+        caseNodeMappingResultAi.caseNodeMapping
+      );
+    }
+
+    // Always rebuild structuredSummary through the single canonical builder.
+    // Pass caseNodeMapping so switch nodes show their cases.
+    const syntheticWfAi: Workflow = { nodes: [], edges: [] };
+    const digestAi = formatWorkflowIntentModelDigest(buildWorkflowIntentModel(syntheticWfAi, userPrompt));
+    const finalStructuredSummaryAi = this.buildStructuredSummaryFromChain(
+      annotatedChainAi,
+      userPrompt,
+      branching,
+      digestAi,
+      caseNodeMappingResultAi.caseNodeMapping
+    );
+
     return {
-      structuredSummary,
-      proposedNodeChain,
+      structuredSummary: finalStructuredSummaryAi,
+      proposedNodeChain: annotatedChainAi,
       nodeInclusionReasons,
       rankedSelectionDiagnostics: this.rankNodesByIntent(
         userPrompt,
         mandatoryNodeTypes,
         nodeInclusionReasons || {}
       ),
-      orderingDiagnostics: this.buildOrderingDiagnostics(proposedNodeChain, userPrompt, branching),
+      orderingDiagnostics: this.buildOrderingDiagnostics(annotatedChainAi, userPrompt, branching),
       mandatoryNodeTypes,
       mandatoryNodesWithOperations:
         mandatoryNodesWithOperations.length > 0 ? mandatoryNodesWithOperations : undefined,
@@ -6230,7 +6430,8 @@ Rules:
       intentModelDigest: formatWorkflowIntentModelDigest(
         buildWorkflowIntentModel({ nodes: [], edges: [] } as Workflow, userPrompt)
       ),
-      ...this._resolveCaseNodeMappingOrError(proposedNodeChain, userPrompt),
+      nodeDescriptionBlocks: nodeDescriptionBlocksAi,
+      ...caseNodeMappingResultAi,
     };
   }
 
@@ -6260,59 +6461,7 @@ Rules:
     proposedNodeChain: string[],
     userPrompt: string
   ): CaseNodeMapping | undefined {
-    const switchIdx = proposedNodeChain.indexOf('switch');
-    if (switchIdx === -1) return undefined;
-
-    // Determine the upstream node type for discriminant field selection
-    const upstreamNodeType = switchIdx > 0 ? proposedNodeChain[switchIdx - 1] : undefined;
-
-    // Get switch cases from the planner
-    const { planSwitchCasesFromPrompt } = require('./switch-case-plan');
-    const switchPlan = planSwitchCasesFromPrompt(userPrompt, upstreamNodeType);
-
-    if (!switchPlan.cases || switchPlan.cases.length === 0) return undefined;
-
-    // Downstream nodes are those that come after the switch node in the chain,
-    // excluding log_output (terminals) — each case maps to the next non-terminal output.
-    const downstreamNodes = proposedNodeChain
-      .slice(switchIdx + 1)
-      .filter((t) => t !== 'log_output');
-
-    if (downstreamNodes.length === 0) return undefined;
-
-    const mapping: CaseNodeMapping = {};
-    const parseTargetDescriptor = (
-      raw: string
-    ): { targetNodeType: string; targetNodeId?: string } => {
-      // Backward compatible: tokens are usually plain node types.
-      // Optional descriptor formats supported for deterministic disambiguation:
-      //   nodeType#nodeId
-      //   nodeType@nodeId
-      const hashIdx = raw.indexOf('#');
-      const atIdx = raw.indexOf('@');
-      const sepIdx =
-        hashIdx > 0 && atIdx > 0 ? Math.min(hashIdx, atIdx) : Math.max(hashIdx, atIdx);
-      if (sepIdx > 0 && sepIdx < raw.length - 1) {
-        return {
-          targetNodeType: raw.slice(0, sepIdx),
-          targetNodeId: raw.slice(sepIdx + 1),
-        };
-      }
-      return { targetNodeType: raw };
-    };
-
-    for (let i = 0; i < switchPlan.cases.length; i++) {
-      const caseValue = switchPlan.cases[i].value;
-      const targetNode = downstreamNodes[i] ?? downstreamNodes[i % downstreamNodes.length];
-      const descriptor = parseTargetDescriptor(targetNode);
-      mapping[caseValue] = {
-        targetNodeType: descriptor.targetNodeType,
-        targetNodeId: descriptor.targetNodeId,
-        slot: `case_${i + 1}`,
-      };
-    }
-
-    return Object.keys(mapping).length > 0 ? mapping : undefined;
+    return buildCaseNodeMappingFromPlanChain(proposedNodeChain, userPrompt);
   }
 
   private normalizeAndEnsureLogOutput(chain: string[]): string[] {
@@ -6339,10 +6488,13 @@ Rules:
         passedBranchNode.value = true;
       }
 
-      // In branching chains, repeated output/action node types after the branch
-      // represent distinct branch instances and must not be collapsed.
-      if (hasBranchingNode && passedBranchNode.value && nodeCapabilityRegistryDSL.isOutput(normalized)) {
-        out.push(normalized);
+      // After fork: duplicate types (outputs or non-outputs) are distinct branch paths — never collapse.
+      if (
+        hasBranchingNode &&
+        passedBranchNode.value &&
+        !this.isTriggerNodeType(normalized)
+      ) {
+        out.push(formatPlanChainToken(String(raw || '').trim(), normalized));
         continue;
       }
 
@@ -6354,7 +6506,7 @@ Rules:
         triggerAdded = true;
       }
       seen.add(normalized);
-      out.push(normalized);
+      out.push(formatPlanChainToken(String(raw || '').trim(), normalized));
     }
     if (out.length === 0) {
       out.push('manual_trigger', 'log_output');
@@ -6458,6 +6610,45 @@ Rules:
     }
 
     return normalized;
+  }
+
+  /**
+   * Annotate plan chain tokens where an if_else node is followed by the same node type
+   * on both the true and false branches. When detected, emits `nodeType[true]` and
+   * `nodeType[false]` so the orchestrator can create two separate instances.
+   *
+   * Only annotates when BOTH adjacent branch positions share the same base node type.
+   * Zero hardcoded node type strings — detection is purely registry-driven.
+   */
+  private annotateSameTypeBranchTokens(chain: string[]): string[] {
+    const result = [...chain];
+    for (let i = 0; i < result.length; i++) {
+      const nodeType = stripPlanTokenToType(result[i]);
+      const def = unifiedNodeRegistry.get(nodeType);
+      // Only process if_else nodes (isBranching + has 'true' and 'false' ports)
+      if (
+        !def?.isBranching ||
+        !Array.isArray(def.outgoingPorts) ||
+        !def.outgoingPorts.includes('true') ||
+        !def.outgoingPorts.includes('false')
+      ) {
+        continue;
+      }
+
+      const trueIdx = i + 1;
+      const falseIdx = i + 2;
+      if (trueIdx >= result.length || falseIdx >= result.length) continue;
+
+      const trueType = stripPlanTokenToType(result[trueIdx]);
+      const falseType = stripPlanTokenToType(result[falseIdx]);
+
+      if (trueType === falseType) {
+        // Same node type on both branches — annotate with branch tags
+        result[trueIdx] = formatPlanChainTokenWithBranchTag(trueType, 'true');
+        result[falseIdx] = formatPlanChainTokenWithBranchTag(falseType, 'false');
+      }
+    }
+    return result;
   }
 
   /**
@@ -6877,10 +7068,10 @@ Rules:
   }
 
   private resolveRegistryNodeType(raw: string): string | null {
-    const t = raw.trim();
-    if (!t) return null;
+    const head = stripPlanTokenToType(String(raw || '').trim());
+    if (!head) return null;
     try {
-      return resolveCanonicalNodeTypeStrict(t);
+      return resolveCanonicalNodeTypeStrict(head);
     } catch {
       return null;
     }
@@ -7038,82 +7229,129 @@ Rules:
     return edges;
   }
 
-  /** Compact, non-repetitive plan text: goal + numbered execution edges only. */
+  /**
+   * Build a structured summary from the node chain using registry-driven per-node descriptions.
+   *
+   * Output format matches what the frontend parseStructuredSummary expects:
+   *   Goal:\n<user prompt>\n\nExecution:\n1. <node description>\n2. ...\n\nTerminal: ...
+   *
+   * All node descriptions come from buildNodeDescriptionBlocks — no hardcoded node type strings.
+   * Works for any node type, any prompt, any chain length.
+   */
   private buildStructuredSummaryFromChain(
     chain: string[],
     userPrompt: string,
     branching?: BranchMetadata,
-    intentModelDigest?: string
+    intentModelDigest?: string,
+    caseNodeMapping?: CaseNodeMapping
   ): string {
-    const edgeSpecs = this.buildConnectionPlanEdges(chain, userPrompt, branching);
     const goal = userPrompt.trim();
     const goalDisplay = goal.length > 220 ? `${goal.slice(0, 220)}…` : goal;
-    const alignmentBlock =
-      intentModelDigest && intentModelDigest.trim().length > 0
-        ? `Intent alignment:\n${intentModelDigest.trim()}\n\n`
+
+    // Build intent with user prompt as trigger so condition extraction works for any prompt.
+    // Actions are populated from the chain so each node gets its default operation.
+    const minimalIntent: StructuredIntent = {
+      trigger: userPrompt,
+      actions: chain.map(t => {
+        const nodeType = stripPlanTokenToType(t);
+        const def = unifiedNodeRegistry.get(nodeType);
+        const defaultOp = (() => {
+          try { return (def?.defaultConfig as any)?.()?.operation || ''; } catch { return ''; }
+        })();
+        return { type: nodeType, operation: defaultOp };
+      }),
+      requires_credentials: [],
+    };
+
+    // buildNodeDescriptionBlocks is fully registry-driven — zero hardcoding.
+    // Pass caseNodeMapping so switch nodes show their cases.
+    const blocks = buildNodeDescriptionBlocks(minimalIntent, chain, caseNodeMapping);
+
+    const executionLines: string[] = [];
+    const terminalLines: string[] = [];
+
+    for (const block of blocks) {
+      // Terminal nodes go to the Terminals: section
+      if (unifiedNodeRegistry.get(block.nodeType)?.workflowBehavior?.alwaysTerminal === true) {
+        terminalLines.push(block.prose);
+        continue;
+      }
+
+      // The prose from buildNodeDescriptionBlocks already contains the full description.
+      // We just number it. No additional string manipulation needed.
+      executionLines.push(block.prose);
+    }
+
+    const numberedExecution = executionLines.map((l, i) => `${i + 1}. ${l}`).join('\n');
+
+    const terminalLine = terminalLines.length > 1
+      ? `Terminals: ${terminalLines.length} × terminal node (one per branch path).`
+      : terminalLines.length === 1
+        ? `Terminal: ${terminalLines[0]}`
         : '';
-    const lines = edgeSpecs.map((e, i) => {
-      const fromDef = unifiedNodeRegistry.get(e.fromType);
-      const toDef = unifiedNodeRegistry.get(e.toType);
-      const fl = fromDef?.label || e.fromType;
-      const tl = toDef?.label || e.toType;
-      const via = e.via ? ` [${e.via}]` : '';
-      return `${i + 1}. ${fl} (${e.fromType}) → ${tl} (${e.toType})${via} — ${e.intent}`;
-    });
-    const logTerminalCount = edgeSpecs.filter((e) => e.toType === 'log_output').length;
-    const detectedNodeCount = chain.length;
-    const uniqueNodeCount = new Set(chain).size;
-    const branchLine =
-      branching && branching.cases && branching.cases.length > 0
-        ? `Branch slots: ${branching.cases.map((c) => c.label || c.id).join(', ')}.`
-        : 'Branch slots: none (linear flow).';
-    const terminalLine =
-      logTerminalCount <= 1
-        ? 'Terminal: log_output.'
-        : `Terminals: ${logTerminalCount} separate log_output nodes (one per branch path; the graph must not merge them).`;
+
+    const alignmentBlock = intentModelDigest?.trim()
+      ? `Intent alignment:\n${intentModelDigest.trim()}\n\n`
+      : '';
+
     const fillContract = buildRegistryStructuralFillContractSection(chain);
-    return `Goal:\n${goalDisplay}\n\nDetected nodes: ${detectedNodeCount} total (${uniqueNodeCount} unique types).\n${branchLine}\n\n${alignmentBlock}Execution:\n${lines.join('\n')}\n\n${terminalLine}\n\n${fillContract}`;
+
+    return [
+      `Goal:\n${goalDisplay}`,
+      `${alignmentBlock}Execution:\n${numberedExecution}`,
+      terminalLine,
+      fillContract,
+    ].filter(Boolean).join('\n\n');
   }
 
+  /**
+   * Registry-driven hop intent description.
+   * Derives the intent from registry metadata (category, tags, isBranching) — no hardcoded node type strings.
+   */
   private describeHopIntent(fromType: string, toType: string, userPrompt: string): string {
-    const prompt = userPrompt.toLowerCase();
-    const numericCompareMatch = userPrompt.match(/\b([a-zA-Z_][a-zA-Z0-9_]*)\b\s*(>=|≤|<=|>|<|=)\s*([0-9]+(?:\.[0-9]+)?)/);
-    const comparedField = numericCompareMatch?.[1];
-    const compareOperator = numericCompareMatch?.[2];
-    const compareValue = numericCompareMatch?.[3];
-    if (this.isTriggerNodeType(fromType)) {
+    const fromDef = unifiedNodeRegistry.get(fromType);
+    const toDef = unifiedNodeRegistry.get(toType);
+
+    // Trigger → next: start the workflow
+    if (fromDef?.category === 'trigger') {
       return 'start workflow with user/system event';
     }
-    if (fromType === 'if_else') {
-      if (comparedField && compareOperator && compareValue) {
-        return `route by ${comparedField} ${compareOperator} ${compareValue} condition outcome`;
-      }
-      return 'route by condition outcome';
+
+    // Branching node → downstream: route by condition
+    if (fromDef?.isBranching) {
+      const disc = fromDef.outputSchema
+        ? Object.keys((fromDef.outputSchema as any).properties || {})[0] || 'value'
+        : 'value';
+      return `route by ${disc} condition outcome`;
     }
-    if (fromType === 'switch') {
-      const switchFieldMatch = userPrompt.match(/\bby\s+([a-zA-Z_][a-zA-Z0-9_]*)\b/i);
-      if (switchFieldMatch?.[1]) {
-        return `route by matched ${switchFieldMatch[1]} case value`;
-      }
-      return 'route by matched case value';
-    }
-    if (toType === 'if_else' || toType === 'switch') {
+
+    // → branching node: prepare for decision
+    if (toDef?.isBranching) {
       return 'prepare data for branching decision';
     }
-    if (/\b(email|gmail|outlook)\b/i.test(toType)) {
-      return prompt.includes('eligible')
-        ? 'send eligibility notification'
-        : 'send email notification';
-    }
-    if (/\bslack|discord|teams|telegram|twilio|whatsapp\b/i.test(toType)) {
-      return prompt.includes('not eligible') || prompt.includes('ineligible')
-        ? 'send non-eligible branch message'
-        : 'send communication output';
-    }
-    if (toType === 'log_output') {
+
+    // → terminal node
+    if (toDef?.workflowBehavior?.alwaysTerminal) {
       return 'persist final observable output';
     }
-    return 'pass normalized workflow payload forward';
+
+    // → output node (send/write): derive from registry tags
+    const toTags = toDef?.tags || [];
+    if (toTags.includes('email') || toTags.includes('send') || toTags.includes('output')) {
+      return `send ${toDef?.label || toType} output`;
+    }
+
+    // → data source (read): derive from registry tags
+    if (toTags.includes('read') || toTags.includes('data_source') || toDef?.category === 'data') {
+      return `read data from ${toDef?.label || toType}`;
+    }
+
+    // → transformation/AI
+    if (toDef?.category === 'transformation' || toDef?.category === 'ai') {
+      return `process data with ${toDef?.label || toType}`;
+    }
+
+    return `pass data to ${toDef?.label || toType}`;
   }
 
   private summarizeLayerResultFromPlan(
@@ -7126,8 +7364,9 @@ Rules:
   ): SummarizeLayerResult {
     const matchedKeywordsSet = new Set<string>();
     for (const nodeType of plan.proposedNodeChain) {
-      matchedKeywordsSet.add(nodeType);
-      const keywordData = allKeywordData.filter(kd => kd.nodeType === nodeType);
+      const nt = stripPlanTokenToType(nodeType);
+      matchedKeywordsSet.add(nt);
+      const keywordData = allKeywordData.filter((kd) => kd.nodeType === nt);
       for (const kd of keywordData.slice(0, 2)) {
         matchedKeywordsSet.add(kd.keyword);
       }
@@ -7138,7 +7377,12 @@ Rules:
 
     const mandatory = plan.mandatoryNodeTypes?.length
       ? plan.mandatoryNodeTypes
-      : [...new Set([...extractedNodeTypes, ...plan.proposedNodeChain])];
+      : [
+          ...new Set([
+            ...extractedNodeTypes,
+            ...plan.proposedNodeChain.map((t) => stripPlanTokenToType(t)),
+          ]),
+        ];
 
     return {
       shouldShowLayer: true,
@@ -7174,8 +7418,17 @@ Rules:
     const chain = first?.nodes?.length ? [...first.nodes] : [];
     const normalized = this.normalizeAndEnsureLogOutput(chain.length ? chain : ['manual_trigger']);
     const fallbackBranching = this.buildBranchMetadataForPlan(userPrompt, normalized);
+    // Always build the structured summary through the canonical builder — never use raw prompt text.
+    const fallbackCaseMapping = this._resolveCaseNodeMappingOrError(normalized, userPrompt);
+    const fallbackSummary = this.buildStructuredSummaryFromChain(
+      normalized,
+      userPrompt,
+      fallbackBranching,
+      undefined,
+      fallbackCaseMapping.caseNodeMapping
+    );
     const plan: WorkflowIntentPlan = {
-      structuredSummary: first?.prompt || fb.clarifiedIntent || userPrompt,
+      structuredSummary: fallbackSummary,
       proposedNodeChain: normalized,
       rankedSelectionDiagnostics: this.rankNodesByIntent(userPrompt, normalized, {}),
       orderingDiagnostics: this.buildOrderingDiagnostics(

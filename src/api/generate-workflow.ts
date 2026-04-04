@@ -54,6 +54,11 @@ import {
   formatArchitecturalWorkflowPrompt,
   structuredPromptAlreadyHasArchitecture,
 } from '../services/ai/structured-workflow-prompt';
+import { runWithBuildUsageTracking, snapshotBuildAiUsage } from '../core/ai/build-usage-context';
+
+function withBuildAiUsage<T extends Record<string, unknown>>(payload: T): T & { buildAiUsage: ReturnType<typeof snapshotBuildAiUsage> } {
+  return { ...payload, buildAiUsage: snapshotBuildAiUsage() };
+}
 
 /**
  * ✅ PHASE 4: Extract nodes from selected variation's matchedKeywords
@@ -126,7 +131,10 @@ function buildFallbackWorkflowIntentPlanForAnalyze(finalPrompt: string): {
       unique.push(n);
     }
   }
-  const summaryText = (fa.summary && String(fa.summary).trim()) || finalPrompt;
+  const summaryText = formatArchitecturalWorkflowPrompt({
+    goal: finalPrompt,
+    proposedNodeChain: unique,
+  });
   const plan: WorkflowIntentPlan = {
     structuredSummary: summaryText,
     proposedNodeChain: unique,
@@ -736,7 +744,7 @@ async function handlePhasedRefine(
           const hasPlan = !!summarizeResult.workflowIntentPlan;
           if (hasPlan) {
             console.log('[PhasedRefine] ✅ Returning single structured plan (summarize phase)');
-            return res.json({
+            return res.json(withBuildAiUsage({
               phase: 'summarize',
               workflowIntentPlan: summarizeResult.workflowIntentPlan,
               promptVariations: summarizeResult.promptVariations || [],
@@ -746,7 +754,7 @@ async function handlePhasedRefine(
               mandatoryNodeTypes: summarizeResult.mandatoryNodeTypes,
               registryTags: summarizeResult.registryTags,
               allKeywords: summarizeResult.allKeywords.slice(0, 100),
-            });
+            }));
           }
 
           const promptToUse = summarizeResult.clarifiedIntent || finalPrompt;
@@ -831,7 +839,7 @@ async function handlePhasedRefine(
       console.log('[PhasedRefine] ✅ Returning refinedPrompt (selected variation):', refinedPromptToReturn.substring(0, 200));
       
       // Return summary with empty questions - AI will work directly from summary
-      return res.json({
+      return res.json(withBuildAiUsage({
         phase: 'clarification',
         questions: [], // Always return empty questions - AI understands from summary
         analysis: {
@@ -843,7 +851,7 @@ async function handlePhasedRefine(
         prompt: finalPrompt,
         refinedPrompt: refinedPromptToReturn, // ✅ CRITICAL: Return selected variation as refinedPrompt
         enhancedPrompt: enhancedPrompt, // Also include at top level
-      });
+      }));
     }
 
     // STEP 2: Check if this is a credential submission (workflow already built)
@@ -914,7 +922,7 @@ async function handlePhasedRefine(
       const structuralBlueprint = buildStructuralBlueprint(finalWorkflow as any);
 
       if (!structuralGate.ok) {
-        return res.json({
+        return res.json(withBuildAiUsage({
           phase: 'configuring_inputs',
           success: false,
           workflow: finalWorkflow,
@@ -927,10 +935,10 @@ async function handlePhasedRefine(
           structuralBlueprint,
           credentialStatuses,
           message: 'Structural fields must be completed before workflow can be ready.',
-        });
+        }));
       }
       
-      return res.json({
+      return res.json(withBuildAiUsage({
         phase: 'ready',
         success: true,
         workflow: finalWorkflow,
@@ -955,7 +963,7 @@ async function handlePhasedRefine(
           warnings: validation.warnings,
           fixesApplied: validation.fixesApplied,
         },
-      });
+      }));
     }
     
     // STEP 2: Build final prompt from answers (if answers provided)
@@ -1193,13 +1201,13 @@ async function handlePhasedRefine(
     }
     
     if (schemaValidationErrors.length > 0) {
-      return res.status(400).json({
+      return res.status(400).json(withBuildAiUsage({
         error: 'Schema validation failed',
         message: `${schemaValidationErrors.length} node(s) have missing schemas`,
         details: schemaValidationErrors,
         phase: 'error',
         success: false,
-      });
+      }));
     }
     
     // 🔒 NODE RESOLUTION: Deterministic node resolution BEFORE integrity check
@@ -1212,14 +1220,14 @@ async function handlePhasedRefine(
     
     if (!resolution.success && resolution.errors.length > 0) {
       console.error('[PHASE] NODE_RESOLUTION_FAILED:', resolution.errors);
-      return res.status(400).json({
+      return res.status(400).json(withBuildAiUsage({
         error: 'Node resolution failed',
         message: 'Failed to resolve required nodes from prompt',
         details: resolution.errors.map(e => e.message),
         suggestions: resolution.errors.flatMap(e => e.suggestions),
         phase: 'error',
         success: false,
-      });
+      }));
     }
     
     // Ensure resolved nodes are in workflow.
@@ -1282,13 +1290,13 @@ async function handlePhasedRefine(
       ));
     } catch (error: any) {
       console.error('[PHASE] GMAIL_INTEGRITY_FAILED:', error.message);
-      return res.status(400).json({
+      return res.status(400).json(withBuildAiUsage({
         error: 'Gmail integrity check failed',
         message: error.message,
         details: 'Gmail mentioned in prompt but google_gmail node not resolved',
         phase: 'error',
         success: false,
-      });
+      }));
     }
     
     // STEP 5: 🔒 CREDENTIAL DISCOVERY PHASE - MANDATORY ARCHITECTURAL PHASE
@@ -1301,14 +1309,14 @@ async function handlePhasedRefine(
     
     if (!credentialDiscovery.allDiscovered) {
       console.error('[PHASE] CREDENTIAL_DISCOVERY_FAILED:', credentialDiscovery.errors);
-      return res.status(400).json({
+      return res.status(400).json(withBuildAiUsage({
         error: 'Credential discovery failed',
         message: 'Failed to discover all required credentials',
         details: credentialDiscovery.errors,
         warnings: credentialDiscovery.warnings,
         phase: 'error',
         success: false,
-      });
+      }));
     }
     
     console.log(`[PHASE] CREDENTIAL_DISCOVERY - Discovered ${credentialDiscovery.requiredCredentials.length} required credential(s)`);
@@ -1349,12 +1357,12 @@ async function handlePhasedRefine(
       credentialResolver.assertGmailCredentials(credentialResolution, validatedWorkflow);
     } catch (error) {
       console.error('🚨 [PHASE] GMAIL_CREDENTIAL_FAILED:', error instanceof Error ? error.message : String(error));
-      return res.status(400).json({
+      return res.status(400).json(withBuildAiUsage({
         error: 'Credential resolution error',
         message: error instanceof Error ? error.message : String(error),
         phase: 'error',
         success: false,
-      });
+      }));
     }
     
     // 🔧 STEP 4.5: INTELLIGENT CONFIGURATION FILLING
@@ -1521,7 +1529,7 @@ async function handlePhasedRefine(
     const credentialWizardView = buildCredentialWizardView(comprehensiveQuestions, credentialStatuses);
 
     if (!structuralGate.ok) {
-      return res.json({
+      return res.json(withBuildAiUsage({
         phase: 'configuring_inputs',
         success: false,
         status: 'completed',
@@ -1543,10 +1551,10 @@ async function handlePhasedRefine(
         phaseBlockingReasons: unifiedReadiness.blockingReasons,
         structuralBlueprint,
         message: 'Structural fields are incomplete. Complete structural inputs before proceeding.',
-      });
+      }));
     }
   
-    return res.json({
+    return res.json(withBuildAiUsage({
       phase: 'ready', // ✅ CRITICAL: Must be "ready" for frontend to show unified modal
       success: true,
       completionCode: 'WORKFLOW_READY',
@@ -1618,16 +1626,16 @@ async function handlePhasedRefine(
         inputsRequired: formattedInputs.length,
         credentialsRequired: credentialResolution.summary.missingCount,
       },
-    });
+    }));
 
     // ✅ REMOVED: No separate credentials phase - everything returned above in phase: 'ready'
     // Both inputs and credentials are discovered and returned together after generation completes
     // This code path should never be reached - if it is, it's a bug
     console.error('[PHASE] ERROR - Reached unreachable code path. All responses should be in phase: ready above.');
-    return res.status(500).json({
+    return res.status(500).json(withBuildAiUsage({
       error: 'Internal error - workflow generation flow issue',
       phase: 'error',
-    });
+    }));
   } catch (error) {
     console.error('[PhasedRefine] Error:', error);
     
@@ -1648,7 +1656,7 @@ async function handlePhasedRefine(
       console.log('✅ [PhasedRefine] Using chatbot fallback due to Ollama unavailability');
       try {
         const fallbackWorkflow = await generateChatbotWorkflowFallback(finalPrompt);
-        return res.json({
+        return res.json(withBuildAiUsage({
           phase: 'complete',
           workflow: fallbackWorkflow.workflow,
           summary: {
@@ -1662,7 +1670,7 @@ async function handlePhasedRefine(
           prompt: finalPrompt,
           requiredCredentials: [],
           warning: 'Ollama service unavailable - workflow generated using pattern-based fallback',
-        });
+        }));
       } catch (fallbackError) {
         console.error('[PhasedRefine] Fallback generation failed:', fallbackError);
       }
@@ -1688,7 +1696,7 @@ async function handlePhasedRefine(
         blockedNodeTypes: (req as any).blockedNodeTypes,   // ✅ PHASE 1: Blocked conflicting nodes
       });
       
-      return res.json({
+      return res.json(withBuildAiUsage({
         phase: 'complete',
         workflow: lifecycleResult.workflow,
         summary: {
@@ -1702,14 +1710,14 @@ async function handlePhasedRefine(
         prompt: finalPrompt,
         requiredCredentials: lifecycleResult.requiredCredentials || [],
         warning: error instanceof Error ? error.message : String(error),
-      });
+      }));
     } catch (fallbackError) {
       // If fallback also fails, return error
-      return res.status(500).json({
+      return res.status(500).json(withBuildAiUsage({
         error: 'Phased workflow generation failed',
         details: error instanceof Error ? error.message : String(error),
         phase: 'error',
-      });
+      }));
     }
   }
 }
@@ -2499,7 +2507,8 @@ async function buildAndFinalizePlanDrivenCreateWorkflow(
 
   effectiveChain = pruneProposedPlanChain(effectiveChain);
   const { buildWorkflowFromPlanChain } = await import('../services/ai/plan-driven-workflow-builder');
-  const built = buildWorkflowFromPlanChain(effectiveChain);
+  const rawForSwitch = String((req as any).__rawUserPrompt || '').trim();
+  const built = buildWorkflowFromPlanChain(effectiveChain, rawForSwitch || undefined);
   if (!built.success || !built.workflow) {
     throw new Error(
       built.errors.join('; ') || 'Plan-driven workflow build failed: graph does not match plan chain'
@@ -2517,6 +2526,7 @@ async function buildAndFinalizePlanDrivenCreateWorkflow(
 }
 
 export default async function generateWorkflow(req: Request, res: Response) {
+  return runWithBuildUsageTracking(async () => {
   try {
     // Capture raw user input immediately at API entry, before any prompt augmentation.
     const entryBody = req.body as Record<string, unknown>;
@@ -2538,17 +2548,17 @@ export default async function generateWorkflow(req: Request, res: Response) {
         typeof body.confirmedStructuredPrompt === 'string' ? body.confirmedStructuredPrompt.trim() : '';
       const canonicalization = canonicalizePlanChainStrict(chain);
       if (!Array.isArray(chain) || chain.filter((x) => typeof x === 'string').length === 0) {
-        return res.status(400).json({
+        return res.status(400).json(withBuildAiUsage({
           success: false,
           error: 'planProposedNodeChain must be a non-empty array of strings',
-        });
+        }));
       }
       if (canonicalization.issues.length > 0) {
-        return res.status(400).json({
+        return res.status(400).json(withBuildAiUsage({
           success: false,
           error: 'planProposedNodeChain contains non-canonical node types',
           canonicalizationIssues: canonicalization.issues,
-        });
+        }));
       }
       // ✅ TRUST THE AI: The AI already determined the correct node chain, count, and order.
       // We apply auto-repair (adds missing trigger/terminal, dedupes email family) but do NOT
@@ -2572,21 +2582,22 @@ export default async function generateWorkflow(req: Request, res: Response) {
         effectiveChain = semanticRepaired.canonical;
       }
       if (!confirmed) {
-        return res.status(400).json({
+        return res.status(400).json(withBuildAiUsage({
           success: false,
           error: 'confirmedStructuredPrompt is required',
-        });
+        }));
       }
       const { buildWorkflowFromPlanChain } = await import('../services/ai/plan-driven-workflow-builder');
-      const built = buildWorkflowFromPlanChain(effectiveChain);
+      const rawForSwitch = String((req as any).__rawUserPrompt || '').trim();
+      const built = buildWorkflowFromPlanChain(effectiveChain, rawForSwitch || undefined);
       if (!built.success || !built.workflow) {
-        return res.status(400).json({
+        return res.status(400).json(withBuildAiUsage({
           success: false,
           errors: built.errors,
           warnings: built.warnings,
           resolvedChain: built.resolvedChain,
           diagnostics: built.diagnostics,
-        });
+        }));
       }
       const vaultUserId = await resolveVaultUserIdFromRequest(req);
       const lifecycleResult = await workflowLifecycleManager.finalizePlanDrivenWorkflow(built.workflow, vaultUserId);
@@ -2597,7 +2608,7 @@ export default async function generateWorkflow(req: Request, res: Response) {
         const structuralWarnings = Array.isArray(lifecycleResult.validation.warnings)
           ? lifecycleResult.validation.warnings
           : [];
-        return res.status(400).json({
+        return res.status(400).json(withBuildAiUsage({
           success: false,
           error: 'Structural healing failed',
           errorType: 'STRUCTURAL_HEALING_FAILED',
@@ -2611,11 +2622,11 @@ export default async function generateWorkflow(req: Request, res: Response) {
             validationWarnings: structuralWarnings,
             resolvedChain: built.resolvedChain,
           },
-        });
+        }));
       }
       const missingRaw = lifecycleResult.requiredCredentials.missingCredentials || [];
       const missingForUi = excludeGoogleOAuthCredentialsForConfigUi(missingRaw);
-      return res.json({
+      return res.json(withBuildAiUsage({
         success: true,
         resolvedChain: built.resolvedChain,
         diagnostics: built.diagnostics,
@@ -2628,17 +2639,17 @@ export default async function generateWorkflow(req: Request, res: Response) {
         discoveryErrors: lifecycleResult.requiredCredentials.errors,
         discoveryWarnings: lifecycleResult.requiredCredentials.warnings,
         allDiscovered: lifecycleResult.requiredCredentials.allDiscovered,
-      });
+      }));
     }
 
     // Use refinedPrompt if prompt is not provided (for create mode from frontend)
     let finalPrompt = prompt || refinedPrompt;
 
     if (!finalPrompt || typeof finalPrompt !== 'string' || !finalPrompt.trim()) {
-      return res.status(400).json({ 
+      return res.status(400).json(withBuildAiUsage({ 
         error: 'Prompt is required',
         details: 'Please provide a description of the workflow you want to generate.'
-      });
+      }));
     }
 
     // Handle analyze mode - STEP 1: Summarize Layer FIRST, then analysis
@@ -2664,7 +2675,7 @@ export default async function generateWorkflow(req: Request, res: Response) {
             const hasPlan = !!summarizeResult.workflowIntentPlan;
             if (hasPlan) {
               console.log('[Analyze Mode] ✅ Returning structured workflow plan (summarize phase)');
-              return res.json({
+              return res.json(withBuildAiUsage({
                 phase: 'summarize',
                 workflowIntentPlan: summarizeResult.workflowIntentPlan,
                 planQuality: 'normal',
@@ -2676,12 +2687,12 @@ export default async function generateWorkflow(req: Request, res: Response) {
                 mandatoryNodeTypes: summarizeResult.mandatoryNodeTypes,
                 registryTags: summarizeResult.registryTags,
                 allKeywords: summarizeResult.allKeywords.slice(0, 100),
-              });
+              }));
             }
 
             console.warn('[Analyze Mode] Summarize returned no workflowIntentPlan — using fast-analysis fallback');
             const fb = buildFallbackWorkflowIntentPlanForAnalyze(finalPrompt);
-            return res.json({
+            return res.json(withBuildAiUsage({
               phase: 'summarize',
               workflowIntentPlan: fb.workflowIntentPlan,
               planQuality: 'degraded',
@@ -2694,11 +2705,11 @@ export default async function generateWorkflow(req: Request, res: Response) {
               mandatoryNodeTypes: fb.mandatoryNodeTypes,
               registryTags: fb.registryTags,
               allKeywords: [],
-            });
+            }));
           } catch (error) {
             console.error('[Analyze Mode] ⚠️ Error in summarize layer — using fast-analysis fallback:', error);
             const fb = buildFallbackWorkflowIntentPlanForAnalyze(finalPrompt);
-            return res.json({
+            return res.json(withBuildAiUsage({
               phase: 'summarize',
               workflowIntentPlan: fb.workflowIntentPlan,
               planQuality: 'degraded',
@@ -2711,7 +2722,7 @@ export default async function generateWorkflow(req: Request, res: Response) {
               mandatoryNodeTypes: fb.mandatoryNodeTypes,
               registryTags: fb.registryTags,
               allKeywords: [],
-            });
+            }));
           }
         } else {
           console.log('[Analyze Mode] ✅ User confirmed plan — running analysis on structured prompt');
@@ -2796,7 +2807,7 @@ export default async function generateWorkflow(req: Request, res: Response) {
         // ⚡ AUTO-CONTINUE FLAG: If no questions, signal frontend to auto-continue
         const hasNoQuestions = !analysis.questions || analysis.questions.length === 0;
         
-        return res.json({
+        return res.json(withBuildAiUsage({
           phase: 'clarification',
           summary: analysis.summary,
           questions: analysis.questions || [], // Always return empty array (no clarifying questions)
@@ -2811,11 +2822,11 @@ export default async function generateWorkflow(req: Request, res: Response) {
             complexity: 'medium',
             enhancedPrompt: enhancedPrompt,
           },
-        });
+        }));
       } catch (error) {
         console.error('Analysis error:', error);
         // Return fallback on error
-        return res.json({
+        return res.json(withBuildAiUsage({
           phase: 'clarification',
           summary: `Build an automated workflow to accomplish: ${finalPrompt.substring(0, 100)}`,
           questions: [],
@@ -2826,7 +2837,7 @@ export default async function generateWorkflow(req: Request, res: Response) {
             complexity: 'medium',
             enhancedPrompt: finalPrompt,
           },
-        });
+        }));
       }
     }
 
@@ -2868,16 +2879,16 @@ export default async function generateWorkflow(req: Request, res: Response) {
         console.log('💬 [Backend] Answers:', JSON.stringify(answers, null, 2));
         console.log('📝 [Backend] Prompt:', finalPrompt.substring(0, 200));
 
-        return res.json({
+        return res.json(withBuildAiUsage({
           refinedPrompt: refinedPrompt,
           systemPrompt: systemPrompt,
           requirements: requirements,
           requiredCredentials: requiredCredentials, // Add required credentials to response
           prompt: finalPrompt,
-        });
+        }));
       } catch (error) {
         console.error('Refinement error:', error);
-        return res.json({
+        return res.json(withBuildAiUsage({
           refinedPrompt: finalPrompt,
           systemPrompt: `Build an automated workflow to accomplish: ${finalPrompt.substring(0, 100)}`,
           requirements: {
@@ -2891,7 +2902,7 @@ export default async function generateWorkflow(req: Request, res: Response) {
             notifications: [],
           },
           prompt: prompt,
-        });
+        }));
       }
     }
 
@@ -3184,7 +3195,7 @@ export default async function generateWorkflow(req: Request, res: Response) {
           });
           const credentialWizardView = buildCredentialWizardView(comprehensiveQuestions, credentialStatuses);
           if (!structuralGate.ok) {
-            res.write(JSON.stringify({
+            res.write(JSON.stringify(withBuildAiUsage({
               success: false,
               status: 'completed',
               phase: 'configuring_inputs',
@@ -3205,11 +3216,11 @@ export default async function generateWorkflow(req: Request, res: Response) {
               phaseBlockingReasons: unifiedReadiness.blockingReasons,
               structuralBlueprint,
               message: 'Structural fields are incomplete. Complete structural inputs before proceeding.',
-            }) + '\n');
+            })) + '\n');
             res.end();
             return;
           }
-          res.write(JSON.stringify({
+          res.write(JSON.stringify(withBuildAiUsage({
             success: true,
             status: 'completed',
             phase: 'ready', // ✅ CRITICAL: Must be "ready" for frontend to show credentials
@@ -3244,14 +3255,14 @@ export default async function generateWorkflow(req: Request, res: Response) {
             },
             fixAudit: fixResult.audit,
             fixConfidence: fixResult.confidence,
-          }) + '\n');
+          })) + '\n');
           res.end();
           return;
         } catch (buildError) {
-          res.write(JSON.stringify({
+          res.write(JSON.stringify(withBuildAiUsage({
             status: 'error',
             error: buildError instanceof Error ? buildError.message : 'Workflow generation failed'
-          }) + '\n');
+          })) + '\n');
           res.end();
         }
       } else {
@@ -3546,7 +3557,7 @@ export default async function generateWorkflow(req: Request, res: Response) {
         const credentialWizardView = buildCredentialWizardView(comprehensiveQuestions, credentialStatuses);
 
         if (!structuralGate.ok) {
-          return res.json({
+          return res.json(withBuildAiUsage({
             success: false,
             status: 'completed',
             phase: 'configuring_inputs',
@@ -3569,10 +3580,10 @@ export default async function generateWorkflow(req: Request, res: Response) {
             fixAudit: fixResult.audit,
             fixConfidence: fixResult.confidence,
             message: 'Structural fields are incomplete. Complete structural inputs before proceeding.',
-          });
+          }));
         }
         
-        return res.json({
+        return res.json(withBuildAiUsage({
           success: true,
           phase: 'ready', // ✅ CRITICAL: Must be "ready" for frontend
           completionCode: 'WORKFLOW_READY',
@@ -3613,7 +3624,7 @@ export default async function generateWorkflow(req: Request, res: Response) {
           },
           chatbotPage: chatbotPageInfo,
           memoryWorkflowId: storedWorkflowId, // Include memory system workflow ID
-        });
+        }));
       }
     } catch (error: any) {
       console.error('Workflow generation error:', error);
@@ -3676,7 +3687,7 @@ export default async function generateWorkflow(req: Request, res: Response) {
           ]
         };
 
-        return res.json({
+        return res.json(withBuildAiUsage({
           success: true,
           workflow: basicWorkflow,
           message: "⚠️  Workflow generation failed. This is a minimal fallback workflow that may not match your intended workflow. Please try again or provide more details.",
@@ -3687,7 +3698,7 @@ export default async function generateWorkflow(req: Request, res: Response) {
             'This workflow was generated as a fallback due to generation failure. It may not match your intended workflow.'
           ],
           expandedIntent: (lifecycleResult as any)?.analysis?.expandedIntent || (lifecycleResult as any)?.expandedIntent,
-        });
+        }));
       } else {
         // Do not silently replace intended workflow
         // Return error instead of fallback
@@ -3697,7 +3708,7 @@ export default async function generateWorkflow(req: Request, res: Response) {
         console.error('   Generation failed:', hasGenerationFailed);
         console.error('   Lifecycle result:', lifecycleResult ? 'exists' : 'missing');
         
-        return res.status(500).json({
+        return res.status(500).json(withBuildAiUsage({
           success: false,
           error: 'Workflow generation failed',
           message: 'Failed to generate workflow. Please try again or provide more details.',
@@ -3705,7 +3716,7 @@ export default async function generateWorkflow(req: Request, res: Response) {
           errors: lifecycleResult?.validation?.errors || [],
           warnings: lifecycleResult?.validation?.warnings || [],
           expandedIntent: (lifecycleResult as any)?.analysis?.expandedIntent || (lifecycleResult as any)?.expandedIntent,
-        });
+        }));
       }
     }
   } catch (error: any) {
@@ -3715,10 +3726,11 @@ export default async function generateWorkflow(req: Request, res: Response) {
     if (errorStack) console.error('[GenerateWorkflowError] Stack:', errorStack);
     console.error('[GenerateWorkflowError] Full error:', error);
     
-    return res.status(500).json({
+    return res.status(500).json(withBuildAiUsage({
       error: errorMsg,
       details: 'Failed to generate workflow. Please try again or check the logs.',
       stack: process.env.NODE_ENV === 'development' ? errorStack : undefined,
-    });
+    }));
   }
+  });
 }

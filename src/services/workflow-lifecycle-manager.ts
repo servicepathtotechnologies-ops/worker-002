@@ -181,6 +181,29 @@ export interface CredentialInjectionResult {
  * Manages the complete workflow lifecycle from generation to execution readiness.
  */
 export class WorkflowLifecycleManager {
+  /**
+   * Self-healing gate (spec task 24).
+   * Validates the workflow BEFORE credential evaluation.
+   * If invalid, attempts repair via reconcileWorkflow.
+   * Throws if repair fails.
+   */
+  private async validateAndHealBeforeCredentials(
+    workflow: Workflow
+  ): Promise<{ workflow: Workflow; healed: boolean }> {
+    const validation = unifiedGraphOrchestrator.validateWorkflow(workflow);
+    if (validation.valid) return { workflow, healed: false };
+
+    // Attempt repair
+    const repaired = unifiedGraphOrchestrator.reconcileWorkflow(workflow);
+    const revalidation = unifiedGraphOrchestrator.validateWorkflow(repaired.workflow);
+
+    if (!revalidation.valid) {
+      throw new Error(`SELF_HEAL_FAILED: ${revalidation.errors.join('; ')}`);
+    }
+
+    return { workflow: repaired.workflow, healed: true };
+  }
+
   private async enforceIntentCoverageGuards(
     workflow: Workflow,
     prompt: string,
@@ -1261,6 +1284,20 @@ export class WorkflowLifecycleManager {
     if (!userId) {
       // ✅ IMPORTANT: Never call tokenless supabase.auth.getUser() on backend; it can stall without a session.
       console.warn('[WorkflowLifecycle] No vaultUserId/authToken provided; credential vault checks will be skipped.');
+    }
+
+    // ── Self-healing gate (spec task 24) ─────────────────────────────────
+    // Validate and repair the workflow BEFORE credential evaluation.
+    // The credential step must only be reached when validateWorkflow returns valid: true.
+    try {
+      const healResult = await this.validateAndHealBeforeCredentials(finalWorkflow);
+      finalWorkflow = healResult.workflow;
+      if (healResult.healed) {
+        console.log('[WorkflowLifecycle] ✅ Self-healing gate: workflow was repaired before credential evaluation');
+      }
+    } catch (healError) {
+      console.error('[WorkflowLifecycle] ❌ Self-healing gate failed:', healError);
+      throw healError;
     }
     
     const credentialDiscovery = await credentialDiscoveryPhase.discoverCredentials(finalWorkflow, userId);

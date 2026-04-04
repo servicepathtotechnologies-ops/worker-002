@@ -1,6 +1,8 @@
 // LLM Adapter Layer for CtrlChecks AI
 // Unified interface for LLM providers (OpenAI, Claude, Gemini). Ollama removed; use Gemini.
 
+import { recordLlmUsage } from '../core/ai/build-usage-context';
+
 export interface LLMMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
@@ -13,6 +15,8 @@ export interface LLMOptions {
   apiKey?: string;
   stream?: boolean;
   provider?: 'openai' | 'claude' | 'gemini' | 'ollama';
+  /** When build-time tracking is active (`runWithBuildUsageTracking`), labels this call in snapshots. */
+  usageStage?: string;
 }
 
 export interface LLMResponse {
@@ -29,6 +33,15 @@ export interface LLMResponse {
 export interface EmbeddingResponse {
   embedding: number[];
   model?: string;
+  usage?: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+  };
+}
+
+export interface EmbeddingOptions {
+  usageStage?: string;
 }
 
 export type LLMProvider = 'openai' | 'claude' | 'gemini' | 'ollama';
@@ -48,34 +61,62 @@ export class LLMAdapter {
   ): Promise<LLMResponse> {
     const effectiveProvider = provider === 'ollama' ? 'gemini' : provider;
     const apiKey = options.apiKey || (effectiveProvider === 'gemini' ? process.env.GEMINI_API_KEY : undefined);
+    let result: LLMResponse;
     switch (effectiveProvider) {
       case 'openai':
-        return this.chatOpenAI(messages, options);
+        result = await this.chatOpenAI(messages, options);
+        break;
       case 'claude':
-        return this.chatClaude(messages, options);
+        result = await this.chatClaude(messages, options);
+        break;
       case 'gemini':
-        return this.chatGemini(messages, { ...options, apiKey: apiKey || options.apiKey });
+        result = await this.chatGemini(messages, { ...options, apiKey: apiKey || options.apiKey });
+        break;
       default:
         throw new Error(`Unsupported provider: ${provider}`);
     }
+    if (result.usage) {
+      recordLlmUsage({
+        provider: String(effectiveProvider),
+        model: result.model || options.model || '',
+        usage: result.usage,
+        stage: options.usageStage,
+        source: 'LLMAdapter.chat',
+      });
+    }
+    return result;
   }
 
   async embed(
     provider: 'openai' | 'gemini' | 'ollama',
     text: string,
-    apiKey?: string
+    apiKey?: string,
+    embedOptions?: EmbeddingOptions
   ): Promise<EmbeddingResponse> {
     if (provider === 'ollama') {
       throw new Error('Ollama removed. Use Gemini for embeddings (or OpenAI).');
     }
+    let result: EmbeddingResponse;
     switch (provider) {
       case 'openai':
-        return this.embedOpenAI(text, apiKey);
+        result = await this.embedOpenAI(text, apiKey);
+        break;
       case 'gemini':
-        return this.embedGemini(text, apiKey);
+        result = await this.embedGemini(text, apiKey);
+        break;
       default:
         throw new Error(`Embedding not supported for provider: ${provider}`);
     }
+    if (result.usage) {
+      recordLlmUsage({
+        provider,
+        model: result.model || 'embedding',
+        usage: result.usage,
+        stage: embedOptions?.usageStage || 'embedding',
+        source: 'LLMAdapter.embed',
+      });
+    }
+    return result;
   }
 
   /**
@@ -418,6 +459,13 @@ export class LLMAdapter {
       return {
         embedding: data.data[0].embedding,
         model: data.model,
+        usage: data.usage
+          ? {
+              promptTokens: data.usage.prompt_tokens || 0,
+              completionTokens: 0,
+              totalTokens: data.usage.total_tokens ?? data.usage.prompt_tokens ?? 0,
+            }
+          : undefined,
       };
     } catch (error) {
       if (error instanceof Error) {

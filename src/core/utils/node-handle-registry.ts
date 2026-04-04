@@ -351,7 +351,14 @@ export function isValidHandle(nodeType: string, handleId: string, isSource: bool
     const validPorts = nodeDef.outgoingPorts || [];
     return validPorts.includes(handleId);
   } else {
-    const validPorts = nodeDef.incomingPorts || [];
+    const validPorts =
+      nodeDef.incomingPorts && nodeDef.incomingPorts.length > 0
+        ? nodeDef.incomingPorts
+        : ['input'];
+    // React Flow / legacy graphs often use "default" for the primary input handle
+    if (handleId === 'default' && validPorts.includes('input')) {
+      return true;
+    }
     return validPorts.includes(handleId);
   }
 }

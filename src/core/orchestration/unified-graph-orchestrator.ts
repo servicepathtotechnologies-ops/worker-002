@@ -482,12 +482,18 @@ class UnifiedGraphOrchestratorImpl implements UnifiedGraphOrchestrator {
       executionOrder,
       tagsFromVariation
     );
-    
+
+    // Structural validation must use the same execution order as reconciliation (avoid stale order + duplicate reconcile).
+    const postReconcileValidation = this.validateWorkflow(
+      reconciliationResult.workflow,
+      executionOrder
+    );
+
     return {
       workflow: reconciliationResult.workflow,
       executionOrder,
-      errors: reconciliationResult.errors,
-      warnings: reconciliationResult.warnings,
+      errors: [...reconciliationResult.errors, ...postReconcileValidation.errors],
+      warnings: [...reconciliationResult.warnings, ...postReconcileValidation.warnings],
       removedNodeTypes: reconciliationResult.removedNodeTypes || [], // ✅ Return removed node types
     };
   }

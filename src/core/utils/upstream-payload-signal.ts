@@ -44,3 +44,67 @@ export function isEffectivelyEmptyUpstreamPayload(output: unknown): boolean {
   }
   return true;
 }
+
+/**
+ * Keys that may appear alone on trigger/schedule/interval outputs without carrying user narrative
+ * (e.g. `{ executed_at }` after schedule). Downstream runtime_ai nodes should treat this like a
+ * thin upstream: use workflow intent + config, not full AI mapping on timestamps.
+ */
+const UPSTREAM_SOLO_NON_NARRATIVE_KEYS = new Set([
+  'executed_at',
+  'scheduled_at',
+  'started_at',
+  'finished_at',
+  'timestamp',
+  'cron',
+  'timezone',
+  'time_zone',
+  'next_run',
+  'next_run_at',
+  'last_run',
+  'last_run_at',
+  'interval',
+  'interval_ms',
+  'interval_seconds',
+  'trigger_type',
+  'trigger',
+  'run_id',
+  'execution_id',
+  'fire_count',
+  'skipped',
+  'status',
+]);
+
+/**
+ * True when upstream is empty OR only contains underscore meta / empty inputData / scheduling-only primitives.
+ * Does not match payloads that include any key outside {@link UPSTREAM_SOLO_NON_NARRATIVE_KEYS} (except _* / inputData).
+ */
+export function isUpstreamNarrativelyThinForRuntimeAi(output: unknown): boolean {
+  if (isEffectivelyEmptyUpstreamPayload(output)) return true;
+  if (output === null || typeof output !== 'object' || Array.isArray(output)) {
+    return false;
+  }
+
+  const obj = output as Record<string, unknown>;
+
+  const inputData = obj.inputData;
+  if (inputData != null && typeof inputData === 'object' && !Array.isArray(inputData)) {
+    if (Object.keys(inputData as object).length > 0) return false;
+  }
+  if (Array.isArray(inputData) && inputData.length > 0) return false;
+  if (typeof inputData === 'string' && inputData.trim().length > 0) return false;
+
+  const keys = Object.keys(obj).filter((k) => !k.startsWith('_') && k !== 'inputData');
+  if (keys.length === 0) return true;
+
+  for (const k of keys) {
+    if (!UPSTREAM_SOLO_NON_NARRATIVE_KEYS.has(k)) {
+      return false;
+    }
+    const v = obj[k];
+    if (v != null && typeof v === 'object') {
+      return false;
+    }
+  }
+  return true;
+}

@@ -11,6 +11,7 @@ export function applyInputAliasesFromSchema(
   inputSchema: Record<string, NodeInputField | unknown>
 ): string[] {
   const filled: string[] = [];
+  // Canonical → alias (e.g. Slack: copy filled `message` into empty `text`)
   for (const [fieldName, def] of Object.entries(inputSchema)) {
     const aliasOf = (def as NodeInputField)?.aliasOf;
     if (!aliasOf || typeof aliasOf !== 'string') continue;
@@ -19,6 +20,15 @@ export function applyInputAliasesFromSchema(
     if (!isMeaningfulStaticValue(canonical)) continue;
     resolvedInputs[fieldName] = canonical;
     filled.push(fieldName);
+  }
+  // Alias → canonical when canonical is empty (e.g. runtime AI mapped plain text to `text` first; `message` is essential)
+  for (const [fieldName, def] of Object.entries(inputSchema)) {
+    const aliasOf = (def as NodeInputField)?.aliasOf;
+    if (!aliasOf || typeof aliasOf !== 'string') continue;
+    if (!isMeaningfulStaticValue(resolvedInputs[fieldName])) continue;
+    if (isMeaningfulStaticValue(resolvedInputs[aliasOf])) continue;
+    resolvedInputs[aliasOf] = resolvedInputs[fieldName];
+    filled.push(aliasOf);
   }
   return filled;
 }

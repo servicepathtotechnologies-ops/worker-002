@@ -19,6 +19,8 @@ import { NodeLibrary } from '../nodes/node-library';
 import { getSupabaseClient } from '../../core/database/supabase-compat';
 import { connectorRegistry } from '../connectors/connector-registry';
 import { getCredentialVault, CredentialAccessContext } from '../credential-vault';
+import { unifiedNormalizeNodeType } from '../../core/utils/unified-node-type-normalizer';
+import { isCredentialSatisfiedByNodeConfig } from './credential-config-satisfaction';
 
 export interface CredentialRequirement {
   credentialId: string; // Unique identifier (e.g., "google_oauth_gmail", "google_oauth_sheets")
@@ -57,13 +59,14 @@ export interface CredentialResolutionResult {
  * This replaces the old NODE_CREDENTIAL_CONTRACTS map.
  * Now uses Connector Registry for strict connector isolation.
  */
-function getCredentialContractsForNode(nodeType: string): Array<{
+export function getCredentialContractsForNode(nodeType: string): Array<{
   provider: string;
   type: 'oauth' | 'api_key' | 'webhook' | 'token' | 'basic_auth' | 'runtime';
   scopes?: string[];
   vaultKey: string;
   displayName: string;
   required: boolean;
+  credentialFieldName?: string;
 }> {
   // Get connector for this node type
   const connector = connectorRegistry.getConnectorByNodeType(nodeType);
@@ -73,14 +76,16 @@ function getCredentialContractsForNode(nodeType: string): Array<{
     return [];
   }
 
+  const cc = connector.credentialContract;
   // Return credential contract from connector
   return [{
-    provider: connector.credentialContract.provider,
-    type: connector.credentialContract.type,
-    scopes: connector.credentialContract.scopes,
-    vaultKey: connector.credentialContract.vaultKey,
-    displayName: connector.credentialContract.displayName,
-    required: connector.credentialContract.required,
+    provider: cc.provider,
+    type: cc.type,
+    scopes: cc.scopes,
+    vaultKey: cc.vaultKey,
+    displayName: cc.displayName,
+    required: cc.required,
+    credentialFieldName: cc.credentialFieldName,
   }];
 }
 
@@ -118,9 +123,10 @@ export class CredentialResolver {
     const allRequirements: CredentialRequirement[] = [];
     const credentialMap = new Map<string, CredentialRequirement>(); // Deduplicate by credentialId
 
-    // STEP 1: Iterate all final nodes
+    // STEP 1: Iterate all final nodes (canonical type + connector registry aligned with CredentialDiscoveryPhase)
     for (const node of workflow.nodes || []) {
-      const nodeType = this.normalizeNodeType(node);
+      const rawType = unifiedNormalizeNodeType(node);
+      const nodeType = this.nodeLibrary.getCanonicalType(rawType);
       const nodeLabel = node.data?.label || nodeType || 'Unknown Node';
       const nodeId = node.id;
 
@@ -146,8 +152,17 @@ export class CredentialResolver {
         // even though they all use Google OAuth
         const credentialId = this.generateCredentialId(contract);
         
-        // Check if credential is already in vault
-        const resolved = userId ? await this.checkVault(contract.vaultKey, contract.type, userId) : false;
+        const vaultResolved = userId ? await this.checkVault(contract.vaultKey, contract.type, userId) : false;
+        let configResolved = false;
+        if (!vaultResolved) {
+          configResolved = isCredentialSatisfiedByNodeConfig(node, contract);
+        }
+        const resolved = vaultResolved || configResolved;
+        const source: 'vault' | 'user_input' | undefined = resolved
+          ? vaultResolved
+            ? 'vault'
+            : 'user_input'
+          : undefined;
 
         const requirement: CredentialRequirement = {
           credentialId,
@@ -162,7 +177,7 @@ export class CredentialResolver {
           scopes: contract.scopes,
           required: contract.required,
           resolved,
-          source: resolved ? 'vault' : undefined,
+          source,
           vaultKey: contract.vaultKey,
         };
 
@@ -174,37 +189,35 @@ export class CredentialResolver {
           credentialMap.set(credentialId, requirement);
           console.log(`[CredentialResolution] ${credentialId}: ${resolved ? 'SATISFIED' : 'MISSING'} (${contract.provider}) - ${contract.displayName}`);
         } else {
-          // Credential with same ID already exists - merge node references
-          // Keep the one that's missing (higher priority for user action)
-          if (!existing.resolved && resolved) {
-            // Existing is missing, new is resolved - keep existing (user needs to provide it)
-            console.log(`[CredentialResolution] ${credentialId}: Keeping MISSING requirement (${contract.provider})`);
-          } else if (existing.resolved && !resolved) {
-            // Existing is resolved, new is missing - update to missing (user needs to provide it)
-            credentialMap.set(credentialId, requirement);
-            console.log(
-              `[CredentialResolution] ${credentialId}: Updated to MISSING (${contract.provider})`
-            );
-          } else {
-            // Both same state - merge node references
-            // Ensure nodeIds/nodeTypes arrays are initialized for backward compatibility
-            if (!existing.nodeIds) {
-              existing.nodeIds = [existing.nodeId];
-            }
-            if (!existing.nodeTypes) {
-              existing.nodeTypes = [existing.nodeType];
-            }
+          const mergedResolved = existing.resolved || resolved;
+          const anyVault =
+            vaultResolved ||
+            (existing.resolved && existing.source === 'vault');
+          const mergedSource: 'vault' | 'user_input' | undefined = mergedResolved
+            ? anyVault
+              ? 'vault'
+              : 'user_input'
+            : undefined;
 
-            if (!existing.nodeIds.includes(nodeId)) {
-              existing.nodeIds.push(nodeId);
-            }
-            if (!existing.nodeTypes.includes(nodeType)) {
-              existing.nodeTypes.push(nodeType);
-            }
-            console.log(
-              `[CredentialResolution] ${credentialId}: Merged node references (${contract.provider})`
-            );
+          if (!existing.nodeIds) {
+            existing.nodeIds = [existing.nodeId];
           }
+          if (!existing.nodeTypes) {
+            existing.nodeTypes = [existing.nodeType];
+          }
+          if (!existing.nodeIds.includes(nodeId)) {
+            existing.nodeIds.push(nodeId);
+          }
+          if (!existing.nodeTypes.includes(nodeType)) {
+            existing.nodeTypes.push(nodeType);
+          }
+
+          existing.resolved = mergedResolved;
+          existing.source = mergedSource;
+
+          console.log(
+            `[CredentialResolution] ${credentialId}: Merged nodes — resolved=${mergedResolved} (${contract.provider})`
+          );
         }
       }
     }
@@ -423,6 +436,7 @@ export class CredentialResolver {
     vaultKey: string;
     displayName: string;
     required: boolean;
+    credentialFieldName?: string;
   }> {
     // ✅ CRITICAL: Canonicalize aliases (e.g., "gmail" → "google_gmail") so
     // connector-based credential contracts apply consistently across the system.

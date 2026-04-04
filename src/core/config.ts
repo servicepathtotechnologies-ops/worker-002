@@ -52,6 +52,9 @@ export const config: any = {
   // Gemini-first node selection (Path B): use LLM + registry for node selection; when false or Path B fails, use keyword-based (Path A)
   useGeminiFirstNodeSelection: process.env.USE_GEMINI_FIRST_NODE_SELECTION !== 'false',
 
+  // When true, skip enhanced-keyword-matcher.ts fallback entirely and use Gemini-first exclusively
+  useGeminiFirstExclusively: process.env.USE_GEMINI_FIRST_EXCLUSIVELY !== 'false',
+
   // Other
   lovableApiKey: process.env.LOVABLE_API_KEY,
   webhookSecret: process.env.WEBHOOK_SECRET,

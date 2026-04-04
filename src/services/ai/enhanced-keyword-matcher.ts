@@ -15,35 +15,6 @@ export interface KeywordMatch {
 }
 
 export class EnhancedKeywordMatcher {
-  // Comprehensive keyword variations mapping
-  private keywordVariations: Map<string, string[]> = new Map([
-    // Google Sheets variations
-    ['google_sheets', ['sheets', 'sheet', 'google sheets', 'google sheet', 'spreadsheet', 'excel', 'gsheet', 'g sheet', 'googlesheet', 'googlesheets']],
-    // Google Docs variations
-    ['google_doc', ['docs', 'doc', 'google docs', 'google doc', 'document', 'gdoc', 'g doc', 'googledoc', 'googledocs']],
-    // LinkedIn variations
-    ['linkedin', ['linkedin', 'linked in', 'linked-in', 'li', 'professional network', 'linkedin post', 'post to linkedin']],
-    // Twitter variations
-    ['twitter', ['twitter', 'tweet', 'x.com', 'x', 'twitter post', 'post to twitter', 'tweet to']],
-    // Instagram variations
-    ['instagram', ['instagram', 'insta', 'ig', 'instagram post', 'post to instagram', 'post on instagram']],
-    // Slack variations
-    ['slack_message', ['slack', 'slack message', 'slack notification', 'send to slack', 'notify slack']],
-    // Gmail variations
-    ['google_gmail', ['gmail', 'g mail', 'google mail', 'google email', 'email', 'send email', 'mail']],
-    // Database variations
-    ['database_read', ['database', 'db', 'read from database', 'query database', 'sql', 'select']],
-    ['database_write', ['database', 'db', 'write to database', 'save to database', 'insert', 'update']],
-    // HTTP variations
-    ['http_request', ['http', 'api', 'request', 'fetch', 'call api', 'http request', 'api call', 'endpoint']],
-    // Schedule variations
-    ['schedule', ['schedule', 'scheduled', 'daily', 'hourly', 'weekly', 'cron', 'at time', 'every day']],
-    // Form variations
-    ['form', ['form', 'form submission', 'submit form', 'form input', 'user submits']],
-    // Webhook variations
-    ['webhook', ['webhook', 'web hook', 'http endpoint', 'api endpoint', 'callback']],
-  ]);
-
   /**
    * Find best matching node type for user input
    */
@@ -98,15 +69,6 @@ export class EnhancedKeywordMatcher {
     const description = schema.description.toLowerCase();
     const keywords = schema.aiSelectionCriteria?.keywords || [];
     const whenToUse = schema.aiSelectionCriteria?.whenToUse || [];
-
-    // Check keyword variations (highest priority)
-    const variations = this.keywordVariations.get(nodeType) || [];
-    for (const variation of variations) {
-      if (input.includes(variation) || combinedInput.includes(variation)) {
-        score += 30; // High score for variation match
-        matchedKeywords.push(variation);
-      }
-    }
 
     // Check exact node type match
     if (input.includes(nodeType.replace('_', ' ')) || input === nodeType) {

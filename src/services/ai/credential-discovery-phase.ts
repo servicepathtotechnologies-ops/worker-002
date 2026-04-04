@@ -13,6 +13,7 @@ import { nodeLibrary } from '../nodes/node-library';
 import { unifiedNormalizeNodeType } from '../../core/utils/unified-node-type-normalizer';
 import { CredentialResolver } from './credential-resolver';
 import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
+import { isCredentialSatisfiedByNodeConfig } from './credential-config-satisfaction';
 
 export interface CredentialRequirement {
   provider: string;
@@ -188,54 +189,27 @@ export class CredentialDiscoveryPhase {
         }
 
         // ✅ CRITICAL: Also check if credential is already injected in node config
-        // This handles cases where credentials are attached via attach-credentials endpoint
+        // (shared rules with CredentialResolver — webhook, OAuth refs, api_key field)
         if (!satisfied) {
-          const config = node.data?.config || {};
           const schema = nodeLibrary.getSchema(nodeType);
-          
-          // For Slack webhook, check if webhookUrl is populated
-          if (contract.type === 'webhook' && contract.provider === 'slack') {
-            const webhookUrl = config.webhookUrl;
-            if (webhookUrl && typeof webhookUrl === 'string' && 
-                webhookUrl.trim() !== '' && 
-                !webhookUrl.includes('{{ENV.') &&
-                !webhookUrl.includes('{{$json') &&
-                webhookUrl.startsWith('http')) {
-              satisfied = true;
-              console.log(`[CredentialDiscovery] ✅ Slack webhook URL found in node config for ${nodeId}`);
-            }
+          satisfied = isCredentialSatisfiedByNodeConfig(node, {
+            provider: contract.provider,
+            type: contract.type,
+            credentialFieldName: contract.credentialFieldName,
+          });
+          if (satisfied) {
+            console.log(`[CredentialDiscovery] ✅ Credential satisfied from node config for ${nodeId} (${nodeType})`);
           }
-          // OAuth: vault tokens are not stored in config, but we persist a reference (e.g. credentialId=google)
-          // after attach-inputs auto-inject. Treat non-placeholder refs as satisfied even when userId is absent.
-          else if (contract.type === 'oauth') {
-            const cid = String((config as Record<string, unknown>).credentialId ?? '').trim();
-            const cref = String((config as Record<string, unknown>).credentialRef ?? '').trim();
-            const ref = cid || cref;
-            const lower = ref.toLowerCase();
-            if (
-              ref &&
-              lower !== 'none' &&
-              !ref.includes('{{') &&
-              !lower.includes('placeholder')
-            ) {
-              satisfied = true;
-              console.log(
-                `[CredentialDiscovery] ✅ OAuth vault reference in node config for ${nodeId} (${nodeType})`
-              );
-            }
-          }
-          // For other credential types, check schema required fields
-          else if (schema && schema.configSchema) {
+          // Fallback: SMTP and similar — multi-field or no credentialFieldName on connector
+          if (!satisfied && schema && schema.configSchema) {
+            const config = node.data?.config || {};
             const requiredFields = schema.configSchema.required || [];
             for (const field of requiredFields) {
               const fieldValue = config[field];
-              // Check if field is populated and not a placeholder
               if (fieldValue && typeof fieldValue === 'string' && 
                   fieldValue.trim() !== '' && 
                   !fieldValue.includes('{{ENV.') &&
                   !fieldValue.includes('{{$json')) {
-                // Field is populated - credential might be satisfied
-                // For webhook URLs, validate format
                 if (field.toLowerCase().includes('webhook') || field.toLowerCase().includes('url')) {
                   if (fieldValue.startsWith('http')) {
                     satisfied = true;
@@ -243,7 +217,6 @@ export class CredentialDiscoveryPhase {
                     break;
                   }
                 } else {
-                  // For other fields (tokens, keys, etc.), assume satisfied if non-empty
                   satisfied = true;
                   console.log(`[CredentialDiscovery] ✅ Credential field "${field}" found in node config for ${nodeId}`);
                   break;

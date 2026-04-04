@@ -367,5 +367,65 @@ describe('CredentialResolver', () => {
       expect(gmailCred?.credentialId).toContain('gmail');
       expect(sheetsCred?.credentialId).toContain('spreadsheets');
     });
+
+    it('should mark Slack webhook satisfied when webhookUrl is in node config (no vault)', async () => {
+      const workflow: Workflow = {
+        nodes: [
+          {
+            id: 's1',
+            type: 'slack_message',
+            position: { x: 0, y: 0 },
+            data: {
+              type: 'slack_message',
+              label: 'Slack',
+              category: 'utility',
+              config: {
+                webhookUrl: 'https://hooks.slack.com/services/XXX/YYY/ZZZ',
+              },
+            },
+          },
+        ],
+        edges: [],
+      };
+
+      const result = await resolver.resolve(workflow, undefined);
+
+      expect(result.missing).toHaveLength(0);
+      expect(result.satisfied).toHaveLength(1);
+      expect(result.satisfied[0].provider).toBe('slack');
+      expect(result.satisfied[0].resolved).toBe(true);
+      expect(result.satisfied[0].source).toBe('user_input');
+      expect(result.summary.missingCount).toBe(0);
+    });
+
+    it('should mark Google OAuth satisfied when credentialId is in node config (no vault)', async () => {
+      const workflow: Workflow = {
+        nodes: [
+          {
+            id: 'sh1',
+            type: 'google_sheets',
+            position: { x: 0, y: 0 },
+            data: {
+              type: 'google_sheets',
+              label: 'Sheets',
+              category: 'google',
+              config: {
+                credentialId: 'google_oauth_spreadsheets',
+                spreadsheetId: 'abc',
+              },
+            },
+          },
+        ],
+        edges: [],
+      };
+
+      const result = await resolver.resolve(workflow, undefined);
+
+      expect(result.missing).toHaveLength(0);
+      expect(result.satisfied.length).toBe(1);
+      expect(result.satisfied[0].provider).toBe('google');
+      expect(result.satisfied[0].source).toBe('user_input');
+      expect(result.summary.missingCount).toBe(0);
+    });
   });
 });

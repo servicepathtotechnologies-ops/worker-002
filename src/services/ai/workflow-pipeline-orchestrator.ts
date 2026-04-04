@@ -189,6 +189,12 @@ export interface PipelineContext {
    * Last known WorkflowIntentPlan — preserved for error recovery UI.
    */
   lastKnownPlan?: import('./summarize-layer').WorkflowIntentPlan;
+
+  /**
+   * Node selection rationale from PipelineReasoningCoordinator.
+   * Populated after the Senior AI validates the node selection stage.
+   */
+  nodeSelectionRationale?: import('./node-sufficiency-checker').NodeSelectionRationale[];
 }
 
 export interface PipelineResult {

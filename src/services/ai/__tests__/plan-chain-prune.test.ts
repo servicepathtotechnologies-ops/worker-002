@@ -13,4 +13,22 @@ describe('plan-chain-prune', () => {
       pruneProposedPlanChain(['form', 'if_else', 'google_gmail', 'log_output', 'slack_message', 'log_output'])
     ).toEqual(['form', 'if_else', 'google_gmail', 'log_output', 'slack_message', 'log_output']);
   });
+
+  it('preserves consecutive duplicate types after if_else (e.g. two AI nodes on two branches)', () => {
+    expect(
+      pruneProposedPlanChain([
+        'manual_trigger',
+        'if_else',
+        'ai_chat_model',
+        'ai_chat_model',
+        'log_output',
+      ])
+    ).toEqual([
+        'manual_trigger',
+        'if_else',
+        'ai_chat_model',
+        'ai_chat_model',
+        'log_output',
+      ]);
+  });
 });

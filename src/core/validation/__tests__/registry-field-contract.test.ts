@@ -28,4 +28,19 @@ describe('registry-field-contract', () => {
     );
     expect(req).toBe(false);
   });
+
+  it('computeFieldRequiredBeforeExecution blocks essential runtime_ai fields', () => {
+    const req = computeFieldRequiredBeforeExecution(
+      'linkedin',
+      'text',
+      {
+        type: 'string',
+        role: 'content',
+        essentialForExecution: true,
+        fillMode: { default: 'runtime_ai', supportsRuntimeAI: true },
+      } as any,
+      { _fillMode: { text: 'runtime_ai' } } as Record<string, unknown>
+    );
+    expect(req).toBe(true);
+  });
 });
