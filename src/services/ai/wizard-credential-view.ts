@@ -16,12 +16,13 @@ export type CredentialWizardOwnershipSummary =
   | 'unlockable_locked'
   | 'selectable';
 
+/** Rows may omit displayName — match logic must not assume it is set. */
 export interface CredentialStatusRow {
   nodeId: string;
   nodeType?: string;
   nodeLabel?: string;
   credentialId: string;
-  displayName: string;
+  displayName?: string;
   status: CredentialWizardStatus;
 }
 
@@ -49,8 +50,8 @@ export interface CredentialWizardNodeGroup {
   rows: CredentialWizardRow[];
 }
 
-function norm(s: string): string {
-  return String(s || '')
+function norm(s: string | undefined | null): string {
+  return String(s ?? '')
     .trim()
     .toLowerCase()
     .replace(/[_\s-]+/g, '');
@@ -112,7 +113,7 @@ export function matchCredentialStatusForQuestion(
     if (fn && (cid.includes(fn) || fn.includes(cid))) score += 5;
     if (fn && dn.includes(fn)) score += 4;
     if (text && dn && (text.includes(dn.slice(0, 12)) || dn.includes(text.slice(0, 12)))) score += 2;
-    if (q.fieldName === 'authType' && r.displayName.toLowerCase().includes('google')) score += 1;
+    if (q.fieldName === 'authType' && (dn.includes('google') || cid.includes('google'))) score += 1;
     return score;
   };
 

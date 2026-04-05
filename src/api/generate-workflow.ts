@@ -106,14 +106,20 @@ export default async function generateWorkflow(req: Request, res: Response): Pro
 
     // Map requiredCredentials (with satisfied flags from vault queries) into
     // the credentialStatuses shape consumed by filterStillBlockingOAuth() in the wizard.
-    const credentialStatuses = result.requiredCredentials.flatMap((req) => {
+    const credentialStatuses = result.requiredCredentials.flatMap((req: any) => {
       const credentialId = (req.vaultKey || req.provider || '').toLowerCase().trim()
         .replace(/^gmail$/, 'google'); // normalize gmail → google
       const status = req.satisfied ? 'resolved_connected' : 'required_missing';
       const nodeIds = Array.isArray(req.nodeIds) && req.nodeIds.length > 0
         ? req.nodeIds
         : ['unknown'];
-      return nodeIds.map((nodeId) => ({ nodeId, credentialId, status }));
+      const displayName =
+        (typeof req.displayName === 'string' && req.displayName.trim()) ||
+        (typeof req.vaultKey === 'string' && req.vaultKey.trim()) ||
+        (typeof req.provider === 'string' && req.provider.trim()) ||
+        credentialId ||
+        'Credential';
+      return nodeIds.map((nodeId: string) => ({ nodeId, credentialId, status, displayName }));
     });
 
     res.json({

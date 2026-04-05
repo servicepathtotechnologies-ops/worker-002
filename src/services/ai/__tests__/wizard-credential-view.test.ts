@@ -101,4 +101,42 @@ describe('wizard-credential-view', () => {
     const { rows } = buildCredentialWizardView(questions, []);
     expect(rows).toHaveLength(0);
   });
+
+  it('does not throw when authType question matches status row without displayName (legacy API shape)', () => {
+    const q = baseQ({
+      id: 'q_auth_tw',
+      fieldName: 'authType',
+      text: 'Authentication method',
+      nodeId: 'n_tw',
+      nodeType: 'twitter',
+      nodeLabel: 'Twitter/X',
+      category: 'credential',
+    });
+    const statuses: CredentialStatusRow[] = [
+      {
+        nodeId: 'n_tw',
+        credentialId: 'twitter',
+        status: 'required_missing',
+      },
+    ];
+    expect(() => matchCredentialStatusForQuestion(q, statuses)).not.toThrow();
+    expect(matchCredentialStatusForQuestion(q, statuses)).toBe('required_missing');
+  });
+
+  it('authType + google credentialId without displayName resolves without throw', () => {
+    const q = baseQ({
+      id: 'q_auth_g',
+      fieldName: 'authType',
+      text: 'Google account',
+      nodeId: 'n_g',
+      nodeType: 'google_gmail',
+      nodeLabel: 'Gmail',
+      category: 'credential',
+    });
+    const statuses: CredentialStatusRow[] = [
+      { nodeId: 'n_g', credentialId: 'google', status: 'resolved_connected' },
+    ];
+    expect(() => matchCredentialStatusForQuestion(q, statuses)).not.toThrow();
+    expect(matchCredentialStatusForQuestion(q, statuses)).toBe('resolved_connected');
+  });
 });
