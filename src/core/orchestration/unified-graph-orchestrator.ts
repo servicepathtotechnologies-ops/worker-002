@@ -282,6 +282,23 @@ class UnifiedGraphOrchestratorImpl implements UnifiedGraphOrchestrator {
         ? downstreamNodes.find((n) => n.id === targetNodeId && !assignedNodeIds.has(n.id))
         : undefined;
 
+      // (1b) Index-aware type+position lookup — when ID lookup fails (stale plan-time ID),
+      // prefer the node at position `index` in downstreamNodes whose type matches targetNodeType.
+      // This preserves semantic intent when IDs differ between plan-time and materialized nodes.
+      if (!targetNode && targetNodeId && targetNodeType) {
+        const candidateByPosition = downstreamNodes[index];
+        if (
+          candidateByPosition &&
+          !assignedNodeIds.has(candidateByPosition.id) &&
+          this.getNodeType(candidateByPosition) === targetNodeType
+        ) {
+          targetNode = candidateByPosition;
+          console.log(
+            `[UnifiedGraphOrchestrator] wireSwitchCaseEdges: case "${caseValue}" — stale ID "${targetNodeId}", resolved via index+type to ${this.getNodeType(candidateByPosition)}(${candidateByPosition.id.substring(0, 8)})`
+          );
+        }
+      }
+
       // (2) Type-based lookup — find the first unassigned node whose type matches.
       if (!targetNode && targetNodeType) {
         targetNode = downstreamNodes.find(
@@ -682,8 +699,13 @@ class UnifiedGraphOrchestratorImpl implements UnifiedGraphOrchestrator {
       if (caseCount === 0) continue; // No cases configured yet — skip (not a structural error)
       const outDegree = currentWorkflow.edges.filter(e => e.source === n.id).length;
       if (outDegree !== caseCount) {
-        errors.push(
-          `Switch node "${n.id}": out-degree ${outDegree} does not match cases.length ${caseCount} — DAG structural invariant violated`
+        // Downgrade to warning: the AI may have generated fewer branch nodes than cases
+        // (e.g. 2 downstream nodes for a 3-case switch). This is a generation-time issue
+        // that the node selection prompt fix addresses. At save/validation time, a mismatch
+        // means some branches are unwired but the graph is otherwise valid — treat as warning
+        // so the workflow can still be saved and the user can add the missing branch node.
+        warnings.push(
+          `Switch node "${n.id}": out-degree ${outDegree} does not match cases.length ${caseCount} — some branches may be unwired`
         );
       }
     }

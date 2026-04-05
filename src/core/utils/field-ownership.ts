@@ -27,6 +27,12 @@ export function classifyFieldOwnership(
   field: Pick<NodeInputField, 'fillMode' | 'role' | 'helpCategory'>
 ): FieldOwnershipClass {
   const helpCategory = field.helpCategory;
+
+  // URL-type categories are config values, not secrets — always return 'value'
+  // This guard takes priority over STRICT_CREDENTIAL_CATEGORIES to prevent future regressions
+  const URL_CONFIG_CATEGORIES = new Set(['webhook_url', 'base_url', 'api_endpoint', 'callback_url', 'redirect_url']);
+  if (helpCategory && URL_CONFIG_CATEGORIES.has(helpCategory)) return 'value';
+
   if (helpCategory && STRICT_CREDENTIAL_CATEGORIES.has(helpCategory)) {
     return 'credential';
   }

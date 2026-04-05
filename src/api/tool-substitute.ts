@@ -9,7 +9,6 @@
 import { Request, Response } from 'express';
 import { toolSubstitutionEngine } from '../services/ai/tool-substitution-engine';
 import { getSupabaseClient } from '../core/database/supabase-compat';
-import { workflowPipelineOrchestrator } from '../services/ai/workflow-pipeline-orchestrator';
 import { Workflow } from '../core/types/ai-types';
 
 interface ToolSubstituteRequest {
@@ -130,41 +129,10 @@ export async function substituteTools(req: Request, res: Response) {
       }
     }
 
-    // Update pipeline if requested
+    // Update pipeline if requested — no-op in AI-first pipeline (generation is direct)
     let pipelineResult = null;
     if (updatePipeline && workflowId) {
-      console.log(`[ToolSubstitute] Updating pipeline after substitution`);
-      
-      // Get confirmation request to continue pipeline
-      const { workflowConfirmationManager } = await import('../services/ai/workflow-confirmation-manager');
-      const confirmationRequest = workflowConfirmationManager.getConfirmationRequest(workflowId);
-      
-      if (confirmationRequest) {
-        // Update confirmation request with new workflow
-        const updatedRequest = {
-          ...confirmationRequest,
-          workflow: {
-            nodes: result.workflow.nodes || [],
-            edges: result.workflow.edges || [],
-          },
-        };
-        
-        // Continue pipeline with updated workflow
-        try {
-          pipelineResult = await workflowPipelineOrchestrator.continuePipelineAfterConfirmation(
-            workflowId,
-            true, // confirmed
-            undefined, // existingCredentials
-            undefined, // providedCredentials
-            {
-              mode: 'build',
-            }
-          );
-        } catch (error) {
-          console.error(`[ToolSubstitute] Pipeline update failed:`, error);
-          // Don't fail the request, just log the error
-        }
-      }
+      console.log(`[ToolSubstitute] Pipeline update requested — AI-first pipeline generates directly, no continuation needed`);
     }
 
     console.log(`[ToolSubstitute] ✅ Successfully substituted ${result.substitutedNodes.length} tool(s)`);

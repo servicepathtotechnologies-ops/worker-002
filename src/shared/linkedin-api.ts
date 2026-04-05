@@ -199,7 +199,7 @@ export async function registerLinkedInUpload(
 }
 
 /**
- * Download media from a public URL and upload it to the LinkedIn upload URL.
+ * Download media from a public URL (or decode a data URI) and upload it to the LinkedIn upload URL.
  * Returns basic metadata about the uploaded file.
  */
 export async function uploadLinkedInMediaFromUrl(
@@ -207,24 +207,38 @@ export async function uploadLinkedInMediaFromUrl(
   mediaUrl: string,
   overrideContentType?: string
 ): Promise<{ contentType: string; size: number }> {
-  const mediaResp = await fetch(mediaUrl);
-  if (!mediaResp.ok) {
-    const errorText = await mediaResp.text().catch(() => '');
-    throw new Error(
-      `[LinkedIn API] Failed to download media from mediaUrl (${mediaResp.status}): ${errorText.slice(
-        0,
-        300
-      )}`
-    );
+  let buffer: Buffer;
+  let contentType: string;
+
+  // Handle base64 data URIs (e.g. data:image/jpeg;base64,/9j/...)
+  if (mediaUrl.startsWith('data:')) {
+    const commaIdx = mediaUrl.indexOf(',');
+    if (commaIdx === -1) {
+      throw new Error('[LinkedIn API] Invalid data URI: missing comma separator');
+    }
+    const meta = mediaUrl.slice(5, commaIdx); // e.g. "image/jpeg;base64"
+    const dataPart = mediaUrl.slice(commaIdx + 1);
+    const isBase64 = meta.includes(';base64');
+    contentType = overrideContentType || meta.replace(';base64', '').trim() || 'application/octet-stream';
+    buffer = isBase64 ? Buffer.from(dataPart, 'base64') : Buffer.from(decodeURIComponent(dataPart));
+  } else {
+    const mediaResp = await fetch(mediaUrl);
+    if (!mediaResp.ok) {
+      const errorText = await mediaResp.text().catch(() => '');
+      throw new Error(
+        `[LinkedIn API] Failed to download media from mediaUrl (${mediaResp.status}): ${errorText.slice(
+          0,
+          300
+        )}`
+      );
+    }
+    contentType =
+      overrideContentType ||
+      mediaResp.headers.get('content-type') ||
+      'application/octet-stream';
+    const arrayBuffer = await mediaResp.arrayBuffer();
+    buffer = Buffer.from(arrayBuffer);
   }
-
-  const contentType =
-    overrideContentType ||
-    mediaResp.headers.get('content-type') ||
-    'application/octet-stream';
-
-  const arrayBuffer = await mediaResp.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
 
   const uploadResp = await fetch(uploadUrl, {
     method: 'PUT',

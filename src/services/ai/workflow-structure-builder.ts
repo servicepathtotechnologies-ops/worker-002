@@ -922,31 +922,9 @@ Return ONLY valid JSON, no markdown, no explanations.`;
       
       if (!hasValidTrigger) {
         console.warn(`[WorkflowStructureBuilder] ⚠️  Intent parsing failed completely - no actions and no valid trigger`);
-        console.warn(`[WorkflowStructureBuilder] Using minimal fallback: manual_trigger + set_variable`);
+        console.warn(`[WorkflowStructureBuilder] Throwing IntentParsingError instead of emitting set_variable skeleton`);
         
-        // Last resort: minimal fallback workflow
-        return {
-          trigger: 'manual_trigger',
-          trigger_config: {},
-          nodes: [
-            {
-              id: 'step1',
-              type: 'set_variable',
-              config: {},
-            },
-          ],
-          connections: [
-            {
-              source: 'trigger',
-              target: 'step1',
-              sourceOutput: 'output',
-              targetInput: 'input',
-            },
-          ],
-          meta: {
-            origin: 'scratch',
-          },
-        };
+        throw new Error('INTENT_UNCLEAR: Could not determine workflow intent — please clarify your request');
       }
     }
 

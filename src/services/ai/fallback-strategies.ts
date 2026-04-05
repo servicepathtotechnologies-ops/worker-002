@@ -20,7 +20,6 @@ import { SimpleIntent } from './simple-intent';
 import { StructuredIntent } from './intent-structurer';
 import { fallbackIntentGenerator } from './fallback-intent-generator';
 import { templateBasedGenerator } from './template-based-generator';
-import { keywordNodeSelector } from './keyword-node-selector';
 import { intentAwarePlanner } from './intent-aware-planner';
 import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 import { nodeCapabilityRegistryDSL } from './node-capability-registry-dsl';
@@ -280,29 +279,33 @@ export class FallbackStrategies {
     const actions: Array<{ type: string; operation: string }> = [];
     const dataSources: Array<{ type: string; operation: string }> = [];
     
-    // ✅ UNIVERSAL: Map sources to node types using registry
+    // ✅ AI-FIRST: Map sources to node types using registry (no keyword selector)
     if (simpleIntent.sources && simpleIntent.sources.length > 0) {
       for (const source of simpleIntent.sources) {
-        const nodeSelection = keywordNodeSelector.selectBestNode(source, 'dataSource');
-        if (nodeSelection) {
-          dataSources.push({
-            type: nodeSelection.nodeType,
-            operation: 'read',
-          });
+        const sourceLower = source.toLowerCase();
+        const allTypes = unifiedNodeRegistry.getAllTypes();
+        const match = allTypes.find((t) => {
+          const def = unifiedNodeRegistry.get(t);
+          return def && (def.label?.toLowerCase().includes(sourceLower) || t.toLowerCase().includes(sourceLower));
+        });
+        if (match) {
+          dataSources.push({ type: match, operation: 'read' });
         }
       }
     }
     
-    // ✅ UNIVERSAL: Map destinations to node types using registry
+    // ✅ AI-FIRST: Map destinations to node types using registry (no keyword selector)
     if (simpleIntent.destinations && simpleIntent.destinations.length > 0) {
       for (const destination of simpleIntent.destinations) {
-        const nodeSelection = keywordNodeSelector.selectBestNode(destination, 'output');
-        if (nodeSelection) {
+        const destLower = destination.toLowerCase();
+        const allTypes = unifiedNodeRegistry.getAllTypes();
+        const match = allTypes.find((t) => {
+          const def = unifiedNodeRegistry.get(t);
+          return def && (def.label?.toLowerCase().includes(destLower) || t.toLowerCase().includes(destLower));
+        });
+        if (match) {
           const operation = this.inferOperationFromVerbs(simpleIntent.verbs);
-          actions.push({
-            type: nodeSelection.nodeType,
-            operation,
-          });
+          actions.push({ type: match, operation });
         }
       }
     }

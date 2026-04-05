@@ -123,6 +123,8 @@ import { validateMappings } from './template-validation-gate';
 import { AliasKeywordCollector } from './summarize-layer';
 import { nodeCapabilityRegistryDSL } from './node-capability-registry-dsl';
 import { buildNodeCatalog } from './node-catalog-builder';
+import { buildNodeCatalogText } from './node-catalog-builder';
+import { systemPromptBuilder } from './system-prompt-builder';
 import { PlannedWorkflow, PlannedStep } from '../../core/types/ai-types';
 import { unifiedGraphOrchestrator } from '../../core/orchestration/unified-graph-orchestrator';
 import type { ExecutionOrder } from '../../core/orchestration/execution-order-manager';
@@ -148,12 +150,15 @@ export class AgenticWorkflowBuilder {
   private async planWorkflowWithGemini(userPrompt: string): Promise<PlannedWorkflow> {
     const nodeCatalog = buildNodeCatalog();
 
-    // Load planning system prompt from file to keep it editable without code changes
-    const promptPath = path.join(__dirname, 'WORKFLOW_PLANNING_SYSTEM_PROMPT.md');
-    const systemPrompt = fs.readFileSync(promptPath, 'utf-8');
+    // ✅ AI-FIRST: Use SystemPromptBuilder — no static markdown files
+    const { systemPrompt } = systemPromptBuilder.build({
+      stage: 'intent',
+      nodeCatalog: buildNodeCatalogText(),
+      userIntent: userPrompt,
+    });
 
     const input = {
-      system: systemPrompt.replace('NODE_CATALOG', JSON.stringify(nodeCatalog, null, 2)),
+      system: systemPrompt,
       message: `USER_REQUEST:\n${userPrompt}\n\nNODE_CATALOG:\n${JSON.stringify(nodeCatalog)}`,
     };
 
@@ -172,6 +177,7 @@ export class AgenticWorkflowBuilder {
 
     const json = text.substring(jsonStart, jsonEnd + 1);
     const planned = JSON.parse(json) as PlannedWorkflow;
+
 
     if (!planned || !Array.isArray(planned.steps)) {
       throw new Error('Invalid PlannedWorkflow structure from Gemini');
@@ -284,13 +290,67 @@ export class AgenticWorkflowBuilder {
   }
 
   /**
+   * Branch hydration: ensure the planner emitted at least one planned step per branch port.
+   *
+   * - If downstream step count >= branchCount (e.g. if_else → gmail, slack_message), preserve types as-is.
+   * - If downstream step count < branchCount (e.g. one slack_message for two branches), clone the last
+   *   template so each port can bind a distinct node instance (registry-driven wiring in orchestrator).
+   *
+   * Per-type expansion is wrong: two different types each appearing once would be duplicated when branchCount=2.
+   */
+  private expandBranchSteps(steps: PlannedStep[]): PlannedStep[] {
+    const branchingStepIndex = steps.findIndex(
+      (s) => s.type === 'switch' || s.type === 'if_else',
+    );
+    if (branchingStepIndex < 0) {
+      return steps;
+    }
+
+    const branchingStep = steps[branchingStepIndex];
+
+    let branchCount: number;
+    if (branchingStep.type === 'switch') {
+      const cases = (branchingStep.config as any)?.cases;
+      branchCount = Array.isArray(cases) && cases.length > 0 ? cases.length : 2;
+    } else {
+      branchCount = 2;
+    }
+
+    const prefix = steps.slice(0, branchingStepIndex + 1);
+    const downstreamSteps = steps.slice(branchingStepIndex + 1);
+
+    if (downstreamSteps.length === 0 || downstreamSteps.length >= branchCount) {
+      return steps;
+    }
+
+    const expanded = [...downstreamSteps];
+    const template = downstreamSteps[downstreamSteps.length - 1];
+    let seq = 0;
+    while (expanded.length < branchCount) {
+      expanded.push({
+        ...template,
+        id: `${template.type}_branch_${seq++}_${randomUUID().slice(0, 8)}`,
+      });
+    }
+
+    return [...prefix, ...expanded];
+  }
+
+  /**
    * Hydrate a PlannedWorkflow (summary + steps) into a concrete Workflow:
    * - Creates WorkflowNode instances using Unified Node Registry
    * - Maps Gemini's role field to DSL category for context-aware categorization
    * - Delegates to Unified Graph Orchestrator to create edges and execution order
+   *
+   * Branch-aware step expansion (Bug 2 fix):
+   * If the planner collapsed same-type steps for multiple branches into one entry,
+   * we clone the step so each branch has its own independent node instance.
    */
   private hydratePlannedWorkflow(planned: PlannedWorkflow): { workflow: Workflow; validation: any } {
-    const nodes: WorkflowNode[] = planned.steps.map((step, index) => {
+    // ── Bug 2 fix: expand collapsed same-type branch steps ──────────────────
+    const expandedSteps = this.expandBranchSteps(planned.steps);
+
+    const nodes: WorkflowNode[] = expandedSteps.map((step, index) => {
       const def = unifiedNodeRegistry.get(step.type);
       if (!def) {
         throw new Error(`Planned step references unknown node type: ${step.type}`);
@@ -2669,6 +2729,26 @@ You are a workflow execution engine, not a diagram generator.`;
     
     // Check for validation errors stored in structure
     const storedValidationError = (finalStructure as any)?._validationError;
+
+    // ✅ FIX Bug 6: Guard against false-positive low-confidence failures on simple linear workflows.
+    // The AI validator penalizes low node count as "incomplete", but a 2-3 node linear workflow
+    // (e.g. manual_trigger → log_output) is structurally valid. Only apply the guard when:
+    //   - node count is ≤ 3, AND
+    //   - no branching node is present (branching workflows need full validation)
+    if (storedValidationError && storedValidationError.confidence < 50) {
+      const isSimpleLinear = finalNodes.length <= 3 && !finalNodes.some((n: WorkflowNode) => {
+        const def = unifiedNodeRegistry.get(unifiedNormalizeNodeType(n));
+        return def?.isBranching === true;
+      });
+      if (isSimpleLinear) {
+        console.log(
+          `✅ [AI Validator] Clearing false-positive _validationError for simple linear workflow ` +
+          `(${finalNodes.length} nodes, confidence=${storedValidationError.confidence})`
+        );
+        delete (finalStructure as any)._validationError;
+      }
+    }
+
     if (storedValidationError && !storedValidationError.valid && (storedValidationError.confidence < 50 || !storedValidationError.completenessValid)) {
       // Log critical validation issues but DO NOT block workflow generation with 422.
       // Frontend can inspect metadata.validation / confidenceScore for warnings.
@@ -3307,51 +3387,14 @@ You are a workflow execution engine, not a diagram generator.`;
   }
 
   private getWorkflowGenerationSystemPrompt(): string {
-    try {
-      // Try FINAL prompt first (highest priority - explicit node list and mandatory integration inclusion)
-      const finalPromptPath = path.join(__dirname, 'FINAL_WORKFLOW_SYSTEM_PROMPT.md');
-      if (fs.existsSync(finalPromptPath)) {
-        const prompt = fs.readFileSync(finalPromptPath, 'utf-8');
-        const nodeReference = this.generateNodeReference();
-        console.log('✅ Using FINAL workflow generation prompt (explicit node list and mandatory integration inclusion)');
-        return prompt + '\n\n' + nodeReference;
-      }
-      
-      // Try ultimate prompt second (fixes all errors)
-      const ultimatePromptPath = path.join(__dirname, 'ULTIMATE_WORKFLOW_SYSTEM_PROMPT.md');
-      if (fs.existsSync(ultimatePromptPath)) {
-        const prompt = fs.readFileSync(ultimatePromptPath, 'utf-8');
-        const nodeReference = this.generateNodeReference();
-        console.log('✅ Using ULTIMATE workflow generation prompt (fixes all node type errors)');
-        return prompt + '\n\n' + nodeReference;
-      }
-      
-      // Try production prompt third
-      const productionPromptPath = path.join(__dirname, 'PRODUCTION_WORKFLOW_GENERATION_PROMPT.md');
-      if (fs.existsSync(productionPromptPath)) {
-        const prompt = fs.readFileSync(productionPromptPath, 'utf-8');
-        const nodeReference = this.generateNodeReference();
-        console.log('✅ Using PRODUCTION workflow generation prompt');
-        return prompt + '\n' + nodeReference;
-      }
-      
-      // Fallback to original prompt
-      const promptPath = path.join(__dirname, 'WORKFLOW_GENERATION_SYSTEM_PROMPT.md');
-      let prompt = '';
-      if (fs.existsSync(promptPath)) {
-        prompt = fs.readFileSync(promptPath, 'utf-8');
-      } else {
-        prompt = this.getEssentialSystemPrompt();
-      }
-      
-      // Append node reference to the prompt
-      const nodeReference = this.generateNodeReference();
-      return prompt + '\n' + nodeReference;
-    } catch (error) {
-      console.warn('⚠️  Could not load comprehensive system prompt, using fallback');
-      const nodeReference = this.generateNodeReference();
-      return this.getEssentialSystemPrompt() + '\n' + nodeReference;
-    }
+    // ✅ AI-FIRST: Use SystemPromptBuilder — no static markdown files
+    const { systemPrompt } = systemPromptBuilder.build({
+      stage: 'node_selection',
+      nodeCatalog: buildNodeCatalogText(),
+      userIntent: '',
+    });
+    const nodeReference = this.generateNodeReference();
+    return systemPrompt + '\n\n' + nodeReference;
   }
 
   /**
@@ -4089,17 +4132,28 @@ Use only nodes from the library above.`;
     ];
     const isTriggerWhen = triggerWhenPatterns.some(pattern => pattern.test(fullText));
     
-    // ✅ CRITICAL: Also check if "extract" is mentioned - this is data extraction, NOT conditional
+    // ✅ "extract …" in prose is often part of conditional or linear flows — do NOT infer set_variable from it.
+    // Still used only to avoid mis-classifying those prompts as "conditional" when they are linear extraction.
     const isDataExtraction = /\bextract\s+(?:the|a|an)?\s*(?:customer|data|field|value|name|email|phone|address|from)/i.test(fullText);
     
     // ✅ CRITICAL: Check if "then" is part of a linear workflow description (not conditional)
     // "extract X then create Y" = linear workflow, NOT conditional
     const isLinearThen = /\b(?:extract|get|fetch|receive|send|create|update|delete|add|save|store)\s+.*?\s+then\s+(?:extract|get|fetch|receive|send|create|update|delete|add|save|store)/i.test(fullText);
     
-    // Detect data extraction requirements (needs set_variable node)
-    if (isDataExtraction || /\bextract\s+.*?\s+from\s+/i.test(fullText)) {
+    // ✅ Intent fidelity: inject set_variable only when the user explicitly asks to assign/store in a variable.
+    // Form payloads and pass-through flows do not require set_variable (downstream nodes use $json).
+    const wantsExplicitVariableAssignment =
+      /\bset_variable\b/i.test(fullText) ||
+      /\b(set|store|save|assign|persist)\s+(?:the\s+)?(?:value\s+)?(?:in|into|to)\s+(?:a\s+)?variable\b/i.test(
+        fullText,
+      ) ||
+      /\bvariable\s+(?:named|called)\b/i.test(fullText) ||
+      /\bhold\s+(?:it\s+)?in\s+(?:a\s+)?variable\b/i.test(fullText);
+    if (wantsExplicitVariableAssignment) {
       detectedRequirements.needsDataExtraction = true;
-      console.log(`🚨 [Node Detection] Detected DATA EXTRACTION requirement - set_variable node needed`);
+      console.log(
+        `🚨 [Node Detection] Explicit variable-assignment intent — set_variable may be required (planner/user-driven only)`,
+      );
     }
     
     // ✅ STRICT: Only detect actual conditional patterns, not linear workflow descriptions
@@ -4495,7 +4549,6 @@ ${JSON.stringify(requirements, null, 2)}
 🚨 PROGRAMMATIC DETECTION RESULTS (MANDATORY - These nodes MUST be included):
 ${detectedRequirements.needsHttpRequest ? `- ✅ HTTP REQUEST NODE REQUIRED (URLs detected: ${detectedRequirements.httpUrls.join(', ') || 'from prompt'})` : ''}
 ${detectedRequirements.needsConditional ? `- ✅ IF/ELSE NODE(S) REQUIRED (${detectedRequirements.conditionalCount} conditional(s) detected) - MUST add if_else node for validation/eligibility checks` : ''}
-${detectedRequirements.needsDataExtraction ? `- ✅ SET_VARIABLE NODE REQUIRED (data extraction detected) - MUST add set_variable node to extract fields from input` : ''}
 ${detectedRequirements.needsLoop ? `- ✅ LOOP NODE REQUIRED (extract from ${detectedRequirements.loopSourceNode || 'data source'} and create in ${detectedRequirements.loopTargetNode || 'target'}) - MUST add loop node between data source and create operation` : ''}
 ${detectedTrigger === 'form' ? `- ✅ FORM TRIGGER REQUIRED - User will fill/submit form data` : ''}
 ${detectedRequirements.needsAiAgent ? `- ✅ AI AGENT NODE REQUIRED (AI analysis detected)` : ''}
@@ -4555,7 +4608,7 @@ CRITICAL INSTRUCTIONS FOR STRUCTURE GENERATION:
 - Multiple destinations → MUST create parallel branches or sequential nodes
 
 **WHEN TO ADD EXTRACTION/TRANSFORMATION NODES** (ONLY if explicitly mentioned):
-- User says "extract", "get specific fields", "parse", "separate" → add set_variable or json_parser
+- User says "set variable", "store in a variable", "assign to" → add set_variable
 - User says "if/then", "condition", "filter", "separate by", "categorize" → **MUST add if_else**
 - User says "format", "transform", "convert", "calculate" → add text_formatter or javascript
 - User says "combine", "merge", "join" → add merge_data
@@ -5469,28 +5522,6 @@ Return JSON:
           }
         }
         
-        // 🚨 CRITICAL: Enforce data extraction node (set_variable) if extraction is detected
-        if (detectedRequirements.needsDataExtraction) {
-          const existingStepTypes = new Set(simplifiedStructure.steps.map((s: any) => s.data?.type || s.type || s.nodeType));
-          const extractionNodeTypes = ['set_variable', 'set', 'json_parser', 'edit_fields'];
-          const hasExtractionNode = extractionNodeTypes.some(nodeType => existingStepTypes.has(nodeType));
-          
-          if (!hasExtractionNode) {
-            console.warn(`⚠️  [Data Extraction Enforcement] SET_VARIABLE node missing. Adding it after trigger.`);
-            
-            // Add set_variable node as first step after trigger
-            const setVariableStep = {
-              id: `step_set_variable_${Date.now()}`,
-              description: 'Extract email and name from webhook body',
-              type: 'set_variable',
-            };
-            
-            // Insert after trigger (first position)
-            simplifiedStructure.steps.unshift(setVariableStep);
-            console.log(`✅ [Data Extraction Enforcement] Added set_variable node for data extraction`);
-          }
-        }
-        
         // 🚨 CRITICAL: Enforce conditional node AFTER filtering (in case it was filtered out)
         // This ensures if_else is always present when conditional logic is detected
         if (detectedRequirements.needsConditional) {
@@ -5905,6 +5936,13 @@ Return JSON:
                                      promptLower.includes('extract') ||
                                      promptLower.includes('filter') ||
                                      promptLower.includes('condition');
+      // ✅ PRESERVATION: set_variable must also be kept when explicit variable-assignment phrasing is present
+      // This mirrors the wantsExplicitVariableAssignment detection in generateStructure.
+      const explicitVariableAssignmentMentioned =
+        /\bset_variable\b/i.test(promptLower) ||
+        /\b(set|store|save|assign|persist)\s+(?:the\s+)?(?:value\s+)?(?:in|into|to)\s+(?:a\s+)?variable\b/i.test(promptLower) ||
+        /\bvariable\s+(?:named|called)\b/i.test(promptLower) ||
+        /\bhold\s+(?:it\s+)?in\s+(?:a\s+)?variable\b/i.test(promptLower);
       
       // ✅ CRITICAL: For AI nodes, check if AI-related keywords are mentioned
       // ✅ Updated: ai_service removed, capabilities resolve to real nodes
@@ -5946,7 +5984,10 @@ Return JSON:
           }
         }
       } else if (isDataProcessing) {
-        if (transformationMentioned) {
+        // ✅ PRESERVATION: For set_variable, also keep when explicit variable-assignment phrasing is present
+        const shouldKeepDataProcessing = transformationMentioned ||
+          (stepType === 'set_variable' && explicitVariableAssignmentMentioned);
+        if (shouldKeepDataProcessing) {
           filteredSteps.push(step);
         } else {
           removedNodes.push(stepType);
@@ -6452,6 +6493,12 @@ Return JSON:
       
       let inferredType = this.inferStepType(step);
       
+      // Skip step if inferStepType could not match a known node type
+      if (inferredType === null) {
+        console.warn(`⚠️  [buildStructure] Skipping step "${step.substring(0, 80)}" — no matching node type found`);
+        return;
+      }
+      
       // Force google_sheets if Google Sheets is mentioned
       if (hasGoogleSheets && (inferredType === 'database_read' || inferredType === 'database_write' || inferredType === 'javascript')) {
         console.log(`✅ Correcting step type from ${inferredType} to google_sheets (Google Sheets detected in: "${step}")`);
@@ -6616,7 +6663,7 @@ Return JSON:
    * Replaces hardcoded pattern matching with semantic matching.
    * Falls back to legacy pattern matching if registry inference fails.
    */
-  private inferStepType(step: string, context?: string): string {
+  private inferStepType(step: string, context?: string): string | null {
     // ✅ STEP 1: Try registry-based inference first
     try {
       const { inferNodeTypeFromPrompt } = require('./registry-based-node-inference');
@@ -6645,7 +6692,7 @@ Return JSON:
    * 
    * @deprecated Use registry-based inference instead
    */
-  private inferStepTypeLegacy(step: string, context?: string): string {
+  private inferStepTypeLegacy(step: string, context?: string): string | null {
     const stepLower = step.toLowerCase();
     const originalStep = step;
     
@@ -6983,10 +7030,9 @@ Return JSON:
       }
     }
     
-    // Fallback to a safe default that exists in library
-    console.warn(`⚠️  [inferStepType] No good match found for: "${originalStep.substring(0, 50)}", using fallback`);
-    const fallbackSchema = nodeLibrary.getSchema('set_variable');
-    return fallbackSchema ? 'set_variable' : allSchemas[0]?.type || 'set_variable';
+    // Fallback: no match found — log warning and skip rather than defaulting to set_variable
+    console.warn(`⚠️  [inferStepType] No match found for step: "${originalStep.substring(0, 80)}" — skipping`);
+    return null;
   }
 
   private inferOutputType(output: string): 'string' | 'number' | 'boolean' | 'object' | 'array' | 'file' {
@@ -7199,7 +7245,7 @@ Return JSON:
         // Try to infer correct type from description if type doesn't exist
         const stepDescLower = (step.description || '').toLowerCase();
         const inferredType = this.inferStepType(step.description || correctedType);
-        const inferredSchema = nodeLibrary.getSchema(inferredType);
+        const inferredSchema = inferredType ? nodeLibrary.getSchema(inferredType) : null;
         
         if (inferredSchema) {
           console.log(`✅ [NODE VALIDATION] Corrected node type from "${originalType}" to "${inferredType}" (inferred from description)`);
@@ -9319,7 +9365,8 @@ Return JSON:
     // ENHANCED: Add example values so users can see where to change things
     
     // Strategy 1: Use requirements context with examples
-    if (fieldNameLower.includes('message') || fieldNameLower.includes('text') || fieldNameLower.includes('content')) {
+    if (fieldNameLower.includes('message') || fieldNameLower.includes('text') || fieldNameLower.includes('content') ||
+        fieldNameLower.includes('subject') || fieldNameLower.includes('title') || fieldNameLower.includes('body')) {
       if (requirements.primaryGoal) {
         return requirements.primaryGoal;
       }
@@ -9463,7 +9510,7 @@ return {
       if (f.includes('sheetname')) return 'Sheet1';
       if (f === 'range') return 'A1:Z1000';
       if (f.includes('condition')) return 'true';
-      if (f.includes('prompt') || f.includes('message') || f.includes('body') || f.includes('text')) {
+      if (f.includes('prompt') || f.includes('message') || f.includes('body') || f.includes('text') || f.includes('subject') || f.includes('title') || f.includes('content')) {
         return requirements.primaryGoal || 'Process the input data';
       }
       if (f.includes('model')) return (schema as any)?.configSchema?.optional?.[fieldName]?.default;

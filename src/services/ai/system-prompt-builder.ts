@@ -1,0 +1,420 @@
+/**
+ * System Prompt Builder — AI-First Pipeline
+ *
+ * Assembles LLM system prompts at runtime for each pipeline stage.
+ * - Stateless and deterministic: same inputs always produce the same prompt.
+ * - No static markdown files. No hardcoded node names.
+ * - Every prompt contains four mandatory sections:
+ *   1. Role and objective
+ *   2. Node_Catalog (or relevant subset)
+ *   3. Output format (JSON schema)
+ *   4. Hard constraints for the stage
+ *
+ * Requirements: 5.1, 5.2, 5.3, 5.5, 5.6
+ */
+
+import type { NodeCatalogText } from './node-catalog-builder';
+
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+export type PipelineStage =
+  | 'intent'
+  | 'node_selection'
+  | 'edge_reasoning'
+  | 'validation'
+  | 'repair';
+
+export interface SelectedNode {
+  type: string;
+  role: 'trigger' | 'action' | 'logic' | 'terminal';
+  reason: string;
+  nodeId: string;
+}
+
+export interface ProposedEdge {
+  source: string; // nodeId
+  target: string; // nodeId
+  type: 'main' | 'true' | 'false' | string; // case_N etc.
+}
+
+export interface ValidationIssue {
+  severity: 'error' | 'warning';
+  description: string;
+  suggestedFix?: string;
+}
+
+export interface StageContext {
+  selectedNodes?: SelectedNode[];
+  edgeList?: ProposedEdge[];
+  validationIssues?: ValidationIssue[];
+  cycleInfo?: string; // for edge_reasoning re-prompt
+}
+
+export interface SystemPromptBuilderInput {
+  stage: PipelineStage;
+  nodeCatalog: NodeCatalogText;
+  userIntent: string;
+  stageContext?: StageContext;
+}
+
+export interface SystemPromptBuilderOutput {
+  systemPrompt: string;
+  outputSchema: object;
+}
+
+// ─── Output schemas per stage ────────────────────────────────────────────────
+
+const INTENT_OUTPUT_SCHEMA = {
+  type: 'object',
+  required: ['intent', 'triggerType', 'actions', 'dataFlows'],
+  properties: {
+    intent: { type: 'string' },
+    triggerType: { enum: ['schedule', 'webhook', 'form', 'chat_trigger', 'manual_trigger'] },
+    actions: { type: 'array', items: { type: 'string' } },
+    dataFlows: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          from: { type: 'string' },
+          to: { type: 'string' },
+          dataDescription: { type: 'string' },
+        },
+      },
+    },
+    constraints: { type: 'array', items: { type: 'string' } },
+  },
+};
+
+const NODE_SELECTION_OUTPUT_SCHEMA = {
+  type: 'object',
+  required: ['selectedNodes'],
+  properties: {
+    selectedNodes: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['type', 'role', 'reason'],
+        properties: {
+          type: { type: 'string' },
+          role: { enum: ['trigger', 'action', 'logic', 'terminal'] },
+          reason: { type: 'string' },
+        },
+      },
+    },
+  },
+};
+
+const EDGE_REASONING_OUTPUT_SCHEMA = {
+  type: 'object',
+  required: ['orderedNodes', 'edges'],
+  properties: {
+    orderedNodes: { type: 'array', items: { type: 'string' } },
+    edges: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['source', 'target', 'type'],
+        properties: {
+          source: { type: 'string' },
+          target: { type: 'string' },
+          type: { enum: ['main', 'true', 'false', 'case_1', 'case_2', 'case_3', 'case_n'] },
+        },
+      },
+    },
+  },
+};
+
+const VALIDATION_OUTPUT_SCHEMA = {
+  type: 'object',
+  required: ['status', 'issues'],
+  properties: {
+    status: { enum: ['pass', 'fail'] },
+    issues: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['severity', 'description'],
+        properties: {
+          severity: { enum: ['error', 'warning'] },
+          description: { type: 'string' },
+          suggestedFix: { type: 'string' },
+        },
+      },
+    },
+  },
+};
+
+// ─── DAG constraint rules (embedded in edge_reasoning and repair prompts) ────
+
+const DAG_CONSTRAINTS = `
+DAG STRUCTURAL CONSTRAINTS — YOU MUST ENFORCE ALL OF THESE:
+1. NO CYCLES: The graph must be a Directed Acyclic Graph. No node may be its own ancestor.
+2. EXACTLY ONE TRIGGER: There must be exactly one trigger node with in-degree zero (no incoming edges).
+3. ALL NON-TERMINAL NODES MUST HAVE AT LEAST ONE OUTGOING EDGE: Every node except the final terminal node must connect to a downstream node.
+4. BRANCHING NODES (if_else, switch) MUST USE LABELED EDGES:
+   - if_else: exactly two outgoing edges labeled "true" and "false"
+   - switch: one outgoing edge per case, labeled "case_1", "case_2", etc.
+5. MERGE NODES: If two branches reconverge, they must connect to a merge node before continuing.
+6. NO ORPHAN NODES: Every node must be reachable from the trigger node.
+7. LINEAR BY DEFAULT: Unless the user explicitly requests branching, use a strictly linear chain.
+`.trim();
+
+// ─── SystemPromptBuilder ─────────────────────────────────────────────────────
+
+export class SystemPromptBuilder {
+  /**
+   * Build a system prompt for the given pipeline stage.
+   * Deterministic: same inputs always produce the same output string.
+   */
+  build(input: SystemPromptBuilderInput): SystemPromptBuilderOutput {
+    const { stage, nodeCatalog, userIntent, stageContext } = input;
+
+    switch (stage) {
+      case 'intent':
+        return this.buildIntentPrompt(nodeCatalog, userIntent);
+      case 'node_selection':
+        return this.buildNodeSelectionPrompt(nodeCatalog, userIntent);
+      case 'edge_reasoning':
+        return this.buildEdgeReasoningPrompt(nodeCatalog, userIntent, stageContext);
+      case 'validation':
+        return this.buildValidationPrompt(nodeCatalog, userIntent, stageContext);
+      case 'repair':
+        return this.buildRepairPrompt(nodeCatalog, userIntent, stageContext);
+    }
+  }
+
+  // ── Section 1: Intent Stage ────────────────────────────────────────────────
+
+  private buildIntentPrompt(nodeCatalog: NodeCatalogText, userIntent: string): SystemPromptBuilderOutput {
+    const systemPrompt = [
+      '## ROLE AND OBJECTIVE',
+      'You are an intent extraction engine for a workflow automation platform.',
+      'Your job is to read a natural language user request and extract a structured intent object.',
+      'Do not generate a workflow. Only extract intent.',
+      '',
+      '## NODE CATALOG',
+      'The following nodes are available on this platform (for context only — do not select nodes yet):',
+      nodeCatalog,
+      '',
+      '## OUTPUT FORMAT',
+      'You MUST return ONLY valid JSON conforming exactly to this schema:',
+      JSON.stringify(INTENT_OUTPUT_SCHEMA, null, 2),
+      '',
+      '## HARD CONSTRAINTS',
+      '- triggerType must be one of: schedule, webhook, form, chat_trigger, manual_trigger',
+      '- actions must list every distinct action the user wants performed',
+      '- dataFlows must describe every data movement between services',
+      '- Return ONLY the JSON object. No explanation, no markdown, no extra text.',
+      '- DO NOT include utility/transformation operations (set_variable, javascript, text_formatter,',
+      '  json_parser, filter, sort, aggregate) in actions unless the user EXPLICITLY asked for them.',
+      '  Data passing between nodes is automatic — no transformation node is needed for that.',
+      '',
+      '## CRITICAL RULE — BRANCH NODE UNIQUENESS',
+      'When multiple branches of a switch or if-else each require the same node type, you MUST emit',
+      'one distinct step per branch with a unique step ID. NEVER collapse two branch actions into a',
+      'single shared step. Each branch must have its own independent node instance.',
+      'Example: a switch with 3 cases all sending a Slack message must produce 3 separate',
+      'slack_message steps (slack_case_1, slack_case_2, slack_case_3), NOT one shared step.',
+      '',
+      '## USER REQUEST',
+      userIntent,
+    ].join('\n');
+
+    return { systemPrompt, outputSchema: INTENT_OUTPUT_SCHEMA };
+  }
+
+  // ── Section 2: Node Selection Stage ───────────────────────────────────────
+
+  private buildNodeSelectionPrompt(nodeCatalog: NodeCatalogText, userIntent: string): SystemPromptBuilderOutput {
+    const systemPrompt = [
+      '## ROLE AND OBJECTIVE',
+      'You are a node selection engine for a workflow automation platform.',
+      'Your job is to select the minimal set of node types needed to fulfill the user\'s intent.',
+      'You MUST select nodes ONLY from the NODE CATALOG below. Do not invent node types.',
+      '',
+      '## NODE CATALOG',
+      nodeCatalog,
+      '',
+      '## OUTPUT FORMAT',
+      'You MUST return ONLY valid JSON conforming exactly to this schema:',
+      JSON.stringify(NODE_SELECTION_OUTPUT_SCHEMA, null, 2),
+      '',
+      '## HARD CONSTRAINTS — TRIGGER AND MINIMAL SET',
+      '- You MUST include exactly ONE trigger node (isTrigger: true in the catalog).',
+      '- Select the MINIMAL necessary set of nodes. Do not add nodes not implied by the user\'s intent.',
+      '- Every selected node type MUST exist in the NODE CATALOG above.',
+      '- Assign role: "trigger" for the trigger node, "action" for data fetch/write nodes,',
+      '  "logic" for transformation/conditional nodes, "terminal" for the final output node.',
+      '- Return ONLY the JSON object. No explanation, no markdown, no extra text.',
+      '',
+      '## CRITICAL RULE — NO UTILITY NODES UNLESS EXPLICITLY REQUESTED',
+      'Utility/transformation nodes (set_variable, javascript, text_formatter, json_parser, edit_fields,',
+      'rename_keys, merge_data, date_time, csv, xml, html, filter, sort, aggregate, limit) MUST NOT be',
+      'selected unless the user\'s intent EXPLICITLY mentions:',
+      '  - "set variable", "store in a variable", "assign to a variable"',
+      '  - "run code", "javascript", "custom code", "transform data"',
+      '  - "format text", "parse JSON", "edit fields", "rename fields"',
+      '  - or a specific transformation operation by name',
+      'Data flowing between nodes is handled automatically via the data pipeline.',
+      'DO NOT add set_variable, javascript, or any transformation node just because data is being',
+      'passed between nodes — that is the default behavior and requires no extra node.',
+      '',
+      '## CRITICAL RULE — BRANCH NODE UNIQUENESS (overrides "minimal set" for branching workflows)',
+      'When the workflow contains a switch or if-else node:',
+      '- Each branch MUST have its OWN independent node instance.',
+      '- If N branches each need the same node type (e.g. 2 branches both send Slack), you MUST',
+      '  emit N separate entries of that type in selectedNodes — one per branch.',
+      '- NEVER share a single node across multiple exclusive branches.',
+      '- Example: switch with 3 cases (shipped→Gmail, processing→Slack, cancelled→Slack)',
+      '  MUST produce: [form, switch, google_gmail, slack_message, slack_message] — TWO slack_message entries.',
+      '- The "no duplicate node types" rule does NOT apply to branch-specific nodes.',
+      '  Duplicate types are REQUIRED when multiple branches need the same service.',
+      '',
+      '## USER INTENT',
+      userIntent,
+    ].join('\n');
+
+    return { systemPrompt, outputSchema: NODE_SELECTION_OUTPUT_SCHEMA };
+  }
+
+  // ── Section 3: Edge Reasoning Stage ───────────────────────────────────────
+
+  private buildEdgeReasoningPrompt(
+    nodeCatalog: NodeCatalogText,
+    userIntent: string,
+    ctx?: StageContext,
+  ): SystemPromptBuilderOutput {
+    const selectedNodesText = ctx?.selectedNodes
+      ? JSON.stringify(ctx.selectedNodes, null, 2)
+      : '(none provided)';
+
+    const cycleWarning = ctx?.cycleInfo
+      ? `\n## CYCLE DETECTED — YOU MUST FIX THIS\nThe previous response contained a cycle: ${ctx.cycleInfo}\nYou MUST return a corrected graph with no cycles.\n`
+      : '';
+
+    const systemPrompt = [
+      '## ROLE AND OBJECTIVE',
+      'You are an execution order and edge reasoning engine for a workflow automation platform.',
+      'Your job is to determine the correct execution order and directed edges for the selected nodes.',
+      '',
+      '## NODE CATALOG',
+      nodeCatalog,
+      '',
+      '## SELECTED NODES',
+      selectedNodesText,
+      '',
+      cycleWarning,
+      '## OUTPUT FORMAT',
+      'You MUST return ONLY valid JSON conforming exactly to this schema:',
+      JSON.stringify(EDGE_REASONING_OUTPUT_SCHEMA, null, 2),
+      '',
+      '## HARD CONSTRAINTS',
+      DAG_CONSTRAINTS,
+      '',
+      '- orderedNodes must list ALL selected node IDs in execution order (first = trigger).',
+      '- edges must connect every consecutive pair of nodes.',
+      '- Use edge type "main" for normal sequential flow.',
+      '- Use "true"/"false" only for if_else branching nodes.',
+      '- Use "case_1", "case_2", etc. only for switch branching nodes.',
+      '- Return ONLY the JSON object. No explanation, no markdown, no extra text.',
+      '',
+      '## USER INTENT',
+      userIntent,
+    ].join('\n');
+
+    return { systemPrompt, outputSchema: EDGE_REASONING_OUTPUT_SCHEMA };
+  }
+
+  // ── Section 4: Validation Stage ───────────────────────────────────────────
+
+  private buildValidationPrompt(
+    nodeCatalog: NodeCatalogText,
+    userIntent: string,
+    ctx?: StageContext,
+  ): SystemPromptBuilderOutput {
+    const graphText = ctx?.edgeList
+      ? JSON.stringify({ nodes: ctx.selectedNodes, edges: ctx.edgeList }, null, 2)
+      : '(graph not provided)';
+
+    const systemPrompt = [
+      '## ROLE AND OBJECTIVE',
+      'You are a workflow validation engine for a workflow automation platform.',
+      'Your job is to validate the assembled workflow graph on FOUR dimensions:',
+      '1. STRUCTURAL VALIDITY: Is the graph a valid DAG? Are all edges correctly typed? Is every node reachable from the trigger?',
+      '2. SEMANTIC ALIGNMENT: Does the graph actually accomplish what the user asked?',
+      '3. COMPLETENESS: Are there any missing required nodes or missing connections?',
+      '4. DATA FLOW COHERENCE: Are the outputs of upstream nodes compatible with the inputs of downstream nodes?',
+      '',
+      '## NODE CATALOG',
+      nodeCatalog,
+      '',
+      '## WORKFLOW GRAPH TO VALIDATE',
+      graphText,
+      '',
+      '## OUTPUT FORMAT',
+      'You MUST return ONLY valid JSON conforming exactly to this schema:',
+      JSON.stringify(VALIDATION_OUTPUT_SCHEMA, null, 2),
+      '',
+      '## HARD CONSTRAINTS',
+      '- Every "error"-severity issue MUST include a "suggestedFix" field.',
+      '- "warning"-severity issues are informational and do not block the workflow.',
+      '- If the graph is fully valid on all four dimensions, return status: "pass" with an empty issues array.',
+      '- Return ONLY the JSON object. No explanation, no markdown, no extra text.',
+      '',
+      '## USER INTENT',
+      userIntent,
+    ].join('\n');
+
+    return { systemPrompt, outputSchema: VALIDATION_OUTPUT_SCHEMA };
+  }
+
+  // ── Section 5: Repair Stage ────────────────────────────────────────────────
+
+  private buildRepairPrompt(
+    nodeCatalog: NodeCatalogText,
+    userIntent: string,
+    ctx?: StageContext,
+  ): SystemPromptBuilderOutput {
+    const issuesText = ctx?.validationIssues
+      ? JSON.stringify(ctx.validationIssues, null, 2)
+      : '(no issues provided)';
+
+    const graphText = ctx?.edgeList
+      ? JSON.stringify({ nodes: ctx.selectedNodes, edges: ctx.edgeList }, null, 2)
+      : '(graph not provided)';
+
+    const systemPrompt = [
+      '## ROLE AND OBJECTIVE',
+      'You are a workflow repair engine for a workflow automation platform.',
+      'The workflow graph below has validation errors. Your job is to return a corrected graph.',
+      '',
+      '## NODE CATALOG',
+      nodeCatalog,
+      '',
+      '## CURRENT WORKFLOW GRAPH (WITH ERRORS)',
+      graphText,
+      '',
+      '## VALIDATION ERRORS TO FIX',
+      issuesText,
+      '',
+      '## OUTPUT FORMAT',
+      'Return the corrected workflow graph using the edge reasoning schema:',
+      JSON.stringify(EDGE_REASONING_OUTPUT_SCHEMA, null, 2),
+      '',
+      '## HARD CONSTRAINTS',
+      DAG_CONSTRAINTS,
+      '',
+      '- Fix ALL "error"-severity issues listed above.',
+      '- Preserve the user\'s original intent — do not remove nodes unless they are structurally invalid.',
+      '- Return ONLY the JSON object. No explanation, no markdown, no extra text.',
+      '',
+      '## USER INTENT',
+      userIntent,
+    ].join('\n');
+
+    return { systemPrompt, outputSchema: EDGE_REASONING_OUTPUT_SCHEMA };
+  }
+}
+
+export const systemPromptBuilder = new SystemPromptBuilder();

@@ -4,7 +4,15 @@
  */
 
 import * as fc from 'fast-check';
-import type { PipelineContext } from '../workflow-pipeline-orchestrator';
+
+// Inline type — PipelineContext from deleted workflow-pipeline-orchestrator
+interface PipelineContext {
+  original_prompt: string;
+  structured_intent: Record<string, any>;
+  confidence_score?: number;
+  requires_confirmation?: boolean;
+  [key: string]: any;
+}
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -58,7 +66,7 @@ test('Property 28: Low confidence sets requires_confirmation to true', () => {
         });
 
         // Verify the contract: low confidence → requires_confirmation
-        if (context.confidence_score < CONFIDENCE_THRESHOLD) {
+        if ((context.confidence_score ?? 0) < CONFIDENCE_THRESHOLD) {
           expect(context.requires_confirmation).toBe(true);
         }
       }

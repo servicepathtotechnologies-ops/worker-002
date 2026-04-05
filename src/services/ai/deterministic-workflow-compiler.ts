@@ -210,29 +210,10 @@ export class DeterministicWorkflowCompiler {
         // Continue with original workflow
       }
       
-      // STEP 6.5: Enforce strict execution ordering
-      console.log('[DeterministicWorkflowCompiler] STEP 6.5: Enforcing strict execution ordering...');
-      try {
-        const { enforceExecutionOrder } = await import('./execution-order-enforcer');
-        const orderResult = enforceExecutionOrder(workflow.nodes, workflow.edges);
-        
-        if (orderResult.reordered) {
-          console.log(`[DeterministicWorkflowCompiler] ✅ Workflow reordered based on execution rules`);
-          workflow = {
-            ...workflow,
-            nodes: orderResult.nodes,
-            edges: orderResult.edges,
-          };
-          warnings.push(`Workflow execution order corrected: ${orderResult.ordering.filter(o => o.originalOrder !== o.finalOrder).length} nodes reordered`);
-        } else {
-          console.log(`[DeterministicWorkflowCompiler] ✅ Workflow already correctly ordered`);
-        }
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error during execution ordering';
-        console.warn(`[DeterministicWorkflowCompiler] ⚠️  Execution ordering failed: ${errorMessage}`);
-        warnings.push(`Could not enforce execution ordering: ${errorMessage}`);
-        // Continue with original workflow
-      }
+      // STEP 6.5: Execution ordering is handled by the AI-first pipeline (Edge_Reasoning_Stage).
+      // The UnifiedGraphOrchestrator.initializeWorkflow() is the single authority for execution order.
+      // Hardcoded topological sort removed from generation path. (Requirements: 3.3, 3.4, 7.2)
+      console.log('[DeterministicWorkflowCompiler] STEP 6.5: Execution order managed by AI pipeline + UnifiedGraphOrchestrator.');
       
       // STEP 6.6: Validate and fix type compatibility
       console.log('[DeterministicWorkflowCompiler] STEP 6.6: Validating type compatibility...');

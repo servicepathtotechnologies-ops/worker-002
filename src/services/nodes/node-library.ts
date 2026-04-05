@@ -52,6 +52,16 @@ export interface ConfigField {
   visibleIf?: { field: string; equals: unknown };
   /** Properties panel: notes under selects when value matches (non-execution metadata) */
   contextHints?: Array<{ whenValue: string; message: string }>;
+  /**
+   * Explicit fillMode override. When present, the UnifiedNodeRegistry uses this value
+   * instead of the auto-derived getDefaultFillMode() result.
+   * Use to correct fields whose names would otherwise be misclassified by the heuristic.
+   */
+  fillMode?: {
+    default: 'manual_static' | 'runtime_ai' | 'buildtime_ai_once';
+    supportsRuntimeAI?: boolean;
+    supportsBuildtimeAI?: boolean;
+  };
 }
 
 export interface AISelectionCriteria {
@@ -1685,6 +1695,7 @@ export class NodeLibrary {
             type: 'string',
             description: 'Full URL to request',
             examples: ['https://api.example.com/data', '{{$json.apiUrl}}/users'],
+            fillMode: { default: 'buildtime_ai_once', supportsRuntimeAI: true, supportsBuildtimeAI: true },
           },
           method: {
             type: 'string',
@@ -2295,6 +2306,7 @@ export class NodeLibrary {
             description: 'Variable value (supports template expressions like {{input.field}})',
             examples: ['Hello World', '{{input.name}}', '{{$json.data}}'],
             default: '',
+            fillMode: { default: 'buildtime_ai_once', supportsRuntimeAI: true, supportsBuildtimeAI: true },
           },
           // Legacy support: also accept 'values' array format
           values: {
@@ -2690,6 +2702,7 @@ export class NodeLibrary {
             description:
               'Expression or template evaluated to a scalar (e.g. {{$json.status}}). Must match one of cases[].value.',
             examples: ['{{$json.status}}', '{{$json.category}}', 'input.region'],
+            fillMode: { default: 'buildtime_ai_once', supportsRuntimeAI: true, supportsBuildtimeAI: true },
           },
           cases: {
             type: 'array',
@@ -3853,10 +3866,12 @@ export class NodeLibrary {
             type: 'string',
             description: 'Slack channel or user ID',
             examples: ['#general', '@username', '{{$json.channel}}'],
+            fillMode: { default: 'buildtime_ai_once', supportsRuntimeAI: true, supportsBuildtimeAI: true },
           },
           message: {
             type: 'string',
             description: 'Message text to send to Slack',
+            fillMode: { default: 'buildtime_ai_once', supportsRuntimeAI: true, supportsBuildtimeAI: true },
           },
           blocks: {
             type: 'string',
@@ -3866,10 +3881,12 @@ export class NodeLibrary {
           text: {
             type: 'string',
             description: 'Message text (alias for message)',
+            fillMode: { default: 'buildtime_ai_once', supportsRuntimeAI: true, supportsBuildtimeAI: true },
           },
           username: {
             type: 'string',
             description: 'Bot username',
+            fillMode: { default: 'buildtime_ai_once', supportsRuntimeAI: false, supportsBuildtimeAI: true },
           },
           iconEmoji: {
             type: 'string',
@@ -4034,6 +4051,7 @@ export class NodeLibrary {
             examples: ['Hello', '{{$json.subject}}'],
             // ✅ This is a configurable input field
             requiredIf: { field: 'operation', equals: 'send' },
+            fillMode: { default: 'buildtime_ai_once', supportsRuntimeAI: true, supportsBuildtimeAI: true },
           },
           body: {
             type: 'string',
@@ -4041,6 +4059,7 @@ export class NodeLibrary {
             examples: ['Email content', '{{$json.message}}'],
             // ✅ This is a configurable input field
             requiredIf: { field: 'operation', equals: 'send' },
+            fillMode: { default: 'buildtime_ai_once', supportsRuntimeAI: true, supportsBuildtimeAI: true },
           },
           // ✅ CRITICAL: from is NOT a configurable input - OAuth account is used
           from: {
@@ -4178,10 +4197,12 @@ export class NodeLibrary {
           subject: {
             type: 'string',
             description: 'Email subject',
+            fillMode: { default: 'buildtime_ai_once', supportsRuntimeAI: true, supportsBuildtimeAI: true },
           },
           text: {
             type: 'string',
             description: 'Email body (text)',
+            fillMode: { default: 'buildtime_ai_once', supportsRuntimeAI: true, supportsBuildtimeAI: true },
           },
           html: {
             type: 'string',
@@ -4397,6 +4418,7 @@ export class NodeLibrary {
           message: {
             type: 'string',
             description: 'Message text (required when messageType is "text")',
+            fillMode: { default: 'buildtime_ai_once', supportsRuntimeAI: true, supportsBuildtimeAI: true },
           },
           parseMode: {
             type: 'string',
@@ -5887,6 +5909,7 @@ export class NodeLibrary {
             type: 'string',
             description: 'Message text to send',
             examples: ['Hello from workflow!'],
+            fillMode: { default: 'buildtime_ai_once', supportsRuntimeAI: true, supportsBuildtimeAI: true },
           },
           botToken: {
             type: 'string',

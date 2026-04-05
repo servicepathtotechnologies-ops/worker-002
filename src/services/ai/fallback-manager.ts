@@ -32,8 +32,8 @@ export class FallbackManager {
           console.warn(`⚠️  Attempt ${attempt} with model ${model} failed:`, lastError.message);
 
           if (attempt < maxRetries) {
-            // Exponential backoff
-            await this.delay(1000 * attempt);
+            // Exponential backoff — reduced
+            await this.delay(300 * attempt);
           }
         }
       }

@@ -4,6 +4,7 @@
 
 import { geminiOrchestrator } from './gemini-orchestrator';
 import { workflowTrainingService } from './workflow-training-service';
+import { buildNodeCatalogText } from './node-catalog-builder';
 
 export interface AnalysisResult {
   summary: string; // 20-30 word summary
@@ -130,20 +131,25 @@ export class WorkflowAnalyzer {
    * STEP 2: CLARIFICATION QUESTIONING ENGINE
    */
   private buildSystemPrompt(): string {
+    // Build node catalog once — injected into both file and fallback prompts
+    const nodeCatalog = buildNodeCatalogText();
+
     // Try to load comprehensive clarifying questions prompt
     try {
       const promptPath = require('path').join(__dirname, 'CLARIFYING_QUESTIONS_SYSTEM_PROMPT.md');
       const fs = require('fs');
       if (fs.existsSync(promptPath)) {
         const content = fs.readFileSync(promptPath, 'utf-8');
-        console.log(`✅ Loaded clarifying questions prompt from: ${promptPath}`);
-        return content;
+        // ✅ REGISTRY-DRIVEN: Replace {{NODE_CATALOG}} placeholder with live registry catalog
+        const injected = content.replace('{{NODE_CATALOG}}', nodeCatalog);
+        console.log(`✅ Loaded clarifying questions prompt from: ${promptPath} (catalog injected: ${nodeCatalog.length} chars)`);
+        return injected;
       }
     } catch (error) {
       console.warn('⚠️  Could not load clarifying questions prompt, using embedded version');
     }
     
-    // Fallback to embedded prompt
+    // Fallback to embedded prompt — inject catalog here too
     return `STEP-2: CLARIFYING QUESTIONS AGENT
 
 ## 🔹 ROLE
@@ -159,6 +165,14 @@ You are NOT allowed to:
 - Ask exploratory or brainstorming questions
 
 You behave like a requirements engineer, not a chatbot.
+
+## 🔹 AVAILABLE NODE CATALOG
+
+The following nodes are available on this platform. Use this catalog to understand what nodes exist and what required fields they need:
+
+${nodeCatalog}
+
+**CRITICAL**: Required fields for each node are defined in the catalog above. Ask ONLY about fields that are marked as required in the catalog AND cannot be inferred from the user's prompt.
 
 ## 🔹 CORE OBJECTIVE
 
@@ -212,9 +226,8 @@ Ask ONLY if an external service is used AND auth source is not specified.
 - "Do you already have an API key for this service?"
 
 ❌ **Never ask:**
-- "Which Google account should be used?" (Google OAuth is handled via navbar credentials button - already integrated with Supabase)
+- About OAuth credentials handled by the platform
 - How to create an account
-- Google OAuth credentials (already available via navbar)
 
 ### 3️⃣ DESTINATION / FINAL OUTPUT
 
@@ -222,17 +235,18 @@ Ask ONLY if output destination is ambiguous.
 
 **Examples:**
 - "Where should the final result be sent?"
-- "Should the message go to Slack or email?"
+- "Which specific channel/sheet/email?"
 
 ❌ **Do not ask formatting questions unless required.**
 
-### 4️⃣ REQUIRED DATA FIELDS
+### 4️⃣ REQUIRED NODE INPUTS
 
-Ask ONLY if mandatory fields for a node are missing.
+Ask ONLY if mandatory fields for an implied node are missing AND cannot be inferred from the prompt.
+Consult the node catalog above to determine which fields are required for each node type.
 
 **Examples:**
+- "Which channel should receive the notification?"
 - "What email address should receive the message?"
-- "Which sheet should data be saved to?"
 
 ❌ **Never ask optional-field questions.**
 
@@ -266,62 +280,28 @@ Before asking ANY question, internally verify:
 
 ## 🔹 QUESTION COUNT LIMIT
 
-Ask the minimum number of questions needed.
-
-**Maximum allowed:**
-- Simple workflow: 0–2
-- Medium workflow: 2–4
-- Complex workflow: max 5
-
-If more than 5 are needed → you must group logically, but still ask separately.
+- Simple workflow: 0–1 questions
+- Medium workflow: 1–2 questions
+- Complex workflow: 2–3 questions
 
 ## 🔹 QUESTION FORMAT (STRICT)
 
 All questions must be:
-- Short
+- Short (5-10 words max)
 - One-line
 - One concept per question
-- Non-technical language
-
-✅ **Correct:**
-"Which Slack workspace should receive the message?"
-
-❌ **Incorrect:**
-"Can you explain how you want Slack integration to work?"
+- User-friendly language
 
 ## 🔹 OUTPUT FORMAT (STRICT)
 
-Output ONLY questions.
-No headings.
-No explanations.
-No numbering emojis.
-
-**Example output:**
-What should trigger this workflow?
-Do you already have an API key for this service?
-Where should the final result be sent?
+Output ONLY questions. No headings. No explanations. No numbering emojis.
 
 **If no questions are needed, output exactly:**
 No clarification needed.
 
 ## 🔹 FAIL-SAFE RULE (VERY IMPORTANT)
 
-If unsure whether to ask a question:
-
-**Default to NOT asking**
-
-Proceed with safest assumption internally
-
-**Wrong question ❌ is worse than no question.**
-
-## 🧠 WHY THIS PROMPT WORKS 100%
-
-This prompt:
-- Eliminates vague questions
-- Prevents over-questioning
-- Forces execution-driven clarity
-- Aligns questions strictly to node IO correctness
-- Mimics real enterprise requirement engineering
+If unsure whether to ask a question: Default to NOT asking. Wrong question ❌ is worse than no question.
 
 ---
 

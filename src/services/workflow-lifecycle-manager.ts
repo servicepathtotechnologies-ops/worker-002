@@ -28,7 +28,6 @@ import { getSupabaseClient } from '../core/database/supabase-compat';
 import { planWorkflowSpecFromPrompt } from './ai/smart-planner-adapter';
 import { mergePrimaryPlannerPrompt } from './ai/planner-prompt-merge';
 import type { WorkflowSpec } from '../planner/types';
-import { workflowPipelineOrchestrator } from './ai/workflow-pipeline-orchestrator';
 import { credentialDetector } from './ai/credential-detector';
 import { credentialInjector } from './ai/credential-injector';
 import { AgenticWorkflowBuilder } from './ai/workflow-builder';
@@ -165,7 +164,7 @@ export interface WorkflowGenerationResult {
   /**
    * Optional analysis snapshot from the new deterministic pipeline (if used)
    */
-  analysis?: import('./ai/workflow-pipeline-orchestrator').PipelineAnalysis;
+  analysis?: Record<string, unknown>;
 }
 
 export interface CredentialInjectionResult {
@@ -348,7 +347,7 @@ export class WorkflowLifecycleManager {
     requirements?: any;
     requiredCredentials?: string[];
     confidenceScore?: any;
-    analysis?: import('./ai/workflow-pipeline-orchestrator').PipelineAnalysis;
+    analysis?: Record<string, unknown>;
   }> {
     console.log('[WorkflowLifecycle] Executing Gemini planner pipeline (with deterministic fallback)...');
 
@@ -460,103 +459,28 @@ export class WorkflowLifecycleManager {
       console.log(`[WorkflowLifecycle] ✅ Using selected structured prompt (original preserved for reference)`);
     }
     
-    // Execute pipeline with progress callback
-    const pipelineResult = await workflowPipelineOrchestrator.executePipeline(
-      userPrompt, // Keep for backward compatibility
-      existingCredentials,
-      constraints?.providedCredentials,
-      {
-        mode: 'build',
-        onProgress,
-        mandatoryNodeTypes, // ✅ NEW: Pass mandatory nodes to pipeline
-        mandatoryNodesWithOperations, // ✅ NEW: Pass operation hints
-        selectedStructuredPrompt, // ✅ NEW: Pass selected structured prompt
-        originalPrompt, // ✅ NEW: Pass original prompt for reference
-        tagsFromVariation, // ✅ Tags from registry for selected nodes (ordering/pruning)
-      }
-    );
+    // Execute pipeline — AI-first, single universal path
+    const { AiFirstPipeline } = await import('./ai/ai-first-pipeline');
+    const aiPipeline = new AiFirstPipeline();
+    const pipelineResult = await aiPipeline.run({
+      userPrompt: selectedStructuredPrompt,
+      userId: 'lifecycle',
+    });
 
-    // ✅ ROOT-LEVEL FIX: Handle clarification required gracefully when clarification is disabled
-    // Note: Clarification stage has been removed, vague prompts are handled by intent_auto_expander
-    if (pipelineResult.clarificationRequired) {
-      console.warn('[WorkflowLifecycleManager] Clarification required flag set, but clarification stage is disabled');
-      
-      // ✅ ROOT-LEVEL FIX: If clarification is required but disabled, check if we can proceed with expansion
-      // The pipeline orchestrator should have already attempted expansion, but if it didn't,
-      // we should provide a meaningful error message instead of "Unknown pipeline error"
-      if (!pipelineResult.workflow && (!pipelineResult.errors || pipelineResult.errors.length === 0)) {
-        // No workflow and no errors - this is the "Unknown pipeline error" case
-        // Provide meaningful error message based on pipeline context
-        const confidence = pipelineResult.confidenceScore?.confidence_score || 0;
-        const missingFields = pipelineResult.pipelineContext?.missing_fields || [];
-        const clarificationQuestions = pipelineResult.clarificationQuestions || [];
-        
-        const errorMessage = `Workflow generation failed: Low confidence (${(confidence * 100).toFixed(1)}%) and intent expansion did not produce a valid workflow. ` +
-          (missingFields.length > 0 ? `Missing fields: ${missingFields.join(', ')}. ` : '') +
-          (clarificationQuestions.length > 0 ? `Clarification needed: ${clarificationQuestions[0]}` : 'Please provide more specific workflow requirements.');
-        
-        // ✅ ROOT-LEVEL FIX: Populate errors array with meaningful message
-        if (!pipelineResult.errors) {
-          pipelineResult.errors = [];
-        }
-        pipelineResult.errors.push(errorMessage);
-      }
+    if (!pipelineResult.ok) {
+      throw new Error(`Pipeline failed: ${pipelineResult.code} — ${pipelineResult.message}`);
     }
-
-    // Handle credentials required
-    if (pipelineResult.requiresCredentials && !pipelineResult.workflow) {
-      throw new Error(`Credentials required: ${pipelineResult.credentialDetection?.missing_credentials.map(c => c.provider).join(', ')}`);
-    }
-
-    if (!pipelineResult.success || !pipelineResult.workflow) {
-      // ✅ ROOT-LEVEL FIX: Ensure errors array is always populated with meaningful messages
-      let errors = pipelineResult.errors || [];
-      
-      if (errors.length === 0) {
-        // Generate meaningful error message from pipeline context
-        // ✅ WORLD-CLASS UNIVERSAL: Use intent confidence from pipeline context as single source of truth
-        // If confidenceScore is missing (e.g. early failure), fall back to pipelineContext.confidence_score
-        let confidence =
-          pipelineResult.confidenceScore?.confidence_score ??
-          pipelineResult.pipelineContext?.confidence_score;
-        if (confidence === undefined || isNaN(confidence)) {
-          confidence = 0;
-        }
-        const warnings = pipelineResult.warnings || [];
-        const missingFields = pipelineResult.pipelineContext?.missing_fields || [];
-        
-        if (confidence < 0.5) {
-          errors.push(`Workflow generation failed: Low confidence (${(confidence * 100).toFixed(1)}%) - prompt may be too vague or ambiguous`);
-        } else if (missingFields.length > 0) {
-          errors.push(`Workflow generation failed: Missing required fields: ${missingFields.join(', ')}`);
-        } else if (warnings.length > 0) {
-          errors.push(`Workflow generation failed: ${warnings[0]}`);
-        } else {
-          errors.push(`Workflow generation failed: Pipeline execution completed but no workflow was generated`);
-        }
-      }
-      
-      const reason = errors.join('; ');
-      // ✅ Preserve pipeline result (including expandedIntent) for fallback detection
-      const error: any = new Error(`Pipeline failed: ${reason}`);
-      error.pipelineResult = pipelineResult; // Attach pipeline result to error for fallback detection
-      throw error;
-    }
-
-    // Convert credential detection to required credentials format
-    const requiredCredentials = pipelineResult.credentialDetection?.required_credentials.map(c => c.provider) || [];
 
     return {
       workflow: pipelineResult.workflow,
-      documentation: `Workflow generated using deterministic pipeline architecture`,
-      suggestions: pipelineResult.warnings.map(w => ({ type: 'warning', message: w })),
+      documentation: 'Workflow generated using AI-first pipeline',
+      suggestions: pipelineResult.validationIssues
+        .filter(i => i.severity === 'warning')
+        .map(i => ({ type: 'warning', message: i.description })),
       estimatedComplexity: 'medium',
-      requiredCredentials,
-      confidenceScore: {
-        score: pipelineResult.success ? 0.9 : 0.5,
-        factors: [],
-      },
-      analysis: pipelineResult.analysis,
+      requiredCredentials: [],
+      confidenceScore: { score: 0.9, factors: [] },
+      analysis: undefined,
     };
   }
 

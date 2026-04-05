@@ -24,9 +24,27 @@ function minimalNode(id: string, type: string, config: Record<string, unknown> =
 }
 
 describe('Tier1: slack and communication registry', () => {
-  it('slack_message message field defaults to runtime_ai', () => {
+  it('slack_message message field defaults to buildtime_ai_once', () => {
     expect(resolveEffectiveFieldFillMode('message', unifiedNodeRegistry.get('slack_message')!.inputSchema as any, {})).toBe(
-      'runtime_ai'
+      'buildtime_ai_once'
+    );
+  });
+
+  it('slack_message channel field defaults to buildtime_ai_once', () => {
+    expect(resolveEffectiveFieldFillMode('channel', unifiedNodeRegistry.get('slack_message')!.inputSchema as any, {})).toBe(
+      'buildtime_ai_once'
+    );
+  });
+
+  it('slack_message text field defaults to buildtime_ai_once', () => {
+    expect(resolveEffectiveFieldFillMode('text', unifiedNodeRegistry.get('slack_message')!.inputSchema as any, {})).toBe(
+      'buildtime_ai_once'
+    );
+  });
+
+  it('slack_message username field defaults to buildtime_ai_once', () => {
+    expect(resolveEffectiveFieldFillMode('username', unifiedNodeRegistry.get('slack_message')!.inputSchema as any, {})).toBe(
+      'buildtime_ai_once'
     );
   });
 

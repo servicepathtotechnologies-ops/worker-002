@@ -123,7 +123,7 @@ export class PromptNormalizer {
         if (attempt < maxRetries && isJsonParseError) {
           console.log(`🔄 [PromptNormalizer] JSON parse error detected, retrying with stricter prompt...`);
           // Wait before retry
-          await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+          await new Promise(resolve => setTimeout(resolve, 200 * attempt));
           continue;
         }
         

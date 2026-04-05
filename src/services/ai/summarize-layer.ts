@@ -819,7 +819,7 @@ export class AIIntentClarifier {
 
         // Wait before retry (exponential backoff)
         if (attempt < maxRetries) {
-          const backoffMs = 1000 * attempt; // 1s, 2s, 3s
+          const backoffMs = 300 * attempt; // 300ms, 600ms, 900ms
           await new Promise(resolve => setTimeout(resolve, backoffMs));
         }
       }

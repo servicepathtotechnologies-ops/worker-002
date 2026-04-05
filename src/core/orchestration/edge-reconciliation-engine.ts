@@ -222,7 +222,13 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
           if (edgeForPortExists) return;
 
           const targetCandidate = potentialTargets.find(t => !usedTargets.has(t));
-          if (!targetCandidate) return;
+          // Task 4.4: guard branch exhaustion — emit hard error instead of silently skipping
+          if (!targetCandidate) {
+            errors.push(
+              `Switch/If node ${branchingNode.id}: no distinct target available for branch port ${portName} — the planner may have emitted too few nodes for this branch`
+            );
+            return;
+          }
 
           const newEdge = this.createEdgeFromOrder(
             workflow,
@@ -251,6 +257,24 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
             usedTargets.add(targetCandidate);
           }
         });
+
+        // Task 4.3: assert no two branch edges from this node share the same target
+        const outgoingBranchEdges = workingEdges.filter(e => e.source === branchingNode.id);
+        const branchTargets = outgoingBranchEdges.map(e => e.target);
+        const uniqueBranchTargets = new Set(branchTargets);
+        if (uniqueBranchTargets.size < branchTargets.length) {
+          // Find which targets are shared
+          const seen = new Set<string>();
+          for (const target of branchTargets) {
+            if (seen.has(target)) {
+              errors.push(
+                `Switch/If node ${branchingNode.id}: branch ports share the same target node ${target} — each branch must have a distinct target node`
+              );
+              break;
+            }
+            seen.add(target);
+          }
+        }
       }
     }
     
@@ -1557,6 +1581,24 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
       if (sourceIdx >= targetIdx) {
         if (this.shouldKeepEdgeDespiteNonMonotonicOrder(workflow, edge)) {
           return;
+        }
+        // Exempt intentional port-labeled branch edges (case_*, true, false) from a branching
+        // node — these are pre-wired by wireSwitchCaseEdges() and must survive into Step 4's
+        // edgeForPortExists guard. Removing them causes Step 4 to re-create them positionally,
+        // overwriting the semantic intent captured in caseNodeMapping.
+        const branchEdgeLabel = String(edge.type || edge.sourceHandle || '');
+        const isBranchPortEdge =
+          branchEdgeLabel === 'true' ||
+          branchEdgeLabel === 'false' ||
+          /^case_\d+$/.test(branchEdgeLabel);
+        if (isBranchPortEdge) {
+          const sourceNodeForBranch = workflow.nodes.find((n) => n.id === edge.source);
+          const sourceIsBranching = sourceNodeForBranch
+            ? unifiedNodeRegistry.get(this.getNodeType(sourceNodeForBranch))?.isBranching === true
+            : false;
+          if (sourceIsBranching) {
+            return; // Keep intentional branch edge — Step 4 will see it via edgeForPortExists
+          }
         }
         // Edge violates execution order (target comes before source in flat list)
         edgesToRemove.push(edge);

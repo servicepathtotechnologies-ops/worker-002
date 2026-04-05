@@ -14,14 +14,13 @@ export function overrideSlackMessage(
 ): UnifiedNodeDefinition {
   const inputSchema = {
     ...def.inputSchema,
-    // Webhook URL is a secret and should be treated as a credential-like field.
-    // Keeping this as `credential` ensures it appears only once in the Credentials step
-    // and is not duplicated as both config + credential.
+    // Webhook URL is a config value (not an auth secret) — ownership='value' keeps it
+    // in the node properties panel where the user can type it directly.
+    // The field-ownership.ts URL guard (webhook_url helpCategory) already returns 'value'.
     webhookUrl: def.inputSchema.webhookUrl
       ? {
           ...def.inputSchema.webhookUrl,
-          ownership: 'credential' as const,
-          credentialTogglePolicy: 'unlockable' as const,
+          ownership: 'value' as const,
           fillMode: {
             default: 'manual_static' as const,
             supportsRuntimeAI: false,
@@ -34,8 +33,8 @@ export function overrideSlackMessage(
           ...def.inputSchema.channel,
           ownership: 'structural' as const,
           fillMode: {
-            default: 'manual_static' as const,
-            supportsRuntimeAI: false,
+            default: 'buildtime_ai_once' as const,
+            supportsRuntimeAI: true,
             supportsBuildtimeAI: true,
           },
         }
@@ -46,7 +45,7 @@ export function overrideSlackMessage(
           ...def.inputSchema.message,
           ownership: 'value' as const,
           fillMode: {
-            default: 'runtime_ai' as const,
+            default: 'buildtime_ai_once' as const,
             supportsRuntimeAI: true,
             supportsBuildtimeAI: true,
           },
@@ -59,7 +58,7 @@ export function overrideSlackMessage(
           ...def.inputSchema.text,
           ownership: 'value' as const,
           fillMode: {
-            default: 'runtime_ai' as const,
+            default: 'buildtime_ai_once' as const,
             supportsRuntimeAI: true,
             supportsBuildtimeAI: true,
           },
@@ -85,7 +84,7 @@ export function overrideSlackMessage(
           ...def.inputSchema.username,
           ownership: 'value' as const,
           fillMode: {
-            default: 'manual_static' as const,
+            default: 'buildtime_ai_once' as const,
             supportsRuntimeAI: false,
             supportsBuildtimeAI: true,
           },

@@ -38,24 +38,10 @@ export class WorkflowGraphRepair {
     });
     const nodeTypes = nodes.map(n => unifiedNormalizeNodeType(n) || n.type || '');
 
-    // Check 1: Form trigger requires form data extraction
-    if (structure.trigger === 'form') {
-      const hasFormExtraction = stepTypes.some(t => 
-        ['set_variable', 'json_parser', 'edit_fields', 'set'].includes(t)
-      ) || nodeTypes.some(t => 
-        ['set_variable', 'json_parser', 'edit_fields', 'set'].includes(t)
-      );
-      
-      if (!hasFormExtraction && (promptLower.includes('form') || promptLower.includes('fill'))) {
-        missingNodes.push({
-          type: 'set_variable',
-          reason: 'Form trigger requires form data extraction to access form fields',
-          requiredPosition: 0 // After trigger, before other nodes
-        });
-      }
-    }
+    // Form triggers pass submission payload to the next node via normal edges; do not inject set_variable
+    // unless the user explicitly requests variable assignment (handled by planner / intent).
 
-    // Check 2: Conditional logic requires if_else node
+    // Check 1: Conditional logic requires if_else node
     // Use strict patterns to avoid false positives (e.g., "agent" contains "age", "manage" contains "age")
     const strictConditionalPatterns = [
       /\bif\s+(.+?)\s+then\b/i,           // "if X then Y"
@@ -92,7 +78,7 @@ export class WorkflowGraphRepair {
       });
     }
 
-    // Check 3: Loop pattern requires loop node
+    // Check 2: Loop pattern requires loop node
     const loopKeywords = ['for each', 'loop', 'iterate', 'process each', 'each row', 'each item'];
     const hasLoopKeyword = loopKeywords.some(keyword => promptLower.includes(keyword));
     const hasLoop = stepTypes.includes('loop') || nodeTypes.includes('loop');
@@ -114,7 +100,7 @@ export class WorkflowGraphRepair {
       });
     }
 
-    // Check 4: Read before write order validation
+    // Check 3: Read before write order validation
     const readOps = stepTypes.filter((t, idx) => {
       const step = structure.steps[idx] as any;
       const operation = step?.operation || (nodes.find(n => {
@@ -146,7 +132,7 @@ export class WorkflowGraphRepair {
       }
     }
 
-    // Check 5: Data source → loop → create pattern validation
+    // Check 4: Data source → loop → create pattern validation
     if (hasDataSource && hasCreateOp && !hasLoop) {
       const dataSourceIndex = stepTypes.findIndex(t => ['google_sheets', 'database_read', 'airtable'].includes(t));
       const createOpIndex = stepTypes.findIndex(t => ['hubspot', 'zoho', 'pipedrive', 'airtable'].includes(t));

@@ -25,7 +25,8 @@ export type AIRequestType =
   | 'node-suggestion'
   | 'error-analysis'
   | 'reasoning'
-  | 'text-completion';
+  | 'text-completion'
+  | 'property-population';
 
 interface CacheEntry {
   result: any;
@@ -262,8 +263,8 @@ export class GeminiOrchestrator {
           throw error;
         }
 
-        // Exponential backoff
-        const delay = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
+        // Exponential backoff — capped at 3s
+        const delay = Math.min(500 * Math.pow(2, attempt - 1), 3000);
         console.log(`[GeminiOrchestrator] Retry attempt ${attempt}/${maxRetries} after ${delay}ms`);
         await new Promise(resolve => setTimeout(resolve, delay));
       }
@@ -333,7 +334,13 @@ export class GeminiOrchestrator {
    */
   private getDefaultMaxTokens(type: AIRequestType): number {
     if (['workflow-generation', 'code-generation'].includes(type)) {
-      return 4000; // Longer outputs
+      return 16000; // Longer outputs — workflow JSON can exceed 4000 tokens for 5+ node graphs
+    }
+
+    // Intent analysis returns structured JSON with actions + dataFlows arrays.
+    // Complex prompts (5+ dataFlows) can exceed 2000 tokens and get truncated.
+    if (type === 'intent-analysis') {
+      return 4000;
     }
     
     if (['summarization', 'text-completion'].includes(type)) {

@@ -1,5 +1,132 @@
 import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 
+// ─── AI-First: Compact catalog types ────────────────────────────────────────
+
+export type NodeCategory =
+  | 'trigger'
+  | 'logic'
+  | 'data'
+  | 'ai'
+  | 'communication'
+  | 'transformation'
+  | 'utility'
+  | string;
+
+export interface NodeCatalogOptions {
+  /** Max characters for the serialized catalog (approx tokens * 4). Default: 32000 */
+  tokenBudget?: number;
+  /** Category priority order — first = highest priority. Default: trigger → logic → data → ai → communication → transformation → utility */
+  priorityOrder?: NodeCategory[];
+}
+
+/** Compact per-node entry included in the LLM system prompt */
+export interface CompactNodeEntry {
+  type: string;
+  label: string;
+  category: string;
+  description: string;
+  inputSummary: string[];
+  outputSummary: string[];
+  credentials: string[];
+  isTrigger: boolean;
+  isBranching: boolean;
+  operations?: string[];
+}
+
+export type NodeCatalogText = string;
+
+const DEFAULT_PRIORITY_ORDER: NodeCategory[] = [
+  'trigger',
+  'logic',
+  'data',
+  'ai',
+  'communication',
+  'transformation',
+  'utility',
+];
+
+const DEFAULT_TOKEN_BUDGET = 32000; // ~8k tokens
+
+/**
+ * Build a compact, token-budget-aware node catalog string for LLM system prompts.
+ *
+ * - Reads ALL node definitions from UnifiedNodeRegistry at call time (no hardcoding).
+ * - Sorts by priorityOrder so trigger/logic nodes are never dropped first.
+ * - Serializes to compact JSON and accumulates until tokenBudget is reached.
+ * - Adding a new node to the registry automatically includes it here — zero code changes needed.
+ *
+ * Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6
+ */
+export function buildNodeCatalogText(options: NodeCatalogOptions = {}): NodeCatalogText {
+  const budget = options.tokenBudget ?? DEFAULT_TOKEN_BUDGET;
+  const priorityOrder = options.priorityOrder ?? DEFAULT_PRIORITY_ORDER;
+
+  const types = unifiedNodeRegistry.getAllTypes();
+
+  // Build compact entries from registry (no hardcoded node names)
+  const entries: CompactNodeEntry[] = [];
+  for (const type of types) {
+    const def = unifiedNodeRegistry.get(type);
+    if (!def) continue;
+
+    const inputSchema = def.inputSchema || {};
+    const outputSchema = def.outputSchema || {};
+    const credSchema = def.credentialSchema;
+
+    const inputSummary = Object.keys(inputSchema).slice(0, 8); // top 8 fields
+    const outputSummary = Object.keys(outputSchema).slice(0, 4);
+
+    const credentials: string[] = [];
+    if (credSchema?.requirements) {
+      for (const req of credSchema.requirements) {
+        if (req.category) credentials.push(req.category);
+      }
+    }
+
+    // Extract operations from inputSchema if present
+    const opField = inputSchema['operation'] as any;
+    let operations: string[] | undefined;
+    if (opField?.enum) operations = opField.enum;
+    else if (opField?.oneOf) operations = opField.oneOf.map((o: any) => o.const ?? o.enum?.[0]).filter(Boolean);
+
+    const entry: CompactNodeEntry = {
+      type,
+      label: def.label || type,
+      category: def.category || 'utility',
+      description: (def.description || '').slice(0, 120),
+      inputSummary,
+      outputSummary,
+      credentials,
+      isTrigger: def.category === 'trigger',
+      isBranching: !!(def as any).isBranching,
+    };
+    if (operations?.length) entry.operations = operations;
+
+    entries.push(entry);
+  }
+
+  // Sort by priority order (lower index = higher priority = kept first when truncating)
+  entries.sort((a, b) => {
+    const ai = priorityOrder.indexOf(a.category);
+    const bi = priorityOrder.indexOf(b.category);
+    const aNorm = ai === -1 ? priorityOrder.length : ai;
+    const bNorm = bi === -1 ? priorityOrder.length : bi;
+    return aNorm - bNorm;
+  });
+
+  // Accumulate until budget is reached
+  const included: CompactNodeEntry[] = [];
+  let accumulated = 0;
+  for (const entry of entries) {
+    const serialized = JSON.stringify(entry);
+    if (accumulated + serialized.length > budget && included.length > 0) break;
+    included.push(entry);
+    accumulated += serialized.length + 1; // +1 for comma/newline
+  }
+
+  return JSON.stringify(included);
+}
+
 export interface NodeCatalogEntry {
   type: string;
   name: string;

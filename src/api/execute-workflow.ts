@@ -9937,7 +9937,7 @@ export async function executeNodeLegacy(
         createLinkedInMediaPost,
       } = await import('../shared/linkedin-api');
 
-      const dryRun = !!config.dryRun;
+      const dryRun = config.dryRun === true || config.dryRun === 'true';
 
       // Handle different operations
       try {
@@ -10123,8 +10123,10 @@ export async function executeNodeLegacy(
 
               try {
                 const lowerUrl = mediaUrl.toLowerCase();
+                // Detect media kind from data URI mime type or file extension
                 const kind =
-                  lowerUrl.match(/\.(mp4|mov|avi|mkv|webm)$/) !== null
+                  (lowerUrl.startsWith('data:video/') ||
+                    lowerUrl.match(/\.(mp4|mov|avi|mkv|webm)(\?|$)/) !== null)
                     ? ('video' as const)
                     : ('image' as const);
 

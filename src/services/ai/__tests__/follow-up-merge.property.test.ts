@@ -4,7 +4,15 @@
  */
 
 import * as fc from 'fast-check';
-import type { PipelineContext } from '../workflow-pipeline-orchestrator';
+
+// Inline type — PipelineContext from deleted workflow-pipeline-orchestrator
+interface PipelineContext {
+  original_prompt: string;
+  structured_intent: Record<string, any>;
+  confidence_score?: number;
+  requires_confirmation?: boolean;
+  [key: string]: any;
+}
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 

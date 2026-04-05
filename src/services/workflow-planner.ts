@@ -88,7 +88,7 @@ export interface WorkflowPlan {
 export class WorkflowPlanner {
   private readonly maxRetries = 3;
   private readonly baseTemperature = 0.1;
-  private readonly retryDelay = 1000; // ms
+  private readonly retryDelay = 200; // ms — reduced from 1000ms
   
   // ✅ FIXED: Execution guard to prevent recursion
   private isPlanning = false;

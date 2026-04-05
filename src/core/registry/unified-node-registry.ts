@@ -39,6 +39,7 @@ import { unifiedNormalizeNodeTypeString } from '../utils/unified-node-type-norma
 import {
   inferFieldHelpMetadata,
 } from '../utils/field-help-metadata';
+import type { FieldHelpCategory } from '../utils/field-help-metadata';
 import { classifyFieldOwnership, isCredentialOwnership } from '../utils/field-ownership';
 
 export class UnifiedNodeRegistry implements INodeRegistry {
@@ -326,7 +327,7 @@ export class UnifiedNodeRegistry implements INodeRegistry {
           default: optionalField?.default,
           examples: optionalField?.examples,
           validation: optionalField?.validation,
-          fillMode: getDefaultFillMode(fieldName, type),
+          fillMode: (optionalField as any)?.fillMode ?? getDefaultFillMode(fieldName, type),
           role: inferRole(fieldName, type),
           essentialForExecution: inferEssentialForExecution(true, fieldName),
           ...(ui ? { ui } : {}),
@@ -347,7 +348,7 @@ export class UnifiedNodeRegistry implements INodeRegistry {
             default: (fieldDef as any).default,
             examples: (fieldDef as any).examples,
             validation: (fieldDef as any).validation,
-            fillMode: getDefaultFillMode(fieldName, type),
+            fillMode: (fieldDef as any).fillMode ?? getDefaultFillMode(fieldName, type),
             role: inferRole(fieldName, type),
             essentialForExecution: inferEssentialForExecution(false, fieldName),
             ...(ui ? { ui } : {}),
@@ -857,9 +858,11 @@ export class UnifiedNodeRegistry implements INodeRegistry {
       if (credentialFieldsSet.has(fieldName)) continue;
       credentialFieldsSet.add(fieldName);
       if (provider) {
+        const category = this.inferCredentialCategory(fieldName, fd.helpCategory);
+        if (category === undefined) continue;
         requirements.push({
           provider,
-          category: this.inferCredentialCategory(fieldName),
+          category,
           required: schema.configSchema?.required?.includes(fieldName) || false,
           description: fd.description || `${fieldName} credential`,
         });
@@ -889,12 +892,26 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     return undefined;
   }
   
-  private inferCredentialCategory(fieldName: string): string {
+  private inferCredentialCategory(fieldName: string, helpCategory?: FieldHelpCategory): string | undefined {
+    // URL-type categories are config values, not secrets — never treat them as credentials
+    const URL_CONFIG_CATEGORIES = new Set<FieldHelpCategory>([
+      'webhook_url',
+      'base_url',
+      'api_endpoint',
+      'callback_url',
+      'redirect_url',
+    ]);
+    if (helpCategory && URL_CONFIG_CATEGORIES.has(helpCategory)) {
+      return undefined;
+    }
+
     const nameLower = fieldName.toLowerCase();
     if (nameLower.includes('oauth')) return 'oauth';
     if (nameLower.includes('api_key')) return 'api_key';
     if (nameLower.includes('token')) return 'token';
-    if (nameLower.includes('webhook')) return 'webhook';
+    // NOTE: 'webhook' substring match intentionally removed — it was the Bug 1 root cause.
+    // Legitimate webhook secrets are identified by helpCategory='webhook_secret' (in STRICT_CREDENTIAL_CATEGORIES)
+    // and are classified as 'credential' ownership before reaching this method.
     return 'credential';
   }
   

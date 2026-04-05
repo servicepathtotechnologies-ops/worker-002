@@ -10,7 +10,6 @@
  */
 
 import { Request, Response } from 'express';
-import { workflowPipelineOrchestrator } from '../services/ai/workflow-pipeline-orchestrator';
 import { workflowConfirmationManager, WorkflowState } from '../services/ai/workflow-confirmation-manager';
 import { toolSubstitutionEngine } from '../services/ai/tool-substitution-engine';
 import { getSupabaseClient } from '../core/database/supabase-compat';
@@ -375,59 +374,22 @@ export async function confirmWorkflow(req: Request, res: Response) {
       });
     }
 
-    // Workflow approved - continue pipeline execution
-    console.log(`[WorkflowConfirm] Workflow ${workflowId} approved, continuing pipeline execution`);
+    // Workflow approved — AI-first pipeline generates directly, no continuation step needed.
+    // Return the workflow from the confirmation request as-is.
+    console.log(`[WorkflowConfirm] Workflow ${workflowId} approved`);
 
-    // Get credentials from request (if provided)
-    const { existingCredentials, providedCredentials } = req.body;
-
-    // Continue pipeline after confirmation
-    const pipelineResult = await workflowPipelineOrchestrator.continuePipelineAfterConfirmation(
-      workflowId,
-      true, // confirmed
-      existingCredentials,
-      providedCredentials,
-      {
-        mode: 'build',
-        onProgress: (step, stepName, progress, details) => {
-          console.log(`[WorkflowConfirm] Pipeline progress: Step ${step} (${stepName}) - ${progress}%`);
-        },
-      }
-    );
-
-    if (!pipelineResult.success) {
-      console.error(`[WorkflowConfirm] Pipeline continuation failed:`, pipelineResult.errors);
-      
-      // Update database state to reflect failure
-      await updateWorkflowStateInDatabase(
-        workflowId,
-        WorkflowState.STATE_REJECTED,
-        undefined,
-        userId
-      );
-
-      return res.status(500).json({
-        success: false,
-        workflowId,
-        error: 'Pipeline continuation failed',
-        errors: pipelineResult.errors,
-        warnings: pipelineResult.warnings,
-      });
-    }
-
-    // Update database with final workflow
+    // Update database with confirmed workflow
     await updateWorkflowStateInDatabase(
       workflowId,
       WorkflowState.STATE_CONFIRMED,
-      pipelineResult.workflow ? {
-        nodes: pipelineResult.workflow.nodes || [],
-        edges: pipelineResult.workflow.edges || [],
-      } : undefined,
+      {
+        nodes: workflow.nodes || [],
+        edges: workflow.edges || [],
+      },
       userId
     );
 
-    // ✅ CRITICAL: Set confirmed field to true when workflow is confirmed
-    // Note: supabaseClient is already declared above
+    // ✅ Set confirmed field to true
     const { error: confirmError } = await supabaseClient
       .from('workflows')
       .update({ confirmed: true })
@@ -435,23 +397,19 @@ export async function confirmWorkflow(req: Request, res: Response) {
 
     if (confirmError) {
       console.error(`[WorkflowConfirm] Error setting confirmed flag:`, confirmError);
-      // Don't throw - status update is more important
     } else {
       console.log(`[WorkflowConfirm] ✅ Set confirmed=true for workflow ${workflowId}`);
     }
 
-    console.log(`[WorkflowConfirm] ✅ Workflow ${workflowId} confirmed and pipeline completed successfully`);
+    console.log(`[WorkflowConfirm] ✅ Workflow ${workflowId} confirmed successfully`);
 
     return res.json({
       success: true,
       workflowId,
       state: WorkflowState.STATE_CONFIRMED,
-      workflow: pipelineResult.workflow,
-      structuredIntent: pipelineResult.structuredIntent,
-      credentialDetection: pipelineResult.credentialDetection,
-      errors: pipelineResult.errors,
-      warnings: pipelineResult.warnings,
-      requiresCredentials: pipelineResult.requiresCredentials,
+      workflow,
+      errors: [],
+      warnings: [],
     });
   } catch (error) {
     console.error(`[WorkflowConfirm] Error processing confirmation:`, error);

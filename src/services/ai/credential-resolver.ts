@@ -304,17 +304,13 @@ export class CredentialResolver {
     userId: string
   ): Promise<boolean> {
     try {
-      // Get user from Supabase
-      const { data: { user }, error: authError } = await this.supabase.auth.getUser();
-      
-      if (authError || !user) {
-        // If no user, try to use userId directly (for service role)
-        if (!userId) {
-          return false;
-        }
+      // The worker uses a service-role Supabase client — auth.getUser() will not return a
+      // user session here. Use the userId passed from the API request directly.
+      if (!userId || userId === 'anonymous') {
+        return false;
       }
 
-      const effectiveUserId = user?.id || userId;
+      const effectiveUserId = userId;
 
       // 🔒 SPECIAL HANDLING: Google OAuth tokens are stored in google_oauth_tokens table
       // This is where the "Connect Google" button stores credentials

@@ -90,9 +90,6 @@ async function executeNodeInWorker(
   // In production, you'd import the actual executeNode function
   // and execute it here with proper error handling
   
-  // Simulate execution
-  await new Promise(resolve => setTimeout(resolve, 100));
-  
   return {
     ...(typeof input === 'object' && input !== null ? input : { value: input }),
     _processed: true,
