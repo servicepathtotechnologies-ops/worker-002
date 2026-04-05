@@ -157,11 +157,41 @@ export async function runEdgeReasoningStage(
 
   // Build WorkflowNode objects from deduplicated nodes + LLM ordering
   const nodeMap = new Map(deduplicatedNodes.map((n) => [n.nodeId, n]));
+
+  // ✅ FIX: Extract switch cases from the AI's proposed edges BEFORE building nodes.
+  // The LLM emits edges like { source: switchId, target: gmailId, type: "success" }.
+  // We collect those case values per switch node so the node config has cases populated
+  // before getOutgoingPortsForWorkflowNode is called during edge reconciliation.
+  // Without this, the switch node gets an empty defaultConfig and reconciliation
+  // falls back to a single 'output' port, wiring everything linearly.
+  const switchCasesByNodeId = new Map<string, string[]>();
+  for (const edge of parsed.edges) {
+    const sourceNode = deduplicatedNodes.find(n => n.nodeId === edge.source);
+    if (!sourceNode) continue;
+    const def = unifiedNodeRegistry.get(sourceNode.type);
+    if (!def?.isBranching) continue;
+    // Collect non-main edge types as case values
+    if (edge.type && edge.type !== 'main' && edge.type !== 'default' && edge.type !== 'true' && edge.type !== 'false') {
+      const existing = switchCasesByNodeId.get(edge.source) || [];
+      if (!existing.includes(edge.type)) {
+        switchCasesByNodeId.set(edge.source, [...existing, edge.type]);
+      }
+    }
+  }
+
   const workflowNodes: WorkflowNode[] = parsed.orderedNodes
     .map((nodeId) => {
       const sel = nodeMap.get(nodeId);
       if (!sel) return null;
       const def = unifiedNodeRegistry.get(sel.type);
+      const baseConfig = def?.defaultConfig ? def.defaultConfig() : {};
+
+      // ✅ Inject AI-derived cases into switch node config so port resolution works
+      const aiCases = switchCasesByNodeId.get(nodeId);
+      const config = aiCases && aiCases.length > 0
+        ? { ...baseConfig, cases: aiCases.map(v => ({ value: v, label: v })) }
+        : baseConfig;
+
       return {
         id: nodeId,
         type: sel.type,
@@ -169,7 +199,7 @@ export async function runEdgeReasoningStage(
           label: def?.label || sel.type,
           type: sel.type,
           category: def?.category || 'action',
-          config: def?.defaultConfig ? def.defaultConfig() : {},
+          config,
         },
       } as WorkflowNode;
     })
@@ -180,6 +210,11 @@ export async function runEdgeReasoningStage(
     ? workflowNodes
     : deduplicatedNodes.map((sel) => {
         const def = unifiedNodeRegistry.get(sel.type);
+        const baseConfig = def?.defaultConfig ? def.defaultConfig() : {};
+        const aiCases = switchCasesByNodeId.get(sel.nodeId);
+        const config = aiCases && aiCases.length > 0
+          ? { ...baseConfig, cases: aiCases.map(v => ({ value: v, label: v })) }
+          : baseConfig;
         return {
           id: sel.nodeId,
           type: sel.type,
@@ -187,7 +222,7 @@ export async function runEdgeReasoningStage(
             label: def?.label || sel.type,
             type: sel.type,
             category: def?.category || 'action',
-            config: def?.defaultConfig ? def.defaultConfig() : {},
+            config,
           },
         } as WorkflowNode;
       });

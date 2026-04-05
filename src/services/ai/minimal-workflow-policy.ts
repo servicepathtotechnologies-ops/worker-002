@@ -501,6 +501,27 @@ export class MinimalWorkflowPolicy {
       return { filteredEdges: edges, pathViolations: [] };
     }
 
+    // ✅ FIX: If the workflow contains ANY branching node (switch, if_else), skip the
+    // minimal-path filter entirely. Branch edges ARE intentional parallel paths — they
+    // are not redundant duplicates. The shortest-path algorithm cannot distinguish
+    // "redundant bypass edge" from "intended branch edge", so it incorrectly drops
+    // case_2, case_3, … edges from switch nodes.
+    const hasBranchingNode = nodes.some(node => {
+      if (removedNodeIds.has(node.id)) return false;
+      const nodeType = unifiedNormalizeNodeType(node);
+      const def = unifiedNodeRegistry.get(nodeType);
+      return def?.isBranching === true;
+    });
+
+    if (hasBranchingNode) {
+      // For branching workflows, keep all edges that connect existing nodes.
+      // Edge deduplication and orphan removal already happened upstream.
+      const filteredEdges = edges.filter(
+        edge => !removedNodeIds.has(edge.source) && !removedNodeIds.has(edge.target)
+      );
+      return { filteredEdges, pathViolations: [] };
+    }
+
     // Build adjacency list
     const outgoing = new Map<string, string[]>();
     const incoming = new Map<string, string[]>();
@@ -547,7 +568,7 @@ export class MinimalWorkflowPolicy {
       path.forEach(edgeId => pathEdgeIds.add(edgeId));
     }
 
-    // Remove edges not in shortest paths
+    // Remove edges not in shortest paths — only for strictly linear workflows
     const filteredEdges: WorkflowEdge[] = [];
     for (const edge of edges) {
       if (removedNodeIds.has(edge.source) || removedNodeIds.has(edge.target)) {
