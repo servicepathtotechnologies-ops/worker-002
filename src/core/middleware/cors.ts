@@ -8,10 +8,18 @@ import { config } from '../config';
 const getAllowedOrigins = (): string[] => {
   const isProduction = config.isProduction || process.env.NODE_ENV === 'production';
   
-  // In production, only use environment variables
+  // In production, use environment variables + hardcoded production defaults
   if (isProduction) {
-    const origins: string[] = [];
-    
+    const origins: string[] = [
+      // Hardcoded production defaults (always allowed)
+      'https://ctrlchecks.ai',
+      'https://www.ctrlchecks.ai',
+      'https://*.vercel.app',
+      'http://localhost:5173',
+      'http://localhost:8080',
+      'http://127.0.0.1:5173',
+    ];
+
     if (config.corsOrigin) {
       const envOrigins = config.corsOrigin.split(',').map((o: string) => o.trim()).filter(Boolean);
       origins.push(...envOrigins);
@@ -21,11 +29,7 @@ const getAllowedOrigins = (): string[] => {
       const envOrigins = process.env.ALLOWED_ORIGINS.split(',').map((o: string) => o.trim()).filter(Boolean);
       origins.push(...envOrigins);
     }
-    
-    if (origins.length === 0) {
-      console.warn('⚠️  No CORS origins configured in production. Set CORS_ORIGIN or ALLOWED_ORIGINS environment variable.');
-    }
-    
+
     return [...new Set(origins)];
   }
   
