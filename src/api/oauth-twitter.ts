@@ -67,6 +67,15 @@ export async function twitterAuthorizeHandler(req: Request, res: Response) {
       });
     }
 
+    const placeholderIds = /^your[_-]?client[_-]?id$/i;
+    if (placeholderIds.test(clientId.trim()) || clientId.includes('your_client')) {
+      return res.status(500).json({
+        success: false,
+        error:
+          'TWITTER_OAUTH_CLIENT_ID is still a placeholder. Set it to your real OAuth 2.0 Client ID from developer.x.com (Keys and tokens / User authentication settings), then restart the worker.',
+      });
+    }
+
     // Generate PKCE parameters
     const { codeVerifier, codeChallenge } = generatePKCE();
     
@@ -78,12 +87,18 @@ export async function twitterAuthorizeHandler(req: Request, res: Response) {
     // In production, use a proper session store
     const stateData = Buffer.from(JSON.stringify({ codeVerifier, state: state })).toString('base64url');
 
+    // Scopes: tweet.write needs Elevated (or higher) access on the X app — if OAuth shows "Something went wrong"
+    // after login, use a smaller set via TWITTER_OAUTH_SCOPES (see worker env.example).
+    const scope =
+      process.env.TWITTER_OAUTH_SCOPES?.trim() ||
+      'users.read offline.access';
+
     // Twitter OAuth 2.0 authorization URL
     const authUrl = new URL('https://twitter.com/i/oauth2/authorize');
     authUrl.searchParams.set('response_type', 'code');
     authUrl.searchParams.set('client_id', clientId);
     authUrl.searchParams.set('redirect_uri', redirectUri);
-    authUrl.searchParams.set('scope', 'tweet.read tweet.write users.read offline.access');
+    authUrl.searchParams.set('scope', scope);
     authUrl.searchParams.set('state', stateData);
     authUrl.searchParams.set('code_challenge', codeChallenge);
     authUrl.searchParams.set('code_challenge_method', 'S256');
@@ -161,6 +176,14 @@ export async function twitterCallbackHandler(req: Request, res: Response) {
       return res.status(500).json({
         success: false,
         error: 'Twitter OAuth credentials not configured',
+      });
+    }
+
+    if (/your[_-]?client/i.test(clientId) || /your[_-]?client/i.test(clientSecret)) {
+      return res.status(500).json({
+        success: false,
+        error:
+          'Twitter OAuth env vars are still placeholders. Set TWITTER_OAUTH_CLIENT_ID and TWITTER_OAUTH_CLIENT_SECRET from developer.x.com.',
       });
     }
 
