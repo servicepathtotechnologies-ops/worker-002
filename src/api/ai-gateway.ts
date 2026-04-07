@@ -11,6 +11,12 @@ import { unifiedGraphOrchestrator } from '../core/orchestration/unified-graph-or
 import type { AiEditorRequest, AiEditorResponse } from '../core/types/ai-editor-contracts';
 import type { Workflow } from '../core/types/ai-types';
 import { WorkflowVersioning } from '../services/ai/workflow-versioning';
+import { getSupabaseClient } from '../core/database/supabase-compat';
+import {
+  buildFieldOwnershipGuidancePrompt,
+  fallbackFieldOwnershipGuidance,
+  type FieldOwnershipGuidanceSections,
+} from '../services/ai/field-ownership-guidance-prompt';
 import {
   resolveAiEditorPrincipal,
   requireCapability,
@@ -75,6 +81,83 @@ router.delete('/chatbot/session/:sessionId', async (req: Request, res: Response)
     res.json({ success: true, message: 'Conversation cleared' });
   } catch (error) {
     res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+  }
+});
+
+router.post('/field-ownership-guide', async (req: Request, res: Response) => {
+  try {
+    const { question, context } = req.body as {
+      question?: string;
+      context?: Record<string, unknown>;
+    };
+    if (!question || typeof question !== 'string' || !question.trim()) {
+      return res.status(400).json({ success: false, error: 'question is required' });
+    }
+
+    const authHeader = req.headers.authorization;
+    const supabase = getSupabaseClient();
+    let userId: string | null = null;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.replace('Bearer ', '').trim();
+      if (token) {
+        const { data: authData, error: authError } = await supabase.auth.getUser(token);
+        if (!authError && authData?.user?.id) userId = authData.user.id;
+      }
+    }
+
+    const workflowId = typeof context?.workflowId === 'string' ? context.workflowId.trim() : '';
+    if (workflowId && userId) {
+      const { data: wf } = await supabase
+        .from('workflows')
+        .select('id,user_id')
+        .eq('id', workflowId)
+        .single();
+      if (wf && wf.user_id && String(wf.user_id) !== String(userId)) {
+        return res.status(403).json({ success: false, error: 'Forbidden workflow access' });
+      }
+    }
+
+    if (!config.geminiApiKey) {
+      return res.status(200).json({ success: true, guidance: fallbackFieldOwnershipGuidance() });
+    }
+
+    const prompt = buildFieldOwnershipGuidancePrompt({
+      question: question.trim(),
+      context: context || {},
+    });
+    const raw = await geminiOrchestrator.processRequest('chat-generation', prompt, {
+      model: 'gemini-2.5-flash',
+      temperature: 0.3,
+    });
+    const text = typeof raw === 'string' ? raw : (raw as any)?.content || '';
+
+    let parsed: FieldOwnershipGuidanceSections | null = null;
+    try {
+      const jsonStart = text.indexOf('{');
+      const jsonEnd = text.lastIndexOf('}');
+      const candidate = jsonStart >= 0 && jsonEnd > jsonStart ? text.slice(jsonStart, jsonEnd + 1) : text;
+      const obj = JSON.parse(candidate);
+      parsed = {
+        whatThisFieldDoes: String(obj.whatThisFieldDoes || ''),
+        ifYouChooseYou: String(obj.ifYouChooseYou || ''),
+        ifYouChooseAIBuild: String(obj.ifYouChooseAIBuild || ''),
+        ifYouChooseAIRuntime: String(obj.ifYouChooseAIRuntime || ''),
+        isActuallyRequired: String(obj.isActuallyRequired || ''),
+        whereToGetValue: String(obj.whereToGetValue || ''),
+        nextStepExpectations: String(obj.nextStepExpectations || ''),
+      };
+    } catch {
+      parsed = null;
+    }
+
+    const guidance = parsed && Object.values(parsed).every((v) => v.trim().length > 0)
+      ? parsed
+      : fallbackFieldOwnershipGuidance();
+
+    res.json({ success: true, guidance });
+  } catch (error) {
+    console.error('Field ownership guide error:', error);
+    res.status(200).json({ success: true, guidance: fallbackFieldOwnershipGuidance() });
   }
 });
 
