@@ -25,13 +25,17 @@ type ServiceNormalizeResult = { normalized: string; valid: boolean; method: stri
 
 function normalizeViaServiceSafely(nodeType: string): ServiceNormalizeResult {
   try {
-    // Lazy-load to avoid startup circular initialization between core utils and AI services.
-    const svc = require('../../services/ai/node-type-normalization-service') as {
-      nodeTypeNormalizationService?: { normalizeNodeType: (t: string) => ServiceNormalizeResult };
+    // Delegate to unified-node-registry alias map (single source of truth).
+    // Lazy-load to avoid startup circular initialization.
+    const { unifiedNodeRegistry } = require('../registry/unified-node-registry') as {
+      unifiedNodeRegistry: { resolveAlias: (t: string) => string | undefined; has: (t: string) => boolean };
     };
-    const res = svc?.nodeTypeNormalizationService?.normalizeNodeType(nodeType);
-    if (res && typeof res.normalized === 'string') {
-      return res;
+    const resolved = unifiedNodeRegistry.resolveAlias(nodeType);
+    if (resolved) {
+      return { normalized: resolved, valid: true, method: 'registry_alias' };
+    }
+    if (unifiedNodeRegistry.has(nodeType)) {
+      return { normalized: nodeType, valid: true, method: 'registry_exact' };
     }
   } catch {
     // Fall through to semantic + raw fallback.

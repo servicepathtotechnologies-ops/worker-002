@@ -150,7 +150,8 @@ export class CapabilityResolver {
       return lower as AICapability;
     }
 
-    // Alias mappings
+    // Alias mappings — Email aliases must NOT be treated as AI capabilities.
+    // Email aliases resolve via unified-node-registry alias map to google_gmail.
     const aliases: Record<string, AICapability> = {
       'ai_service': AICapability.AI_PROCESSING,
       'ai_processing': AICapability.AI_PROCESSING,
@@ -165,6 +166,9 @@ export class CapabilityResolver {
       'generate_text': AICapability.TEXT_GENERATION,
       'sentiment': AICapability.SENTIMENT_ANALYSIS,
       'sentiment_analysis': AICapability.SENTIMENT_ANALYSIS,
+      // Email aliases must NOT be treated as AI capabilities — they resolve via
+      // unified-node-registry alias map to google_gmail.
+      // 'email', 'mail', 'send_email', 'send', 'notify' are intentionally excluded.
     };
 
     return aliases[lower] || null;

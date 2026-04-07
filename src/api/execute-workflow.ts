@@ -1261,45 +1261,35 @@ export async function executeNodeLegacy(
     }
 
     case 'try_catch': {
-      // Try/Catch node is handled by override, but provide fallback execution
-      // The override will handle branching logic (try/catch ports)
-      // The workflow engine should handle error routing to catch branch
-      return {
-        success: true,
-        output: inputObj,
-      };
+      // Passthrough body; registry override adds branch metadata. Keep one flat payload for downstream.
+      result = inputObj && typeof inputObj === 'object' ? { ...inputObj } : inputObj;
+      break;
     }
 
     case 'retry': {
-      // Retry node is handled by override, but provide fallback execution
-      // The override will handle branching logic (success/error ports)
-      // The workflow engine should handle retry logic with maxAttempts, delayBetween, backoff
+      // Config surface for future engine-level retry; passthrough input with retry settings attached.
       const maxAttempts = getNumberProperty(config, 'maxAttempts', 3);
       const delayBetween = getNumberProperty(config, 'delayBetween', 1000);
       const backoff = getStringProperty(config, 'backoff', 'none');
-
-      return {
-        success: true,
+      result = {
+        ...(inputObj && typeof inputObj === 'object' && !Array.isArray(inputObj) ? inputObj : {}),
         attempts: 0,
         maxAttempts,
         delayBetween,
         backoff,
-        output: inputObj,
       };
+      break;
     }
 
     case 'parallel': {
-      // Parallel node is handled by override, but provide fallback execution
-      // The override will handle branching logic
-      // The workflow engine should handle parallel execution of connected branches
+      // Fan-out/fan-in is orchestration-level; node passes data through and records mode.
       const mode = getStringProperty(config, 'mode', 'all');
-
-      return {
-        success: true,
+      result = {
+        ...(inputObj && typeof inputObj === 'object' && !Array.isArray(inputObj) ? inputObj : {}),
         mode,
         results: [],
-        output: inputObj,
       };
+      break;
     }
 
     case 'queue_push': {

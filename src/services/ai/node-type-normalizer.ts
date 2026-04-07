@@ -14,7 +14,7 @@ import { resolutionLearningCache } from './resolution-learning-cache';
  * Responsibilities:
  * 1. Semantic AI resolution (PRIMARY METHOD) - understands intent, not just patterns
  * 2. Pattern matching (FALLBACK) - for backward compatibility
- * 3. Explicit semantic mappings (e.g. ai providers → ai_chat_model)
+ * 3. Explicit semantic mappings only for true aliases / legacy strings (not distinct registered types)
  * 4. Exact match against registered types
  * 5. Token-based matching (whole tokens only, not substrings)
  * 6. Levenshtein distance (final fallback)
@@ -77,15 +77,11 @@ export function normalizeNodeType(nodeType: string): string {
     }
   }
 
-  // ✅ STEP 2: Explicit semantic mappings for AI / LLM providers
-  // These are higher-level logical types that should be implemented
-  // by the canonical ai_chat_model node.
+  // ✅ STEP 2b: Legacy / alias strings only — do NOT collapse distinct catalog types
+  // (e.g. openai_gpt, anthropic_claude, text_summarizer are their own nodes).
   const semanticMap: Record<string, string> = {
-    // Legacy / provider-specific AI nodes → ai_chat_model
-    'ollama_llm': 'ai_chat_model',
-    'text_summarizer': 'ai_chat_model',
-    'openai_gpt': 'ai_chat_model',
-    'anthropic_claude': 'ai_chat_model',
+    ai_service: 'ai_chat_model',
+    ollama_llm: 'ollama',
   };
 
   let candidate = semanticMap[lower] || lower;

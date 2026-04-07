@@ -187,6 +187,10 @@ export interface PlannedStep {
    */
   role?: string;
   /**
+   * Optional display label from the planner (e.g. "Send email") — used for registry-driven routing to Gmail.
+   */
+  label?: string;
+  /**
    * Optional configuration fragment proposed by Gemini.
    * Will be normalized/validated against the node's inputSchema and defaultConfig.
    */

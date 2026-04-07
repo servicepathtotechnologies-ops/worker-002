@@ -259,39 +259,10 @@ export class NodeResolver {
       
       // Extract keywords related to this node
       const keywords = this.extractKeywordsForNode(promptLower, detection.keyword, nodeType, schema);
-      
-      // ✅ CONTEXT-AWARE: Special handling for generic "email" → "google_gmail" mapping
-      // If keyword is "email" but context mentions Gmail or Google services, prefer google_gmail
-      if (detection.keyword === 'email' && nodeType !== 'google_gmail') {
-        const contextMentionsGmail = contextLower.includes('gmail') || 
-                                     contextLower.includes('google mail') || 
-                                     contextLower.includes('google email');
-        const contextMentionsGoogleServices = contextLower.includes('google sheet') || 
-                                             contextLower.includes('google spreadsheet') ||
-                                             contextLower.includes('google');
-        const contextMentionsSmtp = contextLower.includes('smtp') || 
-                                   contextLower.includes('mail server') || 
-                                   contextLower.includes('smtp host');
-        
-        // If context suggests Gmail, check if google_gmail is also detected
-        if ((contextMentionsGmail || (contextMentionsGoogleServices && !contextMentionsSmtp)) && 
-            this.nodeLibrary.isNodeTypeRegistered('google_gmail')) {
-          // Prefer google_gmail over generic email
-          const gmailDetected = Array.from(detectedNodes.keys()).includes('google_gmail');
-          if (!gmailDetected) {
-            // Add google_gmail intent instead
-            intents.push({
-              action: operation || 'send',
-              resource: 'email',
-              provider: 'google',
-              keywords: [...keywords, 'gmail', 'google mail'],
-            });
-            console.log(`[NodeResolver] ✅ Context-aware mapping: Generic "email" → google_gmail (context suggests Gmail)`);
-            continue; // Skip generic email intent
-          }
-        }
-      }
-      
+
+      // ✅ Email aliases resolve via unified-node-registry (single source of truth).
+      // No context-aware hardcoding needed — the registry ALIAS_MAP handles all email aliases.
+
       intents.push({
         action: operation,
         resource,

@@ -898,13 +898,10 @@
       "data",
       "result"
     ],
-    "requiredConfig": [
-      "userInput",
-      "chat_model"
-    ],
+    "requiredConfig": [],
     "optionalConfig": [
       "userInput",
-      "chat_model",
+      "model",
       "memory",
       "tool"
     ]
@@ -929,31 +926,6 @@
       "prompt",
       "systemPrompt",
       "responseFormat"
-    ]
-  },
-  {
-    "type": "ai_service",
-    "category": "ai",
-    "inputs": [
-      "input",
-      "inputData"
-    ],
-    "outputs": [
-      "output",
-      "data",
-      "result"
-    ],
-    "requiredConfig": [
-      "prompt",
-      "maxTokens"
-    ],
-    "optionalConfig": [
-      "prompt",
-      "inputData",
-      "serviceType",
-      "temperature",
-      "maxTokens",
-      "outputFormat"
     ]
   },
   {

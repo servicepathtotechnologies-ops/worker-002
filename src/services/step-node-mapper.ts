@@ -41,18 +41,13 @@ function mapActionToNodeTypeFromRegistry(action: AllowedAction): string {
       return allNodeTypes.find(nt => nt === 'javascript' || (unifiedNodeRegistry.get(nt)?.category === 'transformation')) || 'javascript';
     
     case 'summarize_data':
-      // Find summarizer node from registry
-      return allNodeTypes.find(nt => nt === 'text_summarizer' || nt.includes('summarizer')) || 'text_summarizer';
-    
+      return allNodeTypes.find(nt => nt === 'text_summarizer') || 'text_summarizer';
+
     case 'send_email':
-      // Find email node from registry (prefer Gmail)
-      return allNodeTypes.find(nt => nt === 'google_gmail' || nt.includes('gmail')) || 
-             allNodeTypes.find(nt => nt === 'email' || (nodeCapabilityRegistryDSL.isOutput(nt) && (unifiedNodeRegistry.get(nt)?.tags || []).includes('email'))) || 
-             'google_gmail';
-    
+      return allNodeTypes.find(nt => nt === 'google_gmail') || 'google_gmail';
+
     case 'send_slack':
-      // Find Slack node from registry
-      return allNodeTypes.find(nt => nt === 'slack_message' || nt.includes('slack')) || 'slack_message';
+      return allNodeTypes.find(nt => nt === 'slack_message') || 'slack_message';
     
     case 'store_database':
       // Find database write node from registry

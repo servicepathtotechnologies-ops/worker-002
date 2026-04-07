@@ -15,26 +15,40 @@ export function overrideChatTrigger(
   return {
     ...def,
     execute: async (context) => {
-      const { input } = context;
-      
+      // Prefer raw runtime payload (chat webhook/chat UI input), then resolved inputs.
+      const sourceInput = context.rawInput ?? context.inputs ?? {};
+
       // Extract input object
-      const inputObj = typeof input === 'object' && input !== null && !Array.isArray(input)
-        ? input as Record<string, unknown>
+      const inputObj = typeof sourceInput === 'object' && sourceInput !== null && !Array.isArray(sourceInput)
+        ? sourceInput as Record<string, unknown>
         : {};
       
-      // ✅ OPTIMIZED: Chat Trigger - return clean output with just the message
-      // Extract message from input (can come from chat API or manual execution)
+      // Extract message from input (chat API or manual execution)
       const message = 
         inputObj.message || 
         inputObj.text || 
         inputObj.input || 
-        (typeof input === 'string' ? input : '') ||
-        ''; // Empty string if no message found
+        (typeof sourceInput === 'string' ? sourceInput : '') ||
+        '';
+
+      const channel =
+        (typeof inputObj.sessionId === 'string' && inputObj.sessionId) ||
+        (typeof inputObj.channel === 'string' && inputObj.channel) ||
+        '';
       
-      // Return just the message string (clean output, no metadata)
+      // Return structured output so downstream nodes can reference trigger.message reliably.
       return {
         success: true,
-        output: message,
+        output: {
+          message,
+          channel,
+          sessionId: (inputObj.sessionId as string) || '',
+          trigger: (inputObj.trigger as string) || 'chat',
+          node_id: (inputObj.node_id as string) || '',
+          workflow_id: (inputObj.workflow_id as string) || '',
+          timestamp: (inputObj.timestamp as string) || new Date().toISOString(),
+          _chat: Boolean(inputObj._chat ?? true),
+        },
       };
     },
   };

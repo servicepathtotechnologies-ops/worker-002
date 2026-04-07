@@ -205,10 +205,9 @@ export class TypeValidator {
     }
 
     // ✅ UNIVERSAL: Check for trigger node using registry (no hardcoding)
-    const { unifiedNodeRegistry } = require('../registry/unified-node-registry');
     const hasTrigger = workflow.nodes.some((n) => {
-      const nodeDef = unifiedNodeRegistry.get(n.type);
-      return nodeDef && (nodeDef.category === 'trigger' || (nodeDef.tags || []).includes('trigger'));
+      const { unifiedNodeRegistry } = require('../registry/unified-node-registry');
+      return unifiedNodeRegistry.isTrigger(n.type || n.data?.type || '');
     });
     if (!hasTrigger) {
       warnings.push('Workflow should have a trigger node');

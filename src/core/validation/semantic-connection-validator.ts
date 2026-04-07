@@ -218,8 +218,7 @@ export class SemanticConnectionValidator {
    * ✅ Helper: Check if node is trigger
    */
   private isTriggerNode(nodeType: string): boolean {
-    const nodeDef = unifiedNodeRegistry.get(nodeType);
-    return nodeDef?.category === 'trigger' || nodeType.includes('trigger');
+    return unifiedNodeRegistry.isTrigger(nodeType);
   }
   
   /**

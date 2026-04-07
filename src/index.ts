@@ -66,11 +66,13 @@ try {
     console.error('[ServerStartup] ❌ UnifiedNodeRegistry verification failed:', error.message);
   }
   
-  // ✅ PRODUCTION-GRADE: Verify critical nodes using canonical types only
-  // Registry should not depend on runtime alias resolution
+  // Verify critical nodes are registered
   const criticalNodes = [
-    'ai_service',
-    'google_gmail' // ✅ Canonical type only - 'gmail' is alias, not a node
+    'google_gmail',
+    'ai_agent',
+    'ai_chat_model',
+    'manual_trigger',
+    'chat_trigger',
   ];
   const missingNodes: string[] = [];
   
@@ -90,54 +92,19 @@ try {
     console.log('[ServerStartup] ✅ All critical nodes verified in registry');
   }
   
-  // ✅ PRODUCTION-GRADE: Validate alias resolution on startup
-  // This ensures all aliases resolve to canonical types deterministically
-  // NOTE: Validation is silent - aliases work correctly, this is just a verification
+  // ✅ PRODUCTION-GRADE: Validate alias resolution on startup via unified-node-registry
   try {
-    const { resolveNodeType } = require('./core/utils/node-type-resolver-util');
-    
-    // Test critical aliases (silent validation - no errors logged)
     const aliasTests: Array<{ alias: string; expectedCanonical: string }> = [
       { alias: 'gmail', expectedCanonical: 'google_gmail' },
-      { alias: 'ai', expectedCanonical: 'ai_service' },
-      { alias: 'mail', expectedCanonical: 'email' },
+      { alias: 'email', expectedCanonical: 'google_gmail' },
+      { alias: 'mail', expectedCanonical: 'google_gmail' },
     ];
-    
-    let allValid = true;
+
     for (const { alias, expectedCanonical } of aliasTests) {
-      try {
-        const resolved = resolveNodeType(alias, false);
-        // ✅ FIX: Verify resolved canonical type exists in registry (not the alias itself)
-        // Aliases like "gmail" should resolve to "google_gmail" which IS in the registry
-        if (resolved === alias) {
-          // ❌ CRITICAL: Resolver returned alias instead of canonical type
-          // This means alias resolution failed - the resolver should return canonical type
-          allValid = false;
-          console.warn(`[ServerStartup] ⚠️  Alias "${alias}" did not resolve to canonical type (resolver returned "${resolved}" instead of "${expectedCanonical}")`);
-          continue;
-        }
-        
-        const schema = registry.get(resolved);
-        if (!schema) {
-          allValid = false;
-          // Only log if resolved canonical type doesn't exist in registry (critical error)
-          console.warn(`[ServerStartup] ⚠️  Alias "${alias}" resolves to "${resolved}" but this canonical type is not in registry`);
-        } else if (resolved !== expectedCanonical) {
-          // Alias resolved but to wrong canonical type
-          console.warn(`[ServerStartup] ⚠️  Alias "${alias}" resolves to "${resolved}" but expected "${expectedCanonical}"`);
-        } else {
-          // ✅ Success: Alias correctly resolved to expected canonical type
-          // Silent success - no log needed (aliases are working correctly)
-        }
-      } catch (error: any) {
-        allValid = false;
-        // Only log actual resolution failures (critical errors)
-        console.warn(`[ServerStartup] ⚠️  Alias "${alias}" resolution failed: ${error.message}`);
+      const resolved = unifiedNodeRegistry.resolveAlias(alias);
+      if (resolved !== expectedCanonical) {
+        console.warn(`[ServerStartup] ⚠️  Alias "${alias}" resolved to "${resolved}" but expected "${expectedCanonical}"`);
       }
-    }
-    
-    if (allValid) {
-      // Silent success - aliases are working correctly
     }
   } catch (error: any) {
     // Silent catch - alias resolution works, validation is non-critical

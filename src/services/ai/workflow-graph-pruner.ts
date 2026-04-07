@@ -1190,25 +1190,24 @@ export class WorkflowGraphPruner {
         return true;
       }
       
-      // ✅ FIX 2: Step 2: Check aliases using nodeTypeResolver
+      // ✅ FIX 2: Step 2: Check aliases using unified-node-registry (single source of truth)
       try {
-        const { nodeTypeResolver } = require('../nodes/node-type-resolver');
-        const tagAliases = nodeTypeResolver.getAliases(tagNodeType) || [];
-        const nodeAliases = nodeTypeResolver.getAliases(nodeType) || [];
-        
-        // Check if tag nodeType is an alias of node type, or vice versa
-        if (tagAliases.includes(nodeType) || tagAliases.some((alias: string) => alias.toLowerCase() === nodeTypeLower)) {
-          console.log(`[WorkflowGraphPruner] ✅ Preserving ${nodeType} (alias match: "${tagNodeType}" is alias of "${nodeType}")`);
+        const { unifiedNodeRegistry } = require('../../core/registry/unified-node-registry');
+        // Resolve both to canonical types and compare
+        const tagCanonical = unifiedNodeRegistry.resolveAlias(tagNodeType) || tagNodeType;
+        const nodeCanonical = unifiedNodeRegistry.resolveAlias(nodeType) || nodeType;
+
+        // Check if tag nodeType resolves to the same canonical as node type
+        if (tagCanonical.toLowerCase() === nodeTypeLower) {
+          console.log(`[WorkflowGraphPruner] ✅ Preserving ${nodeType} (alias match: "${tagNodeType}" → "${tagCanonical}")`);
           return true;
         }
-        if (nodeAliases.includes(tagNodeType) || nodeAliases.some((alias: string) => alias.toLowerCase() === tagNodeTypeLower)) {
-          console.log(`[WorkflowGraphPruner] ✅ Preserving ${nodeType} (alias match: "${nodeType}" has alias "${tagNodeType}")`);
+        if (nodeCanonical.toLowerCase() === tagNodeTypeLower) {
+          console.log(`[WorkflowGraphPruner] ✅ Preserving ${nodeType} (alias match: "${nodeType}" → "${nodeCanonical}")`);
           return true;
         }
-        
+
         // Check if both resolve to the same canonical type
-        const tagCanonical = nodeTypeResolver.getCanonicalType(tagNodeType);
-        const nodeCanonical = nodeTypeResolver.getCanonicalType(nodeType);
         if (tagCanonical.toLowerCase() === nodeCanonical.toLowerCase() && tagCanonical !== tagNodeType) {
           console.log(`[WorkflowGraphPruner] ✅ Preserving ${nodeType} (canonical match: "${tagNodeType}" → "${tagCanonical}", "${nodeType}" → "${nodeCanonical}")`);
           return true;

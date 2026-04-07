@@ -28,15 +28,53 @@ import { nodeLibrary } from '../services/nodes/node-library';
 import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../core/utils/unified-node-type-normalizer';
 import { connectorRegistry } from '../services/connectors/connector-registry';
 import { normalizeWorkflowGraph, validateNormalizedGraph } from '../core/utils/workflow-graph-normalizer';
+import {
+  diffWorkflowTopology,
+  fingerprintWorkflowTopology,
+  type WorkflowTopologyFingerprint,
+} from '../core/utils/workflow-topology-fingerprint';
+import { executionOrderManager } from '../core/orchestration/execution-order-manager';
 import { ErrorCode, createError } from '../core/utils/error-codes';
 import { unifiedNodeRegistry } from '../core/registry/unified-node-registry';
-import { coerceFieldFillModeByPolicy, resolveEffectiveFieldFillMode } from '../core/utils/fill-mode-resolver';
+import {
+  coerceFieldFillModeByPolicy,
+  resolveEffectiveFieldFillMode,
+  isMeaningfulStaticValue,
+} from '../core/utils/fill-mode-resolver';
 import { unifiedGraphOrchestrator } from '../core/orchestration/unified-graph-orchestrator';
 import { validateStructuralReadiness } from '../core/validation/workflow-save-validator';
 import { getStructuralDiagnostics, materializeStructuralFields } from '../services/ai/structure-materializer';
 import { applyStructuralIntentAlignment } from '../services/ai/intent-structural-projection';
 import { hydrateRequiredConfigFromRegistryDefaults } from '../core/validation/workflow-config-hydrator';
 import { isCredentialOwnership, isStructuralOwnership } from '../core/utils/field-ownership';
+import type { NodeInputField, NodeInputSchema } from '../core/types/unified-node-contract';
+
+/**
+ * Credential-class fields are usually injected via attach-credentials / vault.
+ * When the user chooses "You" (manual_static), build-time AI once, or unlocks an unlockable
+ * credential field, values must still persist on the node for the Properties panel.
+ */
+function shouldApplyCredentialOwnedFieldViaAttachInputs(
+  fieldName: string,
+  fieldDef: NodeInputField | undefined,
+  config: Record<string, any>,
+  inputSchema: NodeInputSchema | undefined,
+  rawValue: unknown
+): boolean {
+  if (!fieldDef || !isCredentialOwnership(fieldName, fieldDef)) {
+    return true;
+  }
+  if (!isMeaningfulStaticValue(rawValue)) {
+    return false;
+  }
+  const mode = resolveEffectiveFieldFillMode(fieldName, inputSchema, config);
+  if (mode === 'manual_static' || mode === 'buildtime_ai_once') {
+    return true;
+  }
+  const unlockable = fieldDef.credentialTogglePolicy === 'unlockable';
+  const unlocked = config?._ownershipUnlock?.[fieldName] === true;
+  return unlockable && unlocked;
+}
 import {
   runWithBuildUsageTracking,
   snapshotBuildAiUsage,
@@ -330,20 +368,15 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       }
     }
 
-    // Update phase to configuring_inputs (idempotent)
-    // Keep status as 'active' but set phase to 'configuring_inputs'
-    await supabase
-      .from('workflows')
-      .update({
-        status: 'active', // Keep status as active (valid enum)
-        phase: 'configuring_inputs', // Set phase for execution flow
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', workflowId);
+    // ✅ ATOMIC PHASE FIX: Do NOT update phase here.
+    // Phase is only advanced to 'configuring_inputs' AFTER successful graph normalization below.
+    // If normalization fails, the phase must remain unchanged.
 
     // ✅ CRITICAL: Use centralized graph normalizer
     // Handle both workflow.graph format and direct nodes/edges format
     let normalizedGraph: ReturnType<typeof normalizeWorkflowGraph>;
+    /** Fingerprint after topologyPreserve parse — final save must match this. */
+    let baselineTopologyFingerprint: WorkflowTopologyFingerprint | null = null;
     /** Snapshot of node positions from DB row before normalization (preserve manual layout on save). */
     let attachInputsPositionSnapshot = new Map<string, { x: number; y: number }>();
     try {
@@ -384,8 +417,14 @@ export default async function attachInputsHandler(req: Request, res: Response) {
         Array.isArray(graphToNormalize.nodes) ? graphToNormalize.nodes : []
       );
       
+      // Registry-driven: fix AI nodes whose planner config matches communication inputSchema (e.g. Gmail fields on ollama)
+      const graphAfterTypeReconcile = unifiedNodeRegistry.reconcileMisroutedAiCommunicationNodes({
+        nodes: Array.isArray(graphToNormalize.nodes) ? graphToNormalize.nodes : [],
+        edges: Array.isArray(graphToNormalize.edges) ? graphToNormalize.edges : [],
+      } as any);
+
       // ✅ DEBUG: Log node IDs BEFORE any normalization
-      const nodeIdsBeforeAnyNormalization = (graphToNormalize.nodes || []).map((n: any) => n.id);
+      const nodeIdsBeforeAnyNormalization = (graphAfterTypeReconcile.nodes || []).map((n: any) => n.id);
       const duplicatesBeforeAny = nodeIdsBeforeAnyNormalization.filter((id: string, idx: number) => 
         nodeIdsBeforeAnyNormalization.indexOf(id) !== idx
       );
@@ -394,27 +433,28 @@ export default async function attachInputsHandler(req: Request, res: Response) {
           workflowId,
           duplicateIds: [...new Set(duplicatesBeforeAny)],
           allNodeIds: nodeIdsBeforeAnyNormalization,
-          nodeCount: (graphToNormalize.nodes || []).length,
+          nodeCount: (graphAfterTypeReconcile.nodes || []).length,
           uniqueNodeCount: new Set(nodeIdsBeforeAnyNormalization).size,
         });
       }
       
-      // ✅ CRITICAL: Normalize with canonical normalizer FIRST to deduplicate nodes/triggers
-      // This ensures duplicates are removed before any validation
-      const { normalizeWorkflowForSave: normalizeEarly } = await import('../core/validation/workflow-save-validator');
-      const earlyNormalized = normalizeEarly(
-        graphToNormalize.nodes || [],
-        graphToNormalize.edges || []
+      // Topology-preserving parse only (no linearization / trigger stripping / switch reconcile)
+      normalizedGraph = normalizeWorkflowGraph(
+        {
+          nodes: graphAfterTypeReconcile.nodes || [],
+          edges: graphAfterTypeReconcile.edges || [],
+        },
+        { mode: 'topologyPreserve' }
       );
-      
-      if (earlyNormalized.migrationsApplied.length > 0) {
-        console.log('[AttachInputs] 🔄 Early normalization applied (before graph normalizer):', earlyNormalized.migrationsApplied);
-      }
-      
-      // Now normalize graph structure (normalizeWorkflowGraph also deduplicates as safety)
-      normalizedGraph = normalizeWorkflowGraph({
-        nodes: earlyNormalized.nodes,
-        edges: earlyNormalized.edges,
+      baselineTopologyFingerprint = fingerprintWorkflowTopology(
+        normalizedGraph.nodes,
+        normalizedGraph.edges
+      );
+      console.log('[AttachInputs] 📌 Baseline topology fingerprint (topologyPreserve):', {
+        workflowId,
+        fingerprint: baselineTopologyFingerprint.fingerprint,
+        nodeCount: baselineTopologyFingerprint.nodeIdsSorted.length,
+        edgeCount: baselineTopologyFingerprint.edgeKeysSorted.length,
       });
       
       // ✅ DEBUG: Log node IDs AFTER normalization
@@ -447,6 +487,18 @@ export default async function attachInputsHandler(req: Request, res: Response) {
           )
         );
       }
+
+      // ✅ ATOMIC PHASE FIX: Advance phase ONLY after successful normalization + validation.
+      // This ensures a 400 on normalization failure never mutates the phase.
+      await supabase
+        .from('workflows')
+        .update({
+          status: 'active',
+          phase: 'configuring_inputs',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', workflowId);
+      console.log('[AttachInputs] ✅ Phase advanced to configuring_inputs (normalization succeeded)');
     } catch (error) {
       console.error('[AttachInputs] Graph normalization failed:', error);
       console.error('[AttachInputs] Workflow structure:', {
@@ -502,12 +554,11 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       });
     }
 
-    // ✅ CRITICAL: Normalize workflow FIRST to remove duplicate triggers and fix structure
+    // ✅ CRITICAL: Config-only save normalization (preserve topology)
     const { normalizeWorkflowForSave: normalizeWorkflow } = await import('../core/validation/workflow-save-validator');
-    const normalizedBeforeClone = normalizeWorkflow(
-      workflowGraph.nodes,
-      workflowGraph.edges
-    );
+    const normalizedBeforeClone = normalizeWorkflow(workflowGraph.nodes, workflowGraph.edges, {
+      structuralMode: 'configOnly',
+    });
     
     // ✅ DEBUG: Log node IDs AFTER normalization to verify deduplication
     const nodeIdsAfter = normalizedBeforeClone.nodes.map(n => n.id);
@@ -612,7 +663,14 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       // ✅ CRITICAL: Idempotent input application
       // Input format: { "nodeId_fieldName": "value" } or { "nodeId": { "fieldName": "value" } }
       // ✅ COMPREHENSIVE: Also handle question IDs: { "cred_nodeId_fieldName": "value", "op_nodeId_fieldName": "value", "config_nodeId_fieldName": "value", "resource_nodeId_fieldName": "value" }
-      for (const [key, rawValue] of Object.entries(cleanInputs)) {
+      // Process unlock_ / mode_ before field values so credential fields resolve fill mode correctly.
+      const cleanInputKeysSorted = Object.keys(cleanInputs).sort((a, b) => {
+        const rank = (k: string) => (k.startsWith('unlock_') ? 0 : k.startsWith('mode_') ? 1 : 2);
+        const d = rank(a) - rank(b);
+        return d !== 0 ? d : a.localeCompare(b);
+      });
+      for (const key of cleanInputKeysSorted) {
+        const rawValue = cleanInputs[key];
         let fieldName: string | null = null;
         
       // Wizard ownership: keys mode_<nodeId>_<fieldName> -> config._fillMode[fieldName] (manual_static vs runtime_ai)
@@ -774,8 +832,20 @@ export default async function attachInputsHandler(req: Request, res: Response) {
             
             const fieldDef = unifiedDefForNode?.inputSchema?.[fieldName];
             if (fieldDef && isCredentialOwnership(fieldName, fieldDef)) {
-              console.warn(`[AttachInputs] Rejected credential-owned field "${fieldName}" for node ${node.id} (${nodeType}) - use attach-credentials endpoint`);
-              continue;
+              if (
+                !shouldApplyCredentialOwnedFieldViaAttachInputs(
+                  fieldName,
+                  fieldDef,
+                  config,
+                  unifiedDefForNode?.inputSchema,
+                  rawValue
+                )
+              ) {
+                console.warn(
+                  `[AttachInputs] Skipped credential-owned field "${fieldName}" for node ${node.id} (${nodeType}) — use vault/attach-credentials, or choose manual / unlock + value`
+                );
+                continue;
+              }
             }
 
             // SPECIAL CASE: For Google resource IDs, extract from full URLs
@@ -891,8 +961,20 @@ export default async function attachInputsHandler(req: Request, res: Response) {
             if (schema.configSchema) {
               const fieldDef = unifiedDefForNode?.inputSchema?.[fieldName];
               if (fieldDef && isCredentialOwnership(fieldName, fieldDef)) {
-                console.warn(`[AttachInputs] Rejected credential-owned field "${fieldName}" for node ${node.id} (${nodeType}) - use attach-credentials endpoint`);
-                continue;
+                if (
+                  !shouldApplyCredentialOwnedFieldViaAttachInputs(
+                    fieldName,
+                    fieldDef,
+                    config,
+                    unifiedDefForNode?.inputSchema,
+                    fieldValueRaw
+                  )
+                ) {
+                  console.warn(
+                    `[AttachInputs] Skipped credential-owned field "${fieldName}" for node ${node.id} (${nodeType}) — use vault/attach-credentials, or choose manual / unlock + value`
+                  );
+                  continue;
+                }
               }
               
               // ✅ CRITICAL: Validate field exists in schema
@@ -1084,8 +1166,10 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     // ✅ CRITICAL: Normalize workflow BEFORE validation to fix duplicate triggers and structure issues
     const { validateWorkflowForSave, normalizeWorkflowForSave } = await import('../core/validation/workflow-save-validator');
     
-    // Normalize the workflow to fix common issues (duplicate triggers, invalid edges, etc.)
-    const preNormalized = normalizeWorkflowForSave(nodesAfterReplacement, updatedEdges);
+    // Normalize the workflow (config-only: no trigger stripping / switch reconcile)
+    const preNormalized = normalizeWorkflowForSave(nodesAfterReplacement, updatedEdges, {
+      structuralMode: 'configOnly',
+    });
     
     if (preNormalized.migrationsApplied.length > 0) {
       console.log('[AttachInputs] 🔄 Pre-validation normalization applied:', preNormalized.migrationsApplied);
@@ -1137,7 +1221,13 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     // Required fields may be filled later or have defaults
     // Use fixedWorkflow even if there are errors (validator will auto-fix issues)
     // Use normalized workflow (already fixed duplicate triggers, etc.)
-    const validation = await workflowValidator.validateAndFix(normalizedWorkflow);
+    const validation = await workflowValidator.validateAndFix(
+      normalizedWorkflow,
+      0,
+      undefined,
+      undefined,
+      { mode: 'topologyPreserve' }
+    );
 
     // ✅ CRITICAL: Only reject on critical structural errors (missing nodes, invalid edges)
     // Allow validation errors that can be auto-fixed or are non-critical
@@ -1233,7 +1323,8 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     const structuralDiagnostics = getStructuralDiagnostics(materializedWorkflow as any);
     const finalNormalizedForSave = normalizeBeforeSave(
       materializedWorkflow.nodes,
-      materializedWorkflow.edges
+      materializedWorkflow.edges,
+      { structuralMode: 'configOnly' }
     );
     
     if (finalNormalizedForSave.migrationsApplied.length > 0) {
@@ -1243,10 +1334,13 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     // ✅ CRITICAL: Normalize workflow graph before saving (for graph structure)
     let finalNormalizedGraph: ReturnType<typeof normalizeWorkflowGraph>;
     try {
-      finalNormalizedGraph = normalizeWorkflowGraph({
-        nodes: finalNormalizedForSave.nodes,
-        edges: finalNormalizedForSave.edges,
-      });
+      finalNormalizedGraph = normalizeWorkflowGraph(
+        {
+          nodes: finalNormalizedForSave.nodes,
+          edges: finalNormalizedForSave.edges,
+        },
+        { mode: 'topologyPreserve' }
+      );
     } catch (normalizeError) {
       console.error('[AttachInputs] Failed to normalize final workflow:', normalizeError);
       console.error('[AttachInputs] Final workflow structure:', {
@@ -1289,58 +1383,12 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     };
 
     try {
-      const reconciled = unifiedGraphOrchestrator.reconcileWorkflow({
+      const wfContract = {
         nodes: finalNormalizedGraph.nodes as any,
         edges: finalNormalizedGraph.edges as any,
-      } as any);
-
-      finalNormalizedGraph = {
-        ...finalNormalizedGraph,
-        nodes: reconciled.workflow.nodes as any,
-        edges: reconciled.workflow.edges as any,
-      };
-
-      let validationResult = unifiedGraphOrchestrator.validateWorkflow(
-        {
-          nodes: finalNormalizedGraph.nodes as any,
-          edges: finalNormalizedGraph.edges as any,
-        } as any
-      );
-
-      // ✅ SELF-HEAL: If reconcile still leaves structural errors (e.g. orphaned log_output from
-      // a stale branching graph saved before an edge-reconciliation fix), rebuild edges from
-      // scratch via initializeWorkflow. This guarantees correct branch wiring regardless of
-      // what was persisted in the database.
-      // NOTE: log_output is classified as non-required so orphan appears in warnings, not errors.
-      // Check both errors AND warnings for orphan/disconnected signals.
-      const allValidationMessages = [
-        ...(validationResult.errors || []),
-        ...(validationResult.warnings || []),
-      ];
-      const hasOrphanAfterReconcile = allValidationMessages.some((e: string) => {
-        const lower = String(e || '').toLowerCase();
-        return lower.includes('orphan') || lower.includes('no input connection') || lower.includes('disconnected');
-      });
-      if (hasOrphanAfterReconcile) {
-        console.warn('[AttachInputs] ⚠️  Reconcile left orphaned nodes — rebuilding edges from scratch via initializeWorkflow');
-        try {
-          const rebuilt = unifiedGraphOrchestrator.initializeWorkflow(finalNormalizedGraph.nodes as any);
-          finalNormalizedGraph = {
-            ...finalNormalizedGraph,
-            nodes: rebuilt.workflow.nodes as any,
-            edges: rebuilt.workflow.edges as any,
-          };
-          validationResult = unifiedGraphOrchestrator.validateWorkflow(
-            {
-              nodes: finalNormalizedGraph.nodes as any,
-              edges: finalNormalizedGraph.edges as any,
-            } as any
-          );
-          console.log(`[AttachInputs] ✅ Edge rebuild complete — valid=${validationResult.valid}, errors=${(validationResult.errors || []).length}, warnings=${(validationResult.warnings || []).length}`);
-        } catch (rebuildErr) {
-          console.error('[AttachInputs] ❌ Edge rebuild failed:', rebuildErr);
-        }
-      }
+      } as any;
+      const executionOrder = executionOrderManager.initialize(wfContract);
+      const validationResult = unifiedGraphOrchestrator.validateWorkflow(wfContract, executionOrder);
 
       contractDiagnostics.validationValid = validationResult.valid;
       contractDiagnostics.validationErrors = validationResult.errors || [];
@@ -1379,8 +1427,14 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     
     try {
       const { credentialDiscoveryPhase } = await import('../services/ai/credential-discovery-phase');
+      // Use the same reconciled graph as this request (reconcileMisroutedAiCommunicationNodes + normalize).
+      // discoverCredentials(workflowId) re-fetches DB, which still has pre-reconcile types until we save below —
+      // that caused Gmail nodes to be classified as ollama during discovery (wrong vault / requirements).
       credentialDiscovery = await credentialDiscoveryPhase.discoverCredentials(
-        finalNormalizedGraph,
+        {
+          nodes: finalNormalizedGraph.nodes as any,
+          edges: finalNormalizedGraph.edges as any,
+        } as any,
         userId
       );
       
@@ -1454,10 +1508,11 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       missingCredentialsCount = 1;
     }
     
-    // ✅ CRITICAL: Determine readiness using unified lifecycle gate
-    // Use 'active' for status (enum) and phase values for execution readiness (TEXT)
-    let nextStatus = 'active'; // Always use valid enum value when workflow is being configured
-    let nextPhase = 'configuring_credentials';
+    // ✅ PHASE PIPELINE: Determine the correct next phase after successful input attachment.
+    // inputs_applied → signals attach-credentials that it can proceed.
+    // ready_for_execution → no credentials needed, workflow is ready.
+    let nextStatus = 'active';
+    let nextPhase = 'inputs_applied'; // Default: inputs applied, credentials still needed
     const readiness = await workflowLifecycleManager.validateExecutionReady(finalNormalizedGraph as any, userId);
     if (readiness.ready) {
       nextStatus = 'active';
@@ -1465,8 +1520,10 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       console.log(`[AttachInputs] Unified readiness passed - setting phase ready_for_execution`);
     } else {
       nextStatus = 'active';
-      nextPhase = missingCredentialsCount > 0 ? 'configuring_credentials' : 'configuring_inputs';
-      console.log(`[AttachInputs] Unified readiness blocked - phase ${nextPhase}: ${readiness.errors.join('; ')}`);
+      // ✅ KEY FIX: Use 'inputs_applied' so attach-credentials phase guard allows credential injection.
+      // Previously used 'configuring_credentials' or 'configuring_inputs' which blocked attach-credentials.
+      nextPhase = 'inputs_applied';
+      console.log(`[AttachInputs] Inputs applied - phase inputs_applied (credentials still needed): ${readiness.errors.join('; ')}`);
     }
     const structuralReadinessErrors = (readiness.errors || []).filter((msg) => {
       const lower = String(msg || '').toLowerCase();
@@ -1525,7 +1582,31 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       attachInputsPositionSnapshot
     );
     const edgesToSave = finalNormalizedGraph.edges;
-    
+
+    if (baselineTopologyFingerprint) {
+      const finalTopologyFingerprint = fingerprintWorkflowTopology(nodesToSave, edgesToSave);
+      if (finalTopologyFingerprint.fingerprint !== baselineTopologyFingerprint.fingerprint) {
+        const diff = diffWorkflowTopology(baselineTopologyFingerprint, finalTopologyFingerprint);
+        console.error('[AttachInputs] ❌ Topology mutation blocked before save:', {
+          workflowId,
+          diff,
+        });
+        return res.status(409).json(
+          createError(
+            ErrorCode.TOPOLOGY_MUTATION_BLOCKED_CONFIGURING_INPUTS,
+            'Workflow topology must not change during input attachment (configuration phase).',
+            {
+              workflowId,
+              baselineFingerprint: baselineTopologyFingerprint.fingerprint,
+              finalFingerprint: finalTopologyFingerprint.fingerprint,
+              diff,
+            },
+            true
+          )
+        );
+      }
+    }
+
     console.log('[AttachInputs] 💾 Saving workflow with normalized structure:', {
       nodeCount: nodesToSave.length,
       edgeCount: edgesToSave.length,

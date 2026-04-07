@@ -213,18 +213,13 @@ export class NodeLibrary {
   }
 
   /**
-   * Initialize NodeTypeResolver with this NodeLibrary instance
-   * Fixes circular dependency by using dependency injection
+   * Initialize NodeTypeResolver — no-op now that resolution is handled by unified-node-registry.
+   * Kept for backward compatibility; the try/catch ensures no crash if called.
    */
   private initializeNodeTypeResolver(): void {
-    try {
-      const { NodeTypeResolver } = require('./node-type-resolver');
-      const resolver = NodeTypeResolver.getInstance();
-      resolver.setNodeLibrary(this);
-      console.log('[NodeLibrary] ✅ NodeTypeResolver initialized with NodeLibrary');
-    } catch (error) {
-      console.warn('[NodeLibrary] ⚠️  Failed to initialize NodeTypeResolver:', error instanceof Error ? error.message : String(error));
-    }
+    // NodeTypeResolver (node-type-resolver.ts) has been removed.
+    // All alias resolution now goes through unified-node-registry.ts ALIAS_MAP.
+    console.log('[NodeLibrary] ✅ NodeTypeResolver: using unified-node-registry for alias resolution');
   }
   
   /**
@@ -334,25 +329,18 @@ export class NodeLibrary {
     
     // Step 3: Pattern-based search (ONLY for operation names like "summarize", NOT for node type aliases)
     // ✅ CRITICAL: Skip pattern matching for known aliases - they should ONLY resolve via alias map
-    // Check alias map directly to avoid circular dependency
+    // Check alias map directly via unified-node-registry (single source of truth)
     try {
-      const { NODE_TYPE_ALIASES } = require('../nodes/node-type-resolver');
-      const aliasMap = new Map<string, string>();
-      Object.entries(NODE_TYPE_ALIASES as Record<string, string[]>).forEach(([canonical, aliases]) => {
-        (aliases as string[]).forEach((alias: string) => {
-          aliasMap.set(alias.toLowerCase(), canonical);
-        });
-      });
-      
-      // If this is a known alias, DO NOT use pattern matching
+      const { unifiedNodeRegistry } = require('../registry/unified-node-registry');
       const normalizedLower = normalizedQuery.toLowerCase();
-      if (aliasMap.has(normalizedLower) && aliasMap.get(normalizedLower) !== normalizedLower) {
+      const aliasResolved = unifiedNodeRegistry.resolveAlias(normalizedLower);
+      if (aliasResolved && aliasResolved !== normalizedLower) {
         // This is an alias - pattern matching should NOT be used
         // Alias resolution should have worked in Step 2 - return undefined
         return undefined;
       }
     } catch (error) {
-      // Alias map not available - continue to pattern matching
+      // Registry not available - continue to pattern matching
     }
     
     // Only use pattern matching for operation names, NOT for node type aliases
@@ -1169,8 +1157,8 @@ export class NodeLibrary {
     // AI Nodes
     this.addSchema(this.createAiAgentSchema());
     this.addSchema(this.createAiChatModelSchema());
-    this.addSchema(this.createAiServiceSchema()); // ✅ CRITICAL: ai_service node
-    schemaCount += 3;
+    // ai_service is an alias for ai_chat_model — not a separate node type
+    schemaCount += 2;
     
     console.log(`[NodeLibrary] ✅ Registered ${schemaCount} node schemas so far...`);
 
@@ -4705,27 +4693,28 @@ export class NodeLibrary {
       type: 'ai_agent',
       label: 'AI Agent',
       category: 'ai',
-      description: 'Autonomous AI agent with memory, tools, and reasoning capabilities',
+      description: 'AI service node for prompt-based text generation and reasoning',
       configSchema: {
-        required: ['userInput', 'chat_model'],
+        required: [],
         optional: {
           userInput: {
             type: 'string',
-            description: 'User input or prompt for the AI agent',
+            description: 'User input or prompt for the AI node',
             examples: ['Process this data', '{{inputData}}', 'Answer this question'],
           },
-          chat_model: {
-            type: 'object',
-            description: 'Chat model configuration (must connect Chat Model node)',
-            default: { provider: 'gemini', model: 'gemini-2.5-flash' },
+          model: {
+            type: 'string',
+            description: 'LLM model selection',
+            default: 'gemini-2.5-flash',
+            examples: ['gemini-2.5-flash', 'gemini-2.5-pro', 'claude-3-5-sonnet', 'gpt-4o'],
           },
           memory: {
             type: 'object',
-            description: 'Memory configuration (optional, connect Memory node)',
+            description: 'Optional memory configuration (disabled by default)',
           },
           tool: {
             type: 'object',
-            description: 'Tool configuration (optional, connect Tool node)',
+            description: 'Optional tool configuration (disabled by default)',
           },
         },
       },
@@ -6864,7 +6853,10 @@ export class NodeLibrary {
       },
       aiSelectionCriteria: {
         whenToUse: ['User needs AI chat', 'Text generation', 'AI conversation'],
-        whenNotToUse: ['Complex AI agent workflows'],
+        whenNotToUse: [
+          'Complex AI agent workflows',
+          'Sending email or Gmail — use google_gmail (transactional email is not an LLM node)',
+        ],
         keywords: [
           'ollama', 'ollama ai', 'ollama model', 'ollama chat',
           'ollama llm', 'ai chat', 'ai model', 'llm chat'
@@ -9484,7 +9476,7 @@ export class NodeLibrary {
    */
   private registerVirtualNodeTypes(): void {
     console.log('[NodeLibrary] 🔗 Virtual node types: NONE (aliases handled by node-type-resolver.ts)');
-    console.log('[NodeLibrary] ✅ Aliases resolve to canonical types: gmail→google_gmail, mail→email, ai→ai_service');
+    console.log('[NodeLibrary] ✅ Aliases resolve to canonical types: gmail→google_gmail, mail→google_gmail, ai→ai_chat_model');
     // ✅ PERMANENT: No virtual nodes registered - aliases are resolved by node-type-resolver.ts only
   }
 }

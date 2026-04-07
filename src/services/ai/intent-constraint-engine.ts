@@ -502,15 +502,11 @@ export class IntentConstraintEngine {
       }
     }
 
-    // ✅ CRITICAL: Disambiguate email destinations early (before "type exists in library" short-circuit)
-    // Default behavior: sending email should prefer Gmail (google_gmail) unless SMTP is explicitly requested.
-    if ((actionType === 'gmail' || actionType.includes('gmail') || actionType.includes('google_mail') || actionType.includes('google mail')) && operation.includes('send')) {
-      return ['google_gmail'];
-    }
-    if ((actionType === 'email' || actionType === 'mail') && operation.includes('send')) {
-      // If user explicitly indicated SMTP, keep generic SMTP `email` node.
-      if (actionType.includes('smtp')) return ['email'];
-      // Otherwise prefer Gmail for enterprise default (OAuth is the primary email integration).
+    // ✅ Email disambiguation: delegate to unified-node-registry alias map (single source of truth).
+    // 'email', 'mail', 'gmail', 'send_email' all resolve to 'google_gmail' via the registry.
+    // No hardcoded logic needed here.
+    const emailAliasResolved = unifiedNodeRegistry.resolveAlias(actionType);
+    if (emailAliasResolved === 'google_gmail') {
       return ['google_gmail'];
     }
 

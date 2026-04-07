@@ -3,7 +3,10 @@
 // Implements all validation rules from the comprehensive guide
 
 import { Workflow, WorkflowNode, WorkflowEdge } from '../../core/types/ai-types';
-import { normalizeWorkflowGraph } from '../../core/utils/workflow-graph-normalizer';
+import {
+  normalizeWorkflowGraph,
+  type NormalizeWorkflowGraphOptions,
+} from '../../core/utils/workflow-graph-normalizer';
 import { isTransformationNode } from './transformation-templates';
 import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 import { randomUUID } from 'crypto';
@@ -99,10 +102,11 @@ export class WorkflowValidator {
    * @param userPrompt - Optional: User prompt for required services validation
    */
   async validateAndFix(
-    workflow: Workflow, 
+    workflow: Workflow,
     depth: number = 0,
     originalPrompt?: string,
-    userPrompt?: string
+    userPrompt?: string,
+    graphNormalizeOptions?: NormalizeWorkflowGraphOptions
   ): Promise<ValidationResult> {
     // ✅ PHASE 2: Validate input contract at stage boundary
     const { validateWorkflow } = require('../../core/contracts/pipeline-stage-contracts');
@@ -142,10 +146,13 @@ export class WorkflowValidator {
 
     // Normalize workflow graph once per validation run to remove duplicate triggers,
     // invalid edges, and enforce a canonical structure.
-    const normalized = normalizeWorkflowGraph({
-      nodes: workflow.nodes,
-      edges: workflow.edges,
-    });
+    const normalized = normalizeWorkflowGraph(
+      {
+        nodes: workflow.nodes,
+        edges: workflow.edges,
+      },
+      graphNormalizeOptions
+    );
     const normalizedWorkflow: Workflow = {
       nodes: normalized.nodes as WorkflowNode[],
       edges: normalized.edges as WorkflowEdge[],

@@ -80,6 +80,11 @@ interface WorkflowEdge {
   targetHandle?: string;
 }
 
+/** full: legacy save-time fixes; configOnly: preserve topology (attach-inputs / attach-credentials) */
+export interface NormalizeWorkflowForSaveOptions {
+  structuralMode?: 'full' | 'configOnly';
+}
+
 function hasDirectedCycle(nodes: WorkflowNode[], edges: WorkflowEdge[]): boolean {
   const adjacency = new Map<string, string[]>();
   const nodeIds = new Set(nodes.map((n) => n.id));
@@ -321,10 +326,13 @@ export function validateWorkflowForSave(
  */
 export function normalizeWorkflowForSave(
   nodes: WorkflowNode[],
-  edges: WorkflowEdge[]
+  edges: WorkflowEdge[],
+  options?: NormalizeWorkflowForSaveOptions
 ): { nodes: WorkflowNode[]; edges: WorkflowEdge[]; migrationsApplied: string[] } {
   const migrationsApplied: string[] = [];
-  
+  const structuralMode = options?.structuralMode ?? 'full';
+  const configOnly = structuralMode === 'configOnly';
+
   // ✅ STEP 1: Deduplicate nodes by ID (keep first occurrence)
   const nodeMap = new Map<string, WorkflowNode>();
   const duplicateNodeIds: string[] = [];
@@ -348,7 +356,7 @@ export function normalizeWorkflowForSave(
   // Use isTriggerNode helper to recognize ALL nodes from triggers category
   const triggerNodes = normalizedNodes.filter(n => isTriggerNode(n));
   
-  if (triggerNodes.length > 1) {
+  if (!configOnly && triggerNodes.length > 1) {
     // Keep the first trigger, remove the rest
     const firstTriggerId = triggerNodes[0].id;
     const removedTriggerIds = triggerNodes.slice(1).map(t => t.id);
@@ -543,7 +551,7 @@ export function normalizeWorkflowForSave(
     const c = (cfg as { cases?: unknown }).cases;
     return Array.isArray(c) && c.length > 0;
   });
-  if (hasSwitchWithCases) {
+  if (!configOnly && hasSwitchWithCases) {
     try {
       const wf: Workflow = { nodes: finalNodes as any, edges: finalEdges as any };
       const rec = unifiedGraphOrchestrator.reconcileWorkflow(wf);

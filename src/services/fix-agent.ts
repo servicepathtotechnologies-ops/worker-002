@@ -1,6 +1,5 @@
 import { Workflow, WorkflowNode, WorkflowEdge } from '../core/types/ai-types';
 import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../core/utils/unified-node-type-normalizer';
-import { nodeTypeNormalizationService } from './ai/node-type-normalization-service';
 import { workflowValidator, ValidationResult as WorkflowValidationResult } from './ai/workflow-validator';
 import { credentialDiscoveryPhase, CredentialDiscoveryResult } from './ai/credential-discovery-phase';
 import { LRUNodeOutputsCache } from '../core/cache/lru-node-outputs-cache';

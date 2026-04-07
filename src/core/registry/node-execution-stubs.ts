@@ -213,21 +213,19 @@ export const NODE_EXECUTION_STUBS: Record<string, {
   retry: {
     canonicalType: 'retry',
     execute: async (ctx) => {
-      // TODO: Migrate from execute-workflow.ts:1281-1298
-      throw new Error('[STUB] retry execution not migrated. See execute-workflow.ts:1281');
+      throw new Error('[STUB] retry execution lives in registry override + execute-workflow legacy case');
     },
-    legacyLocation: { file: 'worker/src/api/execute-workflow.ts', line: 1281 },
-    migrationStatus: 'pending',
+    legacyLocation: { file: 'worker/src/core/registry/overrides/retry.ts', line: 1 },
+    migrationStatus: 'complete',
   },
   
   parallel: {
     canonicalType: 'parallel',
     execute: async (ctx) => {
-      // TODO: Migrate from execute-workflow.ts:1299-1312
-      throw new Error('[STUB] parallel execution not migrated. See execute-workflow.ts:1299');
+      throw new Error('[STUB] parallel execution lives in registry override + execute-workflow legacy case');
     },
-    legacyLocation: { file: 'worker/src/api/execute-workflow.ts', line: 1299 },
-    migrationStatus: 'pending',
+    legacyLocation: { file: 'worker/src/core/registry/overrides/parallel.ts', line: 1 },
+    migrationStatus: 'complete',
   },
   
   // ============================================

@@ -93,7 +93,6 @@ import { resolveNodeType } from '../../core/utils/node-type-resolver-util';
 import { resolveAliasToCanonical } from '../../core/utils/comprehensive-alias-resolver';
 import { isOutputNode } from '../../core/utils/universal-node-type-checker';
 import { isEmptyValue } from '../../core/utils/is-empty-value';
-import { nodeTypeNormalizationService } from './node-type-normalization-service';
 import { capabilityResolver } from './capability-resolver';
 import { NodeSchemaRegistry } from '../../core/contracts/node-schema-registry';
 import { WorkflowAutoRepair } from '../../core/contracts/workflow-auto-repair';
@@ -351,23 +350,32 @@ export class AgenticWorkflowBuilder {
     const expandedSteps = this.expandBranchSteps(planned.steps);
 
     const nodes: WorkflowNode[] = expandedSteps.map((step, index) => {
-      const def = unifiedNodeRegistry.get(step.type);
+      const resolvedType = unifiedNodeRegistry.resolvePlannedStepCanonicalType(
+        step.type,
+        step.role,
+        step.config || {},
+        {
+          workflowIntentText: planned.summary,
+          stepLabel: typeof (step as { label?: string }).label === 'string' ? (step as { label?: string }).label : undefined,
+        }
+      );
+      const def = unifiedNodeRegistry.get(resolvedType);
       if (!def) {
-        throw new Error(`Planned step references unknown node type: ${step.type}`);
+        throw new Error(`Planned step references unknown node type: ${step.type} (resolved: ${resolvedType})`);
       }
 
       const id = step.id || `step_${index + 1}`;
-      const config = this.normalizePlannedConfig(step.type, step.config || {});
+      const config = this.normalizePlannedConfig(resolvedType, step.config || {});
 
       // ✅ AI-FIRST: Map Gemini's role to DSL category
-      const aiDeterminedCategory = this.mapRoleToDSLCategory(step.role, step.type, config);
+      const aiDeterminedCategory = this.mapRoleToDSLCategory(step.role, resolvedType, config);
 
       return {
         id,
-        type: step.type,
+        type: resolvedType,
         data: {
           label: def.label || id,
-          type: step.type,
+          type: resolvedType,
           category: def.category || 'action',
           config,
           stepRef: step.id,
@@ -1086,275 +1094,6 @@ export class AgenticWorkflowBuilder {
     });
     
     console.log(`[AgenticWorkflowBuilder] ✅ Initialized ${this.nodeLibrary.size} nodes from registry`);
-  }
-
-  /**
-   * Get comprehensive autonomous workflow agent prompt
-   * Loads the full prompt with connection rules and validation guidelines
-   */
-  getComprehensivePrompt(): string {
-    try {
-      // Resolve path relative to the compiled output location
-      // In development: __dirname = src/services/ai
-      // In production: __dirname = dist/services/ai
-      // Try multiple possible paths
-      const possiblePaths = [
-        path.resolve(__dirname, '../../data/autonomous-workflow-agent-prompt.md'), // From src/services/ai
-        path.resolve(__dirname, '../../../data/autonomous-workflow-agent-prompt.md'), // From dist/services/ai
-        path.resolve(process.cwd(), 'data/autonomous-workflow-agent-prompt.md'), // From project root
-        path.resolve(process.cwd(), 'worker/data/autonomous-workflow-agent-prompt.md'), // From project root/worker
-      ];
-      
-      let promptPath: string | null = null;
-      for (const possiblePath of possiblePaths) {
-        if (fs.existsSync(possiblePath)) {
-          promptPath = possiblePath;
-          break;
-        }
-      }
-      
-      if (promptPath) {
-        const content = fs.readFileSync(promptPath, 'utf-8');
-        console.log(`✅ Loaded comprehensive prompt from: ${promptPath}`);
-        return content;
-      } else {
-        // Fallback to embedded prompt if file doesn't exist
-        console.warn('⚠️  Comprehensive prompt file not found, using embedded version');
-        console.warn('   Tried paths:', possiblePaths);
-        return this.getEmbeddedComprehensivePrompt();
-      }
-    } catch (error) {
-      console.warn('⚠️  Failed to load comprehensive prompt file, using embedded version:', error);
-      return this.getEmbeddedComprehensivePrompt();
-    }
-  }
-
-  /**
-   * Get embedded comprehensive prompt (fallback)
-   */
-  private getEmbeddedComprehensivePrompt(): string {
-    return `# AUTONOMOUS WORKFLOW AGENT — STRICT BUILD PROMPT
-
-## 🔹 ROLE
-
-You are an Autonomous Workflow Builder that converts user requests into 100% correct, executable, connected workflows.
-
-Your output must always be a fully connected execution graph, never isolated nodes.
-
-## 🚫 ABSOLUTE RULES (NON-NEGOTIABLE)
-
-❌ Never output disconnected nodes
-❌ Never skip required services
-❌ Never insert AI unless it has a clear purpose
-❌ Never change execution order randomly
-❌ Never connect nodes without matching output → input compatibility
-❌ Never guess output fields or skip required inputs
-❌ Never assume implicit data flow
-❌ Never create circular or orphan nodes
-
-✅ Every node MUST have:
-- Incoming connection (except trigger)
-- Outgoing connection (except final node)
-- Explicit data mapping from previous node output
-
-## 🧩 MANDATORY WORKFLOW BUILD ALGORITHM
-
-When a user gives a prompt, you MUST follow this algorithm:
-
-### STEP 1: INTENT EXTRACTION
-
-From the user prompt, extract:
-- Trigger
-- Mandatory actions
-- Optional actions
-- Data persistence
-- Notifications
-- AI usage (only if explicitly or logically required)
-
-❌ Do not infer extra steps.
-
-### STEP 2: REQUIRED NODE CHECKLIST
-
-Before building, create a checklist:
-
-Example for lead automation:
-- Form Trigger ✅
-- Data Storage (Google Sheets) ✅
-- Notification (Slack) ✅
-- User Communication (Gmail) ✅
-
-❌ If any checklist item is missing → workflow is INVALID.
-
-### STEP 3: NODE ORDERING RULES
-
-Apply this fixed order:
-1. Trigger
-2. Data creation / enrichment (AI only if needed)
-3. Data storage (Sheets / DB)
-4. Internal notifications (Slack, Teams)
-5. External communication (Email, SMS)
-
-❌ You may NOT reorder this sequence.
-
-### STEP 4: AI USAGE RULES (STRICT)
-
-Use AI ONLY IF:
-- personalization
-- summarization
-- classification
-- transformation is required
-
-AI must:
-- Receive input from previous node
-- Produce structured output
-- Feed directly into the next node
-
-❌ AI can NEVER be a dead-end node.
-
-### STEP 5: WIRING & CONNECTION RULES (CRITICAL)
-
-You MUST explicitly ensure:
-- Each node is connected to the next node
-- Output of node N is input to node N+1
-- No floating or isolated nodes
-- Linear or branched execution is visually and logically connected
-
-If a node has no wire → FAIL THE BUILD
-
-### STEP 6: DATA MAPPING RULES
-
-- Form fields → Sheets columns
-- Form fields → Slack message
-- AI output → Gmail body
-- Email recipient → Form email field
-
-❌ No hardcoded values
-❌ No sample placeholders
-
-### STEP 7: FINAL VALIDATION (MANDATORY)
-
-Before outputting the workflow, validate:
-✅ All required nodes exist
-✅ All nodes are connected
-✅ Execution order is correct
-✅ Credentials are mapped
-✅ Workflow can execute end-to-end
-
-If validation fails → rebuild automatically.
-
-## 🔹 WORKFLOW BUILDING PROCESS
-
-STEP 1: INTENT EXTRACTION - Extract trigger type, required integrations, data source, final outcome.
-
-STEP 2: NODE SELECTION - Select nodes based on capability match, required inputs, available outputs. For each node, list Node Name, Purpose, Required Inputs, Produced Outputs.
-
-STEP 3: DATA CONTRACT DEFINITION - Before connecting nodes, define DATA CONTRACTS: Source Node.OutputField → Target Node.InputField. If no valid source exists → DO NOT CONNECT.
-
-STEP 4: CONNECTION VALIDATION LOOP - For EVERY connection, validate: Does Output.Type == Input.Type? Is Output.RequiredField present? Is Output generated at runtime? If ANY answer = NO → FIX or ASK USER.
-
-STEP 5: WORKFLOW GRAPH CONSTRUCTION - Only after validation, build the workflow graph with single trigger entry, linear or conditional flow, no dangling nodes.
-
-## 🔹 WORKFLOW BUILDING PROCESS
-
-STEP 1: INTENT EXTRACTION - Extract trigger type, required integrations, data source, final outcome.
-
-STEP 2: NODE SELECTION - Select nodes based on capability match, required inputs, available outputs. For each node, list Node Name, Purpose, Required Inputs, Produced Outputs.
-
-STEP 3: DATA CONTRACT DEFINITION - Before connecting nodes, define DATA CONTRACTS: Source Node.OutputField → Target Node.InputField. If no valid source exists → DO NOT CONNECT.
-
-STEP 4: CONNECTION VALIDATION LOOP - For EVERY connection, validate: Does Output.Type == Input.Type? Is Output.RequiredField present? Is Output generated at runtime? If ANY answer = NO → FIX or ASK USER.
-
-STEP 5: WORKFLOW GRAPH CONSTRUCTION - Only after validation, build the workflow graph with single trigger entry, linear or conditional flow, no dangling nodes.
-
-## 🔹 AI AGENT NODE RULES
-
-When using an AI Agent node:
-- Inputs: userInput (string), chat_model (REQUIRED - must connect Chat Model node), memory (optional), tool (optional)
-- Outputs: response_text (string), response_json (object with status, message, data), response_markdown (string)
-- Downstream nodes may only consume: response_text, response_json.message, or specific fields inside response_json.data
-- Connection Pattern: Chat Model → AI Agent (chat_model port) [REQUIRED], Previous Node → AI Agent (userInput), AI Agent → Next Node (response_text or response_json.data.*)
-
-## 🔹 STRICT BUILD RULES (MANDATORY)
-
-### STEP 2: REQUIRED NODE CHECKLIST
-
-Before building, create a checklist. Example for lead automation:
-- Form Trigger ✅
-- Data Storage (Google Sheets) ✅
-- Notification (Slack) ✅
-- User Communication (Gmail) ✅
-
-❌ If any checklist item is missing → workflow is INVALID.
-
-### STEP 3: NODE ORDERING RULES
-
-Apply this fixed order:
-1. Trigger
-2. Data creation / enrichment (AI only if needed)
-3. Data storage (Sheets / DB)
-4. Internal notifications (Slack, Teams)
-5. External communication (Email, SMS)
-
-❌ You may NOT reorder this sequence.
-
-### STEP 4: AI USAGE RULES (STRICT)
-
-Use AI ONLY IF:
-- personalization
-- summarization
-- classification
-- transformation is required
-
-AI must:
-- Receive input from previous node
-- Produce structured output
-- Feed directly into the next node
-
-❌ AI can NEVER be a dead-end node.
-
-### STEP 5: WIRING & CONNECTION RULES (CRITICAL)
-
-You MUST explicitly ensure:
-- Each node is connected to the next node
-- Output of node N is input to node N+1
-- No floating or isolated nodes
-- Linear or branched execution is visually and logically connected
-
-If a node has no wire → FAIL THE BUILD
-
-### STEP 6: DATA MAPPING RULES
-
-- Form fields → Sheets columns
-- Form fields → Slack message
-- AI output → Gmail body
-- Email recipient → Form email field
-
-❌ No hardcoded values
-❌ No sample placeholders
-
-### STEP 7: FINAL VALIDATION (MANDATORY)
-
-Before outputting the workflow, validate:
-✅ All required nodes exist
-✅ All nodes are connected
-✅ Execution order is correct
-✅ Credentials are mapped
-✅ Workflow can execute end-to-end
-
-If validation fails → rebuild automatically.
-
-## 🔹 FINAL OUTPUT FORMAT
-
-1️⃣ Node List - List all nodes with IDs
-2️⃣ Connection Map - Source_Node_ID.output_field → Target_Node_ID.input_field
-3️⃣ Node Configuration Summary - For each node, list required inputs and their sources
-
-No explanations. No marketing text. Just the facts.
-
-## 🚫 FINAL DIRECTIVE
-
-Disconnected workflows are considered FAILURES.
-You are a workflow execution engine, not a diagram generator.`;
   }
 
   /**
@@ -3395,51 +3134,6 @@ You are a workflow execution engine, not a diagram generator.`;
     });
     const nodeReference = this.generateNodeReference();
     return systemPrompt + '\n\n' + nodeReference;
-  }
-
-  /**
-   * Get essential system prompt (fallback)
-   */
-  private getEssentialSystemPrompt(): string {
-    return `# WORKFLOW GENERATION SYSTEM INSTRUCTIONS
-
-## MISSION CRITICAL
-You are an expert workflow architect that **translates user intent into executable workflows with 100% accuracy**. Every workflow MUST implement the EXACT requirements from the prompt with zero ambiguity.
-
-## GOLDEN RULE: IMPLEMENT, DON'T REPHRASE
-Never create generic workflows that "talk about" the task. ALWAYS create workflows that **actually perform** the task. If the user says "check age for voting", create nodes that ACTUALLY check age >= 18, not nodes that ask about checking age.
-
-## CRITICAL REQUIREMENTS FOR ALL WORKFLOWS
-
-### 1. MUST HAVE CONCRETE INPUT PROCESSING
-- **ALWAYS** extract specific data fields mentioned in the prompt
-- If prompt mentions "age", workflow MUST have a node extracting {{input.age}}
-- If input field isn't obvious, add a "Extract [field]" node or prompt user
-- NEVER pass through raw _trigger data without processing
-
-### 2. MUST IMPLEMENT ACTUAL LOGIC
-- If prompt involves comparison (age >= 18), **MUST** use an if_else node with exact condition
-- If prompt involves calculation, **MUST** use a code or formula node with actual calculation
-- If prompt involves validation, **MUST** use a condition node with validation rules
-- NO generic "check" or "ask" nodes without specific logic
-
-### 3. MUST HAVE SPECIFIC NODE CONFIGURATIONS
-- Every node MUST have **complete configuration**:
-  - Input fields explicitly mapped
-  - Transformation logic (if applicable)
-  - Output fields defined
-  - Conditions (if conditional node)
-- NO empty configurations
-- NO placeholder values
-
-### 4. MUST PRODUCE MEANINGFUL OUTPUT
-- Output MUST contain **all required result fields**
-- If checking eligibility, output MUST include:
-  - Input value (age: 25)
-  - Result (eligible: true/false)
-  - Reason/explanation
-  - Threshold/reference value
-- NO empty or generic output`;
   }
 
   /**
@@ -7212,23 +6906,15 @@ Return JSON:
       console.log(`🔍 [DIAGNOSTIC] [selectNodes]   - correctedType: ${correctedType}`);
       
       // 🔒 STRUCTURAL FIX: No node is allowed into the graph unless its schema exists
-      // This is a MANDATORY validation - fail fast if schema is missing
-      // Use NodeTypeResolver to resolve aliases and variations
-      const { nodeTypeResolver } = require('../nodes/node-type-resolver');
-      // Only enable debug logging if DEBUG_NODE_LOOKUPS is set
-      const debugLogging = process.env.DEBUG_NODE_LOOKUPS === 'true';
-      const resolution = nodeTypeResolver.resolve(correctedType, debugLogging);
-      
-      let resolvedType = correctedType;
-      if (resolution && resolution.method !== 'not_found' && resolution.method !== 'exact') {
-        resolvedType = resolution.resolved;
-        if (debugLogging) {
-          console.log(`✅ [NODE VALIDATION] Resolved node type "${correctedType}" → "${resolvedType}" (method: ${resolution.method})`);
-        }
+      // Resolve aliases via unified-node-registry (single source of truth)
+      const resolvedAlias = unifiedNodeRegistry.resolveAlias(correctedType);
+      let resolvedType = resolvedAlias ?? correctedType;
+
+      if (resolvedType !== correctedType) {
         correctedType = resolvedType;
         step.type = resolvedType;
       }
-      
+
       let stepSchema = nodeLibrary.getSchema(correctedType);
       
       console.log(`🔍 [DIAGNOSTIC] [selectNodes] Schema lookup for "${correctedType}": ${stepSchema ? 'FOUND' : 'NOT FOUND'}`);
@@ -7311,31 +6997,22 @@ Return JSON:
       console.log(`🔍 [DIAGNOSTIC] [selectNodes] Processing step ${index + 1}: type="${correctedType}", description="${step.description}"`);
       
       // ✅ CRITICAL: Normalize and validate node type before creating node
-      // This ensures workflow builder never generates unknown node types
-      let normalizationResult = nodeTypeNormalizationService.normalizeNodeType(correctedType);
-      
-      // ✅ ROOT-LEVEL FIX: If normalization fails, use node type resolver as fallback
+      // Delegates to unified-node-registry (single source of truth)
+      const resolvedAlias = unifiedNodeRegistry.resolveAlias(correctedType) ?? correctedType;
+      const isValid = nodeLibrary.isNodeTypeRegistered(resolvedAlias);
+      let normalizationResult = { normalized: resolvedAlias, valid: isValid, method: 'registry_alias' };
+
+      // ✅ ROOT-LEVEL FIX: If normalization fails, try lowercase
       if (!normalizationResult.valid) {
-        console.warn(`⚠️  [NODE SELECTION] Node type "${correctedType}" not found, attempting node type resolution...`);
-        
-        // Try node type resolver (handles aliases like "gmail" → "google_gmail")
-        const { nodeTypeResolver } = require('../nodes/node-type-resolver');
-        const resolution = nodeTypeResolver.resolve(correctedType, false);
-        
-        if (resolution && resolution.method !== 'not_found' && nodeLibrary.isNodeTypeRegistered(resolution.resolved)) {
-          console.log(`✅ [NODE SELECTION] Resolved "${correctedType}" → "${resolution.resolved}" via node type resolver (${resolution.method})`);
-          correctedType = resolution.resolved;
-          
-          // Re-validate the resolved type
-          normalizationResult = nodeTypeNormalizationService.normalizeNodeType(correctedType);
-          if (!normalizationResult.valid) {
-            console.error(`❌ [NODE SELECTION] Resolved type "${correctedType}" is still invalid. Skipping node.`);
-            logger.error(`❌ [NODE SELECTION] Invalid resolved node type: ${correctedType}`);
-            return; // Skip invalid node types
-          }
+        console.warn(`⚠️  [NODE SELECTION] Node type "${correctedType}" not found, attempting registry resolution...`);
+        const lower = correctedType.toLowerCase().trim();
+        const resolvedLower = unifiedNodeRegistry.resolveAlias(lower) ?? lower;
+        if (nodeLibrary.isNodeTypeRegistered(resolvedLower)) {
+          console.log(`✅ [NODE SELECTION] Resolved "${correctedType}" → "${resolvedLower}" via registry`);
+          correctedType = resolvedLower;
+          normalizationResult = { normalized: resolvedLower, valid: true, method: 'registry_lower' };
         } else {
           console.error(`❌ [NODE SELECTION] Invalid node type "${correctedType}" and no resolution found. Skipping node.`);
-          logger.error(`❌ [NODE SELECTION] Invalid node type: ${correctedType}`);
           return; // Skip invalid node types
         }
       }

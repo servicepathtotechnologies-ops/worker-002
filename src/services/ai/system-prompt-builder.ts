@@ -150,14 +150,16 @@ const VALIDATION_OUTPUT_SCHEMA = {
 const DAG_CONSTRAINTS = `
 DAG STRUCTURAL CONSTRAINTS — YOU MUST ENFORCE ALL OF THESE:
 1. NO CYCLES: The graph must be a Directed Acyclic Graph. No node may be its own ancestor.
-2. EXACTLY ONE TRIGGER: There must be exactly one trigger node with in-degree zero (no incoming edges).
-3. ALL NON-TERMINAL NODES MUST HAVE AT LEAST ONE OUTGOING EDGE: Every node except the final terminal node must connect to a downstream node.
+2. EXACTLY ONE TRIGGER: There must be exactly one trigger node. Triggers have in-degree zero (no incoming edges). Triggers are ALWAYS considered reachable — never flag them as orphans.
+3. ALL NON-TERMINAL NODES MUST HAVE AT LEAST ONE OUTGOING EDGE: Every node except the final terminal node(s) must connect to a downstream node.
 4. BRANCHING NODES (if_else, switch) MUST USE LABELED EDGES:
-   - if_else: exactly two outgoing edges labeled "true" and "false"
-   - switch: one outgoing edge per case, labeled "case_1", "case_2", etc.
-5. MERGE NODES: If two branches reconverge, they must connect to a merge node before continuing.
-6. NO ORPHAN NODES: Every node must be reachable from the trigger node.
-7. LINEAR BY DEFAULT: Unless the user explicitly requests branching, use a strictly linear chain.
+   - if_else: exactly two outgoing edges — one labeled "true", one labeled "false". Both are required.
+   - switch: exactly one outgoing edge per case value, labeled "case_1", "case_2", etc. in order.
+5. MERGE NODES: If two or more branches reconverge, they MUST connect to a merge node before continuing.
+6. NO ORPHAN NODES: Every non-trigger node must be reachable from the trigger via directed edges. A node is orphaned if no edge points to it (except the trigger itself).
+7. LINEAR BY DEFAULT: Unless the user explicitly requests branching/conditions, use a strictly linear chain: trigger → node1 → node2 → ... → terminal.
+8. EVERY EDGE MUST CONNECT CONSECUTIVE NODES: In a linear chain, each edge connects node[i] to node[i+1]. No skipping nodes.
+9. COMPLETE COVERAGE: The orderedNodes list and the edges list must be consistent — every node in orderedNodes must appear in at least one edge (as source or target), except the trigger (source only) and terminal (target only).
 `.trim();
 
 // ─── SystemPromptBuilder ─────────────────────────────────────────────────────
@@ -271,6 +273,22 @@ export class SystemPromptBuilder {
       '- The "no duplicate node types" rule does NOT apply to branch-specific nodes.',
       '  Duplicate types are REQUIRED when multiple branches need the same service.',
       '',
+      '## CRITICAL RULE — EVERY NODE MUST BE CONNECTABLE',
+      '- The nodes you select will be connected in a linear chain (or branching graph).',
+      '- NEVER select a node that cannot logically receive data from the previous node.',
+      '- NEVER select a node that cannot logically send data to the next node.',
+      '- The trigger node is ALWAYS first. It has no incoming connection.',
+      '- The terminal node is ALWAYS last. It has no outgoing connection.',
+      '- All other nodes must fit between trigger and terminal in a logical data flow.',
+      '- If you select a branching node (if_else or switch), you MUST also select one downstream',
+      '  node per branch — otherwise branches will be orphaned.',
+      '',
+      '## AI_AGENT NODE (when type ai_agent appears in the catalog)',
+      '- Required wiring: an ai_chat_model (or equivalent chat model in catalog) must supply the chat_model input;',
+      '  upstream context feeds userInput; memory and tool are optional per catalog.',
+      '- Typical outputs for downstream mapping: response_text, response_json (status/message/data), response_markdown.',
+      '- Do not leave ai_agent without both a model source and a userInput source in the eventual graph.',
+      '',
       '## USER INTENT',
       userIntent,
     ].join('\n');
@@ -297,6 +315,7 @@ export class SystemPromptBuilder {
       '## ROLE AND OBJECTIVE',
       'You are an execution order and edge reasoning engine for a workflow automation platform.',
       'Your job is to determine the correct execution order and directed edges for the selected nodes.',
+      'You MUST produce a complete, connected, acyclic graph where every node is reachable from the trigger.',
       '',
       '## NODE CATALOG',
       nodeCatalog,
@@ -312,12 +331,25 @@ export class SystemPromptBuilder {
       '## HARD CONSTRAINTS',
       DAG_CONSTRAINTS,
       '',
-      '- orderedNodes must list ALL selected node IDs in execution order (first = trigger).',
-      '- edges must connect every consecutive pair of nodes.',
-      '- Use edge type "main" for normal sequential flow.',
-      '- Use "true"/"false" only for if_else branching nodes.',
-      '- Use "case_1", "case_2", etc. only for switch branching nodes.',
+      '## EDGE RULES (MANDATORY)',
+      '- orderedNodes MUST list ALL selected node IDs in execution order (first = trigger, last = terminal).',
+      '- edges MUST connect every consecutive pair in orderedNodes: orderedNodes[0]→[1], [1]→[2], etc.',
+      '- For a LINEAR workflow with N nodes, you need exactly N-1 edges.',
+      '- Use edge type "main" for all normal sequential flow.',
+      '- For if_else: replace the single outgoing edge with TWO edges — one type "true", one type "false".',
+      '- For switch with K cases: replace the single outgoing edge with K edges — type "case_1" through "case_K".',
+      '- NEVER leave a node with no outgoing edge unless it is the last node in orderedNodes.',
+      '- NEVER leave a non-trigger node with no incoming edge.',
+      '- The trigger node (first in orderedNodes) MUST have exactly one outgoing edge and zero incoming edges.',
       '- Return ONLY the JSON object. No explanation, no markdown, no extra text.',
+      '',
+      '## SELF-CHECK BEFORE RESPONDING',
+      'Before returning your answer, verify:',
+      '1. Count of edges = count of orderedNodes - 1 (for linear) or more (for branching).',
+      '2. Every nodeId in orderedNodes appears in at least one edge.',
+      '3. No node appears as a target more than once (except merge nodes).',
+      '4. The trigger nodeId is the source of the first edge and never a target.',
+      '5. The terminal nodeId is the target of the last edge and never a source.',
       '',
       '## USER INTENT',
       userIntent,

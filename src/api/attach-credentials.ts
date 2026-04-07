@@ -22,6 +22,19 @@ import { getStructuralDiagnostics, materializeStructuralFields } from '../servic
 import { applyStructuralIntentAlignment } from '../services/ai/intent-structural-projection';
 import { hydrateRequiredConfigFromRegistryDefaults } from '../core/validation/workflow-config-hydrator';
 import { validateStructuralReadiness } from '../core/validation/workflow-save-validator';
+import {
+  diffWorkflowTopology,
+  fingerprintWorkflowTopology,
+  type WorkflowTopologyFingerprint,
+} from '../core/utils/workflow-topology-fingerprint';
+import { unifiedNodeRegistry } from '../core/registry/unified-node-registry';
+
+/** Wizard sends `cred_<nodeId>_<fieldName>` — allow through vault-key filter; injectCredentials maps per node. */
+function credentialPayloadKeyMatchesWorkflowNode(key: string, nodeIds: string[]): boolean {
+  const kl = key.toLowerCase();
+  if (!kl.startsWith('cred_')) return false;
+  return nodeIds.some((id) => id && kl.startsWith(`cred_${id.toLowerCase()}_`));
+}
 
 export default async function attachCredentialsHandler(req: Request, res: Response) {
   try {
@@ -115,29 +128,45 @@ export default async function attachCredentialsHandler(req: Request, res: Respon
     // Check phase field first (for execution phases), then fall back to status (for lifecycle)
     const currentPhase = workflow.phase || workflow.status || 'draft';
     
-    // ✅ PERMISSIVE: Allow credential attachment in almost all phases except locked ones
-    // Only block if workflow is actively executing or archived
+    // ✅ PHASE GUARD: Require inputs_applied before credential attachment.
+    // attach-inputs must complete successfully (advancing phase to inputs_applied)
+    // before credentials can be injected. This prevents credential injection into
+    // a graph that was never properly normalized.
     const blockedPhases = ['executing', 'running', 'archived'];
-    
+
     if (blockedPhases.includes(currentPhase)) {
       return res.status(409).json(
         createError(
           ErrorCode.PHASE_LOCKED,
           'Workflow not in credential configuration phase',
-          { 
+          {
             currentPhase,
             workflowId,
             message: 'Workflow is executing or archived. Cannot attach credentials.',
           },
-          true // Recoverable - user can refresh
+          true
         )
       );
     }
-    
-    // ✅ PERMISSIVE: Allow credential attachment in all other phases
-    // This includes: draft, active, ready, configuring_*, discover_*, complete, completed, etc.
-    // Log the phase for debugging but don't block
-    console.log(`[AttachCredentials] ✅ Allowing credential attachment in phase: ${currentPhase}`);
+
+    // ✅ REQUIRE inputs_applied: credentials can only be attached after inputs are applied.
+    if (currentPhase !== 'inputs_applied') {
+      return res.status(409).json(
+        createError(
+          ErrorCode.INVALID_PHASE,
+          'attach-inputs must complete successfully before credentials can be attached',
+          {
+            currentPhase,
+            workflowId,
+            requiredPhase: 'inputs_applied',
+            message: `Workflow phase is "${currentPhase}" but must be "inputs_applied". Call attach-inputs first.`,
+          },
+          true
+        )
+      );
+    }
+
+    console.log(`[AttachCredentials] ✅ Phase check passed: ${currentPhase}`);
 
     // Phase transitions are decided after readiness validation (no eager phase mutation).
 
@@ -145,11 +174,15 @@ export default async function attachCredentialsHandler(req: Request, res: Respon
     // This ensures consistent graph structure across all operations
     const { normalizeWorkflowForSave } = await import('../core/validation/workflow-save-validator');
     const workflowGraph = workflow.graph || { nodes: workflow.nodes || [], edges: workflow.edges || [] };
+    const workflowGraphReconciled = unifiedNodeRegistry.reconcileMisroutedAiCommunicationNodes({
+      nodes: workflowGraph.nodes || [],
+      edges: workflowGraph.edges || [],
+    } as any);
     const materialized = hydrateRequiredConfigFromRegistryDefaults(
       applyStructuralIntentAlignment(
         materializeStructuralFields({
-          nodes: workflowGraph.nodes || [],
-          edges: workflowGraph.edges || [],
+          nodes: workflowGraphReconciled.nodes || [],
+          edges: workflowGraphReconciled.edges || [],
           metadata: {
             ...((workflow as any)?.metadata || {}),
             generatedFrom:
@@ -185,7 +218,9 @@ export default async function attachCredentialsHandler(req: Request, res: Respon
         )
       );
     }
-    const normalized = normalizeWorkflowForSave(materialized.nodes || [], materialized.edges || []);
+    const normalized = normalizeWorkflowForSave(materialized.nodes || [], materialized.edges || [], {
+      structuralMode: 'configOnly',
+    });
     
     // ✅ TELEMETRY: Log normalization fixes
     if (normalized.migrationsApplied.length > 0) {
@@ -202,8 +237,22 @@ export default async function attachCredentialsHandler(req: Request, res: Respon
     // ✅ CRITICAL: Validate normalized graph structure
     const { normalizeWorkflowGraph, validateNormalizedGraph } = await import('../core/utils/workflow-graph-normalizer');
     let normalizedGraph: ReturnType<typeof normalizeWorkflowGraph>;
+    let baselineTopologyFingerprint!: WorkflowTopologyFingerprint;
     try {
-      normalizedGraph = normalizeWorkflowGraph({ nodes: normalized.nodes, edges: normalized.edges });
+      normalizedGraph = normalizeWorkflowGraph(
+        { nodes: normalized.nodes, edges: normalized.edges },
+        { mode: 'topologyPreserve' }
+      );
+      baselineTopologyFingerprint = fingerprintWorkflowTopology(
+        normalizedGraph.nodes,
+        normalizedGraph.edges
+      );
+      console.log('[AttachCredentials] 📌 Baseline topology fingerprint:', {
+        workflowId,
+        fingerprint: baselineTopologyFingerprint.fingerprint,
+        nodeCount: baselineTopologyFingerprint.nodeIdsSorted.length,
+        edgeCount: baselineTopologyFingerprint.edgeKeysSorted.length,
+      });
       const validation = validateNormalizedGraph(normalizedGraph);
       if (!validation.valid) {
         return res.status(400).json(
@@ -224,11 +273,13 @@ export default async function attachCredentialsHandler(req: Request, res: Respon
       );
     }
 
-    // ✅ CRITICAL: Check which credentials are already satisfied in vault
-    // Skip injection for satisfied OAuth credentials (already connected)
+    // Same graph as this handler's reconcile + normalize (not a DB reload — row may still list stale types).
     const { credentialDiscoveryPhase } = await import('../services/ai/credential-discovery-phase');
     const credentialDiscovery = await credentialDiscoveryPhase.discoverCredentials(
-      { nodes: normalizedGraph.nodes, edges: normalizedGraph.edges },
+      {
+        nodes: normalizedGraph.nodes as any,
+        edges: normalizedGraph.edges as any,
+      } as any,
       userId
     );
     
@@ -242,16 +293,18 @@ export default async function attachCredentialsHandler(req: Request, res: Respon
     const allowedVaultKeys = new Set(
       (credentialDiscovery.requiredCredentials || []).map(c => String(c.vaultKey || '').toLowerCase()).filter(Boolean)
     );
-    
+    const graphNodeIds = (normalizedGraph.nodes || []).map((n: any) => String(n?.id || '')).filter(Boolean);
+
     for (const [key, value] of Object.entries(credentials)) {
       const normalizedKey = key.toLowerCase();
-      if (!allowedVaultKeys.has(normalizedKey)) {
+      const nodeScopedCred = credentialPayloadKeyMatchesWorkflowNode(key, graphNodeIds);
+      if (!allowedVaultKeys.has(normalizedKey) && !nodeScopedCred) {
         console.warn(`[AttachCredentials] Rejected unknown/non-credential key "${key}"`);
         rejectedCredentialKeys.push(key);
         continue;
       }
-      // Skip if this credential is already satisfied in vault
-      if (satisfiedVaultKeys.has(normalizedKey)) {
+      // Skip if this credential is already satisfied in vault (vault keys only — node-scoped answers always apply)
+      if (!nodeScopedCred && satisfiedVaultKeys.has(normalizedKey)) {
         console.log(`[AttachCredentials] Skipping ${key} - already satisfied in vault`);
         continue;
       }
@@ -339,20 +392,29 @@ export default async function attachCredentialsHandler(req: Request, res: Respon
       
       console.log('[AttachCredentials] ✅ Credential injection successful');
 
-    // ✅ CRITICAL: Normalize workflow graph before saving (applies linearization)
-    // This ensures single-trigger, single-chain structure is enforced
-    finalNormalizedGraph = normalizeWorkflowGraph(injectionResult.workflow);
-    
-    console.log('[AttachCredentials] ✅ Graph linearized:', {
+    // Topology-preserving normalize only (no linearization)
+    finalNormalizedGraph = normalizeWorkflowGraph(injectionResult.workflow, { mode: 'topologyPreserve' });
+
+    console.log('[AttachCredentials] ✅ Graph normalized (topologyPreserve):', {
       nodeCount: finalNormalizedGraph.nodes.length,
       edgeCount: finalNormalizedGraph.edges.length,
-      triggerNodes: finalNormalizedGraph.nodes.filter(n => {
+      triggerNodes: finalNormalizedGraph.nodes.filter((n) => {
         const category = n.data?.category || '';
         const nodeType = n.data?.type || n.type || '';
-        return category.toLowerCase() === 'triggers' || 
-               category.toLowerCase() === 'trigger' ||
-               nodeType.includes('trigger') ||
-               ['manual_trigger', 'webhook', 'schedule', 'interval', 'form', 'chat_trigger', 'workflow_trigger'].includes(nodeType);
+        return (
+          category.toLowerCase() === 'triggers' ||
+          category.toLowerCase() === 'trigger' ||
+          nodeType.includes('trigger') ||
+          [
+            'manual_trigger',
+            'webhook',
+            'schedule',
+            'interval',
+            'form',
+            'chat_trigger',
+            'workflow_trigger',
+          ].includes(nodeType)
+        );
       }).length,
     });
     } else {
@@ -398,6 +460,28 @@ export default async function attachCredentialsHandler(req: Request, res: Respon
     // Use 'active' for status (enum) and phase values for execution readiness (TEXT)
     const finalStatus = 'active'; // Always use valid enum value
     const finalPhase = validationResult.ready ? 'ready_for_execution' : 'configuring_credentials';
+
+    const finalTopologyFingerprint = fingerprintWorkflowTopology(
+      finalNormalizedGraph.nodes,
+      finalNormalizedGraph.edges
+    );
+    if (finalTopologyFingerprint.fingerprint !== baselineTopologyFingerprint.fingerprint) {
+      const diff = diffWorkflowTopology(baselineTopologyFingerprint, finalTopologyFingerprint);
+      console.error('[AttachCredentials] ❌ Topology mutation blocked:', { workflowId, diff });
+      return res.status(409).json(
+        createError(
+          ErrorCode.TOPOLOGY_MUTATION_BLOCKED_ATTACH_CREDENTIALS,
+          'Workflow topology must not change during credential attachment.',
+          {
+            workflowId,
+            baselineFingerprint: baselineTopologyFingerprint.fingerprint,
+            finalFingerprint: finalTopologyFingerprint.fingerprint,
+            diff,
+          },
+          true
+        )
+      );
+    }
 
     // ✅ CRITICAL: Update workflow graph AND status in a single atomic operation
     // Also sync phase field if it exists (for backward compatibility)

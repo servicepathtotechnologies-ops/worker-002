@@ -245,6 +245,11 @@ export interface UnifiedNodeDefinition {
   // METADATA
   // ============================================
   tags?: string[]; // For search/filtering
+  /**
+   * Capability strings from NodeLibrary (e.g. email.send, gmail.send). Used for registry-driven
+   * routing (transactional email must use the correct channel, not a generic LLM node).
+   */
+  capabilities?: string[];
   deprecated?: boolean; // Mark as deprecated
   replacement?: string; // Suggested replacement node type
   

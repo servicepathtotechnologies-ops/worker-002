@@ -9,11 +9,9 @@ import { nodeLibrary } from '../../../services/nodes/node-library';
 import { NodeSchemaRegistry } from '../../contracts/node-schema-registry';
 
 describe('NodeTypeResolverUtil', () => {
-  // Ensure NodeLibrary is initialized before tests
+  // No setup needed — resolver now delegates to unified-node-registry
   beforeAll(() => {
-    // NodeLibrary is initialized on import, but ensure resolver is ready
-    const { nodeTypeResolver } = require('../../../services/nodes/node-type-resolver');
-    nodeTypeResolver.setNodeLibrary(nodeLibrary);
+    // unified-node-registry is initialized on import
   });
 
   describe('resolveNodeType', () => {

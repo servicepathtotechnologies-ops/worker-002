@@ -10,6 +10,15 @@ import { WorkflowStructure } from '../workflow-structure-builder';
 import { Workflow, WorkflowNode } from '../../../core/types/ai-types';
 import { nodeLibrary } from '../../nodes/node-library';
 
+/** Minimal valid WorkflowNode.data for tests (matches ai-types WorkflowNode). */
+function testNodeData(
+  type: string,
+  label: string,
+  category = 'ai'
+): WorkflowNode['data'] {
+  return { type, label, category, config: {} };
+}
+
 describe('NodeTypeNormalizationService', () => {
   describe('normalizeNodeType', () => {
     it('should map ai_summary to text_summarizer', () => {
@@ -62,6 +71,7 @@ describe('NodeTypeNormalizationService', () => {
       const intent: StructuredIntent = {
         trigger: 'ai_summary',
         actions: [],
+        requires_credentials: [],
       };
 
       const result = nodeTypeNormalizationService.normalizeStructuredIntent(intent);
@@ -78,9 +88,10 @@ describe('NodeTypeNormalizationService', () => {
       const intent: StructuredIntent = {
         trigger: 'webhook',
         actions: [
-          { type: 'ai_summarization', operation: 'summarize', description: 'Summarize text' },
-          { type: 'spreadsheet', operation: 'read', description: 'Read spreadsheet' },
+          { type: 'ai_summarization', operation: 'summarize' },
+          { type: 'spreadsheet', operation: 'read' },
         ],
+        requires_credentials: [],
       };
 
       const result = nodeTypeNormalizationService.normalizeStructuredIntent(intent);
@@ -95,9 +106,8 @@ describe('NodeTypeNormalizationService', () => {
     it('should reject intent with invalid node types', () => {
       const intent: StructuredIntent = {
         trigger: 'webhook',
-        actions: [
-          { type: 'invalid_node_type_xyz', operation: 'read', description: 'Invalid node' },
-        ],
+        actions: [{ type: 'invalid_node_type_xyz', operation: 'read' }],
+        requires_credentials: [],
       };
 
       const result = nodeTypeNormalizationService.normalizeStructuredIntent(intent);
@@ -111,9 +121,10 @@ describe('NodeTypeNormalizationService', () => {
       const intent: StructuredIntent = {
         trigger: 'webhook',
         actions: [
-          { type: 'text_summarizer', operation: 'summarize', description: 'Summarize text' },
-          { type: 'google_sheets', operation: 'read', description: 'Read spreadsheet' },
+          { type: 'text_summarizer', operation: 'summarize' },
+          { type: 'google_sheets', operation: 'read' },
         ],
+        requires_credentials: [],
       };
 
       const result = nodeTypeNormalizationService.normalizeStructuredIntent(intent);
@@ -167,13 +178,13 @@ describe('NodeTypeNormalizationService', () => {
             id: 'node1',
             type: 'custom',
             position: { x: 0, y: 0 },
-            data: { type: 'ai_email', label: 'Send Email' },
+            data: testNodeData('ai_email', 'Send Email', 'communication'),
           },
           {
             id: 'node2',
             type: 'custom',
             position: { x: 0, y: 0 },
-            data: { type: 'spreadsheet', label: 'Read Sheet' },
+            data: testNodeData('spreadsheet', 'Read Sheet', 'data'),
           },
         ],
         edges: [],
@@ -194,7 +205,7 @@ describe('NodeTypeNormalizationService', () => {
             id: 'node1',
             type: 'custom',
             position: { x: 0, y: 0 },
-            data: { type: 'invalid_node_type_xyz', label: 'Invalid' },
+            data: testNodeData('invalid_node_type_xyz', 'Invalid'),
           },
         ],
         edges: [],
@@ -211,9 +222,8 @@ describe('NodeTypeNormalizationService', () => {
     it('should throw error for invalid node types', () => {
       const intent: StructuredIntent = {
         trigger: 'webhook',
-        actions: [
-          { type: 'invalid_node_type_xyz', operation: 'read', description: 'Invalid' },
-        ],
+        actions: [{ type: 'invalid_node_type_xyz', operation: 'read' }],
+        requires_credentials: [],
       };
 
       expect(() => {
@@ -224,9 +234,8 @@ describe('NodeTypeNormalizationService', () => {
     it('should return normalized intent for valid types', () => {
       const intent: StructuredIntent = {
         trigger: 'webhook',
-        actions: [
-          { type: 'ai_summary', operation: 'summarize', description: 'Summarize' },
-        ],
+        actions: [{ type: 'ai_summary', operation: 'summarize' }],
+        requires_credentials: [],
       };
 
       const normalized = nodeTypeNormalizationService.validateAndNormalizeIntent(intent);
@@ -274,7 +283,7 @@ describe('NodeTypeNormalizationService', () => {
             id: 'node1',
             type: 'custom',
             position: { x: 0, y: 0 },
-            data: { type: 'invalid_node_type_xyz', label: 'Invalid' },
+            data: testNodeData('invalid_node_type_xyz', 'Invalid'),
           },
         ],
         edges: [],
@@ -292,7 +301,7 @@ describe('NodeTypeNormalizationService', () => {
             id: 'node1',
             type: 'custom',
             position: { x: 0, y: 0 },
-            data: { type: 'ai_email', label: 'Send Email' },
+            data: testNodeData('ai_email', 'Send Email', 'communication'),
           },
         ],
         edges: [],

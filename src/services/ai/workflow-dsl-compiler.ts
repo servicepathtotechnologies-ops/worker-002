@@ -15,8 +15,6 @@ import { nodeLibrary } from '../nodes/node-library';
 import { resolveCompatibleHandles } from './schema-driven-connection-resolver';
 import { enhancedEdgeCreationService } from './enhanced-edge-creation-service';
 import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
-import { nodeTypeResolver } from '../nodes/node-type-resolver';
-import { nodeTypeNormalizationService } from './node-type-normalization-service';
 import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 import { UnifiedNodeDefinition } from '../../core/types/unified-node-contract';
 import { NodeMetadataHelper, NodeMetadata, METADATA_PREFIXES } from '../../core/types/node-metadata';
@@ -403,7 +401,17 @@ export class WorkflowDSLCompiler {
 
     // For each category, check if multiple nodes are needed
     for (const [categoryName, usages] of categoryUsage.entries()) {
-      const availableNodes = nodeTypeNormalizationService.resolveCategoryToNodeTypes(categoryName);
+      // Resolve category to available node types via registry
+      const availableNodes = (() => {
+        const nodes: string[] = [];
+        for (const type of unifiedNodeRegistry.getAllTypes()) {
+          const def = unifiedNodeRegistry.get(type);
+          if (def && (def.tags?.includes(categoryName) || def.category === categoryName)) {
+            nodes.push(type);
+          }
+        }
+        return nodes;
+      })();
       
       if (availableNodes.length === 0) {
         // Not a category or no nodes available, skip
@@ -576,12 +584,12 @@ export class WorkflowDSLCompiler {
       let normalizedType: string | null = null;
       let resolutionMethod = 'unknown';
 
-      // ✅ STEP 1: Try nodeTypeNormalizationService (handles categories like "crm", "website")
-      const normalizationResult = nodeTypeNormalizationService.normalizeNodeType(originalType);
-      if (normalizationResult.valid && normalizationResult.normalized !== originalType) {
-        normalizedType = normalizationResult.normalized;
-        resolutionMethod = normalizationResult.method;
-        console.log(`[WorkflowDSLCompiler] ✅ Normalized "${originalType}" -> "${normalizedType}" (method: ${normalizationResult.method})`);
+      // ✅ STEP 1: Try registry alias resolution (single source of truth)
+      const aliasResolved = unifiedNodeRegistry.resolveAlias(originalType);
+      if (aliasResolved && aliasResolved !== originalType && nodeLibrary.isNodeTypeRegistered(aliasResolved)) {
+        normalizedType = aliasResolved;
+        resolutionMethod = 'registry_alias';
+        console.log(`[WorkflowDSLCompiler] ✅ Resolved alias "${originalType}" -> "${normalizedType}"`);
       } else {
         // Step 2: Try basic normalization utility
         normalizedType = unifiedNormalizeNodeTypeString(originalType);
@@ -589,21 +597,12 @@ export class WorkflowDSLCompiler {
           resolutionMethod = 'normalized';
           console.log(`[WorkflowDSLCompiler] ✅ Normalized "${originalType}" -> "${normalizedType}"`);
         } else {
-          // Step 3: Try NodeTypeResolver
-          try {
-            const resolution = nodeTypeResolver.resolve(originalType, false);
-            if (resolution && resolution.method !== 'not_found' && nodeLibrary.isNodeTypeRegistered(resolution.resolved)) {
-              normalizedType = resolution.resolved;
-              resolutionMethod = resolution.method;
-              console.log(`[WorkflowDSLCompiler] ✅ Resolved "${originalType}" -> "${normalizedType}" (method: ${resolution.method})`);
-              
-              if (resolution.warning) {
-                warnings = [...warnings, `Node type resolution warning for "${originalType}": ${resolution.warning.message}`]; // ✅ PHASE 3: Immutable add
-              }
-            }
-          } catch (error) {
-            // NodeTypeResolver failed, continue to error
-            console.warn(`[WorkflowDSLCompiler] ⚠️  NodeTypeResolver failed for "${originalType}": ${error}`);
+          // Step 3: Try registry direct lookup
+          const lower = originalType.toLowerCase().trim();
+          if (unifiedNodeRegistry.has(lower)) {
+            normalizedType = lower;
+            resolutionMethod = 'registry_lower';
+            console.log(`[WorkflowDSLCompiler] ✅ Resolved "${originalType}" -> "${normalizedType}" (lowercase)`);
           }
         }
       }

@@ -58,11 +58,48 @@ export class CredentialDiscoveryPhase {
    * ✅ CRITICAL: Checks vault during discovery to mark satisfied credentials
    * OAuth credentials already connected (via header bar) are marked as satisfied
    * 
-   * @param workflow - Complete workflow with nodes and edges
+   * @param workflowOrId - Complete workflow with nodes and edges, OR a workflowId string
    * @param userId - User ID for vault lookup (optional)
+   * @param supabaseClient - Supabase client (required when workflowOrId is a string)
    * @returns Credential discovery result with all required credentials (satisfied marked)
    */
-  async discoverCredentials(workflow: Workflow, userId?: string): Promise<CredentialDiscoveryResult> {
+  async discoverCredentials(
+    workflowOrId: Workflow | string,
+    userId?: string,
+    supabaseClient?: any
+  ): Promise<CredentialDiscoveryResult> {
+    // If a workflowId string is passed, fetch the committed row from DB (e.g. read-only tooling).
+    // attach-inputs / attach-credentials should pass a Workflow object so discovery sees the same
+    // reconciled node types as the handler (DB row can still be ollama until save after reconcile).
+    let workflow: Workflow;
+    if (typeof workflowOrId === 'string') {
+      const workflowId = workflowOrId;
+      if (!supabaseClient) {
+        throw new Error('[CredentialDiscovery] supabaseClient is required when workflowId is passed as string');
+      }
+      const { data, error } = await supabaseClient
+        .from('workflows')
+        .select('nodes, edges, graph')
+        .eq('id', workflowId)
+        .single();
+      if (error || !data) {
+        throw new Error(`[CredentialDiscovery] Failed to fetch workflow ${workflowId} from DB: ${error?.message}`);
+      }
+      // Parse nodes/edges — Supabase may return JSON strings
+      let nodes = data.nodes;
+      let edges = data.edges;
+      if (data.graph && typeof data.graph === 'object' && Array.isArray(data.graph.nodes)) {
+        nodes = data.graph.nodes;
+        edges = data.graph.edges;
+      }
+      if (typeof nodes === 'string') nodes = JSON.parse(nodes);
+      if (typeof edges === 'string') edges = JSON.parse(edges);
+      workflow = { nodes: nodes || [], edges: edges || [] } as Workflow;
+      console.log(`[CredentialDiscovery] ✅ Loaded workflow ${workflowId} from DB (${workflow.nodes.length} nodes)`);
+    } else {
+      workflow = workflowOrId;
+    }
+
     const errors: string[] = [];
     const warnings: string[] = [];
     const credentialMap = new Map<string, CredentialRequirement>();

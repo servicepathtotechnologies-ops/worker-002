@@ -380,19 +380,19 @@ export class NodeAutoConfigurator {
   ): Array<{ sourceField: string; targetField: string }> {
     // Common mapping patterns
     const commonMappings: Record<string, Record<string, Array<{ sourceField: string; targetField: string }>>> = {
-      // Google Sheets → AI Service
+      // Google Sheets → AI nodes
       google_sheets: {
-        ai_service: [
+        ai_agent: [
+          { sourceField: 'rows', targetField: 'userInput' },
+          { sourceField: 'data', targetField: 'userInput' },
+        ],
+        ai_chat_model: [
           { sourceField: 'rows', targetField: 'inputData' },
           { sourceField: 'data', targetField: 'inputData' },
         ],
-      },
-      // AI Service → Gmail
-      ai_service: {
-        google_gmail: [
-          { sourceField: 'output', targetField: 'body' },
-          { sourceField: 'text', targetField: 'body' },
-          { sourceField: 'response', targetField: 'body' },
+        text_summarizer: [
+          { sourceField: 'rows', targetField: 'text' },
+          { sourceField: 'data', targetField: 'text' },
         ],
       },
       // AI Agent → Gmail
@@ -402,11 +402,19 @@ export class NodeAutoConfigurator {
           { sourceField: 'response_json.message', targetField: 'body' },
         ],
       },
-      // Any → AI Service
-      '*': {
-        ai_service: [
-          { sourceField: 'output', targetField: 'inputData' },
-          { sourceField: 'data', targetField: 'inputData' },
+      // AI Chat Model → Gmail
+      ai_chat_model: {
+        google_gmail: [
+          { sourceField: 'output', targetField: 'body' },
+          { sourceField: 'text', targetField: 'body' },
+          { sourceField: 'response', targetField: 'body' },
+        ],
+      },
+      // Text Summarizer → Gmail
+      text_summarizer: {
+        google_gmail: [
+          { sourceField: 'summary', targetField: 'body' },
+          { sourceField: 'text', targetField: 'body' },
         ],
       },
     };

@@ -41,10 +41,200 @@ import {
 } from '../utils/field-help-metadata';
 import type { FieldHelpCategory } from '../utils/field-help-metadata';
 import { classifyFieldOwnership, isCredentialOwnership } from '../utils/field-ownership';
+import type { Workflow } from '../types/ai-types';
 
 export class UnifiedNodeRegistry implements INodeRegistry {
   private static instance: UnifiedNodeRegistry;
   private definitions: Map<string, UnifiedNodeDefinition> = new Map();
+  /** Lazily cached list of definitions in the `communication` category (for planner disambiguation). */
+  private communicationCategoryDefsCache: UnifiedNodeDefinition[] | null = null;
+  /** Lowercased keywords derived from nodes that declare email/Gmail send capabilities (for intent matching). */
+  private emailChannelIntentKeywordCache: string[] | null = null;
+
+  /**
+   * Single source of truth for all node type alias → canonical type mappings.
+   * Email aliases must NEVER map to AI/LLM node types.
+   * All resolution goes through this map — no external resolver files needed.
+   */
+  private readonly ALIAS_MAP: Record<string, string> = {
+    // ── Email (must resolve to google_gmail, never ollama) ──────────────────
+    'email': 'google_gmail',
+    'mail': 'google_gmail',
+    'gmail': 'google_gmail',
+    'send_email': 'google_gmail',
+    'google_mail': 'google_gmail',
+    'send via gmail': 'google_gmail',
+    'google email': 'google_gmail',
+    'gmail_send': 'google_gmail',
+    'email_send': 'google_gmail',
+    'google_gmail': 'google_gmail',
+    // ── Outlook / SMTP ───────────────────────────────────────────────────────
+    'outlook': 'outlook',
+    'microsoft_mail': 'outlook',
+    'outlook_mail': 'outlook',
+    'smtp': 'email',           // generic SMTP → email node
+    // ── Slack ────────────────────────────────────────────────────────────────
+    'slack': 'slack_message',
+    'slack_send': 'slack_message',
+    'send_slack': 'slack_message',
+    'slack_message': 'slack_message',
+    // ── Google Sheets ────────────────────────────────────────────────────────
+    'sheets': 'google_sheets',
+    'gsheets': 'google_sheets',
+    'google_sheet': 'google_sheets',
+    'spreadsheet': 'google_sheets',
+    'sheet': 'google_sheets',
+    'google_sheets': 'google_sheets',
+    // ── Google services ──────────────────────────────────────────────────────
+    'gdoc': 'google_doc',
+    'google_document': 'google_doc',
+    'google_doc': 'google_doc',
+    'gdrive': 'google_drive',
+    'google_storage': 'google_drive',
+    'google_drive': 'google_drive',
+    'drive': 'google_drive',
+    'gcal': 'google_calendar',
+    'calendar': 'google_calendar',
+    'google_cal': 'google_calendar',
+    'google_calendar': 'google_calendar',
+    // ── Triggers ─────────────────────────────────────────────────────────────
+    'manual': 'manual_trigger',
+    'manual_trigger': 'manual_trigger',
+    'webhook_trigger': 'webhook',
+    'http_trigger': 'webhook',
+    'webhook': 'webhook',
+    'schedule_trigger': 'schedule',
+    'cron': 'schedule',
+    'schedule': 'schedule',
+    'interval_trigger': 'interval',
+    'interval': 'interval',
+    'form_trigger': 'form',
+    'form_submission': 'form',
+    'form': 'form',
+    'chat_trigger': 'chat_trigger',
+    'error_trigger': 'error_trigger',
+    // ── Logic ────────────────────────────────────────────────────────────────
+    'if': 'if_else',
+    'if_else': 'if_else',
+    'conditional': 'if_else',
+    'condition': 'if_else',
+    'switch': 'switch',
+    'switch_case': 'switch',
+    'merge': 'merge',
+    'loop': 'loop',
+    'filter': 'filter',
+    'split_in_batches': 'split_in_batches',
+    'batch': 'split_in_batches',
+    // ── AI nodes ─────────────────────────────────────────────────────────────
+    'ai': 'ai_chat_model',
+    'ai_service': 'ai_chat_model',
+    'llm': 'ai_chat_model',
+    'ai_chat': 'ai_chat_model',
+    'chat_model': 'ai_chat_model',
+    'ai_chat_model': 'ai_chat_model',
+    'ai_agent': 'ai_agent',
+    'agent': 'ai_agent',
+    'local_ai': 'ollama',
+    'local_llm': 'ollama',
+    'ollama': 'ollama',
+    'text_summarizer': 'text_summarizer',
+    'summarizer': 'text_summarizer',
+    'sentiment_analyzer': 'sentiment_analyzer',
+    // ── Communication ────────────────────────────────────────────────────────
+    'telegram': 'telegram',
+    'telegram_send': 'telegram',
+    'discord': 'discord',
+    'discord_send': 'discord',
+    'microsoft_teams': 'microsoft_teams',
+    'teams': 'microsoft_teams',
+    'ms_teams': 'microsoft_teams',
+    'whatsapp_cloud': 'whatsapp_cloud',
+    'whatsapp': 'whatsapp_cloud',
+    'twilio': 'twilio',
+    'sms': 'twilio',
+    // ── CRM ──────────────────────────────────────────────────────────────────
+    'hubspot': 'hubspot',
+    'hub_spot': 'hubspot',
+    'salesforce': 'salesforce',
+    'sf': 'salesforce',
+    'airtable': 'airtable',
+    'air_table': 'airtable',
+    'zoho_crm': 'zoho_crm',
+    'zoho': 'zoho_crm',
+    'pipedrive': 'pipedrive',
+    'pipe_drive': 'pipedrive',
+    'notion': 'notion',
+    // ── Database ─────────────────────────────────────────────────────────────
+    'postgresql': 'postgresql',
+    'postgres': 'postgresql',
+    'pg': 'postgresql',
+    'mysql': 'mysql',
+    'mongodb': 'mongodb',
+    'mongo': 'mongodb',
+    'mongo_db': 'mongodb',
+    'supabase': 'supabase',
+    'redis': 'redis',
+    'database_write': 'database_write',
+    'database_read': 'database_read',
+    // ── HTTP ─────────────────────────────────────────────────────────────────
+    'http_request': 'http_request',
+    'http': 'http_request',
+    'api': 'http_request',
+    'api_call': 'http_request',
+    'graphql': 'graphql',
+    'gql': 'graphql',
+    'respond_to_webhook': 'respond_to_webhook',
+    'webhook_response': 'respond_to_webhook',
+    'response': 'respond_to_webhook',
+    // ── Logging ──────────────────────────────────────────────────────────────
+    'log_output': 'log_output',
+    'log': 'log_output',
+    'logger': 'log_output',
+    // ── Social ───────────────────────────────────────────────────────────────
+    'twitter': 'twitter',
+    'tweet': 'twitter',
+    'x': 'twitter',
+    'instagram': 'instagram',
+    'ig': 'instagram',
+    'insta': 'instagram',
+    'facebook': 'facebook',
+    'fb': 'facebook',
+    'youtube': 'youtube',
+    'yt': 'youtube',
+    'linkedin': 'linkedin',
+    'linked_in': 'linkedin',
+    // ── DevOps ───────────────────────────────────────────────────────────────
+    'github': 'github',
+    'git_hub': 'github',
+    'gh': 'github',
+    'gitlab': 'gitlab',
+    'git_lab': 'gitlab',
+    'bitbucket': 'bitbucket',
+    'jira': 'jira',
+    // ── Storage ──────────────────────────────────────────────────────────────
+    'aws_s3': 'aws_s3',
+    's3': 'aws_s3',
+    'amazon_s3': 'aws_s3',
+    'dropbox': 'dropbox',
+    'dbx': 'dropbox',
+    'onedrive': 'onedrive',
+    'one_drive': 'onedrive',
+    // ── E-commerce ───────────────────────────────────────────────────────────
+    'shopify': 'shopify',
+    'stripe': 'stripe',
+    // ── Data manipulation ────────────────────────────────────────────────────
+    'set_variable': 'set_variable',
+    'javascript': 'javascript',
+    'js': 'javascript',
+    'json_parser': 'json_parser',
+    'csv': 'csv',
+    'csv_parser': 'csv',
+    'aggregate': 'aggregate',
+    'sort': 'sort',
+    'limit': 'limit',
+    'wait': 'wait',
+    'delay': 'delay',
+  };
   
   private constructor() {
     console.log('[UnifiedNodeRegistry] 🏗️  Initializing Unified Node Registry...');
@@ -517,6 +707,7 @@ export class UnifiedNodeRegistry implements INodeRegistry {
       isBranching: false,
       aiSelectionCriteria: schema.aiSelectionCriteria,
       tags: schema.keywords || [],
+      capabilities: Array.isArray(schema.capabilities) ? schema.capabilities : [],
     };
   }
   
@@ -1221,7 +1412,10 @@ export class UnifiedNodeRegistry implements INodeRegistry {
    */
   isTrigger(nodeType: string): boolean {
     const definition = this.get(nodeType);
-    return definition?.category === 'trigger';
+    // node-library registers triggers with category 'triggers' (plural);
+    // unified contract normalises to 'trigger' (singular). Accept both.
+    const cat = definition?.category as string | undefined;
+    return cat === 'trigger' || cat === 'triggers';
   }
   
   /**
@@ -1244,26 +1438,288 @@ export class UnifiedNodeRegistry implements INodeRegistry {
   }
   
   /**
-   * Resolve alias to canonical type
-   * Uses node-type-resolver for alias resolution
+   * Resolve alias to canonical type.
+   * Uses the internal ALIAS_MAP — single source of truth, no external resolver files.
+   * Email aliases must NEVER resolve to AI/LLM node types.
    */
   resolveAlias(alias: string): string | undefined {
-    try {
-      const { resolveNodeType } = require('../utils/node-type-resolver-util');
-      const resolved = resolveNodeType(alias, false);
-      // If resolved type exists in registry, return it
-      if (this.has(resolved)) {
-        return resolved;
-      }
-      // If alias itself exists in registry, return it
-      if (this.has(alias)) {
-        return alias;
-      }
-      return undefined;
-    } catch (error) {
-      // If resolver fails, just check if alias exists directly
-      return this.has(alias) ? alias : undefined;
+    if (!alias) return undefined;
+    const normalized = alias.toLowerCase().trim();
+    // Check internal alias map first (authoritative)
+    const fromMap = this.ALIAS_MAP[normalized];
+    if (fromMap) {
+      return fromMap;
     }
+    // If alias is itself a canonical type in the registry, return it directly
+    if (this.has(normalized)) {
+      return normalized;
+    }
+    // Original casing fallback
+    if (this.has(alias)) {
+      return alias;
+    }
+    return undefined;
+  }
+
+  private getCommunicationCategoryDefinitions(): UnifiedNodeDefinition[] {
+    if (this.communicationCategoryDefsCache) {
+      return this.communicationCategoryDefsCache;
+    }
+    const list: UnifiedNodeDefinition[] = [];
+    for (const def of this.definitions.values()) {
+      if (def.category === 'communication') {
+        list.push(def);
+      }
+    }
+    this.communicationCategoryDefsCache = list;
+    return list;
+  }
+
+  private collectPlannerConfigKeys(config: Record<string, unknown> | undefined): Set<string> {
+    const keys = new Set<string>();
+    if (!config || typeof config !== 'object') {
+      return keys;
+    }
+    for (const k of Object.keys(config as Record<string, unknown>)) {
+      if (k.startsWith('_')) continue;
+      keys.add(k);
+    }
+    return keys;
+  }
+
+  private scoreConfigAgainstDefinition(def: UnifiedNodeDefinition, configKeys: Set<string>): number {
+    let score = 0;
+    const schema = def.inputSchema || {};
+    for (const k of configKeys) {
+      if (!schema[k]) continue;
+      score += 1;
+      const field = schema[k] as { role?: string };
+      if (field?.role === 'recipient') {
+        score += 1;
+      }
+    }
+    return score;
+  }
+
+  /** True when NodeLibrary capabilities mark this node as OAuth/API email send (e.g. Gmail), not generic LLM. */
+  private definitionSendsOAuthEmail(def: UnifiedNodeDefinition | undefined): boolean {
+    if (!def) return false;
+    const caps = def.capabilities || [];
+    return caps.some((c) => {
+      const x = String(c).toLowerCase();
+      return (
+        x.startsWith('email.send') ||
+        x.startsWith('gmail.') ||
+        x.includes('gmail.send') ||
+        x === 'google.mail'
+      );
+    });
+  }
+
+  /**
+   * Product default: transactional email in this app is Gmail (`google_gmail`) when that node declares email send capabilities.
+   */
+  private getPreferredGmailSendCanonicalType(): string {
+    const g = this.get('google_gmail');
+    if (g && this.definitionSendsOAuthEmail(g)) {
+      return 'google_gmail';
+    }
+    for (const def of this.definitions.values()) {
+      if (def.type === 'google_gmail' && this.definitionSendsOAuthEmail(def)) {
+        return 'google_gmail';
+      }
+    }
+    for (const def of this.definitions.values()) {
+      if (this.definitionSendsOAuthEmail(def) && (def.capabilities || []).some((c) => String(c).toLowerCase().includes('gmail'))) {
+        return def.type;
+      }
+    }
+    return 'google_gmail';
+  }
+
+  private ensureEmailChannelIntentKeywordCache(): string[] {
+    if (this.emailChannelIntentKeywordCache) {
+      return this.emailChannelIntentKeywordCache;
+    }
+    const seen = new Set<string>();
+    const out: string[] = [];
+    const push = (raw: string) => {
+      const t = String(raw || '')
+        .toLowerCase()
+        .trim();
+      if (t.length < 4 || seen.has(t)) return;
+      seen.add(t);
+      out.push(t);
+    };
+    for (const def of this.definitions.values()) {
+      if (!this.definitionSendsOAuthEmail(def)) continue;
+      for (const t of def.tags || []) {
+        push(String(t));
+      }
+      const ai = def.aiSelectionCriteria;
+      if (ai?.keywords) {
+        for (const k of ai.keywords) {
+          push(String(k));
+        }
+      }
+      if (ai?.whenToUse) {
+        for (const line of ai.whenToUse) {
+          for (const word of String(line).toLowerCase().split(/[^a-z0-9]+/)) {
+            if (word.length >= 5) push(word);
+          }
+        }
+      }
+    }
+    this.emailChannelIntentKeywordCache = out;
+    return out;
+  }
+
+  /** Whether free-text (summary, user prompt, step label) matches keywords from email-send node definitions. */
+  private workflowTextSuggestsRegistryEmailChannel(intentText: string): boolean {
+    const blob = String(intentText || '').toLowerCase();
+    if (!blob.trim()) return false;
+    for (const kw of this.ensureEmailChannelIntentKeywordCache()) {
+      if (blob.includes(kw)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * True when an AI-category planned node should be checked against communication definitions
+   * using config key overlap (registry-driven — no per-node string checks in builders).
+   */
+  private shouldRunCommunicationDisambiguation(
+    fromDef: UnifiedNodeDefinition,
+    role: string | undefined,
+    configKeys: Set<string>
+  ): boolean {
+    if (fromDef.category !== 'ai') {
+      return false;
+    }
+    const r = (role || '').toLowerCase().trim();
+    if (r === 'output') {
+      return true;
+    }
+    const matched = new Set<string>();
+    for (const comm of this.getCommunicationCategoryDefinitions()) {
+      const schema = comm.inputSchema || {};
+      for (const k of configKeys) {
+        if (schema[k]) {
+          matched.add(k);
+        }
+      }
+    }
+    return matched.size >= 2;
+  }
+
+  /**
+   * When the planner emits an AI node type but the config keys clearly belong to a communication
+   * node (per registry inputSchema), return the best-matching communication canonical type.
+   * Used by workflow hydration and optional graph reconciliation (attach-inputs, etc.).
+   *
+   * Email is routed to Gmail (`google_gmail`): if the planner still emits an LLM type for an
+   * output step but workflow/step text matches email-channel registry keywords, the canonical
+   * type becomes `google_gmail` — not Ollama.
+   */
+  resolvePlannedStepCanonicalType(
+    rawType: string,
+    role: string | undefined,
+    config: Record<string, unknown> | undefined,
+    context?: { workflowIntentText?: string; stepLabel?: string }
+  ): string {
+    const normalized = unifiedNormalizeNodeTypeString(rawType);
+    const fromDef = this.get(normalized);
+    if (!fromDef) {
+      return normalized;
+    }
+    const configKeys = this.collectPlannerConfigKeys(config);
+    let resolved = normalized;
+    if (this.shouldRunCommunicationDisambiguation(fromDef, role, configKeys)) {
+      let bestType = normalized;
+      let bestScore = this.scoreConfigAgainstDefinition(fromDef, configKeys);
+      for (const comm of this.getCommunicationCategoryDefinitions()) {
+        const s = this.scoreConfigAgainstDefinition(comm, configKeys);
+        if (s > bestScore) {
+          bestScore = s;
+          bestType = comm.type;
+        }
+      }
+      if (bestType !== normalized && bestScore >= 2) {
+        console.log(
+          `[UnifiedNodeRegistry] Planned-step disambiguation: "${rawType}" (${normalized}) → "${bestType}" (schema overlap score ${bestScore}, role=${role || 'n/a'})`
+        );
+        resolved = bestType;
+      }
+    }
+
+    const r = (role || '').toLowerCase().trim();
+    const intentBlob = [context?.workflowIntentText, context?.stepLabel].filter(Boolean).join(' ');
+    const resolvedDef = this.get(resolved);
+    if (
+      resolvedDef?.category === 'ai' &&
+      r === 'output' &&
+      this.workflowTextSuggestsRegistryEmailChannel(intentBlob)
+    ) {
+      const gmailType = this.getPreferredGmailSendCanonicalType();
+      if (gmailType !== resolved) {
+        console.log(
+          `[UnifiedNodeRegistry] Email intent → Gmail: "${rawType}" (${resolved}) → "${gmailType}" (output step; text matched email-channel registry keywords)`
+        );
+        resolved = gmailType;
+      }
+    }
+
+    return resolved;
+  }
+
+  /**
+   * Rewrite AI nodes whose configs match communication inputSchema better than their declared type.
+   * Preserves React Flow shells (`custom`, `form`) — only `data.type` is updated when shell is custom.
+   */
+  reconcileMisroutedAiCommunicationNodes(workflow: Workflow): Workflow {
+    if (!workflow?.nodes?.length) {
+      return workflow;
+    }
+    const nodes = workflow.nodes.map((node: any) => {
+      const data = node?.data || {};
+      const semanticType = String(data.type || node.type || '').trim();
+      if (!semanticType) {
+        return node;
+      }
+      const role =
+        (data.metadata?.aiRole as string | undefined) ||
+        (data.stepType as string | undefined) ||
+        (data.metadata?.stepType as string | undefined);
+      const wfIntent = [
+        (workflow as any)?.metadata?.summary,
+        (workflow as any)?.metadata?.generatedFrom,
+        (workflow as any)?.metadata?.userPrompt,
+      ]
+        .filter(Boolean)
+        .join(' ');
+      const resolved = this.resolvePlannedStepCanonicalType(semanticType, role, data.config as Record<string, unknown>, {
+        workflowIntentText: wfIntent,
+        stepLabel: typeof data.label === 'string' ? data.label : undefined,
+      });
+      const normalizedBefore = unifiedNormalizeNodeTypeString(semanticType);
+      if (resolved === normalizedBefore) {
+        return node;
+      }
+      const def = this.get(resolved);
+      const shell = String(node.type || '');
+      const useShell = shell === 'custom' || shell === 'form';
+      return {
+        ...node,
+        type: useShell ? shell : resolved,
+        data: {
+          ...data,
+          type: resolved,
+          ...(def?.category ? { category: def.category } : {}),
+          ...(def?.label && !data.label ? { label: def.label } : {}),
+        },
+      };
+    });
+    return { ...workflow, nodes };
   }
   
   /**

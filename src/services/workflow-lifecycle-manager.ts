@@ -22,6 +22,7 @@ import { connectorRegistry } from './connectors/connector-registry';
 import { nodeLibrary } from './nodes/node-library';
 import { unifiedNodeRegistry } from '../core/registry/unified-node-registry';
 import { unifiedNormalizeNodeType } from '../core/utils/unified-node-type-normalizer';
+// resolveNodeType delegates to unified-node-registry.resolveAlias (single source of truth)
 import { resolveNodeType } from '../core/utils/node-type-resolver-util';
 import { NodeResolver } from './ai/node-resolver';
 import { getSupabaseClient } from '../core/database/supabase-compat';
@@ -96,7 +97,7 @@ export function needsSummarizationNode(prompt: string): boolean {
 
 export function isSummarizationNodeType(nodeType: string): boolean {
   const t = resolveNodeType(nodeType);
-  return t === 'ai_chat_model' || t === 'text_summarizer' || t === 'ai_service';
+  return t === 'ai_chat_model' || t === 'text_summarizer';
 }
 
 // Minimal structural/system node set that may be present even when an
@@ -126,15 +127,9 @@ export function detectLogoutIntent(prompt: string): boolean {
 }
 
 export function applyEmailTransportExclusivity(nodeTypes: string[], prompt: string): string[] {
-  const normalized = [...new Set((nodeTypes || []).map((t) => resolveNodeType(t)))];
-  const hasGmail = normalized.includes('google_gmail');
-  const hasEmail = normalized.includes('email');
-  if (!hasGmail || !hasEmail) return normalized;
-
-  const lower = (prompt || '').toLowerCase();
-  const mentionsGmail = lower.includes('gmail') || lower.includes('google mail') || lower.includes('google email');
-  const keep = mentionsGmail ? 'google_gmail' : 'email';
-  return normalized.filter((t) => t === keep || t !== (keep === 'google_gmail' ? 'email' : 'google_gmail'));
+  // 'email' is not a canonical type — google_gmail is the only email node.
+  // Just deduplicate and return; no exclusivity logic needed.
+  return [...new Set((nodeTypes || []).map((t) => resolveNodeType(t)))];
 }
 
 export interface WorkflowGenerationResult {
@@ -2073,10 +2068,12 @@ export class WorkflowLifecycleManager {
       // This ensures credentials go to the correct node based on question ID format
       for (const [key, value] of Object.entries(credentials)) {
         const keyLower = key.toLowerCase();
-        
-        // ✅ ROOT-LEVEL: Match node-specific credential format: cred_${nodeId}_${fieldName}
-        if (keyLower.startsWith(`cred_${node.id.toLowerCase()}_`)) {
-          const fieldName = key.substring(`cred_${node.id}_`.length);
+        const idEsc = node.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const credNodePrefix = new RegExp(`^cred_${idEsc}_`, 'i');
+
+        // ✅ ROOT-LEVEL: Match node-specific credential format: cred_${nodeId}_${fieldName} (case-insensitive on prefix)
+        if (credNodePrefix.test(key)) {
+          const fieldName = key.replace(credNodePrefix, '');
           const credValue = extractCredentialValue(value);
           
           if (credValue) {
@@ -2092,10 +2089,12 @@ export class WorkflowLifecycleManager {
 
             // Get node schema to validate field exists
             const schema = nodeLibrary.getSchema(nodeType);
+            const unifiedDefInject = unifiedNodeRegistry.get(nodeType);
+            const unifiedFieldNames = unifiedDefInject?.inputSchema ? Object.keys(unifiedDefInject.inputSchema) : [];
             if (schema && schema.configSchema) {
               const requiredFields = schema.configSchema.required || [];
               const optionalFields = Object.keys(schema.configSchema.optional || {});
-              const allFields = [...requiredFields, ...optionalFields];
+              const allFields = [...new Set([...requiredFields, ...optionalFields, ...unifiedFieldNames])];
               
               // ✅ ROOT-LEVEL: Only apply if field exists in schema (prevents invalid fields)
               if (allFields.includes(fieldName)) {

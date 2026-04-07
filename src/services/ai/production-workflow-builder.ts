@@ -34,7 +34,6 @@ import { nodeCapabilityRegistryDSL } from './node-capability-registry-dsl';
 import { nodeLibrary } from '../nodes/node-library';
 import { randomUUID } from 'crypto';
 import { workflowValidationPipeline, ValidationContext } from './workflow-validation-pipeline';
-import { nodeTypeNormalizationService } from './node-type-normalization-service';
 import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 import { UnifiedNodeDefinition } from '../../core/types/unified-node-contract';
 import { unifiedNormalizeNodeTypeString, unifiedNormalizeNodeTypeWithInfo } from '../../core/utils/unified-node-type-normalizer';
@@ -1543,10 +1542,7 @@ export class ProductionWorkflowBuilder {
     const errors: string[] = [];
     const warnings: string[] = [];
     const normalized: string[] = [];
-    
-    // ✅ ROOT-LEVEL FIX: Import resolveNodeType for alias resolution
-    const { resolveNodeType } = require('../../core/utils/node-type-resolver-util');
-    
+
     for (const nodeType of nodeTypes) {
       // ✅ UNIVERSAL: Check for special node types (categories, invalid types) using registry
       const specialCheck = isSpecialNodeType(nodeType);
@@ -1555,41 +1551,22 @@ export class ProductionWorkflowBuilder {
         continue; // Skip invalid node types
       }
 
-      // ✅ ROOT-LEVEL FIX: Use resolveNodeType() instead of unifiedNormalizeNodeTypeString()
-      // This handles aliases like "typeform" → "form", "gmail" → "google_gmail", "ai" → "ai_chat_model"
+      // ✅ ROOT-LEVEL FIX: Use unifiedNodeRegistry.resolveAlias() — single source of truth
       let resolvedType: string;
       try {
-        resolvedType = resolveNodeType(nodeType, false);
-        
-        // Successfully resolved alias
-        if (resolvedType && resolvedType !== nodeType) {
+        const aliasResolved = unifiedNodeRegistry.resolveAlias(nodeType);
+        resolvedType = aliasResolved ?? nodeType;
+
+        if (resolvedType !== nodeType) {
           warnings.push(`Node type "${nodeType}" resolved to "${resolvedType}" (alias resolution)`);
-        } else if (!resolvedType) {
-          // Resolution returned empty - try normalization as fallback
-          const normalizationResult = nodeTypeNormalizationService.normalizeNodeType(nodeType);
-          if (normalizationResult.valid && normalizationResult.normalized !== nodeType) {
-            resolvedType = normalizationResult.normalized;
-            warnings.push(`Node type "${nodeType}" normalized to "${resolvedType}" (${normalizationResult.method})`);
-          } else if (!normalizationResult.valid) {
-            // Could not resolve or normalize - this might be a hallucinated node
-            errors.push(`Node type "${nodeType}" could not be resolved and is not found in capability registry (hallucinated node)`);
-            continue; // Skip validation for invalid nodes
-          } else {
-            resolvedType = nodeType; // Use original if normalization didn't change it
-          }
-        }
-        // If resolvedType === nodeType, it's already canonical, use as-is
-      } catch (error) {
-        // Resolution failed (node type not found) - try normalization as fallback
-        const normalizationResult = nodeTypeNormalizationService.normalizeNodeType(nodeType);
-        if (normalizationResult.valid && normalizationResult.normalized !== nodeType) {
-          resolvedType = normalizationResult.normalized;
-          warnings.push(`Node type "${nodeType}" normalized to "${resolvedType}" (fallback: ${normalizationResult.method})`);
-        } else {
-          // Both resolution and normalization failed
-          errors.push(`Node type "${nodeType}" could not be resolved: ${error instanceof Error ? error.message : String(error)}`);
+        } else if (!unifiedNodeRegistry.has(resolvedType)) {
+          // Not in registry — hallucinated node
+          errors.push(`Node type "${nodeType}" could not be resolved and is not found in registry (hallucinated node)`);
           continue;
         }
+      } catch (error) {
+        errors.push(`Node type "${nodeType}" could not be resolved: ${error instanceof Error ? error.message : String(error)}`);
+        continue;
       }
       
       // Ensure we have a resolved type
@@ -1831,6 +1808,7 @@ export class ProductionWorkflowBuilder {
         // ✅ SAFETY: Use canonical node category resolver as a final tie-breaker
         // This prevents structural mistakes like treating http_request as an output.
         try {
+          // Use utils/nodeTypeResolver for category derivation (thin wrapper over unified-node-registry)
           const { resolveNodeType: resolveNodeTypeForNode } = require('../../utils/nodeTypeResolver');
           const syntheticNode: WorkflowNode = {
             id: 'synthetic-' + resolvedNodeType,

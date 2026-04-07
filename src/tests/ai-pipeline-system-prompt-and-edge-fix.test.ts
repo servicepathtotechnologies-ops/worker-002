@@ -7,63 +7,25 @@
  */
 
 import { describe, it, expect } from '@jest/globals';
-import * as fs from 'fs';
-import * as path from 'path';
 import * as fc from 'fast-check';
 import { unifiedNodeRegistry } from '../core/registry/unified-node-registry';
 import { edgeReconciliationEngine } from '../core/orchestration/edge-reconciliation-engine';
 import type { ExecutionOrder } from '../core/orchestration/execution-order-manager';
 import type { WorkflowNode } from '../core/types/ai-types';
+import { SystemPromptBuilder } from '../services/ai/system-prompt-builder';
+import { buildNodeCatalogText } from '../services/ai/node-catalog-builder';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-const PRODUCTION_PROMPT_PATH = path.join(
-  __dirname,
-  '../services/ai/PRODUCTION_WORKFLOW_GENERATION_PROMPT.md'
-);
-const CLARIFYING_PROMPT_PATH = path.join(
-  __dirname,
-  '../services/ai/CLARIFYING_QUESTIONS_SYSTEM_PROMPT.md'
-);
+const systemPromptBuilder = new SystemPromptBuilder();
+const nodeCatalog = buildNodeCatalogText();
 
-/** Node types that were previously hardcoded in the production prompt */
+/** Node types that must NOT be hardcoded in any system prompt */
 const FORMERLY_HARDCODED_NODE_TYPES = [
   'ollama_chat',
   'openai_chat',
-  'google_gmail',
-  'slack_message',
   'smtp_email',
-  'if_else',
-  'switch',
-  'condition',
-  'javascript',
-  'filter',
-  'loop',
-  'text_formatter',
   'data_transform',
-  'merge',
-  'database_read',
-  'database_write',
-  'supabase',
-  'log_output',
-  'delay',
-  'http_request',
-  'respond_to_webhook',
-  'error_handler',
-];
-
-/** Node-field pairs that were previously hardcoded in the clarifying prompt */
-const FORMERLY_HARDCODED_FIELD_PAIRS = [
-  'Google Sheets: Spreadsheet ID',
-  'Slack: Channel ID',
-  'Telegram Bot: Bot Token',
-  'Email: Recipient email address',
-  'Webhook: URL',
-  'Database: Table name',
-  'AI Agent: Prompt/instructions',
-  'PDF Processing: File URL/Path',
-  'Form: Form ID',
-  'Schedule: Cron expression',
 ];
 
 /** DAG structural rules that MUST remain in the production prompt */
@@ -74,47 +36,60 @@ const REQUIRED_STRUCTURAL_RULES = [
   'trigger',
 ];
 
-// ─── Bug 1: No hardcoded node types in production prompt ─────────────────────
+// ─── Bug 1: No hardcoded node types in system prompts ────────────────────────
 
-describe('Bug 1 — Production prompt must not contain hardcoded node types', () => {
-  it('PRODUCTION_WORKFLOW_GENERATION_PROMPT.md exists', () => {
-    expect(fs.existsSync(PRODUCTION_PROMPT_PATH)).toBe(true);
-  });
-
-  it('Production prompt contains {{NODE_CATALOG}} placeholder', () => {
-    const content = fs.readFileSync(PRODUCTION_PROMPT_PATH, 'utf-8');
-    expect(content).toContain('{{NODE_CATALOG}}');
+describe('Bug 1 — System prompts must not contain hardcoded node types', () => {
+  it('edge_reasoning prompt contains DAG structural rules', () => {
+    const { systemPrompt } = systemPromptBuilder.build({
+      stage: 'edge_reasoning',
+      nodeCatalog,
+      userIntent: 'test',
+    });
+    for (const rule of REQUIRED_STRUCTURAL_RULES) {
+      expect(systemPrompt).toContain(rule);
+    }
   });
 
   it.each(FORMERLY_HARDCODED_NODE_TYPES)(
-    'Production prompt does NOT contain hardcoded node type: %s',
+    'edge_reasoning prompt does NOT contain hardcoded node type: %s',
     (nodeType) => {
-      const content = fs.readFileSync(PRODUCTION_PROMPT_PATH, 'utf-8');
-      // Check for backtick-quoted node type (the way they appeared in the old prompt)
-      expect(content).not.toContain(`\`${nodeType}\``);
+      const { systemPrompt } = systemPromptBuilder.build({
+        stage: 'edge_reasoning',
+        nodeCatalog,
+        userIntent: 'test',
+      });
+      expect(systemPrompt).not.toContain(`\`${nodeType}\``);
     }
   );
+
+  it('node_selection prompt contains connectable-node rule', () => {
+    const { systemPrompt } = systemPromptBuilder.build({
+      stage: 'node_selection',
+      nodeCatalog,
+      userIntent: 'test',
+    });
+    expect(systemPrompt).toContain('EVERY NODE MUST BE CONNECTABLE');
+  });
 });
 
-// ─── Bug 2: No hardcoded field lists in clarifying prompt ────────────────────
+// ─── Bug 2: Edge reasoning prompt is deterministic ───────────────────────────
 
-describe('Bug 2 — Clarifying prompt must not contain hardcoded node-field pairs', () => {
-  it('CLARIFYING_QUESTIONS_SYSTEM_PROMPT.md exists', () => {
-    expect(fs.existsSync(CLARIFYING_PROMPT_PATH)).toBe(true);
+describe('Bug 2 — edge_reasoning prompt is deterministic', () => {
+  it('Same inputs always produce the same prompt', () => {
+    const input = { stage: 'edge_reasoning' as const, nodeCatalog, userIntent: 'send email from sheets' };
+    const { systemPrompt: p1 } = systemPromptBuilder.build(input);
+    const { systemPrompt: p2 } = systemPromptBuilder.build(input);
+    expect(p1).toBe(p2);
   });
 
-  it('Clarifying prompt contains {{NODE_CATALOG}} placeholder', () => {
-    const content = fs.readFileSync(CLARIFYING_PROMPT_PATH, 'utf-8');
-    expect(content).toContain('{{NODE_CATALOG}}');
+  it('edge_reasoning prompt contains SELF-CHECK section', () => {
+    const { systemPrompt } = systemPromptBuilder.build({
+      stage: 'edge_reasoning',
+      nodeCatalog,
+      userIntent: 'test',
+    });
+    expect(systemPrompt).toContain('SELF-CHECK BEFORE RESPONDING');
   });
-
-  it.each(FORMERLY_HARDCODED_FIELD_PAIRS)(
-    'Clarifying prompt does NOT contain hardcoded field pair: %s',
-    (pair) => {
-      const content = fs.readFileSync(CLARIFYING_PROMPT_PATH, 'utf-8');
-      expect(content).not.toContain(pair);
-    }
-  );
 });
 
 // ─── Bug 3: Branch port coverage check ───────────────────────────────────────

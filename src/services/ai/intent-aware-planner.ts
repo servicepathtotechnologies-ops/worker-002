@@ -1314,77 +1314,37 @@ export class IntentAwarePlanner {
         }
       }
       
-      // ✅ CRITICAL FIX: Use selectedStructuredPrompt for fallback (not originalPrompt)
-      // This ensures we check the actual selected variation, not the original prompt
+      // ✅ Use registry alias map (single source of truth) to resolve output node type.
+      // No hardcoded email/gmail context-aware logic needed.
       if (!outputNodeType) {
-        // ✅ PRIORITY 1: Check selectedStructuredPrompt (the actual variation being used)
-        const selectedPromptLower = (selectedStructuredPrompt || '').toLowerCase();
-        // ✅ PRIORITY 2: Fallback to originalPrompt for context (if selectedStructuredPrompt doesn't have enough info)
-        const originalPromptLower = (originalPrompt || '').toLowerCase();
-        const promptLower = selectedPromptLower || originalPromptLower;
-        
-        // ✅ CONTEXT-AWARE: If selected variation says "Email" but original says "Gmail", map to google_gmail
-        const selectedMentionsEmail = selectedPromptLower.includes('email') || selectedPromptLower.includes('mail');
-        const originalMentionsGmail = originalPromptLower.includes('gmail') || 
-                                     originalPromptLower.includes('google mail') || 
-                                     originalPromptLower.includes('google email');
-        const originalMentionsGoogleServices = originalPromptLower.includes('google sheets') || 
-                                               originalPromptLower.includes('google');
-        
-        if (selectedMentionsEmail && (originalMentionsGmail || originalMentionsGoogleServices)) {
-          // ✅ Context-aware mapping: "Email" in selected variation + "Gmail" in original → google_gmail
-          outputNodeType = 'google_gmail';
-          console.log(`[IntentAwarePlanner] ✅ Context-aware mapping: "Email" in selected variation → google_gmail (original prompt mentions Gmail/Google)`);
-        } else if (promptLower.includes('email') || promptLower.includes('gmail') || promptLower.includes('send')) {
-          outputNodeType = 'google_gmail';
+        const promptLower = ((selectedStructuredPrompt || '') + ' ' + (originalPrompt || '')).toLowerCase();
+
+        if (promptLower.includes('email') || promptLower.includes('gmail') || promptLower.includes('mail') || promptLower.includes('send')) {
+          // Delegate to registry — 'email'/'gmail' → 'google_gmail'
+          const { unifiedNodeRegistry } = await import('../../core/registry/unified-node-registry');
+          outputNodeType = unifiedNodeRegistry.resolveAlias('email') ?? 'google_gmail';
         } else if (promptLower.includes('slack') || promptLower.includes('message')) {
-          // ✅ WORLD-CLASS: Check if explicit nodes specify a different output
-          // If user explicitly mentioned Slack in selected variation, use slack_message
-          // If user explicitly mentioned Discord, use discord (preserves explicit intent)
-          if (explicitNodeTypes) {
-            if (explicitNodeTypes.has('slack_message')) {
-              outputNodeType = 'slack_message';
-              console.log(`[IntentAwarePlanner] ✅ Using explicit node: slack_message (mentioned in selected variation)`);
-            } else if (explicitNodeTypes.has('discord')) {
-              outputNodeType = 'discord';
-              console.log(`[IntentAwarePlanner] ✅ Using explicit node: discord (mentioned in selected variation)`);
-            } else if (explicitNodeTypes.has('telegram')) {
-              outputNodeType = 'telegram';
-              console.log(`[IntentAwarePlanner] ✅ Using explicit node: telegram (mentioned in selected variation)`);
-            } else {
-              // Check for any explicit output node
-              const { nodeCapabilityRegistryDSL } = await import('./node-capability-registry-dsl');
-              for (const explicitNode of explicitNodeTypes) {
-                if (nodeCapabilityRegistryDSL.isOutput(explicitNode)) {
-                  outputNodeType = explicitNode;
-                  console.log(`[IntentAwarePlanner] ✅ Using explicit output node: ${explicitNode} (mentioned in selected variation)`);
-                  break;
-                }
-              }
-              // If no explicit output found, default to slack_message
-              if (!outputNodeType || outputNodeType === 'log') {
-                outputNodeType = 'slack_message';
-              }
-            }
-          } else {
-            outputNodeType = 'slack_message';
-          }
-        } else {
-          // ✅ WORLD-CLASS: Check explicit nodes for output before defaulting to log
           if (explicitNodeTypes) {
             const { nodeCapabilityRegistryDSL } = await import('./node-capability-registry-dsl');
             for (const explicitNode of explicitNodeTypes) {
               if (nodeCapabilityRegistryDSL.isOutput(explicitNode)) {
                 outputNodeType = explicitNode;
-                console.log(`[IntentAwarePlanner] ✅ Using explicit output node: ${explicitNode} (mentioned in selected variation)`);
                 break;
               }
             }
           }
-          // Default to log node for terminal workflows (only if no explicit output found)
-          if (!outputNodeType) {
-            outputNodeType = 'log';
+          if (!outputNodeType) outputNodeType = 'slack_message';
+        } else {
+          if (explicitNodeTypes) {
+            const { nodeCapabilityRegistryDSL } = await import('./node-capability-registry-dsl');
+            for (const explicitNode of explicitNodeTypes) {
+              if (nodeCapabilityRegistryDSL.isOutput(explicitNode)) {
+                outputNodeType = explicitNode;
+                break;
+              }
+            }
           }
+          if (!outputNodeType) outputNodeType = 'log';
         }
       }
       

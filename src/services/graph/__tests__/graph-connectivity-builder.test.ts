@@ -131,42 +131,7 @@ describe('GraphConnectivityBuilder', () => {
     });
   });
   
-  describe('attachOrphanNodes', () => {
-    it('should attach orphan nodes to last reachable node', () => {
-      const trigger = createMockNode('manual_trigger');
-      const node1 = createMockNode('google_sheets');
-      const orphan = createMockNode('slack_message');
-      const nodes = [trigger, node1, orphan];
-      
-      const edges: WorkflowEdge[] = [
-        { id: randomUUID(), source: trigger.id, target: node1.id },
-      ];
-      
-      const newEdges = builder.attachOrphanNodes(nodes, edges, trigger.id);
-      
-      expect(newEdges.length).toBe(2);
-      const orphanEdge = newEdges.find(e => e.target === orphan.id);
-      expect(orphanEdge).toBeDefined();
-      expect(orphanEdge?.source).toBe(node1.id); // Attached to last reachable
-    });
-    
-    it('should not modify edges if no orphans', () => {
-      const trigger = createMockNode('manual_trigger');
-      const node1 = createMockNode('google_sheets');
-      const nodes = [trigger, node1];
-      
-      const edges: WorkflowEdge[] = [
-        { id: randomUUID(), source: trigger.id, target: node1.id },
-      ];
-      
-      const newEdges = builder.attachOrphanNodes(nodes, edges, trigger.id);
-      
-      expect(newEdges.length).toBe(1);
-      expect(newEdges[0]).toEqual(edges[0]);
-    });
-  });
-  
-  describe('validateGraphIntegrity', () => {
+  describe('validateGraphIntegrity — orphan detection', () => {
     it('should pass for valid connected graph', () => {
       const trigger = createMockNode('manual_trigger');
       const node1 = createMockNode('google_sheets');
@@ -247,14 +212,11 @@ describe('GraphConnectivityBuilder', () => {
       // Build edges
       const edges = builder.buildEdgesFromPlan(plan);
       
-      // Attach orphans (should be none)
-      const finalEdges = builder.attachOrphanNodes(nodes, edges, plan.triggerNodeId);
-      
-      // Validate integrity
-      const integrity = builder.validateGraphIntegrity(nodes, finalEdges, plan.triggerNodeId);
+      // Validate integrity — no orphans expected from a correctly built plan
+      const integrity = builder.validateGraphIntegrity(nodes, edges, plan.triggerNodeId);
       
       expect(integrity.valid).toBe(true);
-      expect(finalEdges.length).toBeGreaterThan(0);
+      expect(edges.length).toBeGreaterThan(0);
       expect(integrity.details.reachableNodes).toBe(nodes.length);
     });
   });

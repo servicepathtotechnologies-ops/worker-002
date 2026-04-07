@@ -28,6 +28,11 @@ export interface NormalizedWorkflowGraph {
   };
 }
 
+/** full: legacy (linearization, log rewiring); topologyPreserve: handle fixes only, no structural rewrites */
+export interface NormalizeWorkflowGraphOptions {
+  mode?: 'full' | 'topologyPreserve';
+}
+
 /**
  * Normalize workflow graph from any format
  * 
@@ -37,7 +42,10 @@ export interface NormalizedWorkflowGraph {
  * - Missing nodes/edges
  * - Invalid structure
  */
-export function normalizeWorkflowGraph(rawGraph: any): NormalizedWorkflowGraph {
+export function normalizeWorkflowGraph(
+  rawGraph: any,
+  options?: NormalizeWorkflowGraphOptions
+): NormalizedWorkflowGraph {
   try {
     // Parse if string
     let parsed: any;
@@ -209,6 +217,21 @@ export function normalizeWorkflowGraph(rawGraph: any): NormalizedWorkflowGraph {
         ...edge,
       };
     });
+
+    if (options?.mode === 'topologyPreserve') {
+      logger.debug(
+        '[NormalizeWorkflowGraph] topologyPreserve: skipping log_output placement and linearization'
+      );
+      return {
+        nodes: normalizedNodes,
+        edges: normalizedEdges,
+        metadata: {
+          version: parsed.metadata?.version || '1.0',
+          createdAt: parsed.metadata?.createdAt || new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      };
+    }
 
     // ✅ ARCHITECTURAL RULE (CORE): log_output must never connect from triggers.
     // It must be placed AFTER terminal execution nodes, branch-aware.

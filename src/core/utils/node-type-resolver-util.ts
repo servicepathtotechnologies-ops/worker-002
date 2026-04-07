@@ -1,85 +1,60 @@
 /**
- * Node Type Resolver Utility
- * 
- * Simple utility function to resolve node type aliases to canonical types.
- * This wraps the NodeTypeResolver service for easy use throughout the codebase.
- * 
- * Usage:
- *   import { resolveNodeType } from './node-type-resolver-util';
- *   const canonicalType = resolveNodeType('gmail'); // Returns 'google_gmail'
- * 
- * NOTE: NodeTypeResolver must be initialized with NodeLibrary before use.
- * This is done automatically in node-library.ts initialization.
+ * Node Type Resolver Utility — THIN WRAPPER (legacy compatibility shim)
+ *
+ * All resolution now delegates to unified-node-registry.ts (single source of truth).
+ * This file exists only for backward compatibility during migration.
+ * Once all callers are updated to import from unified-node-registry directly,
+ * this file will be deleted.
+ *
+ * DO NOT add new logic here. Add aliases to unified-node-registry.ts ALIAS_MAP instead.
  */
 
-import { nodeTypeResolver } from '../../services/nodes/node-type-resolver';
 import { unifiedNodeRegistry } from '../registry/unified-node-registry';
 
-// Use the singleton instance exported from node-type-resolver
-// NOTE: This instance is initialized by NodeLibrary after NodeLibrary is created
-function getNodeTypeResolver() {
-  return nodeTypeResolver;
-}
-
 /**
- * Resolve a node type name to its canonical form
- * 
- * @param nodeType - The node type to resolve (e.g., 'gmail', 'ai', 'llm')
- * @param debug - Whether to log debug information (default: false)
- * @returns The canonical node type name (e.g., 'google_gmail', 'ai_service')
- * 
- * @example
- * resolveNodeType('gmail') // Returns 'google_gmail'
- * resolveNodeType('ai') // Returns 'ai_service'
- * resolveNodeType('google_gmail') // Returns 'google_gmail' (already canonical)
+ * Resolve a node type alias to its canonical form.
+ * Delegates to unified-node-registry.ts ALIAS_MAP — single source of truth.
+ *
+ * @param nodeType - The node type to resolve (e.g., 'gmail', 'email')
+ * @param debug - Unused, kept for API compatibility
+ * @returns The canonical node type name (e.g., 'google_gmail')
  */
 export function resolveNodeType(nodeType: string, debug: boolean = false): string {
   if (!nodeType || typeof nodeType !== 'string') {
-    if (debug) {
-      console.warn(`[resolveNodeType] Invalid node type: ${nodeType}`);
-    }
     return nodeType || '';
   }
-
-  // Use NodeTypeResolver to resolve the type
-  // Pass debug flag to resolver to control logging
-  const resolver = getNodeTypeResolver();
-  const resolution = resolver.resolve(nodeType, debug);
-
-  if (!resolution || resolution.method === 'not_found') {
-    // ✅ PRODUCTION-GRADE: Throw error instead of fallback
-    // This ensures resolution failures are caught immediately and not silently ignored
-    throw new Error(
-      `[NodeTypeResolver] Unknown node type: "${nodeType}". ` +
-      `This type is not registered in NodeLibrary and has no alias mapping. ` +
-      `Please use a canonical node type or add an alias mapping.`
-    );
+  // Delegate to registry — single source of truth
+  const resolved = unifiedNodeRegistry.resolveAlias(nodeType);
+  if (resolved) {
+    return resolved;
   }
-
-  // Log resolution only if debug is explicitly enabled
-  // Don't log for exact matches (already canonical)
-  if (debug && resolution.method !== 'exact') {
-    console.log(`[resolveNodeType] Resolved "${nodeType}" → "${resolution.resolved}" (${resolution.method})`);
+  // If not in alias map but exists in registry, return as-is
+  if (unifiedNodeRegistry.has(nodeType)) {
+    return nodeType;
   }
-
-  return resolution.resolved;
+  // Lowercase fallback
+  const lower = nodeType.toLowerCase().trim();
+  const resolvedLower = unifiedNodeRegistry.resolveAlias(lower);
+  if (resolvedLower) {
+    return resolvedLower;
+  }
+  if (unifiedNodeRegistry.has(lower)) {
+    return lower;
+  }
+  // Return original — let callers decide how to handle unknown types
+  return nodeType;
 }
 
 /**
- * Resolve multiple node types at once
- * 
- * @param nodeTypes - Array of node types to resolve
- * @param debug - Whether to log debug information
- * @returns Array of canonical node types
+ * Resolve multiple node types at once.
  */
 export function resolveNodeTypes(nodeTypes: string[], debug: boolean = false): string[] {
   return nodeTypes.map(type => resolveNodeType(type, debug));
 }
 
 /**
- * Strict canonical resolver for generation pipelines.
- * Unlike resolveNodeType(), this does not use alias/capability heuristics.
- * It only accepts canonical registry node types.
+ * Strict canonical resolver — only accepts types present in unified-node-registry.
+ * Does not use alias heuristics.
  */
 export function resolveCanonicalNodeTypeStrict(nodeType: string): string {
   const trimmed = typeof nodeType === 'string' ? nodeType.trim() : '';
@@ -100,15 +75,9 @@ export function resolveCanonicalNodeTypeStrict(nodeType: string): string {
 }
 
 /**
- * Check if a node type exists (after resolution)
- * 
- * @param nodeType - The node type to check
- * @param debug - Whether to log debug information
- * @returns True if the resolved node type exists in the registry
+ * Check if a node type exists in the registry.
  */
-export function nodeTypeExists(nodeType: string, debug: boolean = false): boolean {
-  const resolved = resolveNodeType(nodeType, debug);
-  const resolver = getNodeTypeResolver();
-  const resolution = resolver.resolve(nodeType, debug);
-  return resolution !== null && resolution.method !== 'not_found';
+export function nodeTypeExists(nodeType: string): boolean {
+  if (!nodeType) return false;
+  return unifiedNodeRegistry.has(nodeType) || unifiedNodeRegistry.has(nodeType.toLowerCase().trim());
 }

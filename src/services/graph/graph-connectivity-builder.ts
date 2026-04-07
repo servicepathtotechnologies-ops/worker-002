@@ -214,33 +214,6 @@ export class GraphConnectivityBuilder {
   }
   
   /**
-   * ❌ REMOVED: attachOrphanNodes()
-   * 
-   * Reason: Orphan nodes must never exist in the first place.
-   * Use DeterministicGraphAssembler instead, which guarantees
-   * zero orphan nodes during graph construction.
-   * 
-   * This method is deprecated and should not be used.
-   * If orphan nodes are detected, it indicates a failure in
-   * the graph assembly process, not a condition to repair.
-   */
-  attachOrphanNodes(
-    nodes: WorkflowNode[],
-    edges: WorkflowEdge[],
-    triggerNodeId: string
-  ): WorkflowEdge[] {
-    // ✅ DEPRECATED: Orphan nodes should never exist
-    // If this is called, it indicates a failure in graph assembly
-    console.warn(
-      `[GraphConnectivityBuilder] ⚠️  DEPRECATED: attachOrphanNodes() called. ` +
-      `Orphan nodes should never exist. Use DeterministicGraphAssembler instead.`
-    );
-    
-    // Return edges as-is (do not attempt repair)
-    return edges;
-  }
-  
-  /**
    * ✅ STEP 4: Validate graph integrity
    * 
    * Runs internal BFS to ensure:

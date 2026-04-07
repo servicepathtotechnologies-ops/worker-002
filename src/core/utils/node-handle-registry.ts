@@ -10,7 +10,7 @@
  * - Most nodes: `input` (target) and `output` (source)
  * - If/Else: `true` and `false` (source handles)
  * - Switch: case values (source handles)
- * - AI Agent: `userInput`, `chat_model`, `memory`, `tool` (target), `output` (source)
+ * - AI Agent: standard single `input` (target), `output` (source)
  */
 
 export interface NodeHandleContract {
@@ -157,11 +157,6 @@ export function getDefaultSourceHandle(nodeType: string): string {
  */
 export function getDefaultTargetHandle(nodeType: string): string {
   const contract = getNodeHandleContract(nodeType);
-  
-  // Special cases
-  if (nodeType === 'ai_agent') {
-    return 'userInput'; // Default to userInput port
-  }
   
   // Return first input handle or 'input'
   return contract.inputs[0] || 'input';
@@ -499,12 +494,12 @@ export function normalizeHandleId(
       'text': 'input',
       'body': 'input',
       'content': 'input',
-      'userinput': 'userInput',
-      'user_input': 'userInput',
-      'chatmodel': 'chat_model',
-      'chat_model': 'chat_model',
-      'memory': 'memory',
-      'tool': 'tool',
+      'userinput': 'input',
+      'user_input': 'input',
+      'chatmodel': 'input',
+      'chat_model': 'input',
+      'memory': 'input',
+      'tool': 'input',
       'values': 'input',
       'json': 'input',
       'template': 'input',
@@ -517,13 +512,6 @@ export function normalizeHandleId(
       'rows': 'input',
     };
     
-    // ✅ SPECIAL: For ai_agent, map 'input' to 'userInput'
-    if (nodeType === 'ai_agent' && handleIdLower === 'input') {
-      if (contract.inputs.includes('userInput')) {
-        return 'userInput';
-      }
-    }
-
     const mapped = targetMappings[handleIdLower];
     if (mapped && contract.inputs.includes(mapped)) {
       return mapped;

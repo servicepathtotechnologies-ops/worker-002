@@ -59,7 +59,7 @@ export type TriggerType = 'manual' | 'schedule' | 'event';
  * Supports both new format (node_type) and legacy format (action) for backward compatibility
  */
 export interface WorkflowStep {
-  node_type?: string; // Canonical node type from registry (e.g., 'google_sheets', 'ai_service') - NEW FORMAT
+  node_type?: string; // Canonical node type from registry (e.g., 'google_sheets', 'ai_chat_model') - NEW FORMAT
   action?: string; // Legacy format - deprecated, use node_type instead
   description?: string;
   order?: number;
@@ -898,7 +898,7 @@ Return JSON only with node_type fields matching the exact node types from the li
   /**
    * ✅ UNIVERSAL: Enforce mandatory nodes in workflow plan using semantic matching
    * Ensures all mandatory nodes (from keyword extraction) are included in the plan
-   * Uses unifiedNodeTypeMatcher for semantic equivalence (e.g., ai_service ≡ ai_chat_model)
+   * Uses unifiedNodeTypeMatcher for semantic equivalence (e.g., ai_agent ≡ ai_chat_model)
    */
   private enforceMandatoryNodes(plan: WorkflowPlan, mandatoryNodes: string[]): WorkflowPlan {
     console.log(`[WorkflowPlanner] 🔒 Enforcing ${mandatoryNodes.length} mandatory node(s): ${mandatoryNodes.join(', ')}`);
@@ -1148,7 +1148,7 @@ Return JSON only with node_type fields matching the exact node types from the li
     }
 
     if (promptLower.includes('summarize') || promptLower.includes('summary') || promptLower.includes('ai') || promptLower.includes('llm')) {
-      const nodeType = availableNodeTypes.find(t => t === 'ai_service' || t === 'text_summarizer');
+      const nodeType = availableNodeTypes.find(t => t === 'text_summarizer' || t === 'ai_agent');
       if (nodeType) steps.push({ node_type: nodeType, order: steps.length + 1 });
     }
 
@@ -1158,7 +1158,7 @@ Return JSON only with node_type fields matching the exact node types from the li
     }
 
     if (promptLower.includes('email') || promptLower.includes('send email') || promptLower.includes('mail') || promptLower.includes('gmail')) {
-      const nodeType = availableNodeTypes.find(t => t === 'google_gmail' || t === 'email');
+      const nodeType = availableNodeTypes.find(t => t === 'google_gmail');
       if (nodeType) steps.push({ node_type: nodeType, order: steps.length + 1 });
     }
 
