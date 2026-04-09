@@ -1388,6 +1388,15 @@ function generateConfigurationQuestions(
           orderedFd as any,
           config as Record<string, unknown>
         );
+        // Derive fillModeDefault from registry so the frontend wizard knows whether
+        // this field is AI-owned (buildtime_ai_once / runtime_ai) or user-owned (manual_static).
+        // Without this, the wizard defaults every field to manual_static and shows it as a
+        // question even when the AI already populated it during property_population.
+        const registryFillModeDefault = (unifiedForOrdered?.inputSchema?.[qDef.field] as any)?.fillMode?.default as
+          | 'manual_static'
+          | 'runtime_ai'
+          | 'buildtime_ai_once'
+          | undefined;
         const question: ComprehensiveNodeQuestion = {
           id: `config_${nodeId}_${qDef.field}`,
           text: qDef.prompt || `Please provide ${qDef.field} for "${nodeLabel}"`,
@@ -1403,6 +1412,7 @@ function generateConfigurationQuestions(
           example: qDef.example,
           placeholder: qDef.placeholder,
           description: qDef.description,
+          ...(registryFillModeDefault ? { fillModeDefault: registryFillModeDefault } : {}),
         };
 
         questions.push(question);
@@ -1503,6 +1513,11 @@ function generateConfigurationQuestions(
         }
         
         const cfgFieldDef = unifiedForConfig?.inputSchema?.[fieldName] as any;
+        const cfgFillModeDefault = cfgFieldDef?.fillMode?.default as
+          | 'manual_static'
+          | 'runtime_ai'
+          | 'buildtime_ai_once'
+          | undefined;
         const question: ComprehensiveNodeQuestion = {
           id: `config_${nodeId}_${fieldName}`,
           text: questionText,
@@ -1522,6 +1537,7 @@ function generateConfigurationQuestions(
           description: fieldInfo?.description,
           placeholder: fieldInfo?.placeholder || (fieldLower.includes('id') ? `Enter ${fieldName}` : undefined),
           options,
+          ...(cfgFillModeDefault ? { fillModeDefault: cfgFillModeDefault } : {}),
         };
 
         questions.push(question);

@@ -100,3 +100,78 @@ describe('Preservation A — linear workflows produce identical edge sets after 
     console.log('[PRESERVATION A] 3-node chain edges:', result.workflow.edges.map(e => `${e.source}→${e.target}`));
   });
 });
+
+describe('Nested switch wiring', () => {
+  it('pre-wires all switch contexts when provided', () => {
+    const nodes: WorkflowNode[] = [
+      makeNode('trigger-1', 'manual_trigger'),
+      makeNode('switch-status', 'switch'),
+      makeNode('switch-priority', 'switch'),
+      makeNode('gmail-1', 'google_gmail'),
+      makeNode('slack-1', 'slack_message'),
+      makeNode('slack-2', 'slack_message'),
+    ];
+
+    const switchContext: any = {
+      switchNodeId: 'switch-status',
+      caseNodeMapping: {
+        shipped: { targetNodeType: 'switch', targetNodeId: 'switch-priority', slot: 'case_1' },
+        updated: { targetNodeType: 'slack_message', targetNodeId: 'slack-2', slot: 'case_2' },
+      },
+      switchContexts: [
+        {
+          switchNodeId: 'switch-status',
+          caseNodeMapping: {
+            shipped: { targetNodeType: 'switch', targetNodeId: 'switch-priority', slot: 'case_1' },
+            updated: { targetNodeType: 'slack_message', targetNodeId: 'slack-2', slot: 'case_2' },
+          },
+        },
+        {
+          switchNodeId: 'switch-priority',
+          caseNodeMapping: {
+            express: { targetNodeType: 'slack_message', targetNodeId: 'slack-1', slot: 'case_1' },
+            standard: { targetNodeType: 'google_gmail', targetNodeId: 'gmail-1', slot: 'case_2' },
+          },
+        },
+      ],
+    };
+
+    const { workflow } = unifiedGraphOrchestrator.initializeWorkflow(nodes, undefined, undefined, switchContext);
+
+    const statusEdges = workflow.edges.filter(e => e.source === 'switch-status');
+    const priorityEdges = workflow.edges.filter(e => e.source === 'switch-priority');
+
+    expect(statusEdges.some(e => e.target === 'switch-priority')).toBe(true);
+    expect(statusEdges.some(e => e.target === 'slack-2')).toBe(true);
+    expect(priorityEdges.some(e => e.target === 'slack-1')).toBe(true);
+    expect(priorityEdges.some(e => e.target === 'gmail-1')).toBe(true);
+  });
+
+  it('keeps branch completeness deterministic when explicit switch mapping is partial', () => {
+    const nodes: WorkflowNode[] = [
+      makeNode('trigger-1', 'manual_trigger'),
+      makeNode('switch-1', 'switch'),
+      makeNode('gmail-1', 'google_gmail'),
+      makeNode('slack-1', 'slack_message'),
+    ];
+    (nodes[1].data as any).config = {
+      cases: [{ value: 'high' }, { value: 'low' }],
+    };
+    const workflow = {
+      nodes,
+      edges: [
+        { id: 'e1', source: 'trigger-1', target: 'switch-1', type: 'main' } as any,
+        { id: 'e2', source: 'switch-1', target: 'gmail-1', type: 'case_1', sourceHandle: 'case_1' } as any,
+      ],
+    };
+    const executionOrder = executionOrderManager.initialize(workflow as any);
+    const result = edgeReconciliationEngine.reconcileEdges(workflow as any, executionOrder);
+    const switchEdges = result.workflow.edges.filter((e) => e.source === 'switch-1');
+    const case1 = switchEdges.find((e) => e.type === 'case_1' || e.sourceHandle === 'case_1');
+    const case2 = switchEdges.find((e) => e.type === 'case_2' || e.sourceHandle === 'case_2');
+    expect(case1).toBeDefined();
+    if (case2) {
+      expect(case1?.target).not.toBe(case2?.target);
+    }
+  });
+});

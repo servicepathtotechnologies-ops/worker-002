@@ -21,8 +21,10 @@ import { existsSync } from 'fs';
 const possibleEnvPaths = [
   join(process.cwd(), 'worker', '.env'),         // If running from project root
   join(process.cwd(), '.env'),                   // Current working directory
+  join(process.cwd(), '..', '.env'),             // If running from nested worker/worker
   join(__dirname, '..', '..', '.env'),           // From compiled dist/ directory
   join(__dirname, '..', '.env'),                 // From src/core/ directory
+  join(__dirname, '..', '..', '..', '.env'),     // From src/core when env is in worker root
 ];
 
 let envLoaded = false;

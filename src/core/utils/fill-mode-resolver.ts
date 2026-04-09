@@ -60,8 +60,14 @@ export function coerceFieldFillModeByPolicy(
     const policy = fieldDef.credentialTogglePolicy ?? 'locked';
     const unlocked =
       policy === 'unlockable' && config?._ownershipUnlock?.[fieldName] === true;
-    if (!unlocked && requestedMode !== 'manual_static') {
-      return { mode: 'manual_static', coerced: true, reason: 'credential_locked' };
+    if (!unlocked) {
+      const fallbackMode =
+        requestedMode === 'runtime_ai' || requestedMode === 'buildtime_ai_once'
+          ? fieldDef.fillMode?.default || 'manual_static'
+          : requestedMode;
+      if (fallbackMode !== requestedMode) {
+        return { mode: fallbackMode, coerced: true, reason: 'credential_locked' };
+      }
     }
   }
 

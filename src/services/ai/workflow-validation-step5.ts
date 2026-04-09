@@ -960,7 +960,10 @@ export class WorkflowValidationStep5 {
             if (!node.data.config) {
               node.data.config = {};
             }
-            node.data.config[fix.changes.field] = fix.changes.defaultValue;
+            // ✅ FIX: Only write default if field is not already set (preserve AI-assigned values)
+            if (!node.data.config[fix.changes.field] && node.data.config[fix.changes.field] !== 0 && node.data.config[fix.changes.field] !== false) {
+              node.data.config[fix.changes.field] = fix.changes.defaultValue;
+            }
           }
         } else if (fix.changes.nodeType) {
           // Add new node (e.g., trigger)

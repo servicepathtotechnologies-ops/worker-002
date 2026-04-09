@@ -37,6 +37,9 @@ export function formatArchitecturalWorkflowPrompt(params: FormatArchitecturalPro
     ...executionLines,
     '',
     terminalLine,
+    ...(logCount > 1
+      ? ['Rule: keep branch terminals separate — never merge multiple branch outputs into one log_output.']
+      : []),
   ];
   if (params.includeRegistryFillContract) {
     parts.push('', buildRegistryStructuralFillContractSection(chain));

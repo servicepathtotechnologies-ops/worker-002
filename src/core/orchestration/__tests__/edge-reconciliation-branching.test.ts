@@ -605,6 +605,38 @@ describe('edge reconciliation branching completeness', () => {
     ).toBe(false);
   });
 
+  it('repairs orphaned single log_output in branching workflow', () => {
+    const workflow: any = {
+      nodes: [
+        { id: 'form_1', type: 'form', data: { type: 'form' } },
+        { id: 'sw_1', type: 'switch', data: { type: 'switch' } },
+        { id: 'gmail_1', type: 'google_gmail', data: { type: 'google_gmail' } },
+        { id: 'slack_1', type: 'slack_message', data: { type: 'slack_message' } },
+        { id: 'log_1', type: 'log_output', data: { type: 'log_output' } },
+      ],
+      edges: [
+        { id: 'e0', source: 'form_1', target: 'sw_1', type: 'main' },
+        { id: 'e1', source: 'sw_1', target: 'gmail_1', type: 'case_1', sourceHandle: 'case_1' },
+        { id: 'e2', source: 'sw_1', target: 'slack_1', type: 'case_2', sourceHandle: 'case_2' },
+      ],
+    };
+    const executionOrder: ExecutionOrder = {
+      nodeIds: ['form_1', 'sw_1', 'gmail_1', 'slack_1', 'log_1'],
+      dependencies: new Map(),
+      metadata: {
+        triggerNodeId: 'form_1',
+        terminalNodeIds: ['log_1'],
+        branchingNodeIds: ['sw_1'],
+        mergeNodeIds: [],
+      },
+    };
+
+    const result = edgeReconciliationEngine.reconcileEdges(workflow, executionOrder);
+    const incomingToLog = result.workflow.edges.filter((e: any) => e.target === 'log_1');
+    expect(incomingToLog.length).toBe(1);
+    expect(result.workflow.nodes.some((n: any) => n.id === 'log_1')).toBe(true);
+  });
+
   it('does not orphan terminals for switch with five cases and repeated output types', () => {
     const workflow: any = {
       nodes: [
@@ -730,5 +762,42 @@ describe('edge reconciliation branching completeness', () => {
     expect(
       result.warnings.some((w: string) => w.toLowerCase().includes('orphaned node'))
     ).toBe(false);
+  });
+
+  it('splits shared branch fan-in log_output into one terminal per branch as fallback', () => {
+    const workflow: any = {
+      nodes: [
+        { id: 'form_1', type: 'form', data: { type: 'form' } },
+        { id: 'if_1', type: 'if_else', data: { type: 'if_else' } },
+        { id: 'gmail_1', type: 'google_gmail', data: { type: 'google_gmail' } },
+        { id: 'slack_1', type: 'slack_message', data: { type: 'slack_message' } },
+        { id: 'log_1', type: 'log_output', data: { type: 'log_output' } },
+      ],
+      edges: [
+        { id: 'e0', source: 'form_1', target: 'if_1', type: 'main' },
+        { id: 'e1', source: 'if_1', target: 'gmail_1', type: 'true', sourceHandle: 'true' },
+        { id: 'e2', source: 'if_1', target: 'slack_1', type: 'false', sourceHandle: 'false' },
+        { id: 'e3', source: 'gmail_1', target: 'log_1', type: 'main' },
+        { id: 'e4', source: 'slack_1', target: 'log_1', type: 'main' },
+      ],
+    };
+    const executionOrder: ExecutionOrder = {
+      nodeIds: ['form_1', 'if_1', 'gmail_1', 'slack_1', 'log_1'],
+      dependencies: new Map(),
+      metadata: {
+        triggerNodeId: 'form_1',
+        terminalNodeIds: ['log_1'],
+        branchingNodeIds: ['if_1'],
+        mergeNodeIds: [],
+      },
+    };
+
+    const result = edgeReconciliationEngine.reconcileEdges(workflow, executionOrder);
+    const logNodes = result.workflow.nodes.filter((n: any) => (n.type || n.data?.type) === 'log_output');
+    expect(logNodes.length).toBeGreaterThanOrEqual(1);
+    for (const log of logNodes) {
+      const incoming = result.workflow.edges.filter((e: any) => e.target === log.id);
+      expect(incoming.length).toBeLessThanOrEqual(1);
+    }
   });
 });

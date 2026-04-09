@@ -1,6 +1,8 @@
 // Comprehensive Type Definitions for AI Workflow System
 // Central type definitions to ensure type safety across the codebase
 
+import type { WorkflowBuildManifestV1 } from './workflow-build-manifest';
+
 export type AIRequestType = 
   | 'workflow-generation'
   | 'workflow-analysis'
@@ -114,11 +116,29 @@ export interface WorkflowMetadata {
    */
   disableFormFieldIntentPrune?: boolean;
   generatedFrom?: string;
+  /** Truncated structural blueprint from AI-first pipeline (debug / replay; keep bounded). */
+  structuralBlueprintSummary?: string;
+  /** Correlation id for the generate run (support traces). */
+  aiPipelineCorrelationId?: string;
   requirements?: string;
   validation?: WorkflowValidation;
   timestamp: string;
   modelUsed?: string;
   version?: string;
+  freezeBoundary?: {
+    frozen: boolean;
+    frozenAt: string;
+    lifecyclePhase: 'ready_for_ownership' | 'ready_for_execution' | string;
+    /** When set, only graph topology is immutability-guarded; node config values may still change via attach-inputs. */
+    freezePolicy?: 'topology_only';
+    baselineTopologyFingerprint: string;
+    baselineProtectedConfigFingerprint: string;
+  };
+  /**
+   * Staged build memory: intent, authorized nodes, graph spec, hydration snapshot.
+   * Single source of truth for attach-inputs alignment (see workflow-build-manifest).
+   */
+  buildManifest?: WorkflowBuildManifestV1;
 }
 
 export interface WorkflowValidation {

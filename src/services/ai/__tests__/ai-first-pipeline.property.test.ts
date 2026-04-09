@@ -50,7 +50,7 @@ test('Property 17: AiFirstPipeline source emits stage start/end logs for all fiv
     'utf-8',
   );
 
-  const stages = ['intent', 'node_selection', 'edge_reasoning', 'validation'];
+  const stages = ['intent', 'node_selection', 'edge_reasoning', 'validation', 'build_manifest'];
   for (const stage of stages) {
     // Each stage must appear in stageTrace push
     expect(source).toContain(`stage: '${stage}'`);

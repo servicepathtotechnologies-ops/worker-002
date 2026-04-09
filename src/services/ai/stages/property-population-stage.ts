@@ -47,6 +47,16 @@ function stripMarkdownFences(text: string): string {
     .trim();
 }
 
+/** Compact ordered id→type list from current workflow (no registry branching logic). */
+function buildCompactGraphDigest(workflow: Workflow): string {
+  return workflow.nodes
+    .map((n, i) => {
+      const t = n.type ?? n.data?.type ?? '?';
+      return `${i + 1}. ${n.id}: ${t}`;
+    })
+    .join('\n');
+}
+
 function tryParseJson(text: string): Record<string, unknown> | null {
   try {
     const cleaned = stripMarkdownFences(text);
@@ -81,6 +91,7 @@ export async function runPropertyPopulationStage(
 ): Promise<PropertyPopulationStageResult> {
   const { workflow, userIntent, structuralPrompt, correlationId } = input;
   const startedAt = Date.now();
+  const graphDigest = buildCompactGraphDigest(workflow);
 
   logger.info({
     event: 'ai_pipeline_stage_start',
@@ -157,12 +168,41 @@ export async function runPropertyPopulationStage(
         })
         .join('\n');
 
+      // ── For if_else nodes: inject upstream form field keys so the LLM uses
+      // the exact internal field names instead of inventing them from natural language.
+      // e.g. form field id="experience" → condition must use $json.experience, NOT $json.experience_years
+      let upstreamFormFieldsHint = '';
+      if (nodeType === 'if_else') {
+        const upstreamFormKeys: string[] = [];
+        for (const n of workflow.nodes) {
+          const nt = n.type ?? n.data?.type ?? '';
+          if (nt === 'form' || nt === 'form_trigger') {
+            const formFields = (n.data?.config as any)?.fields;
+            if (Array.isArray(formFields)) {
+              for (const f of formFields) {
+                const key = f.name ?? f.key ?? f.id;
+                if (key && typeof key === 'string') upstreamFormKeys.push(key);
+              }
+            }
+          }
+        }
+        if (upstreamFormKeys.length > 0) {
+          upstreamFormFieldsHint =
+            `\nUPSTREAM_FORM_FIELD_KEYS (MUST use these exact keys in $json.* condition fields):\n` +
+            upstreamFormKeys.map((k) => `  - ${k}`).join('\n') +
+            `\nCRITICAL: condition field values MUST be "$json.<key>" using ONLY the keys listed above. ` +
+            `Do NOT invent field names. If the user says "years of experience" and the form field is "experience", use "$json.experience".\n`;
+        }
+      }
+
       const userMessage =
         `USER_INTENT:\n${userIntent}\n\n` +
         `WORKFLOW_BLUEPRINT:\n${structuralPrompt}\n\n` +
+        `WORKFLOW_NODE_ORDER:\n${graphDigest}\n\n` +
         `NODE_TYPE: ${nodeType}\n` +
-        `NODE_ID: ${nodeId}\n\n` +
-        `FIELDS_TO_POPULATE:\n${fieldsText}\n\n` +
+        `NODE_ID: ${nodeId}\n` +
+        upstreamFormFieldsHint +
+        `\nFIELDS_TO_POPULATE:\n${fieldsText}\n\n` +
         `Return a JSON object with keys matching the field names above.\n` +
         `For array/object fields, return valid JSON values (not strings).`;
 

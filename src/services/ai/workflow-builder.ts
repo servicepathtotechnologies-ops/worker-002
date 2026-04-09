@@ -12250,16 +12250,25 @@ return {
     const newNodes: WorkflowNode[] = [...nodes];
     let newEdges: WorkflowEdge[] = [...edges];
 
-    // Choose one log_output (prefer auto-injected if available)
-    let logOutputNode: WorkflowNode | null =
-      existingLogOutputs.find(n => (n.data?.config as any)?._autoInjected) ||
-      existingLogOutputs[0] ||
-      null;
+    // Build one branch head per terminal path (exclude existing log terminals).
+    const branchTerminalHeads = terminalNonTriggerNodes.filter(
+      (n) => unifiedNormalizeNodeType(n) !== 'log_output'
+    );
+    if (branchTerminalHeads.length === 0) {
+      return { nodes: sanitizeRuntimeInputConfigForNodes(newNodes), edges: newEdges };
+    }
 
-    if (!logOutputNode) {
-      // Add ONE log_output node (sink)
-      const anchor = terminalNonTriggerNodes[0];
-      logOutputNode = {
+    // Ensure there is one log_output terminal per branch terminal head.
+    const logsByPriority = [...existingLogOutputs].sort((a, b) => {
+      const aAuto = (a.data?.config as any)?._autoInjected ? 0 : 1;
+      const bAuto = (b.data?.config as any)?._autoInjected ? 0 : 1;
+      return aAuto - bAuto;
+    });
+    const needed = branchTerminalHeads.length;
+    const mappedLogs: WorkflowNode[] = logsByPriority.slice(0, needed);
+    for (let i = mappedLogs.length; i < needed; i++) {
+      const anchor = branchTerminalHeads[i];
+      const newLog: WorkflowNode = {
         id: randomUUID(),
         type: 'log_output',
         position: {
@@ -12267,7 +12276,7 @@ return {
           y: (anchor.position?.y || 0),
         },
         data: {
-          label: 'Log Output',
+          label: `Log Output ${i + 1}`,
           type: 'log_output',
           category: 'output',
           config: {
@@ -12277,46 +12286,35 @@ return {
           },
         },
       };
-      newNodes.push(logOutputNode);
-      console.log(`📝 Found no output sink, added ONE log_output node as final sink`);
+      newNodes.push(newLog);
+      mappedLogs.push(newLog);
+    }
+    if (mappedLogs.length > 1) {
+      console.log(`📝 [ensureOutputNode] Using ${mappedLogs.length} log_output terminals (one per branch head)`);
     }
 
-    // 1) Remove edges that incorrectly connect trigger → log_output (this is what users report as "wrong place")
-    //    Only remove if workflow has more than just trigger + log_output.
-    const hasMoreThanTwoNodes = newNodes.length > 2;
-    if (hasMoreThanTwoNodes) {
-      const nodeById = new Map(newNodes.map(n => [n.id, n]));
-      newEdges = newEdges.filter(e => {
-        if (e.target !== logOutputNode!.id) return true;
-        const src = nodeById.get(e.source);
-        if (!src) return true;
-        const srcType = unifiedNormalizeNodeType(src);
-        // Drop trigger→log_output edges so log_output sits at the end of actual branches
-        if (this.isTriggerNodeType(srcType)) {
-          console.warn(`⚠️  [ensureOutputNode] Removed trigger→log_output edge: ${srcType} (${e.source}) → log_output (${e.target})`);
-          return false;
-        }
-        return true;
-      });
-    }
+    const mappedLogIds = new Set(mappedLogs.map((n) => n.id));
+    const branchHeadIds = new Set(branchTerminalHeads.map((n) => n.id));
+    // Remove stale wiring to mapped log terminals; we rewire one-to-one below.
+    newEdges = newEdges.filter((e) => {
+      if (!mappedLogIds.has(e.target)) return true;
+      if (branchHeadIds.has(e.source)) return false;
+      return false;
+    });
+    // Ensure mapped log terminals are sinks.
+    newEdges = newEdges.filter((e) => !mappedLogIds.has(e.source));
 
-    // 2) Ensure log_output has NO outgoing edges (must be a sink)
-    newEdges = newEdges.filter(e => e.source !== logOutputNode!.id);
-
-    // 3) Connect EACH terminal node (in each branch) → log_output (fan-in)
-    //    This ensures log_output is at the end even for branching graphs.
-    const existingPairs = new Set(newEdges.map(e => `${e.source}::${e.target}`));
-    terminalNonTriggerNodes.forEach(term => {
-      if (term.id === logOutputNode!.id) return;
-      const key = `${term.id}::${logOutputNode!.id}`;
-      if (existingPairs.has(key)) return;
+    const existingPairs = new Set(newEdges.map((e) => `${e.source}::${e.target}`));
+    for (let i = 0; i < branchTerminalHeads.length; i++) {
+      const term = branchTerminalHeads[i];
+      const logNode = mappedLogs[i];
+      const key = `${term.id}::${logNode.id}`;
+      if (existingPairs.has(key)) continue;
 
       const sourceActualType = unifiedNormalizeNodeType(term);
-      const targetActualType = unifiedNormalizeNodeType(logOutputNode!);
-
+      const targetActualType = unifiedNormalizeNodeType(logNode);
       const resolvedSourceHandle = this.resolveSourceHandle(term);
-      const resolvedTargetHandle = this.resolveTargetHandle(logOutputNode!);
-
+      const resolvedTargetHandle = this.resolveTargetHandle(logNode);
       const { sourceHandle, targetHandle } = validateAndFixEdgeHandles(
         sourceActualType,
         targetActualType,
@@ -12325,23 +12323,22 @@ return {
       );
 
       try {
-        this.validateEdgeHandlesStrict(term, logOutputNode!, sourceHandle, targetHandle);
+        this.validateEdgeHandlesStrict(term, logNode, sourceHandle, targetHandle);
         newEdges.push({
           id: randomUUID(),
           source: term.id,
-          target: logOutputNode!.id,
+          target: logNode.id,
           type: 'default',
           sourceHandle,
           targetHandle,
         });
         existingPairs.add(key);
       } catch (error) {
-        // If strict validation fails, skip; global safety guard will also repair/drop.
         console.warn(`⚠️  [ensureOutputNode] Could not connect terminal ${sourceActualType} → log_output: ${error instanceof Error ? error.message : String(error)}`);
       }
-    });
+    }
 
-    console.log(`✅ [ensureOutputNode] log_output is connected from ${terminalNonTriggerNodes.length} terminal node(s)`);
+    console.log(`✅ [ensureOutputNode] branch terminals connected one-to-one: ${branchTerminalHeads.length}`);
 
     return { nodes: sanitizeRuntimeInputConfigForNodes(newNodes), edges: newEdges };
   }

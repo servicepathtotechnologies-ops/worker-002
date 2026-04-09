@@ -6,6 +6,8 @@
  */
 
 import type { Workflow } from '../types/ai-types';
+import type { WorkflowBuildManifestV1 } from '../types/workflow-build-manifest';
+import { workflowAuthorizedMultisetMatches } from '../utils/workflow-build-manifest-utils';
 import { unifiedGraphOrchestrator } from '../orchestration/unified-graph-orchestrator';
 import { unifiedNodeRegistry } from '../registry/unified-node-registry';
 import { resolveEffectiveFieldFillMode } from '../utils/fill-mode-resolver';
@@ -17,6 +19,7 @@ import {
 import { normalizeWorkflowFormFieldIdentities } from '../utils/form-field-identity';
 import { isEmptyConfigValue } from './registry-field-contract';
 import { validateIfElseConditionsAgainstUpstreamForm } from '../orchestration/form-ifelse-binding';
+import { extractSwitchCasePortNames } from '../utils/branching-node-ports';
 
 // Workflow types (inline to avoid circular dependencies)
 interface WorkflowNode {
@@ -82,7 +85,7 @@ interface WorkflowEdge {
 
 /** full: legacy save-time fixes; configOnly: preserve topology (attach-inputs / attach-credentials) */
 export interface NormalizeWorkflowForSaveOptions {
-  structuralMode?: 'full' | 'configOnly';
+  structuralMode?: 'full' | 'configOnly' | 'post_freeze_readonly';
 }
 
 function hasDirectedCycle(nodes: WorkflowNode[], edges: WorkflowEdge[]): boolean {
@@ -178,7 +181,8 @@ export function validateStructuralReadiness(
  */
 export function validateWorkflowForSave(
   nodes: WorkflowNode[],
-  edges: WorkflowEdge[]
+  edges: WorkflowEdge[],
+  metadata?: { buildManifest?: WorkflowBuildManifestV1; freezeBoundary?: { frozen?: boolean } },
 ): SaveValidationResult {
   const errors: string[] = [];
   const warnings: string[] = [];
@@ -201,6 +205,53 @@ export function validateWorkflowForSave(
 
   if (invalidEdges.length > 0) {
     errors.push(`Found ${invalidEdges.length} edge(s) referencing non-existent nodes`);
+  }
+
+  // 2b. Enforce per-branch log terminals: no multi-input log_output fan-in.
+  const normalizedTypeById = new Map<string, string>(
+    nodes.map((n) => [n.id, String(n.data?.type || n.type || '')])
+  );
+  const branchingNodeIds = new Set(
+    nodes
+      .filter((n) => {
+        const nt = String(n.data?.type || n.type || '');
+        return !!unifiedNodeRegistry.get(nt)?.isBranching;
+      })
+      .map((n) => n.id)
+  );
+  const branchTargets = new Set(
+    edges.filter((e) => branchingNodeIds.has(e.source)).map((e) => e.target)
+  );
+  const logNodeIds = nodes
+    .filter((n) => String(n.data?.type || n.type || '') === 'log_output')
+    .map((n) => n.id);
+  if (branchTargets.size > 1 && logNodeIds.length === 1) {
+    errors.push(
+      `Branching workflow has ${branchTargets.size} branch target(s) but only one log_output terminal. Use one log_output per branch path.`
+    );
+  }
+  for (const logNodeId of logNodeIds) {
+    const incoming = edges.filter((e) => e.target === logNodeId);
+    const uniqueSources = new Set(incoming.map((e) => e.source));
+    if (uniqueSources.size > 1) {
+      errors.push(
+        `log_output node "${logNodeId}" has ${uniqueSources.size} incoming sources. log_output must be single-input (no branch fan-in).`
+      );
+    }
+    // Soft warning when source is non-merge and log is not a leaf terminal pattern.
+    const outgoingFromLog = edges.filter((e) => e.source === logNodeId);
+    if (outgoingFromLog.length > 0) {
+      warnings.push(`log_output node "${logNodeId}" has outgoing edges; terminal logs should be sinks.`);
+    }
+    for (const e of incoming) {
+      const sourceType = normalizedTypeById.get(e.source) || '';
+      const sourceDef = unifiedNodeRegistry.get(sourceType);
+      if ((sourceDef?.tags || []).includes('merge')) {
+        warnings.push(
+          `log_output "${logNodeId}" is fed by merge "${e.source}". Prefer one branch-specific log_output per branch before merge when branch-level observability is required.`
+        );
+      }
+    }
   }
 
   // 3. Validate node configurations (registry + fill-mode aware)
@@ -249,6 +300,23 @@ export function validateWorkflowForSave(
             (e) => `Node "${node.data?.label || node.id}" (if_else) invalid canonical conditions: ${e}`
           )
         );
+      }
+    }
+
+    if (nodeType === 'switch') {
+      const caseNames = extractSwitchCasePortNames(config as Record<string, any>);
+      const nCases = caseNames.length;
+      if (nCases >= 2) {
+        const outgoing = edges.filter((e) => e.source === node.id);
+        const branchOut = outgoing.filter((e) => {
+          const t = String((e as { type?: string }).type ?? '');
+          return t.length > 0 && t !== 'main';
+        });
+        if (branchOut.length > 0 && branchOut.length !== nCases) {
+          warnings.push(
+            `Switch node "${node.data?.label || node.id}" defines ${nCases} case(s) in config but has ${branchOut.length} non-main outgoing edge(s). Align the graph with the switch cases.`
+          );
+        }
       }
     }
 
@@ -312,6 +380,14 @@ export function validateWorkflowForSave(
     errors.push('Workflow graph contains a cycle. Keep DAG structure and use loop node semantics for repetition.');
   }
 
+  if (metadata?.buildManifest && metadata.freezeBoundary?.frozen) {
+    const wf = { nodes, edges } as Workflow;
+    const match = workflowAuthorizedMultisetMatches(wf, metadata.buildManifest);
+    if (!match.ok) {
+      errors.push(match.detail ?? 'Graph does not match persisted build manifest');
+    }
+  }
+
   return {
     valid: errors.length === 0,
     errors,
@@ -332,6 +408,16 @@ export function normalizeWorkflowForSave(
   const migrationsApplied: string[] = [];
   const structuralMode = options?.structuralMode ?? 'full';
   const configOnly = structuralMode === 'configOnly';
+  const postFreezeReadonly = structuralMode === 'post_freeze_readonly';
+
+  // Post-freeze readonly mode: never mutate workflow shape/config.
+  if (postFreezeReadonly) {
+    return {
+      nodes: Array.isArray(nodes) ? [...nodes] : [],
+      edges: Array.isArray(edges) ? [...edges] : [],
+      migrationsApplied,
+    };
+  }
 
   // ✅ STEP 1: Deduplicate nodes by ID (keep first occurrence)
   const nodeMap = new Map<string, WorkflowNode>();

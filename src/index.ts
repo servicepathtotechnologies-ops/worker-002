@@ -173,6 +173,7 @@ import { authStatusHandler } from './api/auth-status';
 import saveSocialTokenRoute from './api/save-social-token';
 import { notionAuthorizeHandler, notionCallbackHandler } from './api/oauth-notion';
 import { twitterAuthorizeHandler, twitterCallbackHandler } from './api/oauth-twitter';
+import { createRazorpayOrder, verifyRazorpayPayment } from './api/payments-razorpay';
 
 
 
@@ -490,6 +491,10 @@ app.get('/api/auth/status', asyncHandler(authStatusHandler));
 
 // Social media token management endpoint
 app.post('/api/social-tokens', asyncHandler(saveSocialTokenRoute));
+
+// Razorpay payment endpoints (test/live based on key pair)
+app.post('/api/payments/razorpay/create-order', asyncHandler(createRazorpayOrder));
+app.post('/api/payments/razorpay/verify', asyncHandler(verifyRazorpayPayment));
 
 // LinkedIn connection DX/debugging endpoints
 app.get('/api/connections/linkedin/status', asyncHandler(linkedinStatusHandler));

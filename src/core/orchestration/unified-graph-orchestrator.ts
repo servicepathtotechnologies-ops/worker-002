@@ -32,6 +32,11 @@ export interface SwitchContext {
   switchNodeId: string;
   /** Maps case values to downstream target descriptors (from WorkflowIntentPlan.caseNodeMapping). */
   caseNodeMapping: CaseNodeMapping;
+  /** Optional multi-switch contexts for nested/compound switch workflows. */
+  switchContexts?: Array<{
+    switchNodeId: string;
+    caseNodeMapping: CaseNodeMapping;
+  }>;
 }
 
 export interface WorkflowValidationResult {
@@ -170,10 +175,19 @@ class UnifiedGraphOrchestratorImpl implements UnifiedGraphOrchestrator {
     
     // For switch workflows, pre-wire case edges before reconciliation so branch target nodes
     // are reachable and not pruned as orphaned during reconciliation.
-    const seedWorkflow =
-      switchContext && switchContext.switchNodeId && switchContext.caseNodeMapping
-        ? this.wireSwitchCaseEdges(workflow, switchContext)
-        : workflow;
+    let seedWorkflow = workflow;
+    if (switchContext) {
+      const contexts = Array.isArray(switchContext.switchContexts) && switchContext.switchContexts.length > 0
+        ? switchContext.switchContexts
+        : (
+            switchContext.switchNodeId && switchContext.caseNodeMapping
+              ? [{ switchNodeId: switchContext.switchNodeId, caseNodeMapping: switchContext.caseNodeMapping }]
+              : []
+          );
+      for (const ctx of contexts) {
+        seedWorkflow = this.wireSwitchCaseEdges(seedWorkflow, ctx as SwitchContext);
+      }
+    }
 
     // Create/reconcile edges from execution order using orchestrator core engine.
     const reconciliationResult = edgeReconciliationEngine.reconcileEdges(
@@ -306,8 +320,8 @@ class UnifiedGraphOrchestratorImpl implements UnifiedGraphOrchestrator {
         );
       }
 
-      // (3) Bounded positional fallback — prefer next unassigned non-terminal node first.
-      if (!targetNode) {
+      // (3) Bounded positional fallback — only for legacy/underspecified mappings with no target type.
+      if (!targetNode && !targetNodeType) {
         targetNode = downstreamNodes.find((n) => {
           if (assignedNodeIds.has(n.id)) return false;
           const def = unifiedNodeRegistry.get(this.getNodeType(n));
@@ -315,9 +329,18 @@ class UnifiedGraphOrchestratorImpl implements UnifiedGraphOrchestrator {
         });
       }
 
-      // (4) Final fallback — use any remaining unassigned downstream node.
-      if (!targetNode) {
+      // (4) Final fallback — only for legacy/underspecified mappings with no target type.
+      if (!targetNode && !targetNodeType) {
         targetNode = downstreamNodes.find((n) => !assignedNodeIds.has(n.id));
+      }
+
+      // If mapping carries explicit target type but no compatible target exists, skip
+      // case edge instead of wiring to an arbitrary node.
+      if (!targetNode && targetNodeType) {
+        console.warn(
+          `[UnifiedGraphOrchestrator] wireSwitchCaseEdges: case "${caseValue}" has no compatible target for type "${targetNodeType}" on switch ${switchNodeId}`
+        );
+        return;
       }
 
       if (!targetNode) {

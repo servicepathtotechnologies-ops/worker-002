@@ -2,12 +2,20 @@
  * Stable workflow topology fingerprinting for attach-inputs / attach-credentials guards.
  * Only structural identity (node ids + edge wiring semantics), not config/position.
  */
+import { unifiedNodeRegistry } from '../registry/unified-node-registry';
+import { isCredentialOwnership } from './field-ownership';
 
 export interface WorkflowTopologyFingerprint {
   /** Stable hash string for equality checks */
   fingerprint: string;
   nodeIdsSorted: string[];
   edgeKeysSorted: string[];
+}
+
+export interface WorkflowProtectedConfigFingerprint {
+  /** Stable hash string for equality checks */
+  fingerprint: string;
+  nodeKeysSorted: string[];
 }
 
 function canonicalEdgeKey(edge: any, index: number): string {
@@ -21,6 +29,30 @@ function canonicalEdgeKey(edge: any, index: number): string {
   const typ = String(edge.type ?? '');
   const id = edge.id != null ? String(edge.id) : `idx:${index}`;
   return `${src}|${tgt}|${sh}|${th}|${typ}|${id}`;
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || value === undefined) return 'null';
+  if (typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    return `[${value.map((v) => stableStringify(v)).join(',')}]`;
+  }
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj).sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(',')}}`;
+}
+
+function stripCredentialOwnedConfig(nodeType: string, config: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  const inputSchema = unifiedNodeRegistry.get(nodeType)?.inputSchema || {};
+  const volatileKeys = new Set(['credentialId', '_ownershipUnlock', '_fillMode']);
+  for (const [k, v] of Object.entries(config || {})) {
+    if (volatileKeys.has(k)) continue;
+    const fieldDef = (inputSchema as any)?.[k];
+    if (fieldDef && isCredentialOwnership(k, fieldDef)) continue;
+    out[k] = v;
+  }
+  return out;
 }
 
 /**
@@ -53,6 +85,80 @@ export function fingerprintWorkflowTopology(
     fingerprint,
     nodeIdsSorted,
     edgeKeysSorted: edgeKeys,
+  };
+}
+
+/**
+ * Build a deterministic fingerprint for protected node config (all non-credential-owned fields).
+ * Used to prevent post-freeze config drift while still allowing credential injection.
+ */
+export function fingerprintWorkflowProtectedConfig(nodes: unknown): WorkflowProtectedConfigFingerprint {
+  const nodeList = Array.isArray(nodes) ? nodes : [];
+  const nodeKeys: string[] = [];
+  for (const n of nodeList) {
+    if (!n || typeof n !== "object") continue;
+    const node = n as any;
+    const id = String(node.id || '');
+    if (!id) continue;
+    const semanticType = String(node?.data?.type || node.type || '');
+    const cfg = (node?.data?.config || {}) as Record<string, unknown>;
+    const protectedCfg = stripCredentialOwnedConfig(semanticType, cfg);
+    nodeKeys.push(`${id}|${semanticType}|${stableStringify(protectedCfg)}`);
+  }
+  const nodeKeysSorted = nodeKeys.sort();
+  const payload = JSON.stringify({ c: nodeKeysSorted });
+  let hash = 0;
+  for (let i = 0; i < payload.length; i++) {
+    hash = (Math.imul(31, hash) + payload.charCodeAt(i)) | 0;
+  }
+  return {
+    fingerprint: `cp_${nodeKeysSorted.length}_${hash.toString(16)}`,
+    nodeKeysSorted,
+  };
+}
+
+export interface ProtectedConfigDiff {
+  equal: boolean;
+  changedNodeIds: string[];
+  addedNodeIds: string[];
+  removedNodeIds: string[];
+}
+
+export function diffWorkflowProtectedConfig(
+  baseline: WorkflowProtectedConfigFingerprint,
+  current: WorkflowProtectedConfigFingerprint
+): ProtectedConfigDiff {
+  const parseNodeId = (row: string): string => String(row.split('|')[0] || '');
+  const baseMap = new Map<string, string>();
+  for (const row of baseline.nodeKeysSorted) baseMap.set(parseNodeId(row), row);
+  const curMap = new Map<string, string>();
+  for (const row of current.nodeKeysSorted) curMap.set(parseNodeId(row), row);
+
+  const allNodeIds = new Set<string>([...baseMap.keys(), ...curMap.keys()]);
+  const changedNodeIds: string[] = [];
+  const addedNodeIds: string[] = [];
+  const removedNodeIds: string[] = [];
+  for (const nodeId of allNodeIds) {
+    const b = baseMap.get(nodeId);
+    const c = curMap.get(nodeId);
+    if (b && !c) {
+      removedNodeIds.push(nodeId);
+      continue;
+    }
+    if (!b && c) {
+      addedNodeIds.push(nodeId);
+      continue;
+    }
+    if (b !== c) {
+      changedNodeIds.push(nodeId);
+    }
+  }
+
+  return {
+    equal: changedNodeIds.length === 0 && addedNodeIds.length === 0 && removedNodeIds.length === 0,
+    changedNodeIds,
+    addedNodeIds,
+    removedNodeIds,
   };
 }
 

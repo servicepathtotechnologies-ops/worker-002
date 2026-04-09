@@ -107,7 +107,13 @@ export function reconcileFormFieldRecordsToAllowedKeys(
  * Applies structural alignment: persists workflowIntentModel, upgrades placeholder / incomplete form fields,
  * and re-derives if_else conditions against upstream form fields when safe (empty or input.* placeholders).
  */
-export function applyStructuralIntentAlignment(workflow: Workflow): Workflow {
+export function applyStructuralIntentAlignment(
+  workflow: Workflow,
+  options?: { postFreezeReadonly?: boolean }
+): Workflow {
+  if (options?.postFreezeReadonly) {
+    return workflow;
+  }
   const formIntentText = getFormStructuralIntentText(workflow);
   const workflowIntentText = getWorkflowIntentText(workflow);
   const intentText = formIntentText

@@ -577,7 +577,39 @@ export class SelfHealingWorkflowEngine {
           );
 
           if (regenerateResult.success && regenerateResult.workflow) {
-            currentWorkflow = regenerateResult.workflow;
+            // ✅ FIX: Merge original node config values back into the regenerated workflow.
+            // Structural repairs (edges, execution order) are accepted from the regenerated
+            // workflow, but all pre-existing non-empty config field values are restored
+            // from the original workflow to prevent AI-assigned values from being lost.
+            const originalNodesByType = new Map<string, any>();
+            const originalNodesById = new Map<string, any>();
+            for (const origNode of workflow.nodes) {
+              const nodeType = origNode.data?.type || origNode.type;
+              if (nodeType) originalNodesByType.set(nodeType, origNode);
+              if (origNode.id) originalNodesById.set(origNode.id, origNode);
+            }
+
+            const restoredNodes = regenerateResult.workflow.nodes.map((regenNode: any) => {
+              const nodeType = regenNode.data?.type || regenNode.type;
+              const origNode = originalNodesById.get(regenNode.id) || originalNodesByType.get(nodeType);
+              if (!origNode) return regenNode;
+
+              const origConfig = origNode.data?.config || {};
+              const regenConfig = { ...(regenNode.data?.config || {}) };
+              let restored = false;
+
+              for (const [field, value] of Object.entries(origConfig)) {
+                if (value !== null && value !== undefined && value !== '') {
+                  regenConfig[field] = value;
+                  restored = true;
+                }
+              }
+
+              if (!restored) return regenNode;
+              return { ...regenNode, data: { ...regenNode.data, config: regenConfig } };
+            });
+
+            currentWorkflow = { ...regenerateResult.workflow, nodes: restoredNodes };
             allErrors.push(...regenerateResult.errors);
             allWarnings.push(...regenerateResult.warnings);
 

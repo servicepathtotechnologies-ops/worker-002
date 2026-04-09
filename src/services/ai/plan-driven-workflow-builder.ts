@@ -46,6 +46,30 @@ export interface PlanDrivenBuildResult {
   diagnostics: PlanBuildDiagnostics;
 }
 
+function buildSingleRetrySwitchContext(original: any): any {
+  if (!original) return original;
+  const normalizeContext = (ctx: any) => {
+    const caseNodeMapping = Object.entries(ctx?.caseNodeMapping || {}).reduce((acc: any, [k, v]: [string, any]) => {
+      acc[k] = {
+        targetNodeType: v?.targetNodeType,
+        slot: v?.slot,
+      };
+      return acc;
+    }, {});
+    return {
+      switchNodeId: ctx?.switchNodeId,
+      caseNodeMapping,
+    };
+  };
+  const switchContexts = Array.isArray(original?.switchContexts)
+    ? original.switchContexts.map((ctx: any) => normalizeContext(ctx))
+    : [normalizeContext(original)];
+  return {
+    ...normalizeContext(original),
+    switchContexts,
+  };
+}
+
 function parsePlanNodeToken(raw: string): { nodeTypeToken: string; explicitNodeId?: string } {
   const trimmed = (raw || '').trim();
   if (!trimmed) return { nodeTypeToken: '' };
@@ -203,12 +227,49 @@ export function buildWorkflowFromPlanChain(planChain: string[], rawUserPrompt?: 
       ? computeSwitchContextForPlanChain(nodes, resolvedChain, trimmedPrompt)
       : undefined;
 
-  let { workflow, executionOrder } = unifiedGraphOrchestrator.initializeWorkflow(
-    nodes,
-    undefined,
-    undefined,
-    switchContext
-  );
+  let workflow: any;
+  let executionOrder: any;
+  let initializeError: unknown;
+  try {
+    ({ workflow, executionOrder } = unifiedGraphOrchestrator.initializeWorkflow(
+      nodes,
+      undefined,
+      undefined,
+      switchContext
+    ));
+  } catch (err) {
+    initializeError = err;
+    const retrySwitchContext = buildSingleRetrySwitchContext(switchContext);
+    try {
+      ({ workflow, executionOrder } = unifiedGraphOrchestrator.initializeWorkflow(
+        nodes,
+        undefined,
+        undefined,
+        retrySwitchContext
+      ));
+      warnings.push(
+        `Switch wiring required single retry with relaxed target IDs: ${err instanceof Error ? err.message : String(err)}`
+      );
+    } catch (retryErr) {
+      return {
+        success: false,
+        errors: [
+          `Deterministic branch wiring failed after one retry: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`,
+        ],
+        warnings: [
+          ...(initializeError ? [`Initial branch wiring error: ${initializeError instanceof Error ? initializeError.message : String(initializeError)}`] : []),
+          ...warnings,
+        ],
+        resolvedChain,
+        diagnostics: {
+          canonicalization,
+          resolvedChain,
+          unknownTypes: canonicalization.filter((c) => c.status === 'rejected').map((c) => c.input),
+          branchCoverage: { branchingNodes: 0, branchEdges: 0 },
+        },
+      };
+    }
+  }
   workflow = materializeStructuralFields(workflow);
   workflow = applyStructuralIntentAlignment(workflow);
   workflow = hydrateRequiredConfigFromRegistryDefaults(workflow);
@@ -240,7 +301,7 @@ export function buildWorkflowFromPlanChain(planChain: string[], rawUserPrompt?: 
     };
   }
 
-  const branchingNodes = workflow.nodes.filter((n) => {
+  const branchingNodes = workflow.nodes.filter((n: WorkflowNode) => {
     const nodeType = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
     return unifiedNodeRegistry.get(nodeType)?.isBranching === true;
   }).length;

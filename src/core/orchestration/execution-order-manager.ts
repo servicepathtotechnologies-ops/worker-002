@@ -118,6 +118,16 @@ class ExecutionOrderManagerImpl implements ExecutionOrderManager {
     }
     
     // ✅ TIER 2: Use registry-driven category ordering (SECONDARY FALLBACK)
+    // ✅ IMPROVEMENT: When edges exist, prefer topological sort over category sort.
+    // Category sort is blind to branching topology — it places database_write (category=database)
+    // before if_else (category=logic) even when database_write is a branch TARGET of if_else.
+    if (edges.length > 0) {
+      const topoResult = this.buildOrderFromTopology(workflow);
+      if (topoResult && topoResult.nodeIds.length === nodes.length) {
+        console.log(`[ExecutionOrderManager] ✅ TIER 2: Using edge-topology order (${topoResult.nodeIds.length} nodes)`);
+        return topoResult;
+      }
+    }
     const tier2Result = this.buildOrderFromCategories(workflow);
     if (tier2Result.nodeIds.length === nodes.length) {
       console.log(`[ExecutionOrderManager] ✅ TIER 2: Using registry-driven category order (${tier2Result.nodeIds.length} nodes)`);
@@ -682,6 +692,97 @@ class ExecutionOrderManagerImpl implements ExecutionOrderManager {
     };
   }
   
+  /**
+   * ✅ TIER 2 (topology): Topological sort using actual edges.
+   * Respects branching structure — nodes downstream of if_else stay after it.
+   * Returns null if a cycle is detected (falls back to category sort).
+   */
+  private buildOrderFromTopology(workflow: Workflow): ExecutionOrder | null {
+    const nodes = workflow.nodes || [];
+    const edges = workflow.edges || [];
+
+    // Build adjacency: nodeId → [successors]
+    const successors = new Map<string, string[]>();
+    const inDegree = new Map<string, number>();
+    for (const n of nodes) {
+      successors.set(n.id, []);
+      inDegree.set(n.id, 0);
+    }
+    for (const e of edges) {
+      const src = String((e as any).source || '');
+      const tgt = String((e as any).target || '');
+      if (!src || !tgt || src === tgt) continue;
+      if (!successors.has(src) || !successors.has(tgt)) continue;
+      successors.get(src)!.push(tgt);
+      inDegree.set(tgt, (inDegree.get(tgt) || 0) + 1);
+    }
+
+    // Kahn's algorithm (BFS topological sort)
+    const queue: string[] = [];
+    for (const [id, deg] of inDegree) {
+      if (deg === 0) queue.push(id);
+    }
+
+    const ordered: string[] = [];
+    const visited = new Set<string>();
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      if (visited.has(id)) continue;
+      visited.add(id);
+      ordered.push(id);
+      for (const next of (successors.get(id) || [])) {
+        const newDeg = (inDegree.get(next) || 0) - 1;
+        inDegree.set(next, newDeg);
+        if (newDeg === 0) queue.push(next);
+      }
+    }
+
+    // Cycle detected — can't produce a valid order
+    if (ordered.length !== nodes.length) return null;
+
+    const nodeById = new Map(nodes.map((n) => [n.id, n]));
+    const sortedNodes = ordered.map((id) => nodeById.get(id)!).filter(Boolean);
+
+    const dependencies = new Map<string, string[]>();
+    for (const e of edges) {
+      const src = String((e as any).source || '');
+      const tgt = String((e as any).target || '');
+      if (!src || !tgt) continue;
+      const deps = dependencies.get(tgt) || [];
+      if (!deps.includes(src)) deps.push(src);
+      dependencies.set(tgt, deps);
+    }
+
+    const triggerNode = sortedNodes.find((n) => {
+      const nodeDef = unifiedNodeRegistry.get(this.getNodeType(n));
+      return nodeDef?.category === 'trigger';
+    });
+    const branchingNodes = sortedNodes.filter((n) => {
+      const nodeDef = unifiedNodeRegistry.get(this.getNodeType(n));
+      return nodeDef?.isBranching === true;
+    });
+    const mergeNodes = sortedNodes.filter((n) => {
+      const nt = this.getNodeType(n);
+      return nt === 'merge' || (unifiedNodeRegistry.get(nt)?.tags || []).includes('merge');
+    });
+    const terminalNodes = sortedNodes.filter((n) => {
+      const nt = this.getNodeType(n);
+      const nodeDef = unifiedNodeRegistry.get(nt);
+      return (nodeDef?.tags || []).includes('terminal') || nodeDef?.category === 'utility';
+    });
+
+    return {
+      nodeIds: ordered,
+      dependencies,
+      metadata: {
+        triggerNodeId: triggerNode?.id,
+        terminalNodeIds: terminalNodes.map((n) => n.id),
+        branchingNodeIds: branchingNodes.map((n) => n.id),
+        mergeNodeIds: mergeNodes.map((n) => n.id),
+      },
+    };
+  }
+
   /**
    * ✅ TIER 2: Build execution order from registry-driven category ordering (SECONDARY FALLBACK)
    * Sorts by category: trigger → data → transformation → output → log_output (ALWAYS LAST)

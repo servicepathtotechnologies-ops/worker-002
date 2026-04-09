@@ -250,17 +250,42 @@ export async function runEdgeReasoningStage(
 
   // ✅ FIX: Seed the workflow with the LLM's proposed edges BEFORE reconciliation.
   // The orchestrator's EdgeReconciliationEngine uses existing edges as hints when wiring branches.
-  // Without seeding, it falls back to a linear chain and ignores case_1/case_2/case_3 labels.
+  // Also remap case_1/case_2/case_3 edge types to actual switch case values when the LLM
+  // uses positional labels instead of the actual case values (e.g. "high", "medium", "low").
+  const { extractSwitchCasePortNames } = require('../../../core/utils/branching-node-ports') as typeof import('../../../core/utils/branching-node-ports');
+
+  // Build a map of switch node id → actual case values (from config)
+  const switchCaseValueMap = new Map<string, string[]>();
+  for (const node of finalNodes) {
+    const def = unifiedNodeRegistry.get(node.type);
+    if (def?.isBranching && node.type === 'switch') {
+      const caseValues = extractSwitchCasePortNames(node.data?.config as any);
+      if (caseValues.length > 0) switchCaseValueMap.set(node.id, caseValues);
+    }
+  }
+
   const seededEdges = parsed.edges
     .filter((e) => finalNodes.some((n) => n.id === e.source) && finalNodes.some((n) => n.id === e.target))
-    .map((e, i) => ({
-      id: `edge_seed_${i}_${randomUUID().slice(0, 8)}`,
-      source: e.source,
-      target: e.target,
-      type: e.type,
-      sourceHandle: e.type !== 'main' ? e.type : undefined,
-      targetHandle: 'input',
-    }));
+    .map((e, i) => {
+      let edgeType = e.type;
+      // Remap positional case labels (case_1, case_2, ...) to actual switch case values
+      const caseMatch = edgeType.match(/^case_(\d+)$/);
+      if (caseMatch && switchCaseValueMap.has(e.source)) {
+        const caseIndex = parseInt(caseMatch[1], 10) - 1; // case_1 → index 0
+        const caseValues = switchCaseValueMap.get(e.source)!;
+        if (caseIndex >= 0 && caseIndex < caseValues.length) {
+          edgeType = caseValues[caseIndex];
+        }
+      }
+      return {
+        id: `edge_seed_${i}_${randomUUID().slice(0, 8)}`,
+        source: e.source,
+        target: e.target,
+        type: edgeType,
+        sourceHandle: edgeType !== 'main' ? edgeType : undefined,
+        targetHandle: 'input',
+      };
+    });
 
   // ✅ CRITICAL FIX: Use initializeWorkflow with the pre-built execution order (which has
   // branchingNodeIds set) instead of reconcileWorkflow (which reinitializes execution order
@@ -270,13 +295,34 @@ export async function runEdgeReasoningStage(
     finalNodes,
     initialExecutionOrder,
   );
-  // ✅ FIX Bug 4: Replace broken count-based completeness check with registry-driven port coverage.
-  // Old check: seededBranchEdges.length >= branchingNodeIds.length
-  //   → For a switch with 3 cases this evaluates to 3 >= 1 = true even when edges are wrong.
-  // New check: every outgoing port of every branching node must have a seeded edge.
-  const workflow: Workflow = allBranchPortsCovered(branchingNodeIds, finalNodes, seededEdges)
-    ? seededWorkflow  // seeded edges are complete — use them directly
-    : initialized.workflow; // fall back to orchestrator-wired edges
+  // ✅ UNIVERSAL FIX: Always prefer seeded edges when they exist for branching nodes.
+  // The old allBranchPortsCovered check was too strict — it returned false when
+  // getOutgoingPortsForWorkflowNode returned 'output' instead of 'true'/'false',
+  // causing the fallback to initialized.workflow which uses corrupted execution order.
+  //
+  // New logic: if seeded edges cover all branching nodes (at least one edge per branching node),
+  // use seededWorkflow. Otherwise merge: keep seeded edges + add any missing edges from orchestrator.
+  const branchingNodesCoveredBySeeds = branchingNodeIds.every((bid) =>
+    seededEdges.some((e) => e.source === bid)
+  );
+
+  let workflow: Workflow;
+  if (seededEdges.length > 0 && (branchingNodeIds.length === 0 || branchingNodesCoveredBySeeds)) {
+    // Seeded edges cover all branching nodes — use them directly (preserves LLM topology)
+    workflow = seededWorkflow;
+  } else if (seededEdges.length > 0) {
+    // Partial coverage — merge seeded edges with orchestrator edges, seeded take priority
+    const orchestratorEdges = initialized.workflow.edges || [];
+    const seededSourceTargetPairs = new Set(seededEdges.map((e) => `${e.source}→${e.target}`));
+    const mergedEdges = [
+      ...seededEdges,
+      ...orchestratorEdges.filter((e) => !seededSourceTargetPairs.has(`${e.source}→${e.target}`)),
+    ];
+    workflow = { ...seededWorkflow, edges: mergedEdges as any };
+  } else {
+    // No seeded edges — use orchestrator
+    workflow = initialized.workflow;
+  }
 
   const durationMs = Date.now() - startedAt;
   const completionTokens = Math.ceil(text.length / 4);

@@ -212,6 +212,12 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
         );
 
         const branchPorts = outgoingPorts.filter(p => p !== 'output');
+        const explicitBranchEdges = workingEdges.filter(
+          (e) =>
+            e.source === branchingNode.id &&
+            branchPorts.some((p) => e.type === p || e.sourceHandle === p),
+        );
+        const hasExplicitBranchMapping = explicitBranchEdges.length > 0;
         branchPorts.forEach((portName, index) => {
           const edgeForPortExists =
             workingEdges.some(
@@ -220,6 +226,15 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
                 (e.type === portName || e.sourceHandle === portName)
             );
           if (edgeForPortExists) return;
+
+          // Deterministic mode: once any explicit branch mapping exists for this node,
+          // do not auto-wire missing ports to arbitrary targets.
+          if (hasExplicitBranchMapping) {
+            errors.push(
+              `Branch node ${branchingNode.id}: missing explicit mapping for port ${portName}; auto-wiring is disabled in deterministic branch mode`
+            );
+            return;
+          }
 
           const targetCandidate = potentialTargets.find(t => !usedTargets.has(t));
           // Task 4.4: guard branch exhaustion — emit hard error instead of silently skipping
@@ -692,8 +707,76 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
     finalEdges = splitResult.edges;
     if (splitResult.splitCount > 0) {
       warnings.push(
-        `Split ${splitResult.splitCount} multi-input log_output node(s) into separate terminals (one edge each).`
+        `Split ${splitResult.splitCount} multi-input log_output node(s) into separate terminals (one edge each). Planner/generator should emit one log_output per branch path to avoid fallback splitting.`
       );
+    }
+
+    // ✅ STEP 7c: Universal orphan-terminal repair for branching workflows.
+    // If a branching graph still has a log_output with zero incoming edges after Step 7/7b,
+    // reconnect it from a branch-aware predecessor instead of letting validation fail later.
+    const hasBranchingNode = workingNodes.some((n) => {
+      const def = unifiedNodeRegistry.get(this.getNodeType(n));
+      return def?.isBranching === true;
+    });
+    if (hasBranchingNode) {
+      const nodeById = new Map(workingNodes.map((n) => [n.id, n]));
+      const orderedNodeIdsForRepair = executionOrder?.nodeIds || orderedNodeIds;
+      const logNodesSorted = workingNodes
+        .filter((n) => this.getNodeType(n) === 'log_output')
+        .sort(
+          (a, b) =>
+            orderedNodeIdsForRepair.indexOf(a.id) - orderedNodeIdsForRepair.indexOf(b.id)
+        );
+      for (const logNode of logNodesSorted) {
+        const incoming = finalEdges.filter((e) => e.target === logNode.id);
+        if (incoming.length > 0) continue;
+        const logIdx = orderedNodeIdsForRepair.indexOf(logNode.id);
+        if (logIdx < 0) continue;
+
+        const predecessorId = this.pickBranchAwarePredecessorForLogOutput(
+          { ...workflow, nodes: workingNodes, edges: finalEdges } as Workflow,
+          orderedNodeIdsForRepair,
+          finalEdges,
+          logNode.id,
+          logIdx
+        );
+        if (!predecessorId) continue;
+
+        // Enforce single-terminal lineage per non-branching source.
+        const predecessorNode = nodeById.get(predecessorId);
+        if (!predecessorNode) continue;
+        const predecessorType = this.getNodeType(predecessorNode);
+        const predecessorDef = unifiedNodeRegistry.get(predecessorType);
+        if (predecessorDef?.isBranching !== true) {
+          const alreadyTargetsAnotherLog = finalEdges.some((e) => {
+            if (e.source !== predecessorId) return false;
+            const t = nodeById.get(e.target);
+            return !!t && this.getNodeType(t) === 'log_output';
+          });
+          if (alreadyTargetsAnotherLog) continue;
+        }
+
+        const repairedEdge = this.createEdgeFromOrder(
+          { ...workflow, nodes: workingNodes, edges: finalEdges } as Workflow,
+          predecessorId,
+          logNode.id,
+          executionOrder,
+          undefined,
+          finalEdges
+        );
+        if (repairedEdge) {
+          finalEdges.push(repairedEdge);
+          warnings.push(
+            `Repaired orphaned branch terminal log_output ${logNode.id} by reconnecting from ${predecessorId}.`
+          );
+          console.log(
+            `[EdgeReconciliationEngine] ✅ Repaired orphaned log_output ${logNode.id.substring(
+              0,
+              8
+            )} from ${predecessorId.substring(0, 8)}`
+          );
+        }
+      }
     }
     
     // ✅ STEP 8: Auto-remove orphaned nodes that are not required

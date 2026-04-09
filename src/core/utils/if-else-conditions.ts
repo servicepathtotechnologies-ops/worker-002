@@ -153,6 +153,18 @@ export function normalizeIfElseConditions(input: unknown): IfElseCondition[] {
   const normalized: IfElseCondition[] = [];
 
   for (const value of values) {
+    // Handle array-of-arrays format: [[{field, operator, value}], [{...}]]
+    // The AI pipeline sometimes wraps condition groups in an outer array.
+    // Flatten one level so each inner condition object is processed individually.
+    if (Array.isArray(value)) {
+      for (const inner of value) {
+        const condition = normalizeSingleCondition(inner);
+        if (condition && condition.field) {
+          normalized.push(condition);
+        }
+      }
+      continue;
+    }
     const condition = normalizeSingleCondition(value);
     if (condition && condition.field) {
       normalized.push(condition);

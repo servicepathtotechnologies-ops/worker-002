@@ -9,6 +9,7 @@ import { Request, Response } from 'express';
 import { getSupabaseClient } from '../core/database/supabase-compat';
 import { validateWorkflowForSave, normalizeWorkflowForSave } from '../core/validation/workflow-save-validator';
 import { ErrorCode } from '../core/utils/error-codes';
+import type { WorkflowBuildManifestV1 } from '../core/types/workflow-build-manifest';
 
 interface WorkflowNode {
   id: string;
@@ -48,6 +49,8 @@ export default async function saveWorkflowHandler(req: Request, res: Response) {
   }
 
   const { workflowId, name, nodes, edges, user_id } = req.body;
+  const metadata = (req.body as { metadata?: { buildManifest?: WorkflowBuildManifestV1; freezeBoundary?: { frozen?: boolean } } })
+    .metadata;
 
   if (!name) {
     return res.status(400).json({
@@ -121,7 +124,10 @@ export default async function saveWorkflowHandler(req: Request, res: Response) {
     }
 
     // 2. Validate workflow (fail-fast)
-    const validation = validateWorkflowForSave(normalized.nodes, normalized.edges);
+    const validation = validateWorkflowForSave(normalized.nodes, normalized.edges, {
+      buildManifest: metadata?.buildManifest as WorkflowBuildManifestV1 | undefined,
+      freezeBoundary: metadata?.freezeBoundary,
+    });
 
     if (!validation.canSave) {
       return res.status(400).json({

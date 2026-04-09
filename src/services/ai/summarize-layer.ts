@@ -7047,6 +7047,12 @@ Rules:
           `Branching chain incomplete: requires at least ${requiredTargets} downstream output target(s), found ${downstreamOutputs.length}`
         );
       }
+      const branchLogTerminals = chain.filter((n) => n === 'log_output').length;
+      if (branchLogTerminals < downstreamOutputs.length) {
+        throw new Error(
+          `Branching chain incomplete: requires one log_output per branch output (${downstreamOutputs.length}), found ${branchLogTerminals}`
+        );
+      }
     }
     if (branchingNodes.length > 0) {
       const selectedOutputs = strictSelectedNodes.filter((n) => nodeCapabilityRegistryDSL.isOutput(n));

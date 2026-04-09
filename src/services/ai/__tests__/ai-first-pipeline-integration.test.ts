@@ -281,5 +281,7 @@ describe('AiFirstPipeline integration — validateWorkflow passes on all outputs
     expect(stageNames).toContain('node_selection');
     expect(stageNames).toContain('edge_reasoning');
     expect(stageNames).toContain('validation');
+    expect(stageNames).toContain('build_manifest');
+    expect((result.workflow as any).metadata?.buildManifest?.integrity?.contentHash).toBeTruthy();
   });
 });

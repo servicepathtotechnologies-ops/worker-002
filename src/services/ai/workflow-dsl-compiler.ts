@@ -958,6 +958,20 @@ export class WorkflowDSLCompiler {
     // ✅ FIX 1: CORRECT ORDER - Conditionals FIRST (check if data exists), THEN limit (limit array size), THEN transformations (AI, etc.)
     // This ensures: data_source -> if_else -> limit -> ai_chat_model (correct flow)
     const sortedTransformations = [...sortedConditionalNodes, ...sortedLimitNodes, ...sortedActualTransformations];
+    const hasBranchingTransformation = sortedTransformations.some((n) => {
+      const nt = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
+      return !!unifiedNodeRegistry.get(nt)?.isBranching;
+    });
+    if (hasBranchingTransformation) {
+      const outputHeads = sortedOutputs.filter((n) => unifiedNormalizeNodeTypeString(n.type || n.data?.type || '') !== 'log_output');
+      const logTerminals = sortedOutputs.filter((n) => unifiedNormalizeNodeTypeString(n.type || n.data?.type || '') === 'log_output');
+      if (outputHeads.length > 1 && logTerminals.length === 1) {
+        warnings = [
+          ...warnings,
+          `Branching workflow has ${outputHeads.length} branch output head(s) but only one log_output terminal. Expected one log_output per branch path.`,
+        ];
+      }
+    }
 
     // STEP 1: Trigger -> First Data Source (linear flow enforcement)
     // ✅ CRITICAL FIX: For linear workflows, only connect FIRST data source to trigger

@@ -30,9 +30,13 @@ function parseTargetDescriptor(raw: string): { targetNodeType: string; targetNod
 export function buildCaseNodeMappingFromPlanChain(
   resolvedChain: string[],
   rawUserPrompt: string,
-  nodeIdsByChainIndex?: string[]
+  nodeIdsByChainIndex?: string[],
+  switchIndex?: number
 ): CaseNodeMapping | undefined {
-  const switchIdx = resolvedChain.findIndex((t) => stripPlanTokenToType(t) === 'switch');
+  const switchIdx =
+    typeof switchIndex === 'number'
+      ? switchIndex
+      : resolvedChain.findIndex((t) => stripPlanTokenToType(t) === 'switch');
   if (switchIdx === -1) return undefined;
 
   const upstreamNodeType =
@@ -81,24 +85,33 @@ export function computeSwitchContextForPlanChain(
   resolvedChain: string[],
   rawUserPrompt: string
 ): SwitchContext | undefined {
-  const switchIdx = resolvedChain.findIndex((t) => stripPlanTokenToType(t) === 'switch');
-  if (switchIdx < 0 || switchIdx >= nodes.length) return undefined;
-
-  const switchNode = nodes[switchIdx];
-  const nt = unifiedNormalizeNodeTypeString(switchNode.type || switchNode.data?.type || '');
-  if (nt !== 'switch') return undefined;
-
   const nodeIdsByChainIndex = nodes.map((n) => n.id);
-  const caseNodeMapping = buildCaseNodeMappingFromPlanChain(
-    resolvedChain,
-    rawUserPrompt,
-    nodeIdsByChainIndex
-  );
+  const switchContexts: Array<{ switchNodeId: string; caseNodeMapping: CaseNodeMapping }> = [];
 
-  if (!caseNodeMapping || Object.keys(caseNodeMapping).length === 0) return undefined;
+  for (let i = 0; i < resolvedChain.length; i++) {
+    if (stripPlanTokenToType(resolvedChain[i]) !== 'switch') continue;
+    if (i < 0 || i >= nodes.length) continue;
+    const switchNode = nodes[i];
+    const nt = unifiedNormalizeNodeTypeString(switchNode.data?.type || switchNode.type || '');
+    if (nt !== 'switch') continue;
+    const caseNodeMapping = buildCaseNodeMappingFromPlanChain(
+      resolvedChain,
+      rawUserPrompt,
+      nodeIdsByChainIndex,
+      i
+    );
+    if (!caseNodeMapping || Object.keys(caseNodeMapping).length === 0) continue;
+    switchContexts.push({
+      switchNodeId: switchNode.id,
+      caseNodeMapping,
+    });
+  }
 
+  if (switchContexts.length === 0) return undefined;
+  // Backward compatible: first context remains available via legacy fields.
   return {
-    switchNodeId: switchNode.id,
-    caseNodeMapping,
-  };
+    switchNodeId: switchContexts[0].switchNodeId,
+    caseNodeMapping: switchContexts[0].caseNodeMapping,
+    switchContexts,
+  } as SwitchContext;
 }

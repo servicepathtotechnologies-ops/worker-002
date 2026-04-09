@@ -973,6 +973,37 @@ export class FinalIntegrityValidationLayer extends ValidationLayer {
         );
       }
     });
+
+    // Check 1c: log_output terminals must be single-input and branch flows must not collapse to one log_output.
+    const branchingNodeIds = new Set(
+      nodes
+        .filter((n) => {
+          const nt = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
+          return !!unifiedNodeRegistry.get(nt)?.isBranching;
+        })
+        .map((n) => n.id)
+    );
+    const branchTargetIds = new Set(
+      edges.filter((e) => branchingNodeIds.has(e.source)).map((e) => e.target)
+    );
+    const logOutputNodes = nodes.filter((n) => {
+      const nt = unifiedNormalizeNodeTypeString(n.type || n.data?.type || '');
+      return nt === 'log_output';
+    });
+    if (branchTargetIds.size > 1 && logOutputNodes.length === 1) {
+      errors.push(
+        `Branching workflow has ${branchTargetIds.size} branch target(s) but only one log_output terminal. Use one log_output per branch path.`
+      );
+    }
+    for (const logNode of logOutputNodes) {
+      const incoming = edges.filter((e) => e.target === logNode.id);
+      const uniqueSources = new Set(incoming.map((e) => e.source));
+      if (uniqueSources.size > 1) {
+        errors.push(
+          `log_output node "${logNode.id}" has ${uniqueSources.size} incoming sources. log_output must be single-input (no branch fan-in).`
+        );
+      }
+    }
     
     // Check 2: All nodes connected to output
     // ✅ UNIVERSAL FIX: Recognize ALL output nodes using registry (not hardcoded list)

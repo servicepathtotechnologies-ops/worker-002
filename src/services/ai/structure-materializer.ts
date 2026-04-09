@@ -4,6 +4,7 @@ import { unifiedNormalizeNodeType } from '../../core/utils/unified-node-type-nor
 import { isStructuralOwnership } from '../../core/utils/field-ownership';
 import {
   conditionsReferenceInputPaths,
+  conditionsHaveMismatchedJsonPaths,
   findUpstreamFormContextForIfElse,
   resolveFormFieldKeyForConditionOperand,
 } from '../../core/orchestration/form-ifelse-binding';
@@ -250,7 +251,7 @@ function bindIfElseConditionsToUpstreamForms(workflow: Workflow): Workflow {
     const ctx = findUpstreamFormContextForIfElse(workflow, String(node.id));
     if (!ctx?.fields?.length) return node;
     const cond = node.data?.config?.conditions;
-    if (!conditionsReferenceInputPaths(cond)) return node;
+    if (!conditionsReferenceInputPaths(cond) && !conditionsHaveMismatchedJsonPaths(cond, ctx.fields)) return node;
     const next = deriveIfElseConditionsFromIntent(intentText, ctx.fields);
     if (!next.length) return node;
     const config = { ...(node.data?.config || {}) };
@@ -354,7 +355,13 @@ function deriveStructuralValueFromIntent(
   return undefined;
 }
 
-export function materializeStructuralFields(workflow: Workflow): Workflow {
+export function materializeStructuralFields(
+  workflow: Workflow,
+  options?: { postFreezeReadonly?: boolean }
+): Workflow {
+  if (options?.postFreezeReadonly) {
+    return workflow;
+  }
   const intentText = getWorkflowIntentText(workflow);
   const combinedIntentText = getFormStructuralIntentText(workflow) || intentText;
   const unresolved: StructuralIssue[] = [];

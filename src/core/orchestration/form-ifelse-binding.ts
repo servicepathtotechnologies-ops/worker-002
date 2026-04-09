@@ -84,12 +84,14 @@ export function resolveFormFieldKeyForConditionOperand(
 ): string | null {
   if (!fields.length || !leftNormalized) return null;
 
+  // Pass 1: exact normalized match on internal key
   for (const f of fields) {
     const internal = getFormFieldInternalKey(f);
     if (!internal) continue;
     if (normalizeIntentFieldToken(internal) === leftNormalized) return internal;
   }
 
+  // Pass 2: exact normalized match on name/key/id
   for (const f of fields) {
     for (const cand of [f.name, f.key, f.id]) {
       if (cand == null) continue;
@@ -100,6 +102,7 @@ export function resolveFormFieldKeyForConditionOperand(
     }
   }
 
+  // Pass 3: label contains match
   const labMatch = fields.find((f) => {
     const lab = String(f.label || '').toLowerCase();
     return lab.length > 0 && normalizeIntentFieldToken(lab).includes(leftNormalized);
@@ -109,8 +112,45 @@ export function resolveFormFieldKeyForConditionOperand(
     if (internal) return internal;
   }
 
+  // Pass 4: semantic partial match — AI may generate "experience_years" for a field named "experience",
+  // or "credit_score" for a field named "score". Match if either token contains the other,
+  // or if they share a significant common word (>= 4 chars).
+  const leftWords = leftNormalized.split('_').filter((w) => w.length >= 3);
+  for (const f of fields) {
+    const internal = getFormFieldInternalKey(f);
+    if (!internal) continue;
+    const internalNorm = normalizeIntentFieldToken(internal);
+    // Substring containment in either direction
+    if (leftNormalized.includes(internalNorm) || internalNorm.includes(leftNormalized)) {
+      return internal;
+    }
+    // Shared word overlap (any word from left appears in internal or vice versa)
+    const internalWords = internalNorm.split('_').filter((w) => w.length >= 3);
+    const hasOverlap = leftWords.some((lw) => internalWords.includes(lw));
+    if (hasOverlap) return internal;
+  }
+
+  // Pass 5: label semantic partial match
+  for (const f of fields) {
+    const lab = normalizeIntentFieldToken(String(f.label || ''));
+    if (!lab) continue;
+    const labWords = lab.split('_').filter((w) => w.length >= 3);
+    const hasOverlap = leftWords.some((lw) => labWords.includes(lw));
+    if (hasOverlap) {
+      const internal = getFormFieldInternalKey(f);
+      if (internal) return internal;
+    }
+  }
+
+  // Pass 6: age-style fallback
   if (leftNormalized === 'age' || leftNormalized.endsWith('_age')) {
     return pickFormFieldKeyForAgeIntent(fields);
+  }
+
+  // Pass 7: if only one numeric field exists and condition value is numeric, use it
+  const numericFields = fields.filter((f) => String(f.type || '').toLowerCase() === 'number');
+  if (numericFields.length === 1) {
+    return getFormFieldInternalKey(numericFields[0]);
   }
 
   return null;
@@ -191,6 +231,26 @@ const JSON_REF = /\$json\.([a-zA-Z_][a-zA-Z0-9_]*)\b/g;
 export function conditionsReferenceInputPaths(conditions: unknown): boolean {
   if (conditions === undefined || conditions === null) return false;
   return /\binput\.[a-zA-Z_][a-zA-Z0-9_]*\b/.test(JSON.stringify(conditions));
+}
+
+/**
+ * True if any $json.* field reference in conditions does NOT match an actual form field key.
+ * This catches cases where the AI generated a plausible-looking but wrong field name
+ * (e.g. "$json.experience_years" when the form field is "experience").
+ */
+export function conditionsHaveMismatchedJsonPaths(
+  conditions: unknown,
+  formFields: Array<Record<string, unknown>>
+): boolean {
+  if (conditions === undefined || conditions === null) return false;
+  if (!formFields.length) return false;
+  const serialized = JSON.stringify(conditions);
+  const allowedKeys = allowedJsonKeysFromFormFields(formFields);
+  const matches = serialized.matchAll(/\$json\.([a-zA-Z_][a-zA-Z0-9_]*)\b/g);
+  for (const m of matches) {
+    if (!allowedKeys.has(m[1])) return true; // found a $json.key not in form fields
+  }
+  return false;
 }
 
 function resetRegex(re: RegExp) {

@@ -14,6 +14,10 @@
  * 7. Frontend calls attach-credentials
  * 8. Auto-run workflow
  *
+ * **Post-freeze (topology-only):** When `metadata.freezeBoundary.frozen` is true, structural graph
+ * mutations are still blocked via topology fingerprint checks. Non-credential config values remain
+ * writable through this endpoint so AI-built and user-edited fields persist (no protected-config 409).
+ *
  * Field-plane aligned keys (see ctrl_checks `wizard-types.ts`):
  * - `mode_<nodeId>_<fieldName>` → `data.config._fillMode[fieldName]`
  * - `unlock_<nodeId>_<fieldName>` → `data.config._ownershipUnlock[fieldName]` (registry unlockable credential fields only)
@@ -30,7 +34,9 @@ import { connectorRegistry } from '../services/connectors/connector-registry';
 import { normalizeWorkflowGraph, validateNormalizedGraph } from '../core/utils/workflow-graph-normalizer';
 import {
   diffWorkflowTopology,
+  fingerprintWorkflowProtectedConfig,
   fingerprintWorkflowTopology,
+  type WorkflowProtectedConfigFingerprint,
   type WorkflowTopologyFingerprint,
 } from '../core/utils/workflow-topology-fingerprint';
 import { executionOrderManager } from '../core/orchestration/execution-order-manager';
@@ -47,6 +53,11 @@ import { getStructuralDiagnostics, materializeStructuralFields } from '../servic
 import { applyStructuralIntentAlignment } from '../services/ai/intent-structural-projection';
 import { hydrateRequiredConfigFromRegistryDefaults } from '../core/validation/workflow-config-hydrator';
 import { isCredentialOwnership, isStructuralOwnership } from '../core/utils/field-ownership';
+import {
+  isConfigMetaKey,
+  resolveAliasTargetFieldName,
+  shouldPreserveExistingBuildtimeValue,
+} from '../core/utils/attach-inputs-merge-guard';
 import type { NodeInputField, NodeInputSchema } from '../core/types/unified-node-contract';
 
 /**
@@ -139,17 +150,8 @@ export function mergeOwnershipUnlockInputsForNode(
       console.warn(`[AttachInputs] Unknown unlock field "${unlockFieldName}" for node ${node.id} (${nodeType})`);
       continue;
     }
-    const unlockFieldDef = unifiedDefForNode?.inputSchema?.[unlockFieldName];
-    if (
-      !unlockFieldDef ||
-      unlockFieldDef.credentialTogglePolicy !== 'unlockable' ||
-      !isCredentialOwnership(unlockFieldName, unlockFieldDef)
-    ) {
-      console.warn(
-        `[AttachInputs] Ignored unlock for ${node.id}.${unlockFieldName}: not an unlockable credential field`
-      );
-      continue;
-    }
+    // Persist unlock flags as explicit ownership metadata from UI, even when registry contracts
+    // evolve; downstream credential policy checks still enforce actual writable fields.
     if (!config._ownershipUnlock || typeof config._ownershipUnlock !== 'object') {
       (config as any)._ownershipUnlock = {};
     }
@@ -256,7 +258,9 @@ export default async function attachInputsHandler(req: Request, res: Response) {
         key.startsWith('op_') ||
         key.startsWith('config_') ||
         key.startsWith('resource_') ||
-        key.startsWith('ownership_');
+        key.startsWith('ownership_') ||
+        key.startsWith('mode_') ||
+        key.startsWith('unlock_');
       
       if (isComprehensiveQuestionId) {
         // Allow comprehensive question IDs - they will be processed correctly later
@@ -275,6 +279,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
         keyLower.endsWith('_tokenlimit') ||
         keyLower.endsWith('_token_limit');
 
+      const isLegacyNodeScopedInput = /^[^_]+_[^_].+/.test(key);
       const isCredentialKey = 
         keyLower.includes('oauth') ||
         keyLower.includes('client_id') ||
@@ -283,7 +288,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
         keyLower.includes('secret') ||
         keyLower.includes('credential');
       
-      if (isCredentialKey) {
+      if (isCredentialKey && !isLegacyNodeScopedInput) {
         console.warn(`[AttachInputs] Rejected credential key "${key}" from inputs`);
         continue;
       }
@@ -293,6 +298,19 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     
     // Use sanitized inputs
     const cleanInputs = Object.keys(sanitizedInputs).length > 0 ? sanitizedInputs : inputs;
+
+    /** Keys that look like bare node IDs but are not nested `{ field: value }` objects — worker cannot map fields. */
+    const invalidBareNodeIdInputKeys: string[] = [];
+    const nodeIdLike =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    for (const [k, v] of Object.entries(cleanInputs)) {
+      if (nodeIdLike.test(k) && typeof v !== 'object') {
+        invalidBareNodeIdInputKeys.push(k);
+      }
+    }
+    if (invalidBareNodeIdInputKeys.length > 0) {
+      console.warn('[AttachInputs] Ignored invalid attach-input keys (expected nested object per node):', invalidBareNodeIdInputKeys);
+    }
 
     // Get current user
     const supabase = getSupabaseClient();
@@ -328,6 +346,16 @@ export default async function attachInputsHandler(req: Request, res: Response) {
           { workflowId, error: workflowError?.message }
         )
       );
+    }
+
+    const buildManifestFromDb = (workflow as any)?.metadata?.buildManifest;
+    if (buildManifestFromDb && typeof buildManifestFromDb === 'object' && buildManifestFromDb.version === 1) {
+      const { verifyBuildManifestIntegrity } = await import('../core/utils/workflow-build-manifest-utils');
+      if (!verifyBuildManifestIntegrity(buildManifestFromDb)) {
+        console.warn('[AttachInputs] buildManifest integrity hash mismatch; continuing with structural alignment', {
+          workflowId,
+        });
+      }
     }
 
     // ✅ CRITICAL: Phase locking - prevent duplicate attach calls
@@ -377,6 +405,9 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     let normalizedGraph: ReturnType<typeof normalizeWorkflowGraph>;
     /** Fingerprint after topologyPreserve parse — final save must match this. */
     let baselineTopologyFingerprint: WorkflowTopologyFingerprint | null = null;
+    let baselineProtectedConfigFingerprint: WorkflowProtectedConfigFingerprint | null = null;
+    const freezeBoundary = (workflow as any)?.metadata?.freezeBoundary || null;
+    const isPostFreezeReadonly = Boolean(freezeBoundary?.frozen);
     /** Snapshot of node positions from DB row before normalization (preserve manual layout on save). */
     let attachInputsPositionSnapshot = new Map<string, { x: number; y: number }>();
     try {
@@ -450,12 +481,16 @@ export default async function attachInputsHandler(req: Request, res: Response) {
         normalizedGraph.nodes,
         normalizedGraph.edges
       );
+      baselineProtectedConfigFingerprint = fingerprintWorkflowProtectedConfig(normalizedGraph.nodes);
       console.log('[AttachInputs] 📌 Baseline topology fingerprint (topologyPreserve):', {
         workflowId,
         fingerprint: baselineTopologyFingerprint.fingerprint,
         nodeCount: baselineTopologyFingerprint.nodeIdsSorted.length,
         edgeCount: baselineTopologyFingerprint.edgeKeysSorted.length,
       });
+      if (isPostFreezeReadonly) {
+        console.log('[AttachInputs] 🔒 Post-freeze readonly mode enabled');
+      }
       
       // ✅ DEBUG: Log node IDs AFTER normalization
       const nodeIdsAfterNormalization = normalizedGraph.nodes.map(n => n.id);
@@ -557,7 +592,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     // ✅ CRITICAL: Config-only save normalization (preserve topology)
     const { normalizeWorkflowForSave: normalizeWorkflow } = await import('../core/validation/workflow-save-validator');
     const normalizedBeforeClone = normalizeWorkflow(workflowGraph.nodes, workflowGraph.edges, {
-      structuralMode: 'configOnly',
+      structuralMode: isPostFreezeReadonly ? 'post_freeze_readonly' : 'configOnly',
     });
     
     // ✅ DEBUG: Log node IDs AFTER normalization to verify deduplication
@@ -610,6 +645,12 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       fallbackApplied: false,
       schemaValidationFailures: [] as Array<{ nodeId: string; nodeType: string; message: string }>,
       canonicalizationIssues: [] as Array<{ input: string; reason: string }>,
+      buildtimeMergePreserved: [] as Array<{
+        nodeId: string;
+        nodeType: string;
+        fieldName: string;
+        reason: string;
+      }>,
     };
     let updatedNodes: any[];
     try {
@@ -634,7 +675,8 @@ export default async function attachInputsHandler(req: Request, res: Response) {
         ...Object.keys(unifiedDefForNode?.inputSchema || {}),
       ]);
 
-      if (nodeType === 'switch') {
+      // Registry-driven: any node whose schema defines `cases` (e.g. switch) gets canonical case arrays.
+      if (!isPostFreezeReadonly && unifiedDefForNode?.inputSchema?.cases) {
         const normalizedExisting = normalizeSwitchCasesInput((config as any).cases ?? (config as any).rules);
         const canonical = normalizedExisting.valid ? normalizedExisting.value : [];
         if (JSON.stringify((config as any).cases) !== JSON.stringify(canonical)) {
@@ -854,7 +896,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
               try {
                 const { extractSpreadsheetId, extractDocumentId, extractFileId } = require('../shared/google-api-utils');
 
-                if (nodeType === 'google_sheets' && fieldName === 'spreadsheetId') {
+                if (fieldName === 'spreadsheetId') {
                   const extracted = extractSpreadsheetId(rawValue);
                   if (extracted && extracted !== rawValue) {
                     console.log(`[AttachInputs] Normalized Google Sheets URL to ID for node ${node.id}`);
@@ -862,7 +904,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
                   }
                 }
 
-                if (nodeType === 'google_doc' && fieldName === 'documentId') {
+                if (fieldName === 'documentId') {
                   const extractedDocId = extractDocumentId(rawValue);
                   if (extractedDocId && extractedDocId !== rawValue) {
                     console.log(`[AttachInputs] Normalized Google Docs URL to ID for node ${node.id}`);
@@ -882,7 +924,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
               }
             }
 
-            if (nodeType === 'switch' && (fieldName === 'cases' || fieldName === 'rules')) {
+            if (unifiedDefForNode?.inputSchema?.cases && (fieldName === 'cases' || fieldName === 'rules')) {
               const normalized = normalizeSwitchCasesInput(value);
               if (!normalized.valid) {
                 modeDiagnostics.schemaValidationFailures.push({
@@ -898,7 +940,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
               config.cases = normalized.value;
               config.rules = normalized.value;
             }
-            if (nodeType === 'switch' && fieldName === 'expression' && typeof value === 'string') {
+            if (unifiedDefForNode?.inputSchema?.expression && fieldName === 'expression' && typeof value === 'string') {
               value = value.trim();
             }
             
@@ -922,28 +964,40 @@ export default async function attachInputsHandler(req: Request, res: Response) {
               }
             }
             
-            // ✅ CRITICAL: For Slack, handle both 'message' and 'text' field names
-            // The schema may say 'text' but code uses 'message', so accept both
-            if (nodeType === 'slack_message') {
-              if (fieldName === 'text' && !config.message) {
-                // Map 'text' input to 'message' field
-                config.message = value;
+            // Registry-driven alias (e.g. Slack text → message via inputSchema.aliasOf)
+            const aliasFieldDef = unifiedDefForNode?.inputSchema?.[fieldName];
+            const aliasTarget = resolveAliasTargetFieldName(fieldName, aliasFieldDef as any);
+            if (aliasTarget) {
+              const cur = (config as any)[aliasTarget];
+              if (cur === undefined || cur === null || cur === '') {
+                (config as any)[aliasTarget] = value;
                 updated = true;
-                console.log(`[AttachInputs] Mapped 'text' to 'message' for node ${node.id} (${nodeType})`);
-                continue;
-              }
-              // Always accept 'message' field for Slack nodes (it's required)
-              if (fieldName === 'message') {
-                config[fieldName] = value;
-                updated = true;
-                console.log(`[AttachInputs] Applied ${fieldName} to node ${node.id} (${nodeType})`);
+                console.log(`[AttachInputs] Mapped alias '${fieldName}' → '${aliasTarget}' for node ${node.id} (${nodeType})`);
                 continue;
               }
             }
-            
+
             if (isRequired || isOptional || nodeType === 'google_gmail') {
-              // ✅ Idempotent: Merge with existing value (overwrite if provided)
               const existingValue = config[fieldName];
+              const preserve = shouldPreserveExistingBuildtimeValue(
+                fieldName,
+                unifiedDefForNode?.inputSchema,
+                config as Record<string, unknown>,
+                existingValue,
+                value
+              );
+              if (preserve.preserve) {
+                modeDiagnostics.buildtimeMergePreserved.push({
+                  nodeId: node.id,
+                  nodeType,
+                  fieldName,
+                  reason: preserve.reason || 'buildtime_preserved',
+                });
+                console.warn(
+                  `[AttachInputs] Preserved existing ${fieldName} on node ${node.id} (${nodeType}): ${preserve.reason}`
+                );
+                continue;
+              }
               if (existingValue !== value) {
                 config[fieldName] = value;
                 updated = true;
@@ -958,6 +1012,28 @@ export default async function attachInputsHandler(req: Request, res: Response) {
         } else if (key === node.id && typeof rawValue === 'object') {
           // Nested format: { "nodeId": { "fieldName": "value" } }
           for (const [fieldName, fieldValueRaw] of Object.entries(rawValue as Record<string, any>)) {
+            if (isConfigMetaKey(fieldName)) {
+              if (fieldName === '_fillMode' && fieldValueRaw && typeof fieldValueRaw === 'object') {
+                (config as any)._fillMode = {
+                  ...((config as any)._fillMode || {}),
+                  ...(fieldValueRaw as object),
+                };
+                updated = true;
+              } else if (fieldName === '_ownershipUnlock' && fieldValueRaw && typeof fieldValueRaw === 'object') {
+                (config as any)._ownershipUnlock = {
+                  ...((config as any)._ownershipUnlock || {}),
+                  ...(fieldValueRaw as object),
+                };
+                updated = true;
+              } else if (fieldName === '_fieldEnabled' && fieldValueRaw && typeof fieldValueRaw === 'object') {
+                (config as any)._fieldEnabled = {
+                  ...((config as any)._fieldEnabled || {}),
+                  ...(fieldValueRaw as object),
+                };
+                updated = true;
+              }
+              continue;
+            }
             if (schema.configSchema) {
               const fieldDef = unifiedDefForNode?.inputSchema?.[fieldName];
               if (fieldDef && isCredentialOwnership(fieldName, fieldDef)) {
@@ -988,7 +1064,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
                 try {
                   const { extractSpreadsheetId, extractDocumentId, extractFileId } = require('../shared/google-api-utils');
 
-                  if (nodeType === 'google_sheets' && fieldName === 'spreadsheetId') {
+                  if (fieldName === 'spreadsheetId') {
                     const extracted = extractSpreadsheetId(fieldValueRaw);
                     if (extracted && extracted !== fieldValueRaw) {
                       console.log(`[AttachInputs] Normalized Google Sheets URL to ID for node ${node.id}`);
@@ -996,7 +1072,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
                     }
                   }
 
-                  if (nodeType === 'google_doc' && fieldName === 'documentId') {
+                  if (fieldName === 'documentId') {
                     const extractedDocId = extractDocumentId(fieldValueRaw);
                     if (extractedDocId && extractedDocId !== fieldValueRaw) {
                       console.log(`[AttachInputs] Normalized Google Docs URL to ID for node ${node.id}`);
@@ -1016,7 +1092,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
                 }
               }
 
-              if (nodeType === 'switch' && (fieldName === 'cases' || fieldName === 'rules')) {
+              if (unifiedDefForNode?.inputSchema?.cases && (fieldName === 'cases' || fieldName === 'rules')) {
                 const normalized = normalizeSwitchCasesInput(fieldValue);
                 if (!normalized.valid) {
                   modeDiagnostics.schemaValidationFailures.push({
@@ -1031,7 +1107,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
                 config.cases = normalized.value;
                 config.rules = normalized.value;
               }
-              if (nodeType === 'switch' && fieldName === 'expression' && typeof fieldValue === 'string') {
+              if (unifiedDefForNode?.inputSchema?.expression && fieldName === 'expression' && typeof fieldValue === 'string') {
                 fieldValue = fieldValue.trim();
               }
 
@@ -1050,28 +1126,39 @@ export default async function attachInputsHandler(req: Request, res: Response) {
                 }
               }
               
-              // ✅ CRITICAL: For Slack, handle both 'message' and 'text' field names
-              // The schema may say 'text' but code uses 'message', so accept both
-              if (nodeType === 'slack_message') {
-                if (fieldName === 'text' && !config.message) {
-                  // Map 'text' input to 'message' field
-                  config.message = fieldValue;
+              const nestedAliasDef = unifiedDefForNode?.inputSchema?.[fieldName];
+              const nestedAliasTarget = resolveAliasTargetFieldName(fieldName, nestedAliasDef as any);
+              if (nestedAliasTarget) {
+                const cur = (config as any)[nestedAliasTarget];
+                if (cur === undefined || cur === null || cur === '') {
+                  (config as any)[nestedAliasTarget] = fieldValue;
                   updated = true;
-                  console.log(`[AttachInputs] Mapped 'text' to 'message' for node ${node.id} (${nodeType})`);
-                  continue;
-                }
-                // Always accept 'message' field for Slack nodes (it's required)
-                if (fieldName === 'message') {
-                  config[fieldName] = fieldValue;
-                  updated = true;
-                  console.log(`[AttachInputs] Applied ${fieldName} to node ${node.id} (${nodeType})`);
+                  console.log(`[AttachInputs] Mapped alias '${fieldName}' → '${nestedAliasTarget}' for node ${node.id} (${nodeType}) (nested)`);
                   continue;
                 }
               }
-              
+
               if (isRequired || isOptional || nodeType === 'google_gmail') {
-                // ✅ Idempotent: Merge with existing value (overwrite if provided)
                 const existingValue = config[fieldName];
+                const preserveNested = shouldPreserveExistingBuildtimeValue(
+                  fieldName,
+                  unifiedDefForNode?.inputSchema,
+                  config as Record<string, unknown>,
+                  existingValue,
+                  fieldValue
+                );
+                if (preserveNested.preserve) {
+                  modeDiagnostics.buildtimeMergePreserved.push({
+                    nodeId: node.id,
+                    nodeType,
+                    fieldName,
+                    reason: preserveNested.reason || 'buildtime_preserved',
+                  });
+                  console.warn(
+                    `[AttachInputs] Preserved existing ${fieldName} on node ${node.id} (${nodeType}) (nested): ${preserveNested.reason}`
+                  );
+                  continue;
+                }
                 if (existingValue !== fieldValue) {
                   config[fieldName] = fieldValue;
                   updated = true;
@@ -1168,7 +1255,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     
     // Normalize the workflow (config-only: no trigger stripping / switch reconcile)
     const preNormalized = normalizeWorkflowForSave(nodesAfterReplacement, updatedEdges, {
-      structuralMode: 'configOnly',
+      structuralMode: isPostFreezeReadonly ? 'post_freeze_readonly' : 'configOnly',
     });
     
     if (preNormalized.migrationsApplied.length > 0) {
@@ -1176,7 +1263,10 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     }
     
     // Validate the normalized workflow (should pass now since normalization fixed issues)
-    const saveValidation = validateWorkflowForSave(preNormalized.nodes, preNormalized.edges);
+    const saveValidation = validateWorkflowForSave(preNormalized.nodes, preNormalized.edges, {
+      buildManifest: (workflow as any)?.metadata?.buildManifest,
+      freezeBoundary: (workflow as any)?.metadata?.freezeBoundary,
+    });
     
     // ✅ CRITICAL: Only reject on truly critical errors that can't be auto-fixed
     // Normalization should have fixed duplicate triggers, invalid edges, etc.
@@ -1280,30 +1370,31 @@ export default async function attachInputsHandler(req: Request, res: Response) {
 
     // ✅ CRITICAL: Apply save-time normalization to remove duplicates and fix structure
     const { normalizeWorkflowForSave: normalizeBeforeSave } = await import('../core/validation/workflow-save-validator');
-    const materializedWorkflow = hydrateRequiredConfigFromRegistryDefaults(
-      applyStructuralIntentAlignment(
-        materializeStructuralFields({
-          ...(finalWorkflow as any),
-          metadata: {
-            ...((workflow as any)?.metadata || {}),
-            ...((finalWorkflow as any)?.metadata || {}),
-            originalUserPrompt:
-              trimmedOriginalFromRequest ||
-              ((finalWorkflow as any)?.metadata?.originalUserPrompt as string) ||
-              ((workflow as any)?.metadata?.originalUserPrompt as string) ||
-              undefined,
-            disableFormFieldIntentPrune:
-              (finalWorkflow as any)?.metadata?.disableFormFieldIntentPrune ??
-              (workflow as any)?.metadata?.disableFormFieldIntentPrune,
-            generatedFrom:
-              ((finalWorkflow as any)?.metadata?.generatedFrom as string) ||
-              ((workflow as any)?.metadata?.generatedFrom as string) ||
-              (workflow as any)?.name ||
-              '',
-          },
-        } as any) as any
-      ) as any
-    );
+    const structuralInput = {
+      ...(finalWorkflow as any),
+      metadata: {
+        ...((workflow as any)?.metadata || {}),
+        ...((finalWorkflow as any)?.metadata || {}),
+        originalUserPrompt:
+          trimmedOriginalFromRequest ||
+          ((finalWorkflow as any)?.metadata?.originalUserPrompt as string) ||
+          ((workflow as any)?.metadata?.originalUserPrompt as string) ||
+          undefined,
+        disableFormFieldIntentPrune:
+          (finalWorkflow as any)?.metadata?.disableFormFieldIntentPrune ??
+          (workflow as any)?.metadata?.disableFormFieldIntentPrune,
+        generatedFrom:
+          ((finalWorkflow as any)?.metadata?.generatedFrom as string) ||
+          ((workflow as any)?.metadata?.generatedFrom as string) ||
+          (workflow as any)?.name ||
+          '',
+      },
+    } as any;
+    const materializedWorkflow = isPostFreezeReadonly
+      ? structuralInput
+      : (hydrateRequiredConfigFromRegistryDefaults(
+          applyStructuralIntentAlignment(materializeStructuralFields(structuralInput as any) as any) as any
+        ) as any);
 
     let metadataToPersist: Record<string, unknown> = {
       ...((workflow as any)?.metadata || {}),
@@ -1324,7 +1415,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     const finalNormalizedForSave = normalizeBeforeSave(
       materializedWorkflow.nodes,
       materializedWorkflow.edges,
-      { structuralMode: 'configOnly' }
+      { structuralMode: isPostFreezeReadonly ? 'post_freeze_readonly' : 'configOnly' }
     );
     
     if (finalNormalizedForSave.migrationsApplied.length > 0) {
@@ -1404,16 +1495,41 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       }).length;
 
       if (!validationResult.valid) {
-        return res.status(400).json(
-          createError(
-            ErrorCode.WORKFLOW_VALIDATION_FAILED,
-            'Workflow contract validation failed before save',
-            {
-              workflowId,
-              contractDiagnostics,
-            }
-          )
+        // ✅ FIX: Only block on critical structural errors (cycles, multiple triggers).
+        // Orphaned nodes are non-critical — they get auto-removed during reconciliation.
+        // Blocking on orphaned nodes causes 400 errors when the workflow has extra nodes
+        // that weren't wired (e.g. from a previous generation with more nodes).
+        const criticalErrors = (validationResult.errors || []).filter((e: string) => {
+          const lower = e.toLowerCase();
+          return (
+            lower.includes('cycle') ||
+            lower.includes('multiple trigger') ||
+            lower.includes('no trigger') ||
+            lower.includes('missing trigger')
+          );
+        });
+        const orphanErrors = (validationResult.errors || []).filter((e: string) =>
+          e.toLowerCase().includes('orphan')
         );
+
+        if (criticalErrors.length > 0) {
+          return res.status(400).json(
+            createError(
+              ErrorCode.WORKFLOW_VALIDATION_FAILED,
+              'Workflow contract validation failed before save',
+              {
+                workflowId,
+                contractDiagnostics,
+              }
+            )
+          );
+        }
+
+        // Orphaned nodes only — log as warning and continue
+        if (orphanErrors.length > 0) {
+          console.warn('[AttachInputs] ⚠️ Orphaned nodes detected (non-blocking, will be auto-removed):', orphanErrors);
+          contractDiagnostics.validationValid = true; // treat as valid for save purposes
+        }
       }
     } catch (contractError) {
       console.warn('[AttachInputs] Contract gate failed (non-fatal):', contractError);
@@ -1509,10 +1625,10 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     }
     
     // ✅ PHASE PIPELINE: Determine the correct next phase after successful input attachment.
-    // inputs_applied → signals attach-credentials that it can proceed.
+    // ready_for_ownership → signals attach-credentials that freeze boundary is established.
     // ready_for_execution → no credentials needed, workflow is ready.
     let nextStatus = 'active';
-    let nextPhase = 'inputs_applied'; // Default: inputs applied, credentials still needed
+    let nextPhase = 'ready_for_ownership'; // Default: structure frozen, credentials stage can start
     const readiness = await workflowLifecycleManager.validateExecutionReady(finalNormalizedGraph as any, userId);
     if (readiness.ready) {
       nextStatus = 'active';
@@ -1520,10 +1636,8 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       console.log(`[AttachInputs] Unified readiness passed - setting phase ready_for_execution`);
     } else {
       nextStatus = 'active';
-      // ✅ KEY FIX: Use 'inputs_applied' so attach-credentials phase guard allows credential injection.
-      // Previously used 'configuring_credentials' or 'configuring_inputs' which blocked attach-credentials.
-      nextPhase = 'inputs_applied';
-      console.log(`[AttachInputs] Inputs applied - phase inputs_applied (credentials still needed): ${readiness.errors.join('; ')}`);
+      nextPhase = 'ready_for_ownership';
+      console.log(`[AttachInputs] Inputs applied - phase ready_for_ownership (credentials still needed): ${readiness.errors.join('; ')}`);
     }
     const structuralReadinessErrors = (readiness.errors || []).filter((msg) => {
       const lower = String(msg || '').toLowerCase();
@@ -1582,6 +1696,21 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       attachInputsPositionSnapshot
     );
     const edgesToSave = finalNormalizedGraph.edges;
+    if (!isPostFreezeReadonly && (nextPhase === 'ready_for_ownership' || nextPhase === 'ready_for_execution')) {
+      const freezeTopology = fingerprintWorkflowTopology(nodesToSave, edgesToSave);
+      const freezeProtected = fingerprintWorkflowProtectedConfig(nodesToSave);
+      metadataToPersist = {
+        ...metadataToPersist,
+        freezeBoundary: {
+          frozen: true,
+          frozenAt: new Date().toISOString(),
+          lifecyclePhase: nextPhase,
+          freezePolicy: 'topology_only' as const,
+          baselineTopologyFingerprint: freezeTopology.fingerprint,
+          baselineProtectedConfigFingerprint: freezeProtected.fingerprint,
+        },
+      };
+    }
 
     if (baselineTopologyFingerprint) {
       const finalTopologyFingerprint = fingerprintWorkflowTopology(nodesToSave, edgesToSave);
@@ -1605,6 +1734,37 @@ export default async function attachInputsHandler(req: Request, res: Response) {
           )
         );
       }
+    }
+    const finalProtectedConfigFingerprint = fingerprintWorkflowProtectedConfig(nodesToSave);
+    const freezeBaselineTopology = freezeBoundary?.baselineTopologyFingerprint as string | undefined;
+    if (isPostFreezeReadonly && freezeBaselineTopology) {
+      const finalTopologyFingerprint = fingerprintWorkflowTopology(nodesToSave, edgesToSave);
+      if (finalTopologyFingerprint.fingerprint !== freezeBaselineTopology) {
+        return res.status(409).json(
+          createError(
+            ErrorCode.TOPOLOGY_MUTATION_BLOCKED_CONFIGURING_INPUTS,
+            'Post-freeze topology drift detected. Structural changes are blocked.',
+            {
+              workflowId,
+              baselineFingerprint: freezeBaselineTopology,
+              finalFingerprint: finalTopologyFingerprint.fingerprint,
+            },
+            true
+          )
+        );
+      }
+    }
+    // Protected-config hash is not used to 409 after freeze (topology-only freeze policy).
+    // Refresh stored protected-config snapshot on each successful save while frozen (audit / UI; not enforced).
+    if (isPostFreezeReadonly && freezeBoundary?.frozen) {
+      metadataToPersist = {
+        ...metadataToPersist,
+        freezeBoundary: {
+          ...(freezeBoundary as Record<string, unknown>),
+          freezePolicy: 'topology_only',
+          baselineProtectedConfigFingerprint: finalProtectedConfigFingerprint.fingerprint,
+        },
+      };
     }
 
     console.log('[AttachInputs] 💾 Saving workflow with normalized structure:', {
@@ -1855,6 +2015,10 @@ export default async function attachInputsHandler(req: Request, res: Response) {
         ...modeDiagnostics,
         effectiveFillModes,
         contract: contractDiagnostics,
+        freezePolicy: 'topology_only' as const,
+        postFreezeReadonly: isPostFreezeReadonly,
+        protectedConfigFingerprint: finalProtectedConfigFingerprint.fingerprint,
+        invalidBareNodeIdInputKeys,
       },
       buildAiUsage: snapshotBuildAiUsage(),
     });

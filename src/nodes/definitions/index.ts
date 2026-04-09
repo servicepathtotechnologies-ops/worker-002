@@ -18,6 +18,7 @@ import { airtableNodeDefinition } from './airtable-node';
 import { pipedriveNodeDefinition } from './pipedrive-node';
 import { notionNodeDefinition } from './notion-node';
 import { twitterNodeDefinition } from './twitter-node';
+import { facebookNodeDefinition } from './facebook-node';
 import { instagramNodeDefinition } from './instagram-node';
 import { whatsappNodeDefinition } from './whatsapp-node';
 import { googleCalendarNodeDefinition } from './google-calendar-node';
@@ -70,6 +71,7 @@ export function registerAllNodeDefinitions() {
 
   // Social nodes
   nodeDefinitionRegistry.register(twitterNodeDefinition);
+  nodeDefinitionRegistry.register(facebookNodeDefinition);
   nodeDefinitionRegistry.register(instagramNodeDefinition);
   nodeDefinitionRegistry.register(whatsappNodeDefinition);
 

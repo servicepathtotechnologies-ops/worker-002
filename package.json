@@ -67,7 +67,8 @@
     "test:intent-e2e": "jest src/core/utils/__tests__/intent-e2e-harness.test.ts --passWithNoTests",
     "validate:enhancements": "ts-node scripts/validate-enhancements.ts",
     "test:15-workflows": "ts-node scripts/test-15-workflows-execution.ts",
-    "verify:universality": "node scripts/verify-universality-readiness.js"
+    "verify:universality": "node scripts/verify-universality-readiness.js",
+    "test:facebook:permissions": "ts-node scripts/test-facebook-permissions.ts"
   },
   "keywords": [],
   "author": "",

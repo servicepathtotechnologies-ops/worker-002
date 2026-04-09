@@ -92,19 +92,19 @@ describe('fill-mode-resolver', () => {
     expect(mode).toBe('buildtime_ai_once');
   });
 
-  it('coerces credential field to manual_static when credential is locked', () => {
+  it('coerces locked credential field to schema default mode', () => {
     const schema: any = {
       apiKey: {
         type: 'string',
         ownership: 'credential',
         fillMode: {
-          default: 'runtime_ai',
+          default: 'manual_static',
           supportsRuntimeAI: true,
           supportsBuildtimeAI: true,
         },
       },
     };
-    const result = coerceFieldFillModeByPolicy('apiKey', 'runtime_ai', schema, {});
+    const result = coerceFieldFillModeByPolicy('apiKey', 'buildtime_ai_once', schema, {});
     expect(result.coerced).toBe(true);
     expect(result.reason).toBe('credential_locked');
     expect(result.mode).toBe('manual_static');

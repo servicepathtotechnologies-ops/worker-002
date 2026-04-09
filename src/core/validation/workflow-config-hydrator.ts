@@ -20,6 +20,11 @@ export function hydrateRequiredConfigFromRegistryDefaults(workflow: Workflow): W
     let changed = false;
 
     const tryFill = (fieldName: string) => {
+      const fillModeMap = (config?._fillMode || {}) as Record<string, unknown>;
+      const mode = fillModeMap[fieldName];
+      // Runtime-owned values are expected to resolve during execution and should not
+      // be default-hydrated at build/save time.
+      if (mode === 'runtime_ai') return;
       if (!isEmptyConfigValue(config[fieldName])) return;
       const d = defaults[fieldName];
       if (!isEmptyConfigValue(d)) {

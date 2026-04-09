@@ -187,12 +187,38 @@ export class WorkflowLifecycleManager {
     const validation = unifiedGraphOrchestrator.validateWorkflow(workflow);
     if (validation.valid) return { workflow, healed: false };
 
+    // Snapshot all node config values before reconcile (structural-only guard)
+    const configSnapshot = new Map<string, Record<string, unknown>>();
+    for (const node of workflow.nodes) {
+      configSnapshot.set(node.id, { ...(node.data?.config || {}) });
+    }
+
     // Attempt repair
     const repaired = unifiedGraphOrchestrator.reconcileWorkflow(workflow);
     const revalidation = unifiedGraphOrchestrator.validateWorkflow(repaired.workflow);
 
     if (!revalidation.valid) {
       throw new Error(`SELF_HEAL_FAILED: ${revalidation.errors.join('; ')}`);
+    }
+
+    // ✅ FIX: Assert reconcileWorkflow did not modify any node config field values.
+    // reconcileWorkflow is structural-only (edges, execution order) and must never
+    // touch node.data.config. Log a warning if any config value changed.
+    for (const node of repaired.workflow.nodes) {
+      const before = configSnapshot.get(node.id);
+      if (!before) continue;
+      const after = node.data?.config || {};
+      for (const [field, beforeValue] of Object.entries(before)) {
+        const afterValue = (after as Record<string, unknown>)[field];
+        if (afterValue !== beforeValue) {
+          console.warn(
+            `[WorkflowLifecycle] ⚠️ reconcileWorkflow modified config field "${field}" on node ${node.id}: ` +
+            `"${String(beforeValue)}" → "${String(afterValue)}". Restoring original value.`
+          );
+          // Restore the original value — structural repairs must not touch config
+          (after as Record<string, unknown>)[field] = beforeValue;
+        }
+      }
     }
 
     return { workflow: repaired.workflow, healed: true };
@@ -344,6 +370,45 @@ export class WorkflowLifecycleManager {
     confidenceScore?: any;
     analysis?: Record<string, unknown>;
   }> {
+    const mandatory = constraints?.mandatoryNodeTypes;
+    if (mandatory && mandatory.length > 0) {
+      try {
+        const { AiFirstPipeline } = await import('./ai/ai-first-pipeline');
+        const { randomUUID } = await import('crypto');
+        const pipelineUser =
+          (constraints?.selectedStructuredPrompt && String(constraints.selectedStructuredPrompt).trim()) ||
+          userPrompt;
+        const aiResult = await new AiFirstPipeline().run({
+          userPrompt: pipelineUser,
+          userId: 'lifecycle',
+          correlationId: randomUUID(),
+          mandatoryNodeTypes: [...mandatory],
+        });
+        if (aiResult.ok) {
+          return {
+            workflow: aiResult.workflow,
+            documentation: 'Workflow generated via AI-first pipeline (authoritative mandatory chain)',
+            suggestions: [],
+            estimatedComplexity: 'medium',
+            systemPrompt: undefined,
+            requirements: undefined,
+            requiredCredentials: [],
+            confidenceScore: {
+              score: 0.9,
+              factors: ['AI-first pipeline', 'mandatory chain', 'build manifest'],
+            },
+            analysis: undefined,
+          };
+        }
+        console.warn(
+          '[WorkflowLifecycle] AI-first mandatory pipeline failed, using planner path',
+          aiResult.message,
+        );
+      } catch (e) {
+        console.warn('[WorkflowLifecycle] AI-first mandatory pipeline error, using planner path', e);
+      }
+    }
+
     console.log('[WorkflowLifecycle] Executing Gemini planner pipeline (with deterministic fallback)...');
 
     // FIRST: Try Gemini-based planner path
@@ -1929,9 +1994,14 @@ export class WorkflowLifecycleManager {
                   fieldLower.includes('api_token') ||
                   (fieldLower.includes('key') && !fieldLower.includes('public') && !fieldLower.includes('private')) ||
                   (fieldLower.includes('token') && !fieldLower.includes('refresh'))) {
-                config[fieldName] = credValue;
-                updated = true;
-                console.log(`[WorkflowLifecycle] Applied ${fieldName} to node ${node.id} (${nodeType}) via field matching`);
+                // ✅ FIX: Only write if not already set (preserve AI-assigned values)
+                if (!config[fieldName] || config[fieldName] === '') {
+                  config[fieldName] = credValue;
+                  updated = true;
+                  console.log(`[WorkflowLifecycle] Applied ${fieldName} to node ${node.id} (${nodeType}) via field matching`);
+                } else {
+                  console.log(`[WorkflowLifecycle] ⏭️ Skipped ${fieldName} on node ${node.id} (${nodeType}) — already set`);
+                }
               }
             });
           });
@@ -2214,9 +2284,14 @@ export class WorkflowLifecycleManager {
                 throw new Error(`Invalid webhook URL: ${urlValidation.error}`);
               }
             }
-            config[credentialContract.credentialFieldName] = credentialValue;
-            updated = true;
-            console.log(`[WorkflowLifecycle] ✅ Applied ${credentialContract.credentialFieldName} to ${nodeType} node ${node.id} (data-driven from connector)`);
+            // ✅ FIX: Only write if field is not already set (preserve AI-assigned values)
+            if (!config[credentialContract.credentialFieldName] || config[credentialContract.credentialFieldName] === '') {
+              config[credentialContract.credentialFieldName] = credentialValue;
+              updated = true;
+              console.log(`[WorkflowLifecycle] ✅ Applied ${credentialContract.credentialFieldName} to ${nodeType} node ${node.id} (data-driven from connector)`);
+            } else {
+              console.log(`[WorkflowLifecycle] ⏭️ Skipped ${credentialContract.credentialFieldName} on ${nodeType} node ${node.id} — already set (preserving AI-assigned value)`);
+            }
           }
           
           // ✅ PRIORITY 2: If credentialId field exists in schema, also set it (for reference)
@@ -2249,27 +2324,41 @@ export class WorkflowLifecycleManager {
               console.error(`[WorkflowLifecycle] ❌ Invalid Slack webhook URL: ${urlValidation.error}`);
               throw new Error(`Invalid Slack webhook URL: ${urlValidation.error}`);
             }
-            config.webhookUrl = credentialValue;
-            updated = true;
+            // ✅ FIX: Only write if webhookUrl is not already set (preserve AI-assigned values)
+            if (!config.webhookUrl || config.webhookUrl === '') {
+              config.webhookUrl = credentialValue;
+              updated = true;
+            } else {
+              console.log(`[WorkflowLifecycle] ⏭️ Skipped webhookUrl on ${nodeType} node ${node.id} — already set (preserving AI-assigned value)`);
+            }
           } else if (credentialContract.type === 'oauth') {
             // ✅ ENHANCED: OAuth credentials are stored in vault, not in node config
             // Store a reference to the vault key for OAuth providers
             // This works for: Google, Microsoft, Twitter, Instagram, YouTube, Facebook, GitHub, LinkedIn, Salesforce, Zoho
             if (allFields.includes('credentialRef')) {
-              config.credentialRef = vaultKey;
-              updated = true;
+              // ✅ FIX: Only write if not already set (preserve AI-assigned values)
+              if (!config.credentialRef || config.credentialRef === '') {
+                config.credentialRef = vaultKey;
+                updated = true;
+              }
             } else if (allFields.includes('credentialId')) {
               // Some OAuth nodes use credentialId instead of credentialRef
-              config.credentialId = vaultKey;
-              updated = true;
+              if (!config.credentialId || config.credentialId === '') {
+                config.credentialId = vaultKey;
+                updated = true;
+              }
             } else if (allFields.includes('accessToken')) {
               // For OAuth, accessToken can be stored if provided
-              config.accessToken = credentialValue;
-              updated = true;
+              if (!config.accessToken || config.accessToken === '') {
+                config.accessToken = credentialValue;
+                updated = true;
+              }
             } else {
               // Fallback: store vault key reference
-              config.credentialRef = vaultKey;
-              updated = true;
+              if (!config.credentialRef || config.credentialRef === '') {
+                config.credentialRef = vaultKey;
+                updated = true;
+              }
             }
             console.log(`[WorkflowLifecycle] Applied OAuth credential reference (vaultKey: ${vaultKey}) to ${nodeType} node ${node.id}`);
           } else if (credentialContract.type === 'api_key' && credentialContract.provider === 'smtp') {
@@ -2277,37 +2366,52 @@ export class WorkflowLifecycleManager {
             // This is a simplified version - in production, you'd parse the credential object
             if (typeof credentials[vaultKey] === 'object') {
               const smtpCreds = credentials[vaultKey] as any;
-              if (smtpCreds.host) config.host = smtpCreds.host;
-              if (smtpCreds.username) config.username = smtpCreds.username;
-              if (smtpCreds.password) config.password = smtpCreds.password;
-              if (smtpCreds.port) config.port = smtpCreds.port;
-              updated = true;
+              // ✅ FIX: Only write if not already set (preserve AI-assigned values)
+              if (smtpCreds.host && (!config.host || config.host === '')) { config.host = smtpCreds.host; updated = true; }
+              if (smtpCreds.username && (!config.username || config.username === '')) { config.username = smtpCreds.username; updated = true; }
+              if (smtpCreds.password && (!config.password || config.password === '')) { config.password = smtpCreds.password; updated = true; }
+              if (smtpCreds.port && (!config.port || config.port === '')) { config.port = smtpCreds.port; updated = true; }
             } else {
               // Single value - try to match to common fields
-              if (requiredFields.includes('host')) config.host = credentialValue;
-              if (requiredFields.includes('username')) config.username = credentialValue;
-              if (requiredFields.includes('password')) config.password = credentialValue;
-              updated = true;
+              // ✅ FIX: Only write if not already set (preserve AI-assigned values)
+              if (requiredFields.includes('host') && (!config.host || config.host === '')) { config.host = credentialValue; updated = true; }
+              if (requiredFields.includes('username') && (!config.username || config.username === '')) { config.username = credentialValue; updated = true; }
+              if (requiredFields.includes('password') && (!config.password || config.password === '')) { config.password = credentialValue; updated = true; }
             }
           } else if (credentialContract.credentialFieldName && allFields.includes(credentialContract.credentialFieldName)) {
             // ✅ PERMANENT SOLUTION: Data-driven credential field mapping
             // Use credentialFieldName from connector if specified (replaces hardcoded if-else blocks)
-            config[credentialContract.credentialFieldName] = credentialValue;
-            updated = true;
-            console.log(`[WorkflowLifecycle] ✅ Applied ${credentialContract.credentialFieldName} to ${nodeType} node ${node.id} (data-driven from connector)`);
+            // ✅ FIX: Only write if field is not already set (preserve AI-assigned values)
+            if (!config[credentialContract.credentialFieldName] || config[credentialContract.credentialFieldName] === '') {
+              config[credentialContract.credentialFieldName] = credentialValue;
+              updated = true;
+              console.log(`[WorkflowLifecycle] ✅ Applied ${credentialContract.credentialFieldName} to ${nodeType} node ${node.id} (data-driven from connector)`);
+            } else {
+              console.log(`[WorkflowLifecycle] ⏭️ Skipped ${credentialContract.credentialFieldName} on ${nodeType} node ${node.id} — already set (preserving AI-assigned value)`);
+            }
           } else if (credentialContract.type === 'api_key') {
             // ✅ Generic api_key handler: Try common field names
             // First try apiKey (most common)
             if (allFields.includes('apiKey')) {
-              config.apiKey = credentialValue;
-              updated = true;
-              console.log(`[WorkflowLifecycle] Applied apiKey to ${nodeType} node ${node.id}`);
+              // ✅ FIX: Only write if not already set (preserve AI-assigned values)
+              if (!config.apiKey || config.apiKey === '') {
+                config.apiKey = credentialValue;
+                updated = true;
+                console.log(`[WorkflowLifecycle] Applied apiKey to ${nodeType} node ${node.id}`);
+              } else {
+                console.log(`[WorkflowLifecycle] ⏭️ Skipped apiKey on ${nodeType} node ${node.id} — already set`);
+              }
             }
             // Then try apiToken (for Pipedrive-like services)
             else if (allFields.includes('apiToken')) {
-              config.apiToken = credentialValue;
-              updated = true;
-              console.log(`[WorkflowLifecycle] Applied apiToken to ${nodeType} node ${node.id}`);
+              // ✅ FIX: Only write if not already set (preserve AI-assigned values)
+              if (!config.apiToken || config.apiToken === '') {
+                config.apiToken = credentialValue;
+                updated = true;
+                console.log(`[WorkflowLifecycle] Applied apiToken to ${nodeType} node ${node.id}`);
+              } else {
+                console.log(`[WorkflowLifecycle] ⏭️ Skipped apiToken on ${nodeType} node ${node.id} — already set`);
+              }
             }
             // Fallback: search for any field containing 'key' or 'token'
             else {
@@ -2319,9 +2423,14 @@ export class WorkflowLifecycleManager {
                     fieldLower.includes('api_token') ||
                     (fieldLower.includes('key') && !fieldLower.includes('public') && !fieldLower.includes('private')) ||
                     (fieldLower.includes('token') && !fieldLower.includes('refresh'))) {
-                  config[field] = credentialValue;
-                  updated = true;
-                  console.log(`[WorkflowLifecycle] Applied ${field} to ${nodeType} node ${node.id}`);
+                  // ✅ FIX: Only write if not already set (preserve AI-assigned values)
+                  if (!config[field] || config[field] === '') {
+                    config[field] = credentialValue;
+                    updated = true;
+                    console.log(`[WorkflowLifecycle] Applied ${field} to ${nodeType} node ${node.id}`);
+                  } else {
+                    console.log(`[WorkflowLifecycle] ⏭️ Skipped ${field} on ${nodeType} node ${node.id} — already set`);
+                  }
                   break;
                 }
               }
@@ -2335,9 +2444,14 @@ export class WorkflowLifecycleManager {
                   fieldLower.includes('token') || 
                   fieldLower.includes('key') ||
                   fieldLower.includes('secret')) {
-                config[field] = credentialValue;
-                updated = true;
-                console.log(`[WorkflowLifecycle] Applied ${field} to node ${node.id} (${nodeType})`);
+                // ✅ FIX: Only write if not already set (preserve AI-assigned values)
+                if (!config[field] || config[field] === '') {
+                  config[field] = credentialValue;
+                  updated = true;
+                  console.log(`[WorkflowLifecycle] Applied ${field} to node ${node.id} (${nodeType})`);
+                } else {
+                  console.log(`[WorkflowLifecycle] ⏭️ Skipped ${field} on node ${node.id} (${nodeType}) — already set`);
+                }
                 break;
               }
             }
