@@ -150,11 +150,13 @@ export class AgenticWorkflowBuilder {
     const nodeCatalog = buildNodeCatalog();
 
     // ✅ AI-FIRST: Use SystemPromptBuilder — no static markdown files
-    const { systemPrompt } = systemPromptBuilder.build({
+    const { systemPrompt: baseSystemPrompt } = systemPromptBuilder.build({
       stage: 'intent',
       nodeCatalog: buildNodeCatalogText(),
       userIntent: userPrompt,
     });
+
+    const systemPrompt = baseSystemPrompt + '\n\nSUMMARY FIELD RULES:\nThe "summary" field MUST be a specific, descriptive title for this exact workflow.\n- 5 to 15 words\n- Title-Case every word\n- Include the primary integration names (e.g. Gmail, Slack, Google Sheets)\n- Include the core action verb (e.g. Sync, Notify, Summarize, Send)\n- Do NOT use generic labels like "Workflow", "Automation", or "Process"\nExample: "Sync Gmail Attachments to Google Sheets Daily"';
 
     const input = {
       system: systemPrompt,
@@ -439,6 +441,21 @@ export class AgenticWorkflowBuilder {
   }
 
   /**
+   * Derives a human-readable summary from the user's prompt.
+   * Extracts up to 12 words, title-cases each, and joins them.
+   * Returns "Custom Workflow" for empty input.
+   */
+  private deriveSummaryFromPrompt(userPrompt: string): string {
+    const trimmed = userPrompt.trim();
+    if (!trimmed) {
+      return 'Custom Workflow';
+    }
+    const words = trimmed.split(/\s+/).slice(0, 12);
+    const titled = words.map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+    return titled.join(' ');
+  }
+
+  /**
    * Minimal rule-based fallback generator.
    * Produces a simple, always-linear workflow: manual_trigger -> ai_chat_model -> log_output
    * using canonical node types from the registry.
@@ -489,7 +506,7 @@ export class AgenticWorkflowBuilder {
         ...workflow,
         metadata: {
           ...(workflow.metadata || {}),
-          summary: `Minimal fallback workflow for: ${userPrompt}`,
+          summary: this.deriveSummaryFromPrompt(userPrompt),
           fallback: true,
         },
       },
@@ -575,7 +592,7 @@ export class AgenticWorkflowBuilder {
         ...workflow,
         metadata: {
           ...(workflow.metadata || {}),
-          summary: `Conditional fallback workflow for: ${userPrompt}`,
+          summary: this.deriveSummaryFromPrompt(userPrompt),
           fallback: true,
           branchingFallback: true,
         },

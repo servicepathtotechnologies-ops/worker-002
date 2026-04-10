@@ -148,6 +148,23 @@ export async function runPropertyPopulationStage(
         continue;
       }
 
+      // ── Find upstream node type for build value context ──────────────────
+      let upstreamNodeType: string | undefined;
+      try {
+        const incomingEdge = workflow.edges.find((e) => e.target === nodeId);
+        if (incomingEdge) {
+          const upstreamNode = workflow.nodes.find((n) => n.id === incomingEdge.source);
+          if (upstreamNode) {
+            upstreamNodeType = upstreamNode.type ?? upstreamNode.data?.type;
+          }
+        }
+      } catch {
+        // non-blocking
+      }
+
+      // ── Get build value context from registry ────────────────────────────
+      const buildCtx = unifiedNodeRegistry.getBuildValueContext(nodeType, upstreamNodeType);
+
       if (!node.data) {
         (node as { data: Record<string, unknown> }).data = { config: {} };
       }
@@ -195,6 +212,31 @@ export async function runPropertyPopulationStage(
         }
       }
 
+      // Build upstream fields hint
+      let upstreamFieldsHint = '';
+      if (buildCtx.upstreamFields.length > 0) {
+        upstreamFieldsHint =
+          `\nUPSTREAM_OUTPUT_FIELDS (reference these in long_body fields using {{$json.<field>}} syntax):\n` +
+          buildCtx.upstreamFields
+            .map((f) => `  - ${f.name}: ${f.type}${f.description ? ` — ${f.description}` : ''}`)
+            .join('\n') +
+          `\nFor fields with role "long_body", you MUST include at least one {{$json.<field>}} reference ` +
+          `where <field> is one of the upstream field names listed above.\n`;
+      }
+
+      // Build field roles hint
+      let fieldRolesHint = '';
+      if (buildCtx.targetFields.length > 0) {
+        fieldRolesHint =
+          `\nFIELD_ROLES (use these to guide value generation):\n` +
+          buildCtx.targetFields
+            .map((f) => `  - ${f.name}: role=${f.role}, essential=${f.essentialForExecution}`)
+            .join('\n') +
+          `\nFor "title_like" fields: generate a concise, human-readable summary derived from the user's intent. ` +
+          `Do NOT use generic placeholders like "Generated Subject" or "Process the workflow".\n` +
+          `For "long_body" fields: reference upstream data using {{$json.<field>}} template syntax.\n`;
+      }
+
       const userMessage =
         `USER_INTENT:\n${userIntent}\n\n` +
         `WORKFLOW_BLUEPRINT:\n${structuralPrompt}\n\n` +
@@ -202,6 +244,8 @@ export async function runPropertyPopulationStage(
         `NODE_TYPE: ${nodeType}\n` +
         `NODE_ID: ${nodeId}\n` +
         upstreamFormFieldsHint +
+        upstreamFieldsHint +
+        fieldRolesHint +
         `\nFIELDS_TO_POPULATE:\n${fieldsText}\n\n` +
         `Return a JSON object with keys matching the field names above.\n` +
         `For array/object fields, return valid JSON values (not strings).`;
@@ -269,6 +313,10 @@ export async function runPropertyPopulationStage(
       for (const [key, value] of Object.entries(parsed)) {
         const fieldDef = inputSchema[key];
         if (!fieldDef) continue;
+        // Gate 1: Skip fields where supportsBuildtimeAI is explicitly false
+        if (fieldDef.fillMode?.supportsBuildtimeAI === false) continue;
+        // Gate 2: Skip fields where fillMode.default is runtime_ai (defer to runtime)
+        if (fieldDef.fillMode?.default === 'runtime_ai') continue;
         if (fieldDef.fillMode?.default !== 'buildtime_ai_once') continue;
         if (fieldDef.ownership === 'credential') continue;
 
@@ -295,6 +343,19 @@ export async function runPropertyPopulationStage(
           }
         } else {
           filteredLlmValues[key] = value;
+        }
+      }
+
+      // ── Enforce {{$json.*}} references for long_body fields ──────────────
+      if (buildCtx.upstreamFields.length > 0) {
+        const firstUpstreamField = buildCtx.upstreamFields[0].name;
+        for (const [key, value] of Object.entries(filteredLlmValues)) {
+          const fieldDef = inputSchema[key];
+          if (fieldDef?.role === 'long_body' && typeof value === 'string') {
+            if (!value.includes('{{$json.')) {
+              filteredLlmValues[key] = `${value}\n\n{{$json.${firstUpstreamField}}}`;
+            }
+          }
         }
       }
 

@@ -292,6 +292,52 @@ export class AiFirstPipeline {
       }
     }
 
+    // ✅ UTILITY NODE FILTER: Remove utility/logging nodes not explicitly requested by the user.
+    // Uses registry-driven isUtilityNode() — no hardcoded type strings.
+    if (selectedForGraph.length > 0) {
+      try {
+        const { unifiedNodeRegistry: utilityReg } = require('../../core/registry/unified-node-registry') as any;
+        const promptLower = input.userPrompt.toLowerCase();
+        const intentActionsLower: string[] = Array.isArray(intentResult.intent.actions)
+          ? intentResult.intent.actions.map((a: any) => String(a).toLowerCase())
+          : [];
+
+        const beforeUtilityFilter = selectedForGraph.length;
+        const utilityFiltered = selectedForGraph.filter((sel) => {
+          // Non-utility nodes always pass
+          if (!utilityReg.isUtilityNode(sel.type)) return true;
+          // Utility node: only keep if user prompt or intent actions explicitly mention it
+          const nodeDef = utilityReg.get(sel.type);
+          const nodeLabel = String(nodeDef?.label || sel.type).toLowerCase();
+          const nodeType = sel.type.toLowerCase();
+          const aliases = [nodeType, nodeLabel, ...(nodeDef?.tags || []).map((t: string) => t.toLowerCase())];
+          const mentionedInPrompt = aliases.some(
+            (alias) => promptLower.includes(alias.replace(/_/g, ' ')) || promptLower.includes(alias)
+          );
+          const mentionedInActions = intentActionsLower.some((action) =>
+            aliases.some((alias) => action.includes(alias) || alias.includes(action.replace(/\s+/g, '_')))
+          );
+          return mentionedInPrompt || mentionedInActions;
+        });
+
+        if (utilityFiltered.length < beforeUtilityFilter) {
+          logger.info({
+            event: 'ai_pipeline_utility_filter',
+            correlationId,
+            before: beforeUtilityFilter,
+            after: utilityFiltered.length,
+            removed: beforeUtilityFilter - utilityFiltered.length,
+            removedTypes: selectedForGraph
+              .filter((s) => !utilityFiltered.includes(s))
+              .map((s) => s.type),
+          });
+          selectedForGraph = utilityFiltered;
+        }
+      } catch (utilityFilterErr) {
+        logger.warn({ event: 'ai_pipeline_utility_filter_warn', correlationId, error: String(utilityFilterErr) });
+      }
+    }
+
     // ✅ UNIVERSAL FIX: Ensure enough branch targets exist for switch/if_else nodes.
     // The LLM sometimes collapses multiple branches into fewer unique node types.
     // For a switch with N cases, we need N downstream nodes (one per branch).

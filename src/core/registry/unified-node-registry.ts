@@ -43,6 +43,22 @@ import type { FieldHelpCategory } from '../utils/field-help-metadata';
 import { classifyFieldOwnership, isCredentialOwnership } from '../utils/field-ownership';
 import type { Workflow } from '../types/ai-types';
 
+export interface BuildValueContext {
+  upstreamFields: Array<{
+    name: string;
+    type: string;
+    description?: string;
+  }>;
+  targetFields: Array<{
+    name: string;
+    role: string;
+    type: string;
+    fillMode: any;
+    essentialForExecution: boolean;
+    supportsBuildtimeAI: boolean;
+  }>;
+}
+
 export class UnifiedNodeRegistry implements INodeRegistry {
   private static instance: UnifiedNodeRegistry;
   private definitions: Map<string, UnifiedNodeDefinition> = new Map();
@@ -1779,6 +1795,82 @@ export class UnifiedNodeRegistry implements INodeRegistry {
    */
   getExemptFromRemovalNodes(): UnifiedNodeDefinition[] {
     return this.getNodesWithBehavior('exemptFromRemoval');
+  }
+
+  /**
+   * Returns true if the given node type is classified as a utility node.
+   * Classification is registry-driven — no hardcoded type strings outside this method.
+   *
+   * Rules (in priority order):
+   * 1. Resolve alias to canonical type.
+   * 2. Look up definition; if not found, return false (fail-safe).
+   * 3. Return true if definition.category === 'utility'.
+   * 4. Return true if definition.tags includes any of ['logging', 'debug', 'side-effect', 'internal'].
+   * 5. Otherwise return false.
+   */
+  isUtilityNode(nodeType: string): boolean {
+    const canonical = this.ALIAS_MAP[nodeType.toLowerCase()] ?? nodeType;
+    const def = this.definitions.get(canonical);
+    if (!def) return false;
+    if (def.category === 'utility') return true;
+    const utilityTags = ['logging', 'debug', 'side-effect', 'internal'];
+    if ((def.tags || []).some(t => utilityTags.includes(t.toLowerCase()))) return true;
+    return false;
+  }
+
+  /**
+   * Returns context needed for build-time AI value generation for a target node,
+   * given an optional upstream node type.
+   *
+   * - upstreamFields: flat property map from the upstream node's default output port schema.
+   * - targetFields: input fields of the target node eligible for build-time AI population
+   *   (fillMode.default === 'buildtime_ai_once' OR fillMode.supportsBuildtimeAI === true),
+   *   excluding credential-owned fields.
+   *
+   * Returns { upstreamFields: [], targetFields: [] } for unknown target types.
+   */
+  getBuildValueContext(targetNodeType: string, upstreamNodeType: string | undefined): BuildValueContext {
+    const targetCanonical = this.ALIAS_MAP[targetNodeType.toLowerCase()] ?? targetNodeType;
+    const targetDef = this.definitions.get(targetCanonical);
+    if (!targetDef) {
+      return { upstreamFields: [], targetFields: [] };
+    }
+
+    // Build upstreamFields from upstream node's default output port schema properties
+    let upstreamFields: BuildValueContext['upstreamFields'] = [];
+    if (upstreamNodeType) {
+      const upstreamCanonical = this.ALIAS_MAP[upstreamNodeType.toLowerCase()] ?? upstreamNodeType;
+      const upstreamDef = this.definitions.get(upstreamCanonical);
+      const props = upstreamDef?.outputSchema?.default?.schema?.properties;
+      if (props && typeof props === 'object') {
+        upstreamFields = Object.entries(props).map(([key, val]: [string, any]) => ({
+          name: key,
+          type: val?.type || 'string',
+          description: val?.description,
+        }));
+      }
+    }
+
+    // Build targetFields from inputSchema filtered to buildtime-AI-eligible, non-credential fields
+    const targetFields: BuildValueContext['targetFields'] = [];
+    for (const [name, field] of Object.entries(targetDef.inputSchema)) {
+      const fillMode = field.fillMode;
+      const isBuildtimeEligible =
+        fillMode?.default === 'buildtime_ai_once' ||
+        fillMode?.supportsBuildtimeAI === true;
+      if (!isBuildtimeEligible) continue;
+      if (isCredentialOwnership(name, field)) continue;
+      targetFields.push({
+        name,
+        role: field.role || 'content',
+        type: field.type || 'string',
+        fillMode,
+        essentialForExecution: field.essentialForExecution ?? false,
+        supportsBuildtimeAI: fillMode?.supportsBuildtimeAI ?? false,
+      });
+    }
+
+    return { upstreamFields, targetFields };
   }
 }
 

@@ -421,4 +421,28 @@ export interface INodeRegistry {
    * ✅ UNIVERSAL: Get all exempt-from-removal nodes
    */
   getExemptFromRemovalNodes(): UnifiedNodeDefinition[];
+
+  /**
+   * Returns true if the given node type is classified as a utility node
+   * (category === 'utility' or tags include logging/debug/side-effect/internal).
+   * Returns false for unknown types (fail-safe).
+   */
+  isUtilityNode(nodeType: string): boolean;
+
+  /**
+   * Returns upstream output fields and target buildtime-AI-eligible input fields
+   * for the given node pair. Used by PropertyPopulationStage to enrich LLM prompts.
+   * Returns { upstreamFields: [], targetFields: [] } for unknown target types.
+   */
+  getBuildValueContext(targetNodeType: string, upstreamNodeType: string | undefined): {
+    upstreamFields: Array<{ name: string; type: string; description?: string }>;
+    targetFields: Array<{
+      name: string;
+      role: string;
+      type: string;
+      fillMode: any;
+      essentialForExecution: boolean;
+      supportsBuildtimeAI: boolean;
+    }>;
+  };
 }

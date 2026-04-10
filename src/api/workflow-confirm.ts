@@ -15,6 +15,8 @@ import { toolSubstitutionEngine } from '../services/ai/tool-substitution-engine'
 import { getSupabaseClient } from '../core/database/supabase-compat';
 import { nodeLibrary } from '../services/nodes/node-library';
 import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../core/utils/unified-node-type-normalizer';
+import { pendingCredentialStore } from '../services/ai/pending-credential-store';
+import { credentialInjector } from '../services/ai/credential-injector';
 
 interface ConfirmRequest {
   workflowId: string;
@@ -374,6 +376,45 @@ export async function confirmWorkflow(req: Request, res: Response) {
       });
     }
 
+    // ── Inject pending credentials from credential panel ──────────────────
+    const pendingCreds = pendingCredentialStore.get(workflowId);
+    if (pendingCreds && Object.keys(pendingCreds).length > 0) {
+      // Validate no required credential field is an empty string
+      const emptyFields: string[] = [];
+      for (const [provider, fields] of Object.entries(pendingCreds)) {
+        for (const [fieldName, value] of Object.entries(fields)) {
+          if (!value || value.trim() === '') {
+            emptyFields.push(`${provider}.${fieldName}`);
+          }
+        }
+      }
+      if (emptyFields.length > 0) {
+        return res.status(400).json({
+          error: 'Missing credential fields',
+          fields: emptyFields,
+          message: `The following credential fields are empty: ${emptyFields.join(', ')}`,
+        });
+      }
+
+      // Get required credentials from confirmation request (backward compatible: empty array if not available)
+      const requiredCredentials = (confirmationRequest as any).requiredCredentials ?? [];
+
+      // Inject credentials into workflow nodes
+      const injectionResult = credentialInjector.injectCredentials(
+        workflow,
+        pendingCreds,
+        requiredCredentials,
+      );
+      if (!injectionResult.success) {
+        return res.status(400).json({
+          error: 'Credential injection failed',
+          errors: injectionResult.errors,
+        });
+      }
+      workflow = injectionResult.workflow;
+      console.log(`[WorkflowConfirm] ✅ Injected pending credentials for workflow ${workflowId}`);
+    }
+
     // Workflow approved — AI-first pipeline generates directly, no continuation step needed.
     // Return the workflow from the confirmation request as-is.
     console.log(`[WorkflowConfirm] Workflow ${workflowId} approved`);
@@ -402,6 +443,10 @@ export async function confirmWorkflow(req: Request, res: Response) {
     }
 
     console.log(`[WorkflowConfirm] ✅ Workflow ${workflowId} confirmed successfully`);
+
+    // Clear pending credentials now that workflow is confirmed and saved
+    pendingCredentialStore.clear(workflowId);
+    console.log(`[WorkflowConfirm] ✅ Cleared pending credentials for workflow ${workflowId}`);
 
     return res.json({
       success: true,

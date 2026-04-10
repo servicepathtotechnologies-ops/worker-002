@@ -13,7 +13,7 @@
 
 import { WorkflowNode, Workflow } from '../../core/types/ai-types';
 import { RequiredCredential } from './credential-detector';
-import { nodeLibrary } from '../nodes/node-library';
+import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 import { unifiedNormalizeNodeType } from '../../core/utils/unified-node-type-normalizer';
 
 export interface CredentialInjectionResult {
@@ -121,9 +121,8 @@ export class CredentialInjector {
     provider: string,
     credentialData: Record<string, any>
   ): WorkflowNode {
-    // Get node schema to determine credential field name
+    // Get node type to determine credential field name
     const nodeType = unifiedNormalizeNodeType(node);
-    const schema = nodeLibrary.getSchema(nodeType);
 
     // Determine credential field name (usually 'credentialId' or provider-specific)
     const credentialField = this.getCredentialFieldName(nodeType, provider);
@@ -145,17 +144,13 @@ export class CredentialInjector {
   }
 
   /**
-   * Get credential field name for node type
+   * Get credential field name for node type — registry-driven, no hardcoded map.
    */
   private getCredentialFieldName(nodeType: string, provider: string): string {
-    // Most nodes use 'credentialId', but some have provider-specific fields
-    const fieldMap: Record<string, string> = {
-      'slack_message': 'webhook_url',
-      'discord': 'webhook_url',
-      'telegram': 'bot_token',
-    };
-
-    return fieldMap[nodeType] || 'credentialId';
+    const nodeDef = unifiedNodeRegistry.get(nodeType);
+    const credFields = nodeDef?.credentialSchema?.credentialFields;
+    if (credFields && credFields.length > 0) return credFields[0];
+    return 'credentialId';
   }
 
   /**

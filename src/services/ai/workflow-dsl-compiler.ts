@@ -142,46 +142,29 @@ export class WorkflowDSLCompiler {
         const config = ds.config || {};
         const hasEmptyConfig = Object.keys(config).length === 0;
         
-        // ✅ UNIVERSAL: Use registry to check if node is filter/merge (no hardcoded type checks)
-        const nodeDef = unifiedNodeRegistry.get(nodeType);
-        const isFilterOrMerge = nodeDef && (
-          // ✅ UNIVERSAL: Check tags only (works for all node types, including future ones)
-          (nodeDef.tags || []).some(tag => ['filter', 'merge'].includes(tag.toLowerCase())) ||
-          // ✅ UNIVERSAL: Check if node type name contains filter/merge (case-insensitive)
-          nodeType.toLowerCase().includes('filter') ||
-          nodeType.toLowerCase().includes('merge')
-        );
-        
-        // Keep node if it has config OR if it's not filter/merge
-        if (hasEmptyConfig && isFilterOrMerge) {
-          console.log(`[WorkflowDSLCompiler] ⚠️  Filtering out ${nodeType} node with empty config (not requested by user)`);
+        const isUtility = unifiedNodeRegistry.isUtilityNode(nodeType);
+
+        // Keep node if it has config OR if it's not a utility node
+        if (hasEmptyConfig && isUtility) {
+          console.log(`[WorkflowDSLCompiler] ⚠️  Filtering out utility node ${nodeType} with empty config (not requested by user)`);
           return false;
         }
         return true;
       });
       
       // ✅ PHASE 1 FIX: Use registry to check node types instead of hardcoded checks
-      // ✅ CRITICAL FIX: Remove filter/merge nodes that have no config (not requested by user)
+      // ✅ CRITICAL FIX: Remove utility nodes that have no config (not requested by user)
       // These nodes are often added by AI but not needed for simple linear flows
       const filteredTransformations = validatedDSL.transformations.filter(tf => {
         const nodeType = unifiedNormalizeNodeTypeString(tf.type || '');
         const config = tf.config || {};
         const hasEmptyConfig = Object.keys(config).length === 0;
         
-        // ✅ UNIVERSAL: Use registry to check if node is filter/merge (no hardcoded type checks)
-        const nodeDef = unifiedNodeRegistry.get(nodeType);
-        const isFilterOrMerge = nodeDef && (
-          // ✅ UNIVERSAL: Check tags only (works for all node types, including future ones)
-          (nodeDef.tags || []).some(tag => ['filter', 'merge'].includes(tag.toLowerCase())) ||
-          // ✅ UNIVERSAL: Check if node type name contains filter/merge (case-insensitive)
-          nodeType.toLowerCase().includes('filter') ||
-          nodeType.toLowerCase().includes('merge')
-        );
-        
-        // ✅ CRITICAL FIX: Remove filter/merge nodes with empty config (not requested by user)
-        // These nodes break linear flows and are not needed for simple workflows
-        if (hasEmptyConfig && isFilterOrMerge) {
-          console.log(`[WorkflowDSLCompiler] ⚠️  Filtering out ${nodeType} node with empty config (not requested by user, would break linear flow)`);
+        const isUtility = unifiedNodeRegistry.isUtilityNode(nodeType);
+
+        // Keep node if it has config OR if it's not a utility node
+        if (hasEmptyConfig && isUtility) {
+          console.log(`[WorkflowDSLCompiler] ⚠️  Filtering out utility node ${nodeType} with empty config (not requested by user)`);
           return false;
         }
         return true;

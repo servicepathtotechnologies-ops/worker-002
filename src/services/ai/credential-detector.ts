@@ -11,7 +11,7 @@
  */
 
 import { WorkflowStructure } from './workflow-structure-builder';
-import { nodeLibrary } from '../nodes/node-library';
+import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 
 export interface RequiredCredential {
   provider: string;
@@ -84,78 +84,24 @@ export class CredentialDetector {
    */
   private detectNodeCredentials(node: WorkflowStructure['nodes'][0]): RequiredCredential | null {
     const nodeType = node.type;
-    
-    // Rule-based credential mapping
-    const credentialMap: Record<string, { provider: string; fields: string[] }> = {
-      // CRM platforms
-      'hubspot': {
-        provider: 'hubspot',
-        fields: ['access_token', 'refresh_token'],
-      },
-      'zoho_crm': {
-        provider: 'zoho_crm',
-        fields: ['client_id', 'client_secret', 'refresh_token'],
-      },
-      'salesforce': {
-        provider: 'salesforce',
-        fields: ['access_token', 'instance_url'],
-      },
-      'pipedrive': {
-        provider: 'pipedrive',
-        fields: ['api_token'],
-      },
-      
-      // Google services
-      'google_sheets': {
-        provider: 'google_sheets',
-        fields: ['client_id', 'client_secret', 'refresh_token'],
-      },
-      'google_gmail': {
-        provider: 'google_gmail',
-        fields: ['client_id', 'client_secret', 'refresh_token'],
-      },
-      'google_calendar': {
-        provider: 'google_calendar',
-        fields: ['client_id', 'client_secret', 'refresh_token'],
-      },
-      
-      // Communication platforms
-      'slack_message': {
-        provider: 'slack',
-        fields: ['webhook_url'],
-      },
-      'discord': {
-        provider: 'discord',
-        fields: ['webhook_url'],
-      },
-      'telegram': {
-        provider: 'telegram',
-        fields: ['bot_token'],
-      },
-      
-      // Other platforms
-      'airtable': {
-        provider: 'airtable',
-        fields: ['api_key', 'base_id'],
-      },
-      'notion': {
-        provider: 'notion',
-        fields: ['api_key'],
-      },
-      'email': {
-        provider: 'email',
-        fields: ['smtp_host', 'smtp_port', 'smtp_user', 'smtp_password'],
-      },
-    };
+    const nodeDef = unifiedNodeRegistry.get(nodeType);
+    const credSchema = nodeDef?.credentialSchema;
 
-    const credentialInfo = credentialMap[nodeType];
-    if (!credentialInfo) {
-      return null; // Node doesn't require credentials
+    // No credential schema or no requirements → node doesn't need credentials
+    if (!credSchema || !credSchema.requirements || credSchema.requirements.length === 0) {
+      return null;
     }
 
+    const req = credSchema.requirements[0];
+    const fields: string[] = credSchema.credentialFields && credSchema.credentialFields.length > 0
+      ? credSchema.credentialFields
+      : [];
+
+    if (fields.length === 0) return null;
+
     return {
-      provider: credentialInfo.provider,
-      fields: credentialInfo.fields,
+      provider: req.provider,
+      fields,
       node_id: node.id,
       node_type: nodeType,
     };

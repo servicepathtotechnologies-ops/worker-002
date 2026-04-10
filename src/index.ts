@@ -137,6 +137,7 @@ import webhookTriggerRoute from './api/webhook-trigger';
 import chatApiRoute from './api/chat-api';
 import adminTemplatesRoute from './api/admin-templates';
 import adminUsersRoute from './api/admin-users';
+import deleteAccountRoute from './api/delete-account';
 import copyTemplateRoute from './api/copy-template';
 import formTriggerRoute from './api/form-trigger';
 import chatTriggerRoute from './api/chat-trigger';
@@ -551,6 +552,9 @@ app.get('/admin-users/:id', asyncHandler(adminUsersRoute));
 app.patch('/admin-users/:id', asyncHandler(adminUsersRoute));
 app.delete('/admin-users/:id', asyncHandler(adminUsersRoute));
 
+// Delete own account route
+app.delete('/api/user/account', asyncHandler(deleteAccountRoute));
+
 // Copy template routes
 app.post('/api/copy-template', asyncHandler(copyTemplateRoute));
 app.post('/copy-template', asyncHandler(copyTemplateRoute));
@@ -710,6 +714,11 @@ console.log('🔧 Field Mode Toggle API available at PATCH /api/workflows/:id/no
 app.post('/api/workflow/confirm', asyncHandler(confirmWorkflow));
 app.post('/api/workflow/reject', asyncHandler(rejectWorkflow));
 console.log('✅ Workflow Confirmation API available at /api/workflow/confirm and /api/workflow/reject');
+
+// Workflow Credentials API (pending credential store for Continue Workflow flow)
+import saveWorkflowCredentials from './api/workflow-credentials';
+app.post('/api/workflow/credentials', asyncHandler(saveWorkflowCredentials));
+console.log('✅ Workflow Credentials API available at /api/workflow/credentials');
 
 // Tool Substitution API
 app.post('/api/workflow/tool-substitute', asyncHandler(substituteTools));
