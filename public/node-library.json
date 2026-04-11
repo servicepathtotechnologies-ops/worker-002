@@ -2156,6 +2156,98 @@
     ]
   },
   {
+    "type": "whatsapp",
+    "category": "communication",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "resource",
+      "operation"
+    ],
+    "optionalConfig": [
+      "resource",
+      "operation",
+      "phoneNumberId",
+      "businessAccountId",
+      "to",
+      "text",
+      "previewUrl",
+      "mediaType",
+      "mediaUrl",
+      "mediaId",
+      "caption",
+      "latitude",
+      "longitude",
+      "locationName",
+      "address",
+      "contacts",
+      "templateName",
+      "language",
+      "templateComponents",
+      "templateCategory",
+      "templateStatus",
+      "bodyText",
+      "headerText",
+      "footerText",
+      "buttons",
+      "buttonText",
+      "sections",
+      "ctaUrl",
+      "messageId",
+      "contactId",
+      "contactName",
+      "contactPhone",
+      "contactEmail",
+      "labels",
+      "conversationId",
+      "recipients",
+      "limit",
+      "after",
+      "returnAll"
+    ]
+  },
+  {
+    "type": "whatsapp_trigger",
+    "category": "triggers",
+    "inputs": [],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "event"
+    ],
+    "optionalConfig": [
+      "event",
+      "phoneNumberId"
+    ]
+  },
+  {
+    "type": "instagram_trigger",
+    "category": "triggers",
+    "inputs": [],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "event"
+    ],
+    "optionalConfig": [
+      "event",
+      "instagramBusinessAccountId"
+    ]
+  },
+  {
     "type": "mysql",
     "category": "database",
     "inputs": [

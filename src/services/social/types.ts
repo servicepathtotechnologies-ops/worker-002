@@ -4,7 +4,14 @@
  * Common types and interfaces for social media service layer.
  */
 
-export type SocialProvider = 'github' | 'facebook' | 'twitter' | 'linkedin' | 'google';
+export type SocialProvider = 'github' | 'facebook' | 'twitter' | 'linkedin' | 'google' | 'whatsapp' | 'instagram';
+
+export interface MetaApiError {
+  code: number;
+  message: string;
+  fbtrace_id?: string;
+  userMessage: string;
+}
 
 export interface SocialServiceResponse {
   success: boolean;

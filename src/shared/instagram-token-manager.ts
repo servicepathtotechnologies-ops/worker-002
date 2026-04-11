@@ -141,13 +141,6 @@ async function refreshInstagramToken(
     }
 
     // Facebook token refresh endpoint
-    const response = await fetch(`https://graph.facebook.com/v18.0/oauth/access_token`, {
-      method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    });
-
     const url = new URL('https://graph.facebook.com/v18.0/oauth/access_token');
     url.searchParams.append('grant_type', 'fb_exchange_token');
     url.searchParams.append('client_id', clientId);

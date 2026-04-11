@@ -96,6 +96,9 @@ import { overrideClickup } from './overrides/clickup';
 import { overrideOutlook } from './overrides/outlook';
 import { overrideMemory } from './overrides/memory';
 import { overrideTool } from './overrides/tool';
+import { overrideWhatsapp } from './overrides/whatsapp';
+import { overrideWhatsappTrigger } from './overrides/whatsapp-trigger';
+import { overrideInstagramTrigger } from './overrides/instagram-trigger';
 
 type OverrideFn = (def: UnifiedNodeDefinition, schema: NodeSchema) => UnifiedNodeDefinition;
 
@@ -192,6 +195,10 @@ const overridesByType: Record<string, OverrideFn> = {
   youtube: overrideYoutube,
   facebook: overrideFacebook,
   linkedin: overrideLinkedin,
+  // ✅ WhatsApp & Instagram full nodes
+  whatsapp: overrideWhatsapp,
+  whatsapp_trigger: overrideWhatsappTrigger,
+  instagram_trigger: overrideInstagramTrigger,
   // ✅ BATCH 11: E-commerce & Payments
   shopify: overrideShopify,
   woocommerce: overrideWoocommerce,

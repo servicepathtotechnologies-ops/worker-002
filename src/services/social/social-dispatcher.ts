@@ -14,12 +14,16 @@ import { withRetry } from './retry-wrapper';
 import { SocialServiceResponse } from './types';
 import { GitHubNode, GitHubNodeParams, GitHubNodeResult } from './github-node';
 import { FacebookNode, FacebookNodeParams, FacebookNodeResult } from './facebook-node';
+import { WhatsAppNode, WhatsAppNodeParams, WhatsAppNodeResult } from './whatsapp-node';
+import { InstagramNode, InstagramNodeParams, InstagramNodeResult } from './instagram-node';
+import { getWhatsAppAccessToken } from '../../shared/whatsapp-token-manager';
+import { getInstagramAccessToken } from '../../shared/instagram-token-manager';
 
 export interface SocialNodeConfig {
-  provider: 'github' | 'facebook' | 'twitter';
+  provider: 'github' | 'facebook' | 'twitter' | 'whatsapp' | 'instagram';
   operation: string;
-  // Optional resource when using the new node pattern (GitHub/Facebook)
-  resource?: GitHubNodeParams['resource'] | FacebookNodeParams['resource'];
+  // Optional resource when using the new node pattern (GitHub/Facebook/WhatsApp/Instagram)
+  resource?: GitHubNodeParams['resource'] | FacebookNodeParams['resource'] | WhatsAppNodeParams['resource'] | InstagramNodeParams['resource'];
   [key: string]: any;
 }
 
@@ -38,6 +42,55 @@ export async function executeSocialNode(
   const userIdsToTry: string[] = [];
   if (userId) userIdsToTry.push(userId);
   if (currentUserId && currentUserId !== userId) userIdsToTry.push(currentUserId);
+
+  // WhatsApp and Instagram use their own token managers — skip generic token lookup
+  if (provider === 'whatsapp') {
+    try {
+      const waToken = await getWhatsAppAccessToken(supabase, userIdsToTry);
+      if (!waToken) {
+        return {
+          success: false,
+          provider: 'whatsapp',
+          action: operation,
+          data: {},
+          error: 'No WhatsApp token found. Please connect your WhatsApp Business account in settings.',
+        };
+      }
+      return await executeWhatsAppNode(waToken, supabase, config);
+    } catch (error) {
+      return {
+        success: false,
+        provider: 'whatsapp',
+        action: operation,
+        data: {},
+        error: error instanceof Error ? error.message : 'Unknown error occurred',
+      };
+    }
+  }
+
+  if (provider === 'instagram') {
+    try {
+      const igToken = await getInstagramAccessToken(supabase, userIdsToTry);
+      if (!igToken) {
+        return {
+          success: false,
+          provider: 'instagram',
+          action: operation,
+          data: {},
+          error: 'No Instagram token found. Please connect your Instagram account in settings.',
+        };
+      }
+      return await executeInstagramNode(igToken, supabase, config);
+    } catch (error) {
+      return {
+        success: false,
+        provider: 'instagram',
+        action: operation,
+        data: {},
+        error: error instanceof Error ? error.message : 'Unknown error occurred',
+      };
+    }
+  }
   
   const token = userIdsToTry.length > 0
     ? await getProviderToken(supabase, userIdsToTry, provider)
@@ -619,4 +672,96 @@ async function executeTwitterOperation(
         };
     }
   });
+}
+
+/**
+ * Execute WhatsApp node using comprehensive resource/operation pattern
+ */
+async function executeWhatsAppNode(
+  token: string,
+  supabase: SupabaseClient,
+  config: Record<string, any>
+): Promise<SocialServiceResponse> {
+  try {
+    const { resource, operation: op, provider: _provider, ...restConfig } = config;
+    const params: WhatsAppNodeParams = {
+      resource: resource as WhatsAppNodeParams['resource'],
+      operation: op as string,
+      ...restConfig,
+    };
+    const node = new WhatsAppNode(token, supabase);
+    const result: WhatsAppNodeResult = await node.execute(params);
+
+    if (result.success) {
+      return {
+        success: true,
+        provider: 'whatsapp',
+        action: `${result.resource}.${result.operation}`,
+        data: result.data,
+        error: null,
+      };
+    } else {
+      return {
+        success: false,
+        provider: 'whatsapp',
+        action: `${result.resource}.${result.operation}`,
+        data: {},
+        error: result.error?.message || 'WhatsApp operation failed',
+      };
+    }
+  } catch (err: any) {
+    return {
+      success: false,
+      provider: 'whatsapp',
+      action: config.operation ?? 'unknown',
+      data: {},
+      error: err?.message ?? String(err),
+    };
+  }
+}
+
+/**
+ * Execute Instagram node using comprehensive resource/operation pattern
+ */
+async function executeInstagramNode(
+  token: string,
+  supabase: SupabaseClient,
+  config: Record<string, any>
+): Promise<SocialServiceResponse> {
+  try {
+    const { resource, operation: op, provider: _provider, ...restConfig } = config;
+    const params: InstagramNodeParams = {
+      resource: resource as InstagramNodeParams['resource'],
+      operation: op as string,
+      ...restConfig,
+    };
+    const node = new InstagramNode(token, supabase);
+    const result: InstagramNodeResult = await node.execute(params);
+
+    if (result.success) {
+      return {
+        success: true,
+        provider: 'instagram',
+        action: `${result.resource}.${result.operation}`,
+        data: result.data,
+        error: null,
+      };
+    } else {
+      return {
+        success: false,
+        provider: 'instagram',
+        action: `${result.resource}.${result.operation}`,
+        data: {},
+        error: result.error?.message || 'Instagram operation failed',
+      };
+    }
+  } catch (err: any) {
+    return {
+      success: false,
+      provider: 'instagram',
+      action: config.operation ?? 'unknown',
+      data: {},
+      error: err?.message ?? String(err),
+    };
+  }
 }

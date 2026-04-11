@@ -1245,6 +1245,11 @@ export class NodeLibrary {
     // Missing Social Media Nodes
     this.addSchema(this.createFacebookSchema());
     
+    // New WhatsApp and Instagram nodes
+    this.addSchema(this.createWhatsappSchema());
+    this.addSchema(this.createWhatsappTriggerSchema());
+    this.addSchema(this.createInstagramTriggerSchema());
+    
     // Missing Database Nodes
     this.addSchema(this.createMysqlSchema());
     this.addSchema(this.createMongodbSchema());
@@ -9456,6 +9461,121 @@ export class NodeLibrary {
         'payment paypal', 'paypal api', 'paypal integration',
         'paypal process', 'process paypal', 'paypal transaction'
       ],
+    };
+  }
+
+  private createWhatsappSchema(): NodeSchema {
+    return {
+      type: 'whatsapp',
+      label: 'WhatsApp',
+      category: 'communication',
+      description: 'Send messages, manage contacts and conversations via WhatsApp Business API',
+      configSchema: {
+        required: ['resource', 'operation'],
+        optional: {
+          resource: { type: 'string', description: 'WhatsApp resource', examples: ['message', 'contact', 'conversation', 'template', 'campaign', 'aiAgent'], default: 'message' },
+          operation: { type: 'string', description: 'WhatsApp operation', examples: ['sendText', 'sendMedia', 'sendLocation', 'sendContact', 'sendTemplate', 'sendInteractiveButtons', 'sendInteractiveList', 'sendInteractiveCTA', 'markAsRead'], default: 'sendText' },
+          phoneNumberId: { type: 'string', description: 'WhatsApp Phone Number ID' },
+          businessAccountId: { type: 'string', description: 'WhatsApp Business Account ID' },
+          to: { type: 'string', description: 'Recipient phone number' },
+          text: { type: 'string', description: 'Message text' },
+          previewUrl: { type: 'boolean', description: 'Enable URL preview', default: false },
+          mediaType: { type: 'string', description: 'Media type', examples: ['image', 'video', 'audio', 'document', 'sticker'] },
+          mediaUrl: { type: 'string', description: 'Media URL' },
+          mediaId: { type: 'string', description: 'Media ID' },
+          caption: { type: 'string', description: 'Media caption' },
+          latitude: { type: 'number', description: 'Location latitude' },
+          longitude: { type: 'number', description: 'Location longitude' },
+          locationName: { type: 'string', description: 'Location name' },
+          address: { type: 'string', description: 'Location address' },
+          contacts: { type: 'array', description: 'Contact objects' },
+          templateName: { type: 'string', description: 'Template name' },
+          language: { type: 'string', description: 'Template language code' },
+          templateComponents: { type: 'array', description: 'Template components' },
+          templateCategory: { type: 'string', description: 'Template category', examples: ['MARKETING', 'UTILITY', 'AUTHENTICATION'] },
+          templateStatus: { type: 'string', description: 'Template approval status' },
+          bodyText: { type: 'string', description: 'Interactive message body text' },
+          headerText: { type: 'string', description: 'Interactive message header text' },
+          footerText: { type: 'string', description: 'Interactive message footer text' },
+          buttons: { type: 'array', description: 'Interactive buttons' },
+          buttonText: { type: 'string', description: 'List button text' },
+          sections: { type: 'array', description: 'List sections' },
+          ctaUrl: { type: 'object', description: 'CTA URL object' },
+          messageId: { type: 'string', description: 'Message ID' },
+          contactId: { type: 'string', description: 'Contact ID' },
+          contactName: { type: 'string', description: 'Contact name' },
+          contactPhone: { type: 'string', description: 'Contact phone' },
+          contactEmail: { type: 'string', description: 'Contact email' },
+          labels: { type: 'array', description: 'Contact labels' },
+          conversationId: { type: 'string', description: 'Conversation ID' },
+          recipients: { type: 'array', description: 'Campaign recipients' },
+          limit: { type: 'number', description: 'Pagination limit', default: 20 },
+          after: { type: 'string', description: 'Pagination cursor' },
+          returnAll: { type: 'boolean', description: 'Return all results', default: false },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: ['User mentions WhatsApp', 'WhatsApp Business messaging', 'Send WhatsApp message'],
+        whenNotToUse: ['Other messaging platforms'],
+        keywords: ['whatsapp', 'whatsapp business', 'whatsapp message', 'whatsapp api', 'wa'],
+        useCases: ['WhatsApp messaging', 'Business communication', 'Customer support'],
+        intentDescription: 'WhatsApp Business API node for sending messages, managing contacts and conversations. Supports text, media, location, template, and interactive messages.',
+        intentCategories: ['messaging', 'whatsapp', 'communication', 'business_messaging'],
+      },
+      commonPatterns: [],
+      validationRules: [],
+    };
+  }
+
+  private createWhatsappTriggerSchema(): NodeSchema {
+    return {
+      type: 'whatsapp_trigger',
+      label: 'WhatsApp Trigger',
+      category: 'triggers',
+      description: 'Trigger workflows on WhatsApp events: message received, delivered, read, conversation created',
+      configSchema: {
+        required: ['event'],
+        optional: {
+          event: { type: 'string', description: 'WhatsApp event type', examples: ['message.received', 'message.sent', 'message.delivered', 'message.read', 'conversation.created', 'conversation.handoff'], default: 'message.received' },
+          phoneNumberId: { type: 'string', description: 'WhatsApp Phone Number ID to listen on' },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: ['Trigger on WhatsApp message', 'WhatsApp webhook trigger'],
+        whenNotToUse: ['Sending WhatsApp messages (use whatsapp node)'],
+        keywords: ['whatsapp trigger', 'whatsapp webhook', 'whatsapp event', 'on whatsapp message'],
+        useCases: ['WhatsApp chatbot', 'Automated WhatsApp responses'],
+        intentDescription: 'WhatsApp trigger node that fires workflows when WhatsApp events occur such as message received, delivered, read, or conversation created.',
+        intentCategories: ['trigger', 'whatsapp', 'webhook', 'messaging'],
+      },
+      commonPatterns: [],
+      validationRules: [],
+    };
+  }
+
+  private createInstagramTriggerSchema(): NodeSchema {
+    return {
+      type: 'instagram_trigger',
+      label: 'Instagram Trigger',
+      category: 'triggers',
+      description: 'Trigger workflows on Instagram events: new DM, comment, mention, postback',
+      configSchema: {
+        required: ['event'],
+        optional: {
+          event: { type: 'string', description: 'Instagram event type', examples: ['message.received', 'comment.created', 'mention.created', 'postback'], default: 'message.received' },
+          instagramBusinessAccountId: { type: 'string', description: 'Instagram Business Account ID to listen on' },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: ['Trigger on Instagram DM', 'Instagram webhook trigger', 'Instagram comment trigger'],
+        whenNotToUse: ['Posting to Instagram (use instagram node)'],
+        keywords: ['instagram trigger', 'instagram webhook', 'instagram event', 'on instagram message', 'instagram dm trigger'],
+        useCases: ['Instagram chatbot', 'Automated Instagram responses', 'Comment moderation'],
+        intentDescription: 'Instagram trigger node that fires workflows when Instagram events occur such as new DM, comment, mention, or postback.',
+        intentCategories: ['trigger', 'instagram', 'webhook', 'social_media'],
+      },
+      commonPatterns: [],
+      validationRules: [],
     };
   }
 
