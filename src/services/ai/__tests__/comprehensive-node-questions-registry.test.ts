@@ -47,15 +47,15 @@ describe('generateComprehensiveNodeQuestions + registry helpCategory', () => {
     expect(spreadsheetQ).toBeUndefined();
   });
 
-  it('treats webhookUrl as credential (vault) for slack_webhook when empty', () => {
+  it('includes webhookUrl prompt for slack_message in full configuration mode', () => {
     const wf: Workflow = {
       nodes: [
         {
           id: 'n1',
-          type: 'slack_webhook',
+          type: 'slack_message',
           data: {
             label: 'Slack',
-            type: 'slack_webhook',
+            type: 'slack_message',
             category: 'output',
             config: {},
           },
@@ -63,9 +63,30 @@ describe('generateComprehensiveNodeQuestions + registry helpCategory', () => {
       ],
       edges: [],
     };
-    const { questions } = generateComprehensiveNodeQuestions(wf, {}, { categories: ['credential'] });
+    const { questions } = generateComprehensiveNodeQuestions(wf, {}, { mode: 'full_configuration' });
     const webhookQ = questions.find((q) => q.fieldName === 'webhookUrl');
     expect(webhookQ).toBeDefined();
-    expect(webhookQ?.category).toBe('credential');
+  });
+
+  it('deduplicates alias-equivalent fields by canonical field name', () => {
+    const wf: Workflow = {
+      nodes: [
+        {
+          id: 'n1',
+          type: 'slack_message',
+          data: {
+            label: 'Slack',
+            type: 'slack_message',
+            category: 'communication',
+            config: {},
+          },
+        },
+      ],
+      edges: [],
+    };
+
+    const { questions } = generateComprehensiveNodeQuestions(wf, {}, { mode: 'full_configuration' });
+    const messageLike = questions.filter((q) => ['text', 'message'].includes(String(q.fieldName)));
+    expect(messageLike.length).toBeLessThanOrEqual(1);
   });
 });

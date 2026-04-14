@@ -41,6 +41,91 @@ import { getStageProgress, STAGE_LOG_LABELS } from './stage-progress-map';
 
 const STRUCTURAL_BLUEPRINT_MAX_LEN = 4000;
 
+type MergeWorkflowNode = {
+  id?: string;
+  type?: string;
+  data?: {
+    type?: string;
+    config?: Record<string, any>;
+    meta?: Record<string, any>;
+  };
+};
+
+type MergeWorkflowEdge = {
+  source?: string;
+  target?: string;
+  type?: string;
+  sourceHandle?: string;
+};
+
+function canonicalNodeTypeForMerge(node: MergeWorkflowNode | undefined): string {
+  return String(node?.data?.type || node?.type || '').trim().toLowerCase();
+}
+
+function normalizeBranchTagForMerge(node: MergeWorkflowNode | undefined): string {
+  return String(node?.data?.meta?.branchTag || '').trim().toLowerCase();
+}
+
+function branchSlotForMerge(edge: MergeWorkflowEdge): string {
+  const raw = String(edge.type || edge.sourceHandle || '').trim().toLowerCase();
+  return raw || 'main';
+}
+
+function isBranchSlotForMerge(slot: string): boolean {
+  return (
+    slot === 'true' ||
+    slot === 'false' ||
+    slot.startsWith('case_')
+  );
+}
+
+function buildIncomingEdgesByTarget(edges: MergeWorkflowEdge[]): Map<string, MergeWorkflowEdge[]> {
+  const incomingByTarget = new Map<string, MergeWorkflowEdge[]>();
+  for (const edge of edges || []) {
+    const target = String(edge.target || '').trim();
+    if (!target) continue;
+    if (!incomingByTarget.has(target)) incomingByTarget.set(target, []);
+    incomingByTarget.get(target)!.push(edge);
+  }
+  return incomingByTarget;
+}
+
+function buildBranchLineageSignature(
+  nodeId: string,
+  incomingByTarget: Map<string, MergeWorkflowEdge[]>,
+  visited = new Set<string>()
+): string {
+  if (!nodeId || visited.has(nodeId)) return '';
+  visited.add(nodeId);
+
+  const incoming = (incomingByTarget.get(nodeId) || []).slice().sort((a, b) => {
+    const as = `${String(a.source || '')}:${branchSlotForMerge(a)}`;
+    const bs = `${String(b.source || '')}:${branchSlotForMerge(b)}`;
+    return as.localeCompare(bs);
+  });
+  if (incoming.length === 0) return '';
+
+  const parts: string[] = [];
+  for (const edge of incoming) {
+    const source = String(edge.source || '').trim();
+    if (!source) continue;
+    const slot = branchSlotForMerge(edge);
+    if (!isBranchSlotForMerge(slot)) continue;
+    const upstream = buildBranchLineageSignature(source, incomingByTarget, visited);
+    parts.push(upstream ? `${upstream}>${source}:${slot}` : `${source}:${slot}`);
+  }
+  return parts.join('|');
+}
+
+function isMeaningfulExistingValue(value: unknown): boolean {
+  return !(
+    value === null ||
+    value === undefined ||
+    value === '' ||
+    (Array.isArray(value) && value.length === 0)
+  );
+}
+
 /**
  * Canonical build-time metadata for save / attach-inputs / resolveWorkflowRuntimeIntent.
  * Does not mutate nodes or edges.
@@ -499,33 +584,108 @@ export class AiFirstPipeline {
     // AI-assigned values from prior generations rather than discarding them.
     let mergedWorkflow = ppResult.workflow;
     if (input.existingWorkflow && input.existingWorkflow.nodes && input.existingWorkflow.nodes.length > 0) {
-      const existingNodesByType = new Map<string, any>();
-      const existingNodesById = new Map<string, any>();
-      for (const existingNode of input.existingWorkflow.nodes) {
-        const nodeType = existingNode.data?.type || existingNode.type;
-        if (nodeType) existingNodesByType.set(nodeType, existingNode);
-        if (existingNode.id) existingNodesById.set(existingNode.id, existingNode);
+      const existingNodes = (input.existingWorkflow.nodes || []) as MergeWorkflowNode[];
+      const existingEdges = (input.existingWorkflow.edges || []) as MergeWorkflowEdge[];
+      const generatedEdges = (mergedWorkflow.edges || []) as MergeWorkflowEdge[];
+
+      const existingIncomingByTarget = buildIncomingEdgesByTarget(existingEdges);
+      const generatedIncomingByTarget = buildIncomingEdgesByTarget(generatedEdges);
+
+      const existingNodesById = new Map<string, MergeWorkflowNode>();
+      const existingBySignature = new Map<string, MergeWorkflowNode[]>();
+      const existingByType = new Map<string, MergeWorkflowNode[]>();
+
+      for (const node of existingNodes) {
+        const nodeId = String(node.id || '').trim();
+        const nodeType = canonicalNodeTypeForMerge(node);
+        if (!nodeType) continue;
+        if (nodeId) {
+          existingNodesById.set(nodeId, node);
+        }
+
+        const lineage = nodeId
+          ? buildBranchLineageSignature(nodeId, existingIncomingByTarget, new Set<string>())
+          : '';
+        const branchTag = normalizeBranchTagForMerge(node);
+        const signatures = [
+          `${nodeType}|${branchTag}|${lineage}`,
+          `${nodeType}||${lineage}`,
+          `${nodeType}|${branchTag}|`,
+          `${nodeType}||`,
+        ];
+        for (const key of signatures) {
+          if (!existingBySignature.has(key)) existingBySignature.set(key, []);
+          existingBySignature.get(key)!.push(node);
+        }
+        if (!existingByType.has(nodeType)) existingByType.set(nodeType, []);
+        existingByType.get(nodeType)!.push(node);
       }
 
-      const mergedNodes = mergedWorkflow.nodes.map((generatedNode: any) => {
-        const nodeType = generatedNode.data?.type || generatedNode.type;
-        // Match by id first, then by type
-        const existingNode = existingNodesById.get(generatedNode.id) || existingNodesByType.get(nodeType);
-        if (!existingNode) return generatedNode;
-
-        const existingConfig = existingNode.data?.config || {};
-        const generatedConfig = { ...(generatedNode.data?.config || {}) };
-        let merged = false;
-
-        for (const [field, value] of Object.entries(existingConfig)) {
-          // Only copy non-empty values from existing workflow (preserve AI-assigned values)
-          if (value !== null && value !== undefined && value !== '') {
-            generatedConfig[field] = value;
-            merged = true;
+      const consumedExistingNodeIds = new Set<string>();
+      const resolveExistingNodeForGenerated = (generatedNode: MergeWorkflowNode): MergeWorkflowNode | undefined => {
+        const generatedId = String(generatedNode.id || '').trim();
+        if (generatedId) {
+          const exact = existingNodesById.get(generatedId);
+          if (exact && !consumedExistingNodeIds.has(String(exact.id || '').trim())) {
+            return exact;
           }
         }
 
-        if (!merged) return generatedNode;
+        const nodeType = canonicalNodeTypeForMerge(generatedNode);
+        if (!nodeType) return undefined;
+        const branchTag = normalizeBranchTagForMerge(generatedNode);
+        const lineage = generatedId
+          ? buildBranchLineageSignature(generatedId, generatedIncomingByTarget, new Set<string>())
+          : '';
+        const keys = [
+          `${nodeType}|${branchTag}|${lineage}`,
+          `${nodeType}||${lineage}`,
+          `${nodeType}|${branchTag}|`,
+          `${nodeType}||`,
+        ];
+        for (const key of keys) {
+          const candidates = existingBySignature.get(key) || [];
+          const match = candidates.find((n) => !consumedExistingNodeIds.has(String(n.id || '').trim()));
+          if (match) return match;
+        }
+        const byType = existingByType.get(nodeType) || [];
+        return byType.find((n) => !consumedExistingNodeIds.has(String(n.id || '').trim()));
+      };
+
+      const mergedNodes = mergedWorkflow.nodes.map((generatedNode: any) => {
+        const existingNode = resolveExistingNodeForGenerated(generatedNode);
+        if (!existingNode) return generatedNode;
+        const existingNodeId = String(existingNode.id || '').trim();
+        if (existingNodeId) consumedExistingNodeIds.add(existingNodeId);
+
+        const existingConfig = (existingNode.data?.config || {}) as Record<string, unknown>;
+        const generatedConfig = { ...(generatedNode.data?.config || {}) } as Record<string, unknown>;
+        let mergedAnyField = false;
+
+        for (const [field, value] of Object.entries(existingConfig)) {
+          if (!isMeaningfulExistingValue(value)) continue;
+
+          if (
+            value &&
+            typeof value === 'object' &&
+            !Array.isArray(value) &&
+            generatedConfig[field] &&
+            typeof generatedConfig[field] === 'object' &&
+            !Array.isArray(generatedConfig[field])
+          ) {
+            generatedConfig[field] = {
+              ...(generatedConfig[field] as Record<string, unknown>),
+              ...(value as Record<string, unknown>),
+            };
+            mergedAnyField = true;
+            continue;
+          }
+
+          generatedConfig[field] = value;
+          mergedAnyField = true;
+        }
+
+        if (!mergedAnyField) return generatedNode;
         return {
           ...generatedNode,
           data: { ...generatedNode.data, config: generatedConfig },
@@ -533,7 +693,12 @@ export class AiFirstPipeline {
       });
 
       mergedWorkflow = { ...mergedWorkflow, nodes: mergedNodes };
-      logger.info({ event: 'existing_workflow_config_merged', correlationId, mergedNodes: mergedNodes.length });
+      logger.info({
+        event: 'existing_workflow_config_merged',
+        correlationId,
+        mergedNodes: mergedNodes.length,
+        consumedExistingNodes: consumedExistingNodeIds.size,
+      });
     }
 
     // ── Stage 7: Credential Discovery ─────────────────────────────────────

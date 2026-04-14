@@ -101,8 +101,8 @@ export default async function saveWorkflowHandler(req: Request, res: Response) {
       })),
     });
     
-    // 1. Normalize workflow (apply migrations)
-    const normalized = normalizeWorkflowForSave(nodes, edges);
+    // 1. Normalize workflow in config-only mode so save does not rewrite topology.
+    const normalized = normalizeWorkflowForSave(nodes, edges, { structuralMode: 'configOnly' });
     
     // ✅ DEBUG: Log normalization results
     console.log('[SaveWorkflow] 🔄 Normalized workflow:', {
