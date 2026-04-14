@@ -117,12 +117,15 @@ export default async function generateWorkflow(req: Request, res: Response): Pro
 
     const existingWorkflow = body.existingWorkflow as any | undefined;
 
-    const isStreaming = req.headers['x-stream-progress'] === 'true';
+    const rawStreamHeader = req.headers['x-stream-progress'];
+    const streamHeaderValue = Array.isArray(rawStreamHeader) ? rawStreamHeader[0] : rawStreamHeader;
+    const isStreaming = ['true', '1', 'yes'].includes(String(streamHeaderValue || '').toLowerCase());
 
     if (isStreaming) {
       // ── Streaming mode: emit NDJSON stage events ──────────────────────────
       res.setHeader('Content-Type', 'application/x-ndjson');
       res.setHeader('Transfer-Encoding', 'chunked');
+      res.setHeader('Cache-Control', 'no-cache');
       res.flushHeaders();
 
       const writeEvent = (event: object) => res.write(JSON.stringify(event) + '\n');
@@ -165,6 +168,7 @@ export default async function generateWorkflow(req: Request, res: Response): Pro
 
       // Terminal payload as a single NDJSON line
       writeEvent({
+        status: 'success',
         success: true,
         phase: 'ready',
         workflow: result.workflow,
