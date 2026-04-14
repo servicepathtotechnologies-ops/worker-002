@@ -25,28 +25,6 @@ import { unifiedNodeRegistry } from '../core/registry/unified-node-registry';
 
 const pipeline = new AiFirstPipeline();
 
-function humanizeNodeType(nodeType: string): string {
-  return nodeType.replace(/_/g, ' ').trim();
-}
-
-function buildUiStructuredSummary(userPrompt: string, proposedNodeChain: string[]): string {
-  const steps = proposedNodeChain
-    .filter((nodeType) => typeof nodeType === 'string' && nodeType.trim().length > 0)
-    .map((nodeType, idx) => `${idx + 1}. ${humanizeNodeType(nodeType)}`);
-
-  const terminalCount = proposedNodeChain.filter((nodeType) => nodeType === 'log_output').length;
-  const terminalLine =
-    terminalCount > 1
-      ? `Terminals: ${terminalCount} terminal outputs (one per branch path).`
-      : 'Terminal: log output';
-
-  return [
-    `Goal:\n${userPrompt}`,
-    `Execution:\n${steps.join('\n')}`,
-    terminalLine,
-  ].join('\n\n');
-}
-
 export default async function generateWorkflow(req: Request, res: Response): Promise<void> {
   const correlationId = randomUUID();
 
@@ -74,16 +52,12 @@ export default async function generateWorkflow(req: Request, res: Response): Pro
       const intentResult = await runIntentStage(userPrompt, nodeCatalog, correlationId);
       const terminalFallback = resolvePreferredTerminalNodeType();
       if (!intentResult.ok) {
-        const fallbackChain = ['manual_trigger', terminalFallback];
         res.json({
           phase: 'summarize',
           workflowIntentPlan: {
-            structuredSummary: buildUiStructuredSummary(userPrompt, fallbackChain),
-            proposedNodeChain: fallbackChain,
+            structuredSummary: userPrompt,
+            proposedNodeChain: ['manual_trigger', terminalFallback],
             mandatoryNodeTypes: ['manual_trigger'],
-          },
-          structuralBlueprint: {
-            available: false,
           },
           matchedKeywords: [],
           mandatoryNodeTypes: ['manual_trigger'],
@@ -94,6 +68,7 @@ export default async function generateWorkflow(req: Request, res: Response): Pro
 
       // Stage 2: generate structural blueprint
       const spResult = await runStructuralPromptStage(intentResult.intent, nodeCatalog, correlationId);
+      const structuredSummary = spResult.ok ? spResult.structuralPrompt : intentResult.intent.intent;
       const structuralForSelection = spResult.ok ? spResult.structuralPrompt : undefined;
 
       // Stage 3: same node selection as full pipeline — registry-grounded chain (no fixed log_output suffix)
@@ -118,8 +93,6 @@ export default async function generateWorkflow(req: Request, res: Response): Pro
           .slice(0, 8);
         proposedNodeChain = [trig, ...actions, terminalFallback];
       }
-      // Keep backend structural analysis deep, but send concise and non-repetitive plan text to the UI.
-      const structuredSummary = buildUiStructuredSummary(userPrompt, proposedNodeChain);
 
       res.json({
         phase: 'summarize',
@@ -132,18 +105,6 @@ export default async function generateWorkflow(req: Request, res: Response): Pro
             return acc;
           }, {}),
         },
-        structuralBlueprint: spResult.ok
-          ? {
-              available: true,
-              text: spResult.structuralPrompt,
-              contract: spResult.structuralContract,
-              llmCall: spResult.llmCall,
-              durationMs: spResult.durationMs,
-            }
-          : {
-              available: false,
-              code: spResult.code,
-            },
         matchedKeywords: intentResult.intent.actions,
         mandatoryNodeTypes: [intentResult.intent.triggerType || 'manual_trigger'],
         correlationId,

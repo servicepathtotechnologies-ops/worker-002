@@ -174,10 +174,6 @@ import { authStatusHandler } from './api/auth-status';
 import saveSocialTokenRoute from './api/save-social-token';
 import { notionAuthorizeHandler, notionCallbackHandler } from './api/oauth-notion';
 import { twitterAuthorizeHandler, twitterCallbackHandler } from './api/oauth-twitter';
-import { salesforceAuthorizeHandler, salesforceCallbackHandler } from './api/oauth-salesforce';
-import { instagramAuthorizeHandler, instagramCallbackHandler, instagramRefreshHandler, instagramStatusHandler, instagramDisconnectHandler } from './api/oauth-instagram';
-import { instagramResolveIdHandler } from './api/instagram-resolve-id';
-import { whatsappAuthorizeHandler, whatsappCallbackHandler, whatsappStatusHandler, whatsappDisconnectHandler } from './api/oauth-whatsapp';
 import { createRazorpayOrder, verifyRazorpayPayment } from './api/payments-razorpay';
 
 
@@ -522,24 +518,6 @@ app.post('/api/oauth/notion/callback', asyncHandler(notionCallbackHandler));
 // Twitter OAuth endpoints
 app.get('/api/oauth/twitter/authorize', asyncHandler(twitterAuthorizeHandler));
 app.post('/api/oauth/twitter/callback', asyncHandler(twitterCallbackHandler));
-
-// Salesforce OAuth endpoints
-app.get('/api/oauth/salesforce/authorize', asyncHandler(salesforceAuthorizeHandler));
-app.post('/api/oauth/salesforce/callback', asyncHandler(salesforceCallbackHandler));
-
-// Instagram OAuth endpoints
-app.get('/api/oauth/instagram/authorize', asyncHandler(instagramAuthorizeHandler));
-app.post('/api/oauth/instagram/callback', asyncHandler(instagramCallbackHandler));
-app.post('/api/oauth/instagram/refresh', asyncHandler(instagramRefreshHandler));
-app.get('/api/connections/instagram/status', asyncHandler(instagramStatusHandler));
-app.delete('/api/connections/instagram', asyncHandler(instagramDisconnectHandler));
-app.post('/api/connections/instagram/resolve-id', asyncHandler(instagramResolveIdHandler));
-
-// WhatsApp OAuth endpoints
-app.get('/api/oauth/whatsapp/authorize', asyncHandler(whatsappAuthorizeHandler));
-app.post('/api/oauth/whatsapp/callback', asyncHandler(whatsappCallbackHandler));
-app.get('/api/connections/whatsapp/status', asyncHandler(whatsappStatusHandler));
-app.delete('/api/connections/whatsapp', asyncHandler(whatsappDisconnectHandler));
 app.post('/api/connections/linkedin/refresh-now', asyncHandler(linkedinRefreshNowHandler));
 app.delete('/api/connections/linkedin', asyncHandler(linkedinDisconnectHandler));
 

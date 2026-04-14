@@ -220,10 +220,12 @@ export function buildWorkflowFromPlanChain(planChain: string[], rawUserPrompt?: 
     };
   }
 
+  const trimmedPrompt = typeof rawUserPrompt === 'string' ? rawUserPrompt.trim() : '';
   const hasSwitch = resolvedChain.some((t) => stripPlanTokenToType(t) === 'switch');
-  const switchContext = hasSwitch
-    ? computeSwitchContextForPlanChain(nodes, resolvedChain)
-    : undefined;
+  const switchContext =
+    trimmedPrompt.length > 0 && hasSwitch
+      ? computeSwitchContextForPlanChain(nodes, resolvedChain, trimmedPrompt)
+      : undefined;
 
   let workflow: any;
   let executionOrder: any;

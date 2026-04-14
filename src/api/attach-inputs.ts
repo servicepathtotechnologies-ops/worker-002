@@ -59,7 +59,6 @@ import {
   shouldPreserveExistingBuildtimeValue,
 } from '../core/utils/attach-inputs-merge-guard';
 import type { NodeInputField, NodeInputSchema } from '../core/types/unified-node-contract';
-import { createHash } from 'crypto';
 
 /**
  * Credential-class fields are usually injected via attach-credentials / vault.
@@ -203,27 +202,6 @@ export function normalizeSwitchCasesInput(raw: unknown): { value: Array<{ value:
   return { value: normalized, valid: normalized.length > 0 };
 }
 
-function sortObjectKeysDeep(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(sortObjectKeysDeep);
-  }
-  if (value && typeof value === 'object') {
-    const input = value as Record<string, unknown>;
-    const sortedKeys = Object.keys(input).sort((a, b) => a.localeCompare(b));
-    const normalized: Record<string, unknown> = {};
-    for (const key of sortedKeys) {
-      normalized[key] = sortObjectKeysDeep(input[key]);
-    }
-    return normalized;
-  }
-  return value;
-}
-
-function fingerprintAttachInputsPayload(inputs: Record<string, unknown>): string {
-  const canonical = JSON.stringify(sortObjectKeysDeep(inputs));
-  return createHash('sha256').update(canonical).digest('hex');
-}
-
 export default async function attachInputsHandler(req: Request, res: Response) {
   return runWithBuildUsageTracking(async () => {
   try {
@@ -321,8 +299,6 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     // Use sanitized inputs
     const cleanInputs = Object.keys(sanitizedInputs).length > 0 ? sanitizedInputs : inputs;
 
-    const payloadFingerprint = fingerprintAttachInputsPayload(cleanInputs as Record<string, unknown>);
-
     /** Keys that look like bare node IDs but are not nested `{ field: value }` objects — worker cannot map fields. */
     const invalidBareNodeIdInputKeys: string[] = [];
     const nodeIdLike =
@@ -418,56 +394,6 @@ export default async function attachInputsHandler(req: Request, res: Response) {
           )
         );
       }
-    }
-
-    const previousAttachInputs = (workflow as any)?.metadata?.attachInputs;
-    const previousPayloadFingerprint =
-      previousAttachInputs && typeof previousAttachInputs === 'object'
-        ? (previousAttachInputs as any).lastPayloadFingerprint
-        : undefined;
-    const isDuplicateReadyRequest =
-      Boolean((workflow as any)?.metadata?.freezeBoundary?.frozen) &&
-      currentPhase === 'ready_for_execution' &&
-      typeof previousPayloadFingerprint === 'string' &&
-      previousPayloadFingerprint === payloadFingerprint;
-
-    if (isDuplicateReadyRequest) {
-      const existingNodes = Array.isArray((workflow as any)?.nodes)
-        ? (workflow as any).nodes
-        : Array.isArray((workflow as any)?.graph?.nodes)
-          ? (workflow as any).graph.nodes
-          : [];
-      const existingEdges = Array.isArray((workflow as any)?.edges)
-        ? (workflow as any).edges
-        : Array.isArray((workflow as any)?.graph?.edges)
-          ? (workflow as any).graph.edges
-          : [];
-
-      console.log('[AttachInputs] 🔁 Duplicate post-freeze payload detected in ready_for_execution; returning idempotent no-op', {
-        workflowId,
-        phase: currentPhase,
-        payloadFingerprint,
-      });
-
-      return res.json({
-        success: true,
-        workflow: { nodes: existingNodes, edges: existingEdges },
-        nodes: existingNodes,
-        edges: existingEdges,
-        validation: { valid: true, errors: [], warnings: [] },
-        status: workflow.status || 'active',
-        phase: currentPhase,
-        ready: true,
-        message: 'Inputs unchanged. Workflow already ready for execution; no regeneration performed.',
-        diagnostics: {
-          duplicateRequestNoop: true,
-          payloadFingerprint,
-          freezePolicy: 'topology_only' as const,
-          postFreezeReadonly: true,
-          invalidBareNodeIdInputKeys: [],
-        },
-        buildAiUsage: snapshotBuildAiUsage(),
-      });
     }
 
     // ✅ ATOMIC PHASE FIX: Do NOT update phase here.
@@ -1476,11 +1402,6 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       ...(trimmedOriginalFromRequest
         ? { originalUserPrompt: trimmedOriginalFromRequest }
         : {}),
-      attachInputs: {
-        ...(((workflow as any)?.metadata?.attachInputs || {}) as Record<string, unknown>),
-        lastPayloadFingerprint: payloadFingerprint,
-        lastAppliedAt: new Date().toISOString(),
-      },
     };
     const usageSnap = snapshotBuildAiUsage();
     if (usageSnap.totals.callCount > 0) {

@@ -14,7 +14,6 @@
  */
 
 import { Request, Response } from 'express';
-import { createHash } from 'crypto';
 import { getSupabaseClient } from '../core/database/supabase-compat';
 import { workflowLifecycleManager } from '../services/workflow-lifecycle-manager';
 import { ErrorCode, createError } from '../core/utils/error-codes';
@@ -92,27 +91,6 @@ function validatePostFreezeGraphSafety(graph: { nodes: any[]; edges: any[] }): s
   return errors;
 }
 
-function sortObjectKeysDeep(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(sortObjectKeysDeep);
-  }
-  if (value && typeof value === 'object') {
-    const input = value as Record<string, unknown>;
-    const sortedKeys = Object.keys(input).sort((a, b) => a.localeCompare(b));
-    const normalized: Record<string, unknown> = {};
-    for (const key of sortedKeys) {
-      normalized[key] = sortObjectKeysDeep(input[key]);
-    }
-    return normalized;
-  }
-  return value;
-}
-
-function fingerprintCredentialsPayload(credentials: Record<string, unknown>): string {
-  const canonical = JSON.stringify(sortObjectKeysDeep(credentials));
-  return createHash('sha256').update(canonical).digest('hex');
-}
-
 export default async function attachCredentialsHandler(req: Request, res: Response) {
   try {
     // ✅ CRITICAL: Get workflowId from URL params (not body)
@@ -149,7 +127,6 @@ export default async function attachCredentialsHandler(req: Request, res: Respon
         )
       );
     }
-    const payloadFingerprint = fingerprintCredentialsPayload(credentials as Record<string, unknown>);
     
     // Empty credentials object is valid (workflow may not need credentials)
     console.log(`[AttachCredentials] Received ${Object.keys(credentials).length} credential(s) for workflow ${workflowId}`);
@@ -205,23 +182,12 @@ export default async function attachCredentialsHandler(req: Request, res: Respon
     // ✅ CRITICAL: Phase locking - prevent duplicate attach calls
     // Check phase field first (for execution phases), then fall back to status (for lifecycle)
     const currentPhase = workflow.phase || workflow.status || 'draft';
-    const previousAttachCredentials = (workflow as any)?.metadata?.attachCredentials;
-    const previousPayloadFingerprint =
-      previousAttachCredentials && typeof previousAttachCredentials === 'object'
-        ? (previousAttachCredentials as any).lastPayloadFingerprint
-        : undefined;
-    const isDuplicateReadyRequest =
-      Boolean((workflow as any)?.metadata?.freezeBoundary?.frozen) &&
-      currentPhase === 'ready_for_execution' &&
-      typeof previousPayloadFingerprint === 'string' &&
-      previousPayloadFingerprint === payloadFingerprint;
     
-    // ✅ PHASE GUARD: credentials can be attached only after attach-inputs establishes freeze boundary.
-    // Supported phases are:
-    // - ready_for_ownership (primary credential entry point)
-    // - configuring_credentials (retry path when credential requirements remain unresolved)
+    // ✅ PHASE GUARD: Require ready_for_ownership before credential attachment.
+    // attach-inputs must complete successfully (advancing phase to inputs_applied)
+    // before credentials can be injected. This prevents credential injection into
+    // a graph that was never properly normalized.
     const blockedPhases = ['executing', 'running', 'archived'];
-    const allowedCredentialPhases = new Set(['ready_for_ownership', 'configuring_credentials']);
 
     if (blockedPhases.includes(currentPhase)) {
       return res.status(409).json(
@@ -238,28 +204,17 @@ export default async function attachCredentialsHandler(req: Request, res: Respon
       );
     }
 
-    // Idempotent no-op: when already ready_for_execution and payload is unchanged,
-    // return success instead of failing phase guard. This avoids client retries causing 409.
-    if (isDuplicateReadyRequest || (currentPhase === 'ready_for_execution' && Object.keys(credentials || {}).length === 0)) {
-      return res.status(200).json({
-        success: true,
-        workflowId,
-        status: workflow.status || 'active',
-        phase: currentPhase,
-        message: 'Workflow already ready for execution; no credential changes applied.',
-      });
-    }
-
-    if (!allowedCredentialPhases.has(currentPhase)) {
+    // ✅ REQUIRE ready_for_ownership: credentials can only be attached after freeze boundary is established.
+    if (currentPhase !== 'ready_for_ownership') {
       return res.status(409).json(
         createError(
           ErrorCode.INVALID_PHASE,
-          'Workflow is not in a credential-configuration phase',
+          'Workflow must be in ready_for_ownership phase before credentials can be attached',
           {
             currentPhase,
             workflowId,
-            requiredPhases: Array.from(allowedCredentialPhases),
-            message: `Workflow phase is "${currentPhase}" but must be one of: ${Array.from(allowedCredentialPhases).join(', ')}. Call attach-inputs first.`,
+            requiredPhase: 'ready_for_ownership',
+            message: `Workflow phase is "${currentPhase}" but must be "ready_for_ownership". Call attach-inputs first.`,
           },
           true
         )
@@ -568,21 +523,11 @@ export default async function attachCredentialsHandler(req: Request, res: Respon
     // ✅ CRITICAL: Update workflow graph AND status in a single atomic operation
     // Also sync phase field if it exists (for backward compatibility)
     // Note: Database uses 'nodes' and 'edges' columns, not 'graph'
-    const metadataToPersist = {
-      ...(((workflow as any)?.metadata || {}) as Record<string, unknown>),
-      attachCredentials: {
-        ...(((workflow as any)?.metadata?.attachCredentials || {}) as Record<string, unknown>),
-        lastPayloadFingerprint: payloadFingerprint,
-        lastAppliedAt: new Date().toISOString(),
-      },
-    };
-
     const { data: updateData, error: updateError } = await supabase
       .from('workflows')
       .update({
         nodes: finalNormalizedGraph.nodes,
         edges: finalNormalizedGraph.edges,
-        metadata: metadataToPersist,
         status: finalStatus, // ✅ CRITICAL: Use valid enum value ('active')
         phase: finalPhase, // ✅ CRITICAL: Use TEXT field for execution phase
         updated_at: new Date().toISOString(),

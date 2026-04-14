@@ -250,14 +250,12 @@ class UnifiedGraphOrchestratorImpl implements UnifiedGraphOrchestrator {
     const caseEntries = Object.entries(caseNodeMapping);
     if (caseEntries.length === 0) return workflow;
 
-    // Build an ordered list of downstream nodes after this switch only.
+    // Build an ordered list of non-trigger/non-switch downstream nodes.
     // Used as fallback when type-based lookup finds no match.
     // Note: do NOT exclude log_output here. Switch branches may legitimately
     // terminate directly into per-branch log_output nodes.
-    const switchIndexInNodeList = workflow.nodes.findIndex((n) => n.id === switchNodeId);
-    const downstreamNodes = workflow.nodes.filter((n, idx) => {
+    const downstreamNodes = workflow.nodes.filter((n) => {
       if (n.id === switchNodeId) return false;
-      if (switchIndexInNodeList >= 0 && idx <= switchIndexInNodeList) return false;
       const nt = this.getNodeType(n);
       const def = unifiedNodeRegistry.get(nt);
       return def?.category !== 'trigger';

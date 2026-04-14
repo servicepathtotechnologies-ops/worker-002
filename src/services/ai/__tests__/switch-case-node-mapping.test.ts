@@ -33,21 +33,6 @@ describe('switch-case-node-mapping', () => {
     expect(Object.keys(mapping || {}).length).toBeGreaterThanOrEqual(2);
   });
 
-  it('uses nearest downstream nodes without wrapping to far tail nodes', () => {
-    const chain = ['manual_trigger', 'switch', 'google_gmail', 'switch', 'slack_message', 'log_output'];
-    const mapping = buildCaseNodeMappingFromPlanChain(
-      chain,
-      'route by status: shipped, cancelled',
-      ['n0', 'n1', 'n2', 'n3', 'n4', 'n5'],
-      1
-    ) as any;
-    expect(mapping).toBeDefined();
-    const targets = Object.values(mapping).map((m: any) => m.targetNodeId);
-    // Outer switch must map only to the nearest downstream candidates.
-    expect(targets).toEqual(expect.arrayContaining(['n2', 'n3']));
-    expect(targets).not.toContain('n5');
-  });
-
   it('returns multi-switch contexts when more than one switch exists', () => {
     const nodes = [
       node('n0', 'manual_trigger'),

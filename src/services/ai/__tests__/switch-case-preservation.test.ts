@@ -309,7 +309,7 @@ describe('Preservation E — N=2 switch with matching chain: buildCaseNodeMappin
     expect(Object.keys(mapping!).length).toBe(2);
   });
 
-  it('the 2-entry mapping keys are deterministic structural case slots', () => {
+  it('the 2-entry mapping keys are the condition values from the prompt', () => {
     // Feature: switch-node-case-generation-bug, Property 2: Preservation
     const chain = ['manual_trigger', 'switch', 'gmail', 'slack', 'log_output'];
     const prompt = 'route messages as sales or support';
@@ -318,9 +318,9 @@ describe('Preservation E — N=2 switch with matching chain: buildCaseNodeMappin
 
     expect(mapping).toBeDefined();
     const keys = Object.keys(mapping!);
-    // Universal mode: keys are prompt-independent structural slots.
-    expect(keys).toContain('case_1');
-    expect(keys).toContain('case_2');
+    // Keys should be the condition values: sales, support
+    expect(keys).toContain('sales');
+    expect(keys).toContain('support');
   });
 
   it('a N=2 switch workflow with matching edges passes validateWorkflow', () => {

@@ -108,24 +108,6 @@ export interface NodeQuestionsResult {
   nodeQuestionsMap: Map<string, ComprehensiveNodeQuestion[]>; // nodeId -> questions
 }
 
-function resolveCanonicalFieldName(nodeType: string, fieldName: string): string {
-  const def = unifiedNodeRegistry.get(nodeType);
-  const inputSchema = def?.inputSchema;
-  if (!inputSchema || !(fieldName in inputSchema)) {
-    return fieldName;
-  }
-  const fieldDef = (inputSchema as any)[fieldName];
-  if (fieldDef?.aliasOf && typeof fieldDef.aliasOf === 'string' && fieldDef.aliasOf.trim()) {
-    return fieldDef.aliasOf.trim();
-  }
-  return fieldName;
-}
-
-function buildCanonicalQuestionKey(question: ComprehensiveNodeQuestion): string {
-  const canonicalField = resolveCanonicalFieldName(question.nodeType, question.fieldName);
-  return `${question.nodeId}::${canonicalField}`;
-}
-
 /**
  * Ensures every registry inputSchema field has a row for Field Ownership (merge pass).
  */
@@ -133,7 +115,7 @@ function addMissingInputSchemaQuestionsForOwnership(
   workflow: Workflow,
   existing: ComprehensiveNodeQuestion[]
 ): ComprehensiveNodeQuestion[] {
-  const byKey = new Set(existing.map((q) => buildCanonicalQuestionKey(q)));
+  const byKey = new Set(existing.map((q) => `${q.nodeId}_${q.fieldName}`));
   const added: ComprehensiveNodeQuestion[] = [...existing];
   for (const node of workflow.nodes) {
     const nodeType = unifiedNormalizeNodeType(node);
@@ -142,7 +124,7 @@ function addMissingInputSchemaQuestionsForOwnership(
     if (!inputSchema) continue;
     const nodeLabel = node.data?.label || nodeType;
     for (const fieldName of Object.keys(inputSchema)) {
-      const key = `${node.id}::${resolveCanonicalFieldName(nodeType, fieldName)}`;
+      const key = `${node.id}_${fieldName}`;
       if (byKey.has(key)) continue;
       byKey.add(key);
       const fieldDef = inputSchema[fieldName] as any;
@@ -470,10 +452,10 @@ export function generateComprehensiveNodeQuestions(
   
   // ✅ CRITICAL: Deduplicate questions by fieldName within each node
   // This prevents the same field from being asked multiple times (e.g., as both credential and configuration)
-  const seenQuestionKeys = new Map<string, ComprehensiveNodeQuestion>(); // nodeId::canonicalField -> question
+  const seenQuestionKeys = new Map<string, ComprehensiveNodeQuestion>(); // nodeId_fieldName -> question
   
   for (const question of allQuestions) {
-    const key = buildCanonicalQuestionKey(question);
+    const key = `${question.nodeId}_${question.fieldName}`;
     
     // Prefer question category aligned with canonical ownership (registry-driven).
     const ownershipPriority: Record<string, number> = { credential: 0, structural: 1, value: 2 };

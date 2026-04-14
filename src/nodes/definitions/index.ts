@@ -16,7 +16,6 @@ import { logOutputNodeDefinition } from './log-output-node';
 import { httpRequestNodeDefinition } from './http-request-node';
 import { airtableNodeDefinition } from './airtable-node';
 import { pipedriveNodeDefinition } from './pipedrive-node';
-import { salesforceNodeDefinition } from './salesforce-node';
 import { notionNodeDefinition } from './notion-node';
 import { twitterNodeDefinition } from './twitter-node';
 import { facebookNodeDefinition } from './facebook-node';
@@ -69,7 +68,6 @@ export function registerAllNodeDefinitions() {
 
   // CRM nodes
   nodeDefinitionRegistry.register(pipedriveNodeDefinition);
-  nodeDefinitionRegistry.register(salesforceNodeDefinition);
 
   // Social nodes
   nodeDefinitionRegistry.register(twitterNodeDefinition);

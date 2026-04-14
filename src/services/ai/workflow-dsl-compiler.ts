@@ -1177,29 +1177,142 @@ export class WorkflowDSLCompiler {
           console.log(`[WorkflowDSLCompiler] 🔍 Switch node input analysis: Previous node "${prevNodeType}" provides fields: ${availableInputFields.join(', ')}`);
         }
         
-        // ✅ UNIVERSAL: Expression field is selected from upstream schema, not prompt text.
-        expressionField = availableInputFields[0] || 'value';
+        // ✅ STEP 2: Extract expression field from prompt intelligently
+        // Pattern: "route based on status", "switch on type", "if field equals"
+        const expressionPatterns = [
+          /(?:route|switch|based on|if|when)\s+(?:the\s+)?(\w+)\s+(?:field|column|value|is|equals)/gi,
+          /(?:switch|route)\s+(?:on|by|using)\s+["']?(\w+)["']?/gi,
+          /(?:field|column)\s+["']?(\w+)["']?/gi,
+        ];
+        
+        for (const pattern of expressionPatterns) {
+          const match = pattern.exec(originalPrompt);
+          if (match && match[1]) {
+            const field = match[1].toLowerCase();
+            // Check if this field exists in available input fields
+            if (availableInputFields.some(f => f.toLowerCase().includes(field) || field.includes(f.toLowerCase()))) {
+              expressionField = field;
+              console.log(`[WorkflowDSLCompiler] ✅ Extracted expression field from prompt: "${expressionField}"`);
+              break;
+            }
+          }
+        }
+        
+        // ✅ UNIVERSAL FIX: Use planSwitchCasesFromPrompt exclusively for case extraction.
+        // This is the single source of truth — no duplicate regex patterns here.
+        const { planSwitchCasesFromPrompt } = require('./switch-case-plan');
+        const upstreamNodeForSwitch = allNodesForEdges.find((n: any) => {
+          const nt = (n.type || n.data?.type || '').toLowerCase();
+          return nt !== 'switch' && nt !== 'log_output';
+        });
+        const upstreamTypeForSwitch = upstreamNodeForSwitch
+          ? (upstreamNodeForSwitch.type || upstreamNodeForSwitch.data?.type || '')
+          : undefined;
+        const switchPlanResult = planSwitchCasesFromPrompt(originalPrompt, upstreamTypeForSwitch);
+        const extractedCaseValues = new Set<string>(switchPlanResult.cases.map((c: any) => c.value));
+        
+        console.log(`[WorkflowDSLCompiler] 🔍 Extracted ${extractedCaseValues.size} case value(s) from prompt: ${Array.from(extractedCaseValues).join(', ')}`);
+        
+        // Step 2: Extract ALL node type mentions from prompt (universal matching)
+        // Match any node type mentioned in the prompt (slack_message, google_gmail, hubspot, etc.)
+        // ✅ PHASE 3: Build array immutably (use let for reassignment)
+    let nodeTypeMentions: Array<{ nodeType: string; position: number; node: WorkflowNode }> = [];
+        for (const outputNode of sortedOutputs) {
+          const nodeType = (outputNode.type || outputNode.data?.type || '').toLowerCase();
+          
+          // Create multiple search patterns for each node type
+          const nodeTypeVariations = [
+            nodeType, // "slack_message"
+            nodeType.replace(/_/g, ' '), // "slack message"
+            nodeType.replace(/_/g, ''), // "slackmessage"
+            // Extract key words: "slack_message" -> "slack", "google_gmail" -> "gmail"
+            ...nodeType.split('_').filter(word => word.length > 2), // ["slack", "message"]
+          ];
+          
+          // ✅ PHASE 3: Build aliases immutably
+          let aliases: string[] = [];
+          if (nodeType.includes('slack')) aliases = [...aliases, 'slack']; // ✅ PHASE 3: Immutable add
+          if (nodeType.includes('gmail') || nodeType.includes('email')) aliases = [...aliases, 'gmail', 'email']; // ✅ PHASE 3: Immutable add
+          if (nodeType.includes('log')) aliases = [...aliases, 'log']; // ✅ PHASE 3: Immutable add
+          if (nodeType.includes('hubspot')) aliases = [...aliases, 'hubspot', 'crm']; // ✅ PHASE 3: Immutable add
+          if (nodeType.includes('sheets')) aliases = [...aliases, 'sheets', 'spreadsheet']; // ✅ PHASE 3: Immutable add
+          
+          const allVariations = [...new Set([...nodeTypeVariations, ...aliases])];
+          
+          for (const variation of allVariations) {
+            // Escape special regex characters
+            const escaped = variation.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const regex = new RegExp(`\\b${escaped}\\b`, 'gi');
+            let match;
+            while ((match = regex.exec(originalPrompt)) !== null) {
+              nodeTypeMentions = [...nodeTypeMentions, { nodeType, position: match.index, node: outputNode }]; // ✅ PHASE 3: Immutable add
+            }
+          }
+        }
+        
+        // Step 3: Match cases to nodes using semantic proximity (universal matching)
+        // For each case value, find the closest node mention in the prompt
+        const promptLower = originalPrompt.toLowerCase();
+        for (const caseValue of extractedCaseValues) {
+          // Find the position of this case value in the prompt
+          const casePosition = promptLower.indexOf(caseValue);
+          if (casePosition === -1) continue;
+          
+          // Find the closest node mention after this case value
+          let closestMention: { nodeType: string; position: number; node: WorkflowNode } | null = null;
+          let minDistance = Infinity;
+          
+          for (const mention of nodeTypeMentions) {
+            // Only consider nodes that appear after the case value
+            if (mention.position > casePosition) {
+              const distance = mention.position - casePosition;
+              if (distance < minDistance) {
+                minDistance = distance;
+                closestMention = mention;
+              }
+            }
+          }
+          
+          // If found a close node, map the case to it
+          if (closestMention && minDistance < 200) { // Within 200 chars is considered related
+            if (!switchCases.some(c => c.value === caseValue)) {
+              switchCases = [...switchCases, { // ✅ PHASE 3: Immutable add
+                value: caseValue, 
+                label: caseValue.charAt(0).toUpperCase() + caseValue.slice(1) 
+              }];
+              caseToNodeMapping.set(caseValue, closestMention.node);
+              console.log(`[WorkflowDSLCompiler] ✅ Matched case "${caseValue}" -> ${closestMention.nodeType} (distance: ${minDistance} chars)`);
+            }
+          }
+        }
+        
+        // ✅ UNIVERSAL FIX: If planSwitchCasesFromPrompt returned no cases, use generic case_N fallback.
+        // No hardcoded semantic guesses (active/pending/completed) — those are wrong for domain-specific prompts.
+        if (switchCases.length === 0 && sortedOutputs.length > 0) {
+          console.log(`[WorkflowDSLCompiler] ⚠️  No cases extracted from prompt, using generic case_N fallback`);
+          sortedOutputs.forEach((outputNode, index) => {
+            const caseValue = `case_${index + 1}`;
+            switchCases = [...switchCases, { value: caseValue, label: `Case ${index + 1}` }];
+            caseToNodeMapping.set(caseValue, outputNode);
+          });
+        }
 
-        // ✅ UNIVERSAL: Case values come from persisted switch config first.
-        const { extractSwitchCasePortNames } = require('../../core/utils/branching-node-ports') as typeof import('../../core/utils/branching-node-ports');
-        const configuredCaseValues = extractSwitchCasePortNames(
-          ((lastTransformation.data?.config || {}) as Record<string, any>)
-        );
-
-        const resolvedCaseValues =
-          configuredCaseValues.length > 0
-            ? configuredCaseValues
-            : sortedOutputs.map((_, index) => `case_${index + 1}`);
-
-        for (let index = 0; index < resolvedCaseValues.length; index++) {
-          const targetNode = sortedOutputs[index];
-          if (!targetNode) break;
-          const caseValue = resolvedCaseValues[index];
-          switchCases = [...switchCases, {
-            value: caseValue,
-            label: caseValue.charAt(0).toUpperCase() + caseValue.slice(1),
-          }];
-          caseToNodeMapping.set(caseValue, targetNode);
+        // ✅ SILENT-DROP GUARD: If proximity matching produced fewer cases than planSwitchCasesFromPrompt
+        // extracted, fill the remaining cases by mapping them to remaining output nodes by index.
+        // This prevents truncation when a case value doesn't appear near a node mention in the prompt.
+        if (switchCases.length < extractedCaseValues.size && sortedOutputs.length > switchCases.length) {
+          const mappedCaseValues = new Set(switchCases.map(c => c.value));
+          const unmappedCases = switchPlanResult.cases.filter((c: any) => !mappedCaseValues.has(c.value));
+          const usedNodes = new Set(Array.from(caseToNodeMapping.values()).map(n => n.id));
+          const remainingOutputs = sortedOutputs.filter(n => !usedNodes.has(n.id));
+          unmappedCases.forEach((c: any, idx: number) => {
+            const targetNode = remainingOutputs[idx];
+            if (targetNode) {
+              switchCases = [...switchCases, { value: c.value, label: c.label }];
+              caseToNodeMapping.set(c.value, targetNode);
+              console.log(`[WorkflowDSLCompiler] ✅ Filled unmatched case "${c.value}" -> ${targetNode.type} (index fallback)`);
+            }
+          });
         }
         
         // ✅ N8N APPROACH: Set switch node's outgoingPorts immediately (cases are known)

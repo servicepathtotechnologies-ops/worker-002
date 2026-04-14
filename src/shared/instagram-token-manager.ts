@@ -195,34 +195,20 @@ async function refreshInstagramToken(
 }
 
 /**
- * Get Instagram Business Account ID.
- * First checks the stored ig_user_id in instagram_oauth_tokens,
- * then falls back to resolving via Facebook Pages API.
+ * Get Instagram Business Account ID from Facebook Page
+ * This is required for most Instagram Graph API operations
  */
 export async function getInstagramBusinessAccountId(
   accessToken: string,
-  pageId?: string,
-  supabase?: SupabaseClient,
-  userId?: string
+  pageId?: string
 ): Promise<string | null> {
   try {
-    // First: check if ig_user_id is already stored in the database
-    if (supabase && userId) {
-      const { data } = await supabase
-        .from('instagram_oauth_tokens' as any)
-        .select('ig_user_id')
-        .eq('user_id', userId)
-        .maybeSingle();
-      if (data?.ig_user_id) {
-        return data.ig_user_id as string;
-      }
-    }
-
-    // Second: if pageId is provided, get Instagram account from that page
+    // If pageId is provided, get Instagram account from that page
     if (pageId) {
       const response = await fetch(
         `https://graph.facebook.com/v18.0/${pageId}?fields=instagram_business_account&access_token=${accessToken}`
       );
+      
       if (response.ok) {
         const data = await response.json() as { instagram_business_account?: { id: string } };
         if (data.instagram_business_account?.id) {
@@ -231,33 +217,29 @@ export async function getInstagramBusinessAccountId(
       }
     }
 
-    // Third: try me/accounts (requires pages_show_list permission)
+    // Otherwise, get user's pages and find the one with Instagram account
     const pagesResponse = await fetch(
-      `https://graph.facebook.com/v18.0/me/accounts?fields=id,instagram_business_account&access_token=${accessToken}`
+      `https://graph.facebook.com/v18.0/me/accounts?access_token=${accessToken}`
     );
-    if (pagesResponse.ok) {
-      const pagesData = await pagesResponse.json() as {
-        data?: Array<{ id: string; instagram_business_account?: { id: string } }>;
-      };
-      for (const page of pagesData.data ?? []) {
+
+    if (!pagesResponse.ok) {
+      console.error('[InstagramTokenManager] Failed to fetch pages');
+      return null;
+    }
+
+    const pagesData = await pagesResponse.json() as {
+      data?: Array<{ id: string; instagram_business_account?: { id: string } }>;
+    };
+
+    if (pagesData.data && pagesData.data.length > 0) {
+      // Find first page with Instagram business account
+      for (const page of pagesData.data) {
         if (page.instagram_business_account?.id) {
           return page.instagram_business_account.id;
         }
       }
     }
 
-    // Fourth: try me directly (some tokens have instagram_business_account on the user)
-    const meResponse = await fetch(
-      `https://graph.facebook.com/v18.0/me?fields=instagram_business_account&access_token=${accessToken}`
-    );
-    if (meResponse.ok) {
-      const meData = await meResponse.json() as { instagram_business_account?: { id: string } };
-      if (meData.instagram_business_account?.id) {
-        return meData.instagram_business_account.id;
-      }
-    }
-
-    console.warn('[InstagramTokenManager] Could not resolve ig_user_id — Instagram may not be linked to a Facebook Page');
     return null;
   } catch (error) {
     console.error('[InstagramTokenManager] Error getting Instagram Business Account ID:', error);

@@ -17,7 +17,6 @@ import { nodeLibrary } from '../services/nodes/node-library';
 import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../core/utils/unified-node-type-normalizer';
 import { pendingCredentialStore } from '../services/ai/pending-credential-store';
 import { credentialInjector } from '../services/ai/credential-injector';
-import { unifiedGraphOrchestrator } from '../core/orchestration/unified-graph-orchestrator';
 
 interface ConfirmRequest {
   workflowId: string;
@@ -80,7 +79,7 @@ function applyToolOverrides(
 /**
  * Apply node overrides to workflow
  */
-async function applyNodeOverrides(
+function applyNodeOverrides(
   workflow: { nodes: any[]; edges: any[] },
   nodeOverrides: Record<string, {
     nodeId: string;
@@ -89,32 +88,33 @@ async function applyNodeOverrides(
     newNodeConfig?: Record<string, any>;
     reasoning?: string;
   }>
-): Promise<{ nodes: any[]; edges: any[] }> {
-  let updatedWorkflow = {
-    nodes: [...workflow.nodes],
-    edges: [...workflow.edges],
-  };
+): { nodes: any[]; edges: any[] } {
+  let updatedNodes = [...workflow.nodes];
+  let updatedEdges = [...workflow.edges];
 
-  for (const override of Object.values(nodeOverrides)) {
+  Object.values(nodeOverrides).forEach(override => {
     if (override.action === 'remove') {
+      // Remove node and its edges
       console.log(`[WorkflowConfirm] Removing node ${override.nodeId}`);
-      const removed = unifiedGraphOrchestrator.removeNode(updatedWorkflow as any, override.nodeId);
-      updatedWorkflow = removed.workflow as any;
+      updatedNodes = updatedNodes.filter(n => n.id !== override.nodeId);
+      updatedEdges = updatedEdges.filter(
+        e => e.source !== override.nodeId && e.target !== override.nodeId
+      );
     } else if (override.action === 'replace' && override.newNodeType) {
       // Replace node type
-      const nodeIndex = updatedWorkflow.nodes.findIndex(n => n.id === override.nodeId);
+      const nodeIndex = updatedNodes.findIndex(n => n.id === override.nodeId);
       if (nodeIndex !== -1) {
-        const node = updatedWorkflow.nodes[nodeIndex];
+        const node = updatedNodes[nodeIndex];
         const newSchema = nodeLibrary.getSchema(override.newNodeType);
         
         if (!newSchema) {
           console.warn(`[WorkflowConfirm] Node override failed: ${override.newNodeType} not found in node library`);
-          continue;
+          return;
         }
 
         console.log(`[WorkflowConfirm] Replacing node ${override.nodeId}: ${unifiedNormalizeNodeType(node)} → ${override.newNodeType}`);
-
-        updatedWorkflow.nodes[nodeIndex] = {
+        
+        updatedNodes[nodeIndex] = {
           ...node,
           data: {
             ...node.data,
@@ -130,13 +130,13 @@ async function applyNodeOverrides(
       const newSchema = nodeLibrary.getSchema(override.newNodeType);
       if (!newSchema) {
         console.warn(`[WorkflowConfirm] Node add failed: ${override.newNodeType} not found in node library`);
-        continue;
+        return;
       }
 
       const newNodeId = `node_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       console.log(`[WorkflowConfirm] Adding new node ${newNodeId} of type ${override.newNodeType}`);
-
-      const newNode = {
+      
+      updatedNodes.push({
         id: newNodeId,
         type: 'custom',
         position: { x: 0, y: 0 },
@@ -146,28 +146,13 @@ async function applyNodeOverrides(
           category: newSchema.category || 'action',
           config: override.newNodeConfig || {},
         },
-      };
-
-      const injected = await unifiedGraphOrchestrator.injectNode(
-        updatedWorkflow as any,
-        newNode as any,
-        {
-          type: 'user_requested',
-          position: 'after',
-          referenceNodeId: override.nodeId,
-          reason: 'workflow_confirm_override',
-        }
-      );
-      updatedWorkflow = injected.workflow as any;
+      });
     }
-  }
-
-  // Final reconciliation after all override operations keeps execution order/edges canonical.
-  updatedWorkflow = unifiedGraphOrchestrator.reconcileWorkflow(updatedWorkflow as any).workflow as any;
+  });
 
   return {
-    nodes: updatedWorkflow.nodes,
-    edges: updatedWorkflow.edges,
+    nodes: updatedNodes,
+    edges: updatedEdges,
   };
 }
 
@@ -360,7 +345,7 @@ export async function confirmWorkflow(req: Request, res: Response) {
 
     if (nodeOverrides && Object.keys(nodeOverrides).length > 0) {
       console.log(`[WorkflowConfirm] Applying ${Object.keys(nodeOverrides).length} node override(s)`);
-      workflow = await applyNodeOverrides(workflow, nodeOverrides);
+      workflow = applyNodeOverrides(workflow, nodeOverrides);
     }
 
     // Submit confirmation
