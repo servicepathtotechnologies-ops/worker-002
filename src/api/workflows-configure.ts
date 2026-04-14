@@ -167,49 +167,9 @@ export default async function configureWorkflowHandler(req: Request, res: Respon
       };
     }
 
-    // Step 3: AI auto-config for remaining non-credential fields
-    console.log(`[ConfigureWorkflow] Running AI auto-config for remaining fields`);
-    try {
-      const { universalNodeAIContext } = await import('../services/ai/universal-node-ai-context');
-      const userPrompt = workflowData.name || 'Process workflow data';
-      
-      // Auto-fill each node that has empty AI-generatable fields
-      workflow = {
-        ...workflow,
-        nodes: await Promise.all(
-          workflow.nodes.map(async (node) => {
-            // Skip if node already has all required fields filled
-            const config = node.data?.config || {};
-            const hasEmptyFields = Object.values(config).some(
-              (v: any) => !v || (typeof v === 'string' && v.trim() === '')
-            );
-            
-            if (!hasEmptyFields) {
-              return node; // Node is already configured
-            }
-            
-            // Auto-fill using AI context
-            try {
-              const autoFilledNode = await universalNodeAIContext.autoFillNode(
-                node,
-                workflow,
-                userPrompt,
-                {} // No previous outputs during configuration
-              );
-              return autoFilledNode;
-            } catch (autoFillError: any) {
-              console.warn(`[ConfigureWorkflow] Auto-fill failed for node ${node.id} (non-blocking):`, autoFillError.message);
-              return node; // Continue with original node if auto-fill fails
-            }
-          })
-        ),
-      };
-      
-      console.log(`[ConfigureWorkflow] ✅ AI auto-config completed`);
-    } catch (autoConfigError: any) {
-      console.warn(`[ConfigureWorkflow] ⚠️ AI auto-config failed (non-blocking):`, autoConfigError.message);
-      // Continue without auto-config - workflow can still be saved
-    }
+    // Step 3: Preserve existing build values.
+    // Do not run a second AI auto-fill pass here, otherwise post-credential configuration
+    // can overwrite values generated during the initial workflow build.
 
     // Step 4: Validate workflow
     console.log(`[ConfigureWorkflow] Validating workflow`);
