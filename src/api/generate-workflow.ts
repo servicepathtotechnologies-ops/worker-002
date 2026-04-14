@@ -120,15 +120,28 @@ export default async function generateWorkflow(req: Request, res: Response): Pro
     const rawStreamHeader = req.headers['x-stream-progress'];
     const streamHeaderValue = Array.isArray(rawStreamHeader) ? rawStreamHeader[0] : rawStreamHeader;
     const isStreaming = ['true', '1', 'yes'].includes(String(streamHeaderValue || '').toLowerCase());
+    console.log(`[GenerateWorkflow] correlationId=${correlationId} mode=${mode || 'default'} stream=${isStreaming}`);
 
     if (isStreaming) {
       // ── Streaming mode: emit NDJSON stage events ──────────────────────────
-      res.setHeader('Content-Type', 'application/x-ndjson');
+      res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
       res.setHeader('Transfer-Encoding', 'chunked');
-      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.setHeader('X-Stream-Mode', 'ndjson');
       res.flushHeaders();
 
-      const writeEvent = (event: object) => res.write(JSON.stringify(event) + '\n');
+      const writeEvent = (event: object) => {
+        res.write(JSON.stringify(event) + '\n');
+        // Force chunk flush when available (helps behind reverse proxies).
+        const flush = (res as Response & { flush?: () => void }).flush;
+        if (typeof flush === 'function') {
+          flush.call(res);
+        }
+      };
+
+      writeEvent({ current_phase: 'initializing', progress_percentage: 1, log: 'Initializing generation pipeline...' });
 
       const result = await pipeline.run({
         userPrompt,
