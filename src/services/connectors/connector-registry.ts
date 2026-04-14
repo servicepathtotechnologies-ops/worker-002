@@ -241,23 +241,25 @@ export class ConnectorRegistry {
       capabilities: [
         'crm.read',
         'crm.write',
-        'salesforce.crm',
+        'crm.search',
+        'salesforce.account',
+        'salesforce.contact',
+        'salesforce.lead',
+        'salesforce.opportunity',
+        'salesforce.case',
+        'salesforce.soql',
       ],
-      keywords: ['salesforce', 'sf', 'salesforce crm'],
+      keywords: ['salesforce', 'sfdc', 'sf', 'salesforce crm', 'salesforce account', 'salesforce contact', 'salesforce lead', 'salesforce opportunity'],
       credentialContract: {
         provider: 'salesforce',
         type: 'oauth',
-        // Typical Salesforce OAuth scopes; adjust if your app uses a specific set.
-        scopes: [
-          'api',
-          'refresh_token',
-        ],
+        scopes: ['api', 'refresh_token'],
         vaultKey: 'salesforce',
         displayName: 'Salesforce OAuth',
         required: true,
       },
       nodeTypes: ['salesforce'],
-      description: 'Interact with Salesforce CRM objects via OAuth (sObjects, SOQL, SOSL)',
+      description: 'Interact with Salesforce CRM — Accounts, Contacts, Leads, Opportunities, Cases, and more via OAuth 2.0',
     });
 
     // ============================================
