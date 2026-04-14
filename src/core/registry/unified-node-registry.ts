@@ -248,6 +248,7 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     'json_parser': 'json_parser',
     'csv': 'csv',
     'csv_parser': 'csv',
+    'csv_processor': 'csv',
     'aggregate': 'aggregate',
     'sort': 'sort',
     'limit': 'limit',

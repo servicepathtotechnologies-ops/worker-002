@@ -37,14 +37,12 @@ interface WorkflowEdge {
 export default async function saveWorkflowHandler(req: Request, res: Response) {
   const supabase = getSupabaseClient();
   
-  // ✅ CRITICAL: Require Google OAuth connection for workflow creation/updates
+  // Require authenticated user for workflow creation/updates.
+  // Do NOT require global Google OAuth at save-time; credentials are node/provider-specific.
   try {
-    const { requireGoogleAuth } = await import('../core/utils/check-google-auth');
-    await requireGoogleAuth(req);
+    const { requireAuthenticatedUser } = await import('../core/utils/check-google-auth');
+    await requireAuthenticatedUser(req);
   } catch (authError: any) {
-    if (authError.code === ErrorCode.GOOGLE_AUTH_REQUIRED) {
-      return res.status(403).json(authError);
-    }
     return res.status(401).json(authError);
   }
 

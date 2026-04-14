@@ -12530,8 +12530,9 @@ export default async function executeWorkflowHandler(req: Request, res: Response
   
   // Continue with direct execution (existing logic)
 
-  // ✅ CRITICAL: Require Google OAuth connection for workflow execution
-  // BUT: Bypass for internal trigger executions (form-trigger, chat-trigger, webhook - server-to-server)
+  // Require authenticated user for external workflow execution.
+  // Do NOT require global Google OAuth here; provider credentials are validated per node at runtime.
+  // Bypass for internal trigger executions (form-trigger, chat-trigger, webhook - server-to-server).
   const isInternalFormExecution = req.headers['x-internal-form-execution'] === 'true';
   const isInternalChatExecution = req.headers['x-internal-chat-execution'] === 'true';
   const isInternalWebhookExecution = req.headers['x-internal-webhook-execution'] === 'true';
@@ -12539,12 +12540,9 @@ export default async function executeWorkflowHandler(req: Request, res: Response
   
   if (!isInternalExecution) {
     try {
-      const { requireGoogleAuth } = await import('../core/utils/check-google-auth');
-      await requireGoogleAuth(req);
+      const { requireAuthenticatedUser } = await import('../core/utils/check-google-auth');
+      await requireAuthenticatedUser(req);
     } catch (authError: any) {
-      if (authError.code === ErrorCode.GOOGLE_AUTH_REQUIRED) {
-        return res.status(403).json(authError);
-      }
       return res.status(401).json(authError);
     }
   } else {

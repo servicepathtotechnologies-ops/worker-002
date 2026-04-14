@@ -567,26 +567,18 @@ export class WorkflowDSLCompiler {
       let normalizedType: string | null = null;
       let resolutionMethod = 'unknown';
 
-      // ✅ STEP 1: Try registry alias resolution (single source of truth)
+      // ✅ SINGLE SOURCE: Resolve node types via unified registry only.
       const aliasResolved = unifiedNodeRegistry.resolveAlias(originalType);
-      if (aliasResolved && aliasResolved !== originalType && nodeLibrary.isNodeTypeRegistered(aliasResolved)) {
+      if (aliasResolved && nodeLibrary.isNodeTypeRegistered(aliasResolved)) {
         normalizedType = aliasResolved;
         resolutionMethod = 'registry_alias';
         console.log(`[WorkflowDSLCompiler] ✅ Resolved alias "${originalType}" -> "${normalizedType}"`);
       } else {
-        // Step 2: Try basic normalization utility
-        normalizedType = unifiedNormalizeNodeTypeString(originalType);
-        if (normalizedType !== originalType && nodeLibrary.isNodeTypeRegistered(normalizedType)) {
-          resolutionMethod = 'normalized';
-          console.log(`[WorkflowDSLCompiler] ✅ Normalized "${originalType}" -> "${normalizedType}"`);
-        } else {
-          // Step 3: Try registry direct lookup
-          const lower = originalType.toLowerCase().trim();
-          if (unifiedNodeRegistry.has(lower)) {
-            normalizedType = lower;
-            resolutionMethod = 'registry_lower';
-            console.log(`[WorkflowDSLCompiler] ✅ Resolved "${originalType}" -> "${normalizedType}" (lowercase)`);
-          }
+        const lower = originalType.toLowerCase().trim();
+        if (unifiedNodeRegistry.has(lower) && nodeLibrary.isNodeTypeRegistered(lower)) {
+          normalizedType = lower;
+          resolutionMethod = 'registry_lower';
+          console.log(`[WorkflowDSLCompiler] ✅ Resolved "${originalType}" -> "${normalizedType}" (lowercase canonical)`);
         }
       }
 

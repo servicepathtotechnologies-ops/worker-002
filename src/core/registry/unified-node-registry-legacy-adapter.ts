@@ -62,9 +62,28 @@ export async function executeViaLegacyExecutor(args: {
     const { filterPlaceholderValues, cleanOutputFromConfig } = await import('../utils/placeholder-filter');
     const filteredConfig = filterPlaceholderValues(resolvedConfig);
 
-    // Merge resolved inputs into config (inputs are fallback only; config wins)
+    // Merge resolved inputs into config.
+    // Runtime-owned fields must override config; static fields keep config precedence.
     const filteredBaseConfig = filterPlaceholderValues(context.config || {});
-    const mergedConfig = { ...(context.inputs || {}), ...filteredBaseConfig, ...filteredConfig };
+    const mergedConfig = { ...filteredBaseConfig, ...filteredConfig } as Record<string, any>;
+    const inputSources =
+      context && typeof (context as any).resolvedInputSources === 'object'
+        ? ((context as any).resolvedInputSources as Record<string, 'runtime_ai' | 'static_config'>)
+        : {};
+    for (const [fieldName, value] of Object.entries(context.inputs || {})) {
+      if (inputSources[fieldName] === 'runtime_ai') {
+        mergedConfig[fieldName] = value;
+        continue;
+      }
+      const current = mergedConfig[fieldName];
+      const isEmptyCurrent =
+        current === undefined ||
+        current === null ||
+        (typeof current === 'string' && current.trim() === '');
+      if (isEmptyCurrent) {
+        mergedConfig[fieldName] = value;
+      }
+    }
 
     // Default execution input is resolved inputs
     let prepared: LegacyAdapterPrepared = {

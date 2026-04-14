@@ -271,6 +271,35 @@ export class NodeLibrary {
     }
     
     const normalizedQuery = nodeType.toLowerCase().trim();
+
+    // 🔒 STRICT SINGLE-SOURCE MODE: registry/exact lookup only in critical flows.
+    // Keep legacy pattern logic below for temporary compatibility toggling, but do not use it.
+    const STRICT_REGISTRY_ONLY = true;
+    if (STRICT_REGISTRY_ONLY) {
+      // Direct canonical lookup
+      const exact = this.schemas.get(nodeType) || this.schemas.get(normalizedQuery);
+      if (exact) return exact;
+
+      try {
+        const { unifiedNodeRegistry } = require('../registry/unified-node-registry');
+        const resolved = unifiedNodeRegistry.resolveAlias(normalizedQuery);
+        if (resolved) {
+          const schema = this.schemas.get(resolved);
+          if (schema) return schema;
+        }
+        if (unifiedNodeRegistry.has(normalizedQuery)) {
+          const schema = this.schemas.get(normalizedQuery);
+          if (schema) return schema;
+        }
+      } catch {
+        // Registry unavailable: fail closed in strict mode.
+      }
+
+      if (process.env.DEBUG_NODE_LOOKUPS === 'true' || !normalizedQuery.includes('custom')) {
+        console.warn(`[NodeLibrary] ❌ Strict lookup failed for node type: "${nodeType}"`);
+      }
+      return undefined;
+    }
     
     // ✅ ROOT-LEVEL FIX: Step 0 - Extract base node name from compound names
     // This handles AI-generated compound names like "notion_write_data" → "notion"

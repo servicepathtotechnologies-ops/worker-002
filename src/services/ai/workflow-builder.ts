@@ -90,7 +90,6 @@ import { getNodeOutputType, areTypesCompatible, getNodeOutputSchema } from '../.
 // TypeConverter removed - not used in this file
 import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
 import { resolveNodeType } from '../../core/utils/node-type-resolver-util';
-import { resolveAliasToCanonical } from '../../core/utils/comprehensive-alias-resolver';
 import { isOutputNode } from '../../core/utils/universal-node-type-checker';
 import { isEmptyValue } from '../../core/utils/is-empty-value';
 import { capabilityResolver } from './capability-resolver';
@@ -5309,18 +5308,19 @@ Return JSON:
 
     // Resolve trigger
     if (parsed.trigger && typeof parsed.trigger === 'string') {
-      const resolution = resolveAliasToCanonical(parsed.trigger);
-      if (resolution.resolved) {
+      const original = parsed.trigger;
+      const resolved = unifiedNodeRegistry.resolveAlias(original) ?? original;
+      if (nodeLibrary.isNodeTypeRegistered(resolved)) {
         resolutionLog.push({
           location: 'trigger',
-          original: resolution.original,
-          resolved: resolution.resolved,
-          method: resolution.method,
-          confidence: resolution.confidence,
+          original,
+          resolved,
+          method: resolved === original ? 'registry_exact' : 'registry_alias',
+          confidence: resolved === original ? 1 : 0.95,
         });
-        parsed.trigger = resolution.resolved;
+        parsed.trigger = resolved;
       } else {
-        console.warn(`[Alias Resolver] ⚠️ Could not resolve trigger: "${parsed.trigger}" - ${resolution.warning || 'no match found'}`);
+        console.warn(`[Alias Resolver] ⚠️ Could not resolve trigger via registry: "${parsed.trigger}"`);
       }
     }
 
@@ -5334,22 +5334,23 @@ Return JSON:
 
         const stepType = step.type || step.nodeType;
         if (stepType && typeof stepType === 'string') {
-          const resolution = resolveAliasToCanonical(stepType);
-          if (resolution.resolved) {
+          const original = stepType;
+          const resolved = unifiedNodeRegistry.resolveAlias(original) ?? original;
+          if (nodeLibrary.isNodeTypeRegistered(resolved)) {
             resolutionLog.push({
               location: `step${index + 1} (${step.id || 'unknown'})`,
-              original: resolution.original,
-              resolved: resolution.resolved,
-              method: resolution.method,
-              confidence: resolution.confidence,
+              original,
+              resolved,
+              method: resolved === original ? 'registry_exact' : 'registry_alias',
+              confidence: resolved === original ? 1 : 0.95,
             });
             
             // Replace with resolved canonical type
-            if (step.type) step.type = resolution.resolved;
-            if (step.nodeType) step.nodeType = resolution.resolved;
+            if (step.type) step.type = resolved;
+            if (step.nodeType) step.nodeType = resolved;
           } else {
             console.warn(
-              `[Alias Resolver] ⚠️ Could not resolve step${index + 1} type: "${stepType}" - ${resolution.warning || 'no match found'}`
+              `[Alias Resolver] ⚠️ Could not resolve step${index + 1} type via registry: "${stepType}"`
             );
           }
         }
@@ -6388,364 +6389,13 @@ Return JSON:
         return inference.nodeType;
       }
     } catch (error) {
-      console.warn(`[RegistryInference] ⚠️  Registry inference failed, using legacy pattern matching: ${error}`);
+      console.warn(`[RegistryInference] ⚠️  Registry inference failed: ${error}`);
     }
-    
-    // ✅ STEP 2: Fallback to legacy pattern matching (for backward compatibility)
-    return this.inferStepTypeLegacy(step, context);
-  }
-  
-  /**
-   * ⚠️ LEGACY: Pattern-based node type inference
-   * 
-   * This method contains hardcoded pattern matching.
-   * TODO: Migrate all patterns to node metadata in NodeLibrary.
-   * 
-   * @deprecated Use registry-based inference instead
-   */
-  private inferStepTypeLegacy(step: string, context?: string): string | null {
-    const stepLower = step.toLowerCase();
-    const originalStep = step;
-    
-    console.log(`🔍 [inferStepType] Analyzing step: "${step.substring(0, 80)}"`);
-    
-    // ✅ CRITICAL: Try sample workflow matching FIRST (highest priority)
-    // This ensures we use real-world workflow patterns instead of direct keyword matching
-    try {
-      const { workflowTrainingService } = require('./workflow-training-service');
-      const modernExamples = workflowTrainingService.getModernExamples(10, step);
-      
-      for (const example of modernExamples) {
-        const selectedNodes = example.phase1?.step5?.selectedNodes || [];
-        
-        // Check if step description matches example goal/description
-        const exampleGoal = (example.goal || '').toLowerCase();
-        const exampleDesc = (example.description || '').toLowerCase();
-        const stepWords = stepLower.split(/\s+/).filter(w => w.length > 3);
-        const exampleWords = (exampleGoal + ' ' + exampleDesc).split(/\s+/).filter(w => w.length > 3);
-        
-        // Calculate similarity
-        const matchingWords = stepWords.filter(w => exampleWords.includes(w));
-        const similarity = matchingWords.length / Math.max(stepWords.length, exampleWords.length);
-        
-        if (similarity > 0.3 && selectedNodes.length > 0) {
-          // Use the first node from the matching example
-          const matchedNodeType = selectedNodes[0];
-          const schema = nodeLibrary.getSchema(matchedNodeType);
-          if (schema) {
-            console.log(`✅ [inferStepType] Matched sample workflow: "${example.goal}" → ${matchedNodeType} (similarity: ${similarity.toFixed(2)})`);
-            return matchedNodeType;
-          }
-        }
-      }
-    } catch (error) {
-      console.log('[inferStepType] Sample workflows not available, using standard matching');
-    }
-    
-    // CRITICAL: Use Enhanced Keyword Matcher for better matching
-    try {
-      const { enhancedKeywordMatcher } = require('./enhanced-keyword-matcher');
-      const match = enhancedKeywordMatcher.findBestMatch(step, context);
-      if (match && match.confidence === 'high') {
-        console.log(`✅ [inferStepType] Enhanced matcher found: "${match.nodeType}" (score: ${match.score}, keywords: ${match.matchedKeywords.join(', ')})`);
-        return match.nodeType;
-      }
-    } catch (error) {
-      // Enhanced matcher not available, continue with fallback
-    }
-    
-    // CRITICAL: Priority-based matching - check specific services FIRST
-    // Google Services
-    if (stepLower.includes('google doc') || stepLower.includes('google document') || stepLower.includes('read doc') || stepLower.includes('extract from doc')) {
-      const schema = nodeLibrary.getSchema('google_doc');
-      if (schema) {
-        console.log(`✅ [inferStepType] Detected Google Doc from: "${step.substring(0, 50)}"`);
-        return 'google_doc';
-      }
-    }
-    
-    if (stepLower.includes('google sheet') || stepLower.includes('spreadsheet') || stepLower.includes('sheets') || 
-        stepLower.includes('read from sheet') || stepLower.includes('save to sheet') || stepLower.includes('store in sheet')) {
-      const schema = nodeLibrary.getSchema('google_sheets');
-      if (schema) {
-        console.log(`✅ [inferStepType] Detected Google Sheets from: "${step.substring(0, 50)}"`);
-        return 'google_sheets';
-      }
-    }
-    
-    // Communication Services
-    if (stepLower.includes('slack') || stepLower.includes('notify') || stepLower.includes('send to slack') || stepLower.includes('post to slack')) {
-      const schema = nodeLibrary.getSchema('slack_message');
-      if (schema) {
-        console.log(`✅ [inferStepType] Detected Slack from: "${step.substring(0, 50)}"`);
-        return 'slack_message';
-      }
-    }
-    
-    // 🚨 CRITICAL: Check for Gmail patterns FIRST (before generic email)
-    // Gmail uses OAuth, not SMTP - must use google_gmail node
-    if (stepLower.includes('gmail') || 
-        stepLower.includes('google mail') || 
-        stepLower.includes('google email') ||
-        (stepLower.includes('email') && stepLower.includes('gmail')) ||
-        (stepLower.includes('send') && stepLower.includes('gmail')) ||
-        (stepLower.includes('via') && stepLower.includes('gmail'))) {
-      const schema = nodeLibrary.getSchema('google_gmail');
-      if (schema) {
-        console.log(`✅ [inferStepType] Detected Gmail from: "${step.substring(0, 50)}"`);
-        return 'google_gmail';
-      }
-    }
-    
-    // Only use generic email node if Gmail is NOT mentioned
-    if (stepLower.includes('email') && 
-        !stepLower.includes('gmail') && 
-        !stepLower.includes('google mail') && 
-        !stepLower.includes('google email')) {
-      const schema = nodeLibrary.getSchema('email');
-      if (schema) {
-        console.log(`✅ [inferStepType] Detected Email from: "${step.substring(0, 50)}"`);
-        return 'email';
-      }
-    }
-    
-    // CRITICAL FIX: Airtable patterns - check BEFORE AI agent
-    if (stepLower.includes('airtable') || 
-        (stepLower.includes('add') && stepLower.includes('row') && stepLower.includes('airtable')) ||
-        (stepLower.includes('add') && stepLower.includes('a') && stepLower.includes('row') && stepLower.includes('airtable')) ||
-        (stepLower.includes('create') && stepLower.includes('record') && stepLower.includes('airtable')) ||
-        (stepLower.includes('save') && stepLower.includes('to') && stepLower.includes('airtable'))) {
-      const airtableSchema = nodeLibrary.getSchema('airtable');
-      if (airtableSchema) {
-        console.log(`✅ [inferStepType] Detected Airtable from: "${step.substring(0, 50)}"`);
-        return 'airtable';
-      }
-    }
-    
-    // Social Media - ONLY if explicitly mentioned
-    if (stepLower.includes('linkedin') || stepLower.includes('linked in') || stepLower.includes('post to linkedin')) {
-      const schema = nodeLibrary.getSchema('linkedin');
-      if (schema) {
-        console.log(`✅ [inferStepType] Detected LinkedIn from: "${step.substring(0, 50)}"`);
-        return 'linkedin';
-      }
-    }
-    
-    if (stepLower.includes('twitter') || stepLower.includes('tweet') || stepLower.includes('x.com')) {
-      const schema = nodeLibrary.getSchema('twitter');
-      if (schema) {
-        console.log(`✅ [inferStepType] Detected Twitter from: "${step.substring(0, 50)}"`);
-        return 'twitter';
-      }
-    }
-    
-    // AI/ML Services - Check FIRST before general matching
-    // ✅ CRITICAL: Check for AI summarization FIRST (before AI agent)
-    if (stepLower.includes('summarize') || stepLower.includes('summary') || 
-        stepLower.includes('summarization') || stepLower.includes('ai summarization') ||
-        stepLower.includes('ai summarize') || stepLower.includes('ai summarizer') ||
-        (stepLower.includes('ai') && stepLower.includes('summarize')) ||
-        (stepLower.includes('using ai') && stepLower.includes('summarize'))) {
-      const summarizerSchema = nodeLibrary.getSchema('text_summarizer');
-      if (summarizerSchema) {
-        console.log(`✅ [inferStepType] Detected Text Summarizer from: "${step.substring(0, 50)}"`);
-        return 'text_summarizer';
-      }
-    }
-    
-    // AI/ML Services - ONLY if NOT a specific integration action
-    if (stepLower.includes('ai agent') || stepLower.includes('ai_agent') || 
-        stepLower.includes('chatbot') || stepLower.includes('chat bot') ||
-        stepLower.includes('conversational ai') || stepLower.includes('ai assistant') ||
-        stepLower.includes('llm') || stepLower.includes('language model')) {
-      // CRITICAL: Don't use ai_agent for integration actions
-      const isIntegrationAction = stepLower.includes('airtable') || 
-                                  stepLower.includes('gmail') || 
-                                  stepLower.includes('hubspot') || 
-                                  stepLower.includes('slack') ||
-                                  (stepLower.includes('add') && stepLower.includes('row')) ||
-                                  (stepLower.includes('send') && stepLower.includes('email'));
-      
-      if (!isIntegrationAction) {
-        const aiAgentSchema = nodeLibrary.getSchema('ai_agent');
-        if (aiAgentSchema) {
-          console.log(`✅ [inferStepType] Detected AI Agent from: "${step.substring(0, 50)}"`);
-          return 'ai_agent';
-        }
-      } else {
-        console.log(`⚠️  [inferStepType] Skipping AI Agent - detected integration action: "${step.substring(0, 50)}"`);
-      }
-    }
-    
-    // Data Processing
-    if (stepLower.includes('javascript') || stepLower.includes('js code') || stepLower.includes('transform') || 
-        stepLower.includes('process data') || stepLower.includes('code') || stepLower.includes('script')) {
-      const schema = nodeLibrary.getSchema('javascript');
-      if (schema) {
-        console.log(`✅ [inferStepType] Detected JavaScript from: "${step.substring(0, 50)}"`);
-        return 'javascript';
-      }
-    }
-    
-    // Conditional Logic
-    if (stepLower.includes('if') || stepLower.includes('condition') || stepLower.includes('check') || 
-        stepLower.includes('whether') || stepLower.includes('filter') || stepLower.includes('separate')) {
-      const schema = nodeLibrary.getSchema('if_else');
-      if (schema) {
-        console.log(`✅ [inferStepType] Detected If/Else from: "${step.substring(0, 50)}"`);
-        return 'if_else';
-      }
-    }
-    
-    // Database Operations
-    if (stepLower.includes('database') || stepLower.includes('db') || stepLower.includes('query') || 
-        stepLower.includes('sql') || stepLower.includes('supabase')) {
-      if (stepLower.includes('supabase')) {
-        const schema = nodeLibrary.getSchema('supabase');
-        if (schema) {
-          console.log(`✅ [inferStepType] Detected Supabase from: "${step.substring(0, 50)}"`);
-          return 'supabase';
-        }
-      }
-      if (stepLower.includes('read') || stepLower.includes('get') || stepLower.includes('fetch')) {
-        const schema = nodeLibrary.getSchema('database_read');
-        if (schema) {
-          console.log(`✅ [inferStepType] Detected Database Read from: "${step.substring(0, 50)}"`);
-          return 'database_read';
-        }
-      }
-      if (stepLower.includes('write') || stepLower.includes('save') || stepLower.includes('insert') || stepLower.includes('update')) {
-        const schema = nodeLibrary.getSchema('database_write');
-        if (schema) {
-          console.log(`✅ [inferStepType] Detected Database Write from: "${step.substring(0, 50)}"`);
-          return 'database_write';
-        }
-      }
-    }
-    
-    // Use nodeLibrary service (UNIVERSAL - works for all nodes) as fallback
-    const allSchemas = nodeLibrary.getAllSchemas();
-    
-    interface MatchResult {
-      type: string;
-      score: number;
-      reason: string;
-    }
-    let bestMatch: MatchResult | null = null;
-    
-    // Check all nodes in library (UNIVERSAL) - only if no priority match found
-    for (const schema of allSchemas) {
-      const type = schema.type;
-      const nodeLabelLower = schema.label.toLowerCase();
-      const nodeDescLower = schema.description.toLowerCase();
-      const keywords = schema.aiSelectionCriteria?.keywords || [];
-      const keywordsLower = keywords.map(k => k.toLowerCase());
-      
-      let score = 0;
-      let reason = '';
-      
-      // Check if step keywords match node label or description
-      const stepWords = stepLower.split(/\s+/);
-      stepWords.forEach(word => {
-        if (word.length > 2) { // Ignore short words
-          if (nodeLabelLower.includes(word)) {
-            score += 3;
-            reason += `label:${word} `;
-          }
-          if (nodeDescLower.includes(word)) {
-            score += 2;
-            reason += `desc:${word} `;
-          }
-          if (type.includes(word)) {
-            score += 4;
-            reason += `type:${word} `;
-          }
-          // Check against keywords from schema (UNIVERSAL) - REDUCED WEIGHT
-          if (keywordsLower.some(k => k.includes(word) || word.includes(k))) {
-            score += 2; // Reduced from 5 to 2 - sample workflows should take priority
-            reason += `keyword:${word} `;
-          }
-        }
-      });
-      
-      // Use schema keywords for matching (UNIVERSAL) - REDUCED WEIGHT to prioritize sample workflows
-      keywordsLower.forEach(keyword => {
-        if (stepLower.includes(keyword)) {
-          score += 3; // Reduced from 10 to 3 - sample workflows should take priority
-          reason += `schema-keyword:${keyword} `;
-        }
-      });
-      
-      // Check "when to use" criteria (UNIVERSAL)
-      const whenToUse = schema.aiSelectionCriteria?.whenToUse || [];
-      whenToUse.forEach(criterion => {
-        if (stepLower.includes(criterion.toLowerCase())) {
-          score += 8;
-          reason += `when-to-use:${criterion} `;
-        }
-      });
-      
-      // Penalize "when not to use" matches
-      const whenNotToUse = schema.aiSelectionCriteria?.whenNotToUse || [];
-      whenNotToUse.forEach(criterion => {
-        if (stepLower.includes(criterion.toLowerCase())) {
-          score -= 5;
-          reason += `when-not-to-use:${criterion} `;
-        }
-      });
-      
-      // Additional specific keyword matching with higher weights
-      if (stepLower.includes('http') || stepLower.includes('api') || stepLower.includes('request') || stepLower.includes('endpoint')) {
-        if (type === 'http_request' || type === 'http_post') {
-          score += 15;
-          reason += 'http-match ';
-        }
-      }
-      
-      // Penalize wrong matches
-      // Don't match database_read for Google Sheets
-      if (stepLower.includes('sheet') && type === 'database_read') {
-        score -= 20;
-        reason += 'penalty:sheet-not-db ';
-      }
-      if (stepLower.includes('sheet') && type === 'database_write') {
-        score -= 20;
-        reason += 'penalty:sheet-not-db-write ';
-      }
-      // Don't match google_doc for sheets
-      if (stepLower.includes('sheet') && type === 'google_doc') {
-        score -= 20;
-        reason += 'penalty:sheet-not-doc ';
-      }
-      // Don't match google_sheets for docs
-      if (stepLower.includes('doc') && !stepLower.includes('sheet') && type === 'google_sheets') {
-        score -= 20;
-        reason += 'penalty:doc-not-sheet ';
-      }
-      
-      if (score > 0) {
-        if (!bestMatch || score > bestMatch.score) {
-          bestMatch = { type, score, reason: reason.trim() };
-        }
-      }
-    }
-    
-    // Validate that the matched type exists in library (UNIVERSAL validation)
-    if (bestMatch && bestMatch.score > 5) { // Minimum threshold
-      const matchedSchema = nodeLibrary.getSchema(bestMatch.type);
-      if (matchedSchema) {
-        console.log(`✅ [inferStepType] Selected "${bestMatch.type}" with score ${bestMatch.score} (${bestMatch.reason}) for: "${originalStep.substring(0, 50)}"`);
-        return bestMatch.type;
-      } else {
-        console.warn(`⚠️  [inferStepType] Matched type "${bestMatch.type}" not found in library`);
-      }
-    }
-    
-    // Fallback: no match found — log warning and skip rather than defaulting to set_variable
-    console.warn(`⚠️  [inferStepType] No match found for step: "${originalStep.substring(0, 80)}" — skipping`);
+
+    // 🔒 STRICT SINGLE-SOURCE: no legacy pattern/keyword fallback in critical node typing path.
     return null;
   }
-
+  
   private inferOutputType(output: string): 'string' | 'number' | 'boolean' | 'object' | 'array' | 'file' {
     const outputLower = output.toLowerCase();
     
@@ -6940,49 +6590,12 @@ Return JSON:
         console.error(`🚨 [NODE VALIDATION] CRITICAL: Node type "${correctedType}" NOT FOUND in library.`);
         console.error(`🚨 [NODE VALIDATION] Step description: "${step.description}"`);
         console.error(`🚨 [NODE VALIDATION] Step object: ${JSON.stringify({ type: step.type, data: stepAny.data })}`);
-        console.error(`🚨 [NODE VALIDATION] This node cannot be added to the workflow.`);
-        
-        // Try to infer correct type from description
-        console.warn(`⚠️  [NODE VALIDATION] Attempting correction...`);
-        
-        // Try to infer correct type from description if type doesn't exist
-        const stepDescLower = (step.description || '').toLowerCase();
-        const inferredType = this.inferStepType(step.description || correctedType);
-        const inferredSchema = inferredType ? nodeLibrary.getSchema(inferredType) : null;
-        
-        if (inferredSchema) {
-          console.log(`✅ [NODE VALIDATION] Corrected node type from "${originalType}" to "${inferredType}" (inferred from description)`);
-          correctedType = inferredType;
-          step.type = correctedType;
-          stepSchema = inferredSchema;
-        } else {
-          // Last resort: try to find similar node
-          const allSchemas = nodeLibrary.getAllSchemas();
-          const similarNode = allSchemas.find(s => {
-            const typeMatch = s.type.toLowerCase().includes(correctedType.toLowerCase()) || 
-                            correctedType.toLowerCase().includes(s.type.toLowerCase());
-            const keywordMatch = s.aiSelectionCriteria?.keywords?.some(k => 
-              step.description?.toLowerCase().includes(k.toLowerCase())
-            );
-            return typeMatch || keywordMatch;
-          });
-          
-          if (similarNode) {
-            console.log(`✅ [NODE VALIDATION] Using similar node type: "${similarNode.type}" instead of "${originalType}"`);
-            step.type = similarNode.type;
-            stepSchema = similarNode;
-          } else {
-            // 🔒 STRUCTURAL FIX: Fail fast if schema is missing
-            // No node is allowed into the graph unless its schema exists
-            const availableTypes = allSchemas.map(s => s.type).slice(0, 20).join(', ');
-            console.error(`❌ [NODE VALIDATION] CRITICAL: Cannot find node type "${originalType}" in library.`);
-            console.error(`❌ [NODE VALIDATION] Step description: "${step.description}"`);
-            console.error(`❌ [NODE VALIDATION] Available node types (first 20): ${availableTypes}`);
-            console.error(`❌ [NODE VALIDATION] This step will be SKIPPED. Node schema must exist in library.`);
-            console.error(`❌ [NODE VALIDATION] This is a structural requirement - all nodes must have schemas.`);
-            return false; // Skip this step - cannot proceed without schema
-          }
-        }
+        // 🔒 STRICT MODE: No infer/similar/pattern fallback allowed in critical selection path.
+        // Node must resolve from unified registry + NodeLibrary canonical catalog.
+        const availableTypes = nodeLibrary.getAllSchemas().map(s => s.type).slice(0, 20).join(', ');
+        console.error(`❌ [NODE VALIDATION] STRICT rejection for "${originalType}" (resolved: "${correctedType}")`);
+        console.error(`❌ [NODE VALIDATION] Available node types (first 20): ${availableTypes}`);
+        return false;
       } else {
         console.log(`✅ [NODE VALIDATION] Node type "${correctedType}" validated successfully`);
       }

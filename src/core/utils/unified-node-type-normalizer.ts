@@ -20,7 +20,6 @@
  */
 
 import { WorkflowNode } from '../types/ai-types';
-import { normalizeNodeType as semanticNormalizeNodeType } from '../../services/ai/node-type-normalizer';
 type ServiceNormalizeResult = { normalized: string; valid: boolean; method: string };
 
 function normalizeViaServiceSafely(nodeType: string): ServiceNormalizeResult {
@@ -95,10 +94,10 @@ export function unifiedNormalizeNodeType(input: WorkflowNode | any | string): st
 /**
  * ✅ UNIFIED: Normalize node type string
  * 
- * Uses comprehensive normalization strategy:
- * 1. NodeTypeNormalizationService (capabilities, categories, abstract types)
- * 2. Semantic resolution (if service fails)
- * 3. Fallback to original (don't break workflows)
+ * Uses strict registry normalization strategy:
+ * 1. UnifiedNodeRegistry alias resolution
+ * 2. UnifiedNodeRegistry exact canonical lookup
+ * 3. Fallback to original only (caller decides whether to reject)
  * 
  * @param nodeType - Node type string to normalize
  * @returns Normalized node type string
@@ -108,25 +107,14 @@ export function unifiedNormalizeNodeTypeString(nodeType: string): string {
     return nodeType || '';
   }
   
-  // Step 1: Try NodeTypeNormalizationService (comprehensive - handles capabilities, categories, etc.)
+  // Step 1: Resolve through UnifiedNodeRegistry only (single source of truth)
   const serviceResult = normalizeViaServiceSafely(nodeType);
   
   if (serviceResult.valid) {
     return serviceResult.normalized;
   }
-  
-  // Step 2: Fallback to semantic normalization (handles aliases, fuzzy matching)
-  try {
-    const semanticResult = semanticNormalizeNodeType(nodeType);
-    if (semanticResult && semanticResult !== nodeType) {
-      console.log(`[UnifiedNodeTypeNormalizer] ✅ Semantic normalization: "${nodeType}" → "${semanticResult}"`);
-      return semanticResult;
-    }
-  } catch (error) {
-    // Semantic normalization failed - continue to fallback
-  }
-  
-  // Step 3: If all normalization fails, return original (don't break workflows)
+
+  // Step 2: If resolution fails, return original and let callers fail fast where required.
   console.warn(`[UnifiedNodeTypeNormalizer] ⚠️  Could not normalize node type: "${nodeType}" (method: ${serviceResult.method})`);
   return nodeType;
 }
@@ -148,22 +136,12 @@ export function unifiedNormalizeNodeTypeWithInfo(nodeType: string): {
     return { normalized: nodeType || '', valid: false, method: 'invalid_input' };
   }
   
-  // Try NodeTypeNormalizationService first
+  // Try registry normalization first
   const serviceResult = normalizeViaServiceSafely(nodeType);
   
   if (serviceResult.valid) {
     return serviceResult;
   }
-  
-  // Fallback to semantic normalization
-  try {
-    const semanticResult = semanticNormalizeNodeType(nodeType);
-    if (semanticResult && semanticResult !== nodeType) {
-      return { normalized: semanticResult, valid: true, method: 'semantic_resolution' };
-    }
-  } catch (error) {
-    // Semantic normalization failed
-  }
-  
+
   return serviceResult; // Return service result (may be invalid, but has method info)
 }

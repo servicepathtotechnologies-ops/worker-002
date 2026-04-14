@@ -448,12 +448,11 @@ export async function executeNodeDynamically(
   const runtimeInputSchema = definition.inputSchema as Record<string, any>;
   const requiredInputs = definition.requiredInputs || [];
 
-  // Strict runtime_ai enforcement for essential/required runtime fields.
+  // Strict runtime_ai enforcement for registry-required runtime fields only.
+  // Optional runtime fields may remain empty without blocking execution.
   const strictRuntimeFieldNames = Object.keys(runtimeInputSchema).filter((fieldName) => {
     if (effectiveFillModes[fieldName] !== 'runtime_ai') return false;
-    const fd = runtimeInputSchema[fieldName] as NodeInputField | undefined;
-    const essential = fd?.essentialForExecution === true;
-    return requiredInputs.includes(fieldName) || essential;
+    return requiredInputs.includes(fieldName);
   });
   const unresolvedRuntimeFields = strictRuntimeFieldNames.filter(
     (fieldName) => !isMeaningfulStaticValue((resolvedInputs as Record<string, any>)[fieldName])
@@ -518,8 +517,9 @@ export async function executeNodeDynamically(
 
   // Capture resolved runtime inputs for execution observability without leaking secrets.
   // This is used by execution detail views and "last runtime value" previews in UI.
+  let resolvedInputSources: Record<string, 'runtime_ai' | 'static_config'> = {};
   try {
-    const resolvedInputSources: Record<string, 'runtime_ai' | 'static_config'> = {};
+    resolvedInputSources = {};
     for (const fieldName of Object.keys(resolvedInputs || {})) {
       resolvedInputSources[fieldName] = effectiveFillModes[fieldName] === 'runtime_ai'
         ? 'runtime_ai'
@@ -627,6 +627,7 @@ export async function executeNodeDynamically(
     userId,
     currentUserId,
     supabase,
+    resolvedInputSources,
   };
   
         // Populate upstreamOutputs map
@@ -732,19 +733,21 @@ async function resolveInputsWithAI(
   // User intent from currentWorkflowIntent set at execution start in execute-workflow (single source for this run).
   const userIntent = (global as any).currentWorkflowIntent || 'Process workflow data';
   
-  // Fast path when there is no previous output OR upstream is trigger-only / schedule timestamps only / empty inputData.
-  // Otherwise AI runs on useless keys (e.g. executed_at) and often maps runtime_ai fields to placeholders.
+  // Thin upstream payloads should not short-circuit to static config.
+  // We still run AI resolution using workflow intent so runtime_ai fields can be generated.
   if (
     previousOutput == null ||
     (typeof previousOutput === 'object' && Object.keys(previousOutput as object).length === 0) ||
     isEffectivelyEmptyUpstreamPayload(previousOutput) ||
     isUpstreamNarrativelyThinForRuntimeAi(previousOutput)
   ) {
-    console.log('[DynamicExecutor] ℹ️ Thin upstream payload detected, using config-first fallback input resolution', {
+    console.log('[DynamicExecutor] ℹ️ Thin upstream payload detected, running intent-only AI input resolution', {
       nodeType,
       nodeId: currentNodeId,
     });
-    return resolveInputsFromConfig(inputSchema, config, nodeOutputs);
+    previousOutput = undefined;
+    (global as any).lastPreviousOutput = undefined;
+    (global as any).lastPreviousOutputNodeId = null;
   }
 
   // Import AI Input Resolver – AI analyzes actual keys (number, value, number.1, number.list, etc.) and creates input JSON
@@ -900,9 +903,12 @@ async function resolveNodeInputsUniversalContract(
       workflowIntent: rawWorkflowIntent,
     });
 
+    const outputNode =
+      String(definition.category) === 'output' || definition.category === 'communication';
     if (
-      isEffectivelyEmptyUpstreamPayload(upstreamPayload) ||
-      isUpstreamNarrativelyThinForRuntimeAi(upstreamPayload)
+      (isEffectivelyEmptyUpstreamPayload(upstreamPayload) ||
+        isUpstreamNarrativelyThinForRuntimeAi(upstreamPayload)) &&
+      !outputNode
     ) {
       const fallbackIntent =
         rawWorkflowIntent.length > 0 ? rawWorkflowIntent : 'Process the workflow using the configured nodes.';
@@ -951,17 +957,23 @@ async function resolveNodeInputsUniversalContract(
     missingRuntimeFieldsAudit = missingRuntimeFields;
 
     // Generic output-node reliability: avoid publishing obvious placeholder AI text.
-    const outputNode =
-      String(definition.category) === 'output' || definition.category === 'communication';
     if (outputNode && runtimeFields.length > 0) {
-      const fallbackIntent = rawWorkflowIntent || 'Generated content from workflow intent';
+      const upstreamType = getUpstreamNodeTypeFromExecutionGlobal();
+      const narrativeFallback = pickPrimaryNarrativeStringFromUpstreamOutput(
+        upstreamType,
+        upstreamPayload
+      );
       const replacedFields: string[] = [];
       for (const fieldName of runtimeFields) {
         const fieldDef = runtimeInputSchema[fieldName] as NodeInputField | undefined;
         if (!shouldFillRuntimeAiFromWorkflowIntent(fieldName, fieldDef)) continue;
         const val = (resolvedInputs as Record<string, unknown>)[fieldName];
-        if (looksPlaceholderLikeValue(val)) {
-          (resolvedInputs as Record<string, any>)[fieldName] = fallbackIntent;
+        if (
+          looksPlaceholderLikeValue(val) &&
+          typeof narrativeFallback === 'string' &&
+          narrativeFallback.trim().length > 0
+        ) {
+          (resolvedInputs as Record<string, any>)[fieldName] = narrativeFallback;
           replacedFields.push(fieldName);
         }
       }

@@ -3,10 +3,10 @@ import { getSupabaseClient } from '../database/supabase-compat';
 import { ErrorCode, createError } from './error-codes';
 
 /**
- * Check if user has Google OAuth connected
- * Returns user ID if Google is connected, throws error otherwise
+ * Check if request has a valid authenticated user.
+ * Returns user ID if authenticated, throws UNAUTHORIZED otherwise.
  */
-export async function requireGoogleAuth(req: Request): Promise<string> {
+export async function requireAuthenticatedUser(req: Request): Promise<string> {
   const supabase = getSupabaseClient();
 
   const authHeader = req.headers.authorization;
@@ -29,6 +29,17 @@ export async function requireGoogleAuth(req: Request): Promise<string> {
       { hint: 'Please sign in to continue' }
     );
   }
+
+  return userId;
+}
+
+/**
+ * Check if user has Google OAuth connected
+ * Returns user ID if Google is connected, throws error otherwise
+ */
+export async function requireGoogleAuth(req: Request): Promise<string> {
+  const supabase = getSupabaseClient();
+  const userId = await requireAuthenticatedUser(req);
 
   // Check Google OAuth connection
   const { data: googleTokenData, error: googleError } = await supabase
