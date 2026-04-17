@@ -1,4 +1,4 @@
-// Feature: ai-first-workflow-generation-pipeline
+// Feature: intelligent-workflow-generation-pipeline
 // Validates: Requirements 7.1, 7.2, 7.3, 7.4, 9.1, 9.3
 
 import * as fs from 'fs';
@@ -7,13 +7,14 @@ import * as path from 'path';
 const WORKER_SRC = path.resolve(__dirname, '../../..');
 const AI_SRC = path.resolve(__dirname, '..');
 const STAGES_SRC = path.resolve(__dirname, '../stages');
+const PIPELINE_SRC = path.resolve(__dirname, '../pipeline');
 const API_SRC = path.resolve(__dirname, '../../../api');
 
 // ─── Generation path files ────────────────────────────────────────────────────
 
 const GENERATION_PATH_FILES: Record<string, string> = {
   'generate-workflow.ts': path.join(API_SRC, 'generate-workflow.ts'),
-  'ai-first-pipeline.ts': path.join(AI_SRC, 'ai-first-pipeline.ts'),
+  'workflow-generation-pipeline.ts': path.join(PIPELINE_SRC, 'workflow-generation-pipeline.ts'),
   'intent-stage.ts': path.join(STAGES_SRC, 'intent-stage.ts'),
   'node-selection-stage.ts': path.join(STAGES_SRC, 'node-selection-stage.ts'),
   'edge-reasoning-stage.ts': path.join(STAGES_SRC, 'edge-reasoning-stage.ts'),
@@ -162,12 +163,12 @@ describe('6. No hardcoded validation rules in validation path (Requirement 7.3)'
   });
 });
 
-// ─── 7. generate-workflow.ts uses AiFirstPipeline directly ───────────────────
+// ─── 7. generate-workflow.ts uses WorkflowGenerationPipeline directly ────────
 
-describe('7. generate-workflow.ts uses AiFirstPipeline directly (Requirements 9.1, 9.3)', () => {
-  it('contains AiFirstPipeline', () => {
+describe('7. generate-workflow.ts uses WorkflowGenerationPipeline directly (Requirements 9.1, 9.3)', () => {
+  it('contains WorkflowGenerationPipeline', () => {
     const source = readGenerationFile('generate-workflow.ts');
-    expect(source).toContain('AiFirstPipeline');
+    expect(source).toContain('WorkflowGenerationPipeline');
   });
 
   it('does not contain WorkflowPipelineOrchestrator', () => {

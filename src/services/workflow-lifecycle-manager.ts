@@ -342,20 +342,21 @@ export class WorkflowLifecycleManager {
   }
 
   /**
-   * Generate workflow using Gemini planner + registry + graph orchestrator.
-   * Falls back to deterministic pipeline only if planner-based generation fails.
+   * Generate workflow using WorkflowGenerationPipeline — the single universal pipeline.
+   * No deterministic fallback. No dual paths. WorkflowGenerationPipeline handles its own
+   * internal fallback (manual_trigger → ai_chat_model → log_output) when needed.
    */
   private async generateWorkflowWithNewPipeline(
-    userPrompt: string, // ✅ Can be original prompt or selected structured prompt
+    userPrompt: string,
     constraints?: {
       mandatoryNodeTypes?: string[];
-      mandatoryNodesWithOperations?: Array<{ nodeType: string; operationHint?: string; context?: string }>; // ✅ NEW: Nodes with operation hints
-      selectedStructuredPrompt?: string; // ✅ NEW: Selected structured prompt from summarize layer
-      originalPrompt?: string; // ✅ NEW: Original user prompt (preserved for reference)
-      registryTags?: string[]; // Tags from registry for selected nodes (e.g. nodeType:category)
-      providedCredentials?: Record<string, Record<string, any>>; // ✅ FIX: Added missing property
+      mandatoryNodesWithOperations?: Array<{ nodeType: string; operationHint?: string; context?: string }>;
+      selectedStructuredPrompt?: string;
+      originalPrompt?: string;
+      registryTags?: string[];
+      providedCredentials?: Record<string, Record<string, any>>;
       selectedVariantStrategy?: 'registry_minimal' | 'registry_extended' | 'keyword_minimal' | 'keyword_extended';
-      variantNodes?: string[]; // Ordered node types from variant (for registry/keyword enforcement)
+      variantNodes?: string[];
       requiredNodeTypes?: string[];
     },
     onProgress?: (step: number, stepName: string, progress: number, details?: any) => void
@@ -370,176 +371,46 @@ export class WorkflowLifecycleManager {
     confidenceScore?: any;
     analysis?: Record<string, unknown>;
   }> {
-    const mandatory = constraints?.mandatoryNodeTypes;
-    if (mandatory && mandatory.length > 0) {
-      try {
-        const { AiFirstPipeline } = await import('./ai/ai-first-pipeline');
-        const { randomUUID } = await import('crypto');
-        const pipelineUser =
-          (constraints?.selectedStructuredPrompt && String(constraints.selectedStructuredPrompt).trim()) ||
-          userPrompt;
-        const aiResult = await new AiFirstPipeline().run({
-          userPrompt: pipelineUser,
-          userId: 'lifecycle',
-          correlationId: randomUUID(),
-          mandatoryNodeTypes: [...mandatory],
-        });
-        if (aiResult.ok) {
-          return {
-            workflow: aiResult.workflow,
-            documentation: 'Workflow generated via AI-first pipeline (authoritative mandatory chain)',
-            suggestions: [],
-            estimatedComplexity: 'medium',
-            systemPrompt: undefined,
-            requirements: undefined,
-            requiredCredentials: [],
-            confidenceScore: {
-              score: 0.9,
-              factors: ['AI-first pipeline', 'mandatory chain', 'build manifest'],
-            },
-            analysis: undefined,
-          };
-        }
-        console.warn(
-          '[WorkflowLifecycle] AI-first mandatory pipeline failed, using planner path',
-          aiResult.message,
-        );
-      } catch (e) {
-        console.warn('[WorkflowLifecycle] AI-first mandatory pipeline error, using planner path', e);
-      }
-    }
+    const { WorkflowGenerationPipeline } = await import('./ai/pipeline/workflow-generation-pipeline');
+    const { randomUUID } = await import('crypto');
 
-    console.log('[WorkflowLifecycle] Executing Gemini planner pipeline (with deterministic fallback)...');
+    const pipelineUser =
+      (constraints?.selectedStructuredPrompt && String(constraints.selectedStructuredPrompt).trim()) ||
+      userPrompt;
 
-    // FIRST: Try Gemini-based planner path
-    try {
-      const builder = new AgenticWorkflowBuilder();
-      // If a selected structured prompt was provided, use variant-aware entry point (registry vs keyword semantics).
-      // userPrompt here is primaryPlannerPrompt (original + structured merged) so Gemini sees full intent.
-      if (constraints?.selectedStructuredPrompt) {
-        const workflow = await builder.generateWorkflowFromVariant(userPrompt, {
-          mandatoryNodeTypes: constraints.mandatoryNodeTypes,
-          registryTags: constraints.registryTags,
-          strategy: constraints.selectedVariantStrategy,
-          variantNodes: constraints.variantNodes,
-          requiredNodeTypes: constraints.requiredNodeTypes ?? constraints.mandatoryNodeTypes,
-        });
-        return {
-          workflow,
-          documentation: 'Workflow generated from selected prompt variation using Gemini planner + Unified Node Registry + Unified Graph Orchestrator',
-          suggestions: [],
-          estimatedComplexity: 'medium',
-          systemPrompt: undefined,
-          requirements: undefined,
-          requiredCredentials: [],
-          confidenceScore: {
-            score: 0.9,
-            factors: ['Gemini planner', 'registry defaults', 'graph orchestrator validation', 'selected prompt variation'],
-          },
-          analysis: undefined,
-        };
-      }
-
-      // Prefer graph-level planner + WorkflowPlan validator when possible,
-      // fall back to the existing step-based Gemini planner on failure.
-      let workflow: Workflow;
-      try {
-        workflow = await builder.generateWorkflowWithGraphPlanner(userPrompt, {
-          mandatoryNodeTypes: constraints?.mandatoryNodeTypes,
-          suggestedNodes: constraints?.registryTags,
-        });
-        console.log('[WorkflowLifecycle] ✅ Graph planner WorkflowPlan path succeeded');
-      } catch (graphError) {
-        console.warn(
-          '[WorkflowLifecycle] Graph planner WorkflowPlan path failed, falling back to step-based Gemini planner',
-          graphError instanceof Error ? graphError.message : String(graphError),
-        );
-        workflow = await builder.generateWorkflowWithGeminiPlannerRobust(userPrompt);
-      }
-
-      return {
-        workflow,
-        documentation: 'Workflow generated using Gemini planner + Unified Node Registry + Unified Graph Orchestrator',
-        suggestions: [],
-        estimatedComplexity: 'medium',
-        systemPrompt: undefined,
-        requirements: undefined,
-        requiredCredentials: [],
-        confidenceScore: {
-          score: 0.9,
-          factors: ['Gemini planner', 'registry defaults', 'graph orchestrator validation'],
-        },
-        analysis: undefined,
-      };
-    } catch (plannerError) {
-      console.warn('[WorkflowLifecycle] Gemini planner pipeline failed, falling back to deterministic pipeline', {
-        error: plannerError instanceof Error ? plannerError.message : String(plannerError),
-      });
-    }
-
-    // FALLBACK: existing deterministic pipeline architecture
-    console.log('[WorkflowLifecycle] Executing deterministic pipeline fallback...');
-
-    // Get existing credentials from vault if available
-    let existingCredentials: Record<string, any> | undefined;
-    try {
-      const supabase = getSupabaseClient();
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user?.id) {
-        // TODO: Load existing credentials from vault
-        existingCredentials = {};
-      }
-    } catch (error) {
-      console.warn('[WorkflowLifecycle] Could not load existing credentials:', error);
-    }
-
-    // ✅ NEW: Extract mandatory nodes from constraints and pass to pipeline
-    const mandatoryNodeTypes = constraints?.mandatoryNodeTypes || [];
-    const mandatoryNodesWithOperations = constraints?.mandatoryNodesWithOperations || [];
-    const tagsFromVariation = (constraints?.registryTags && constraints.registryTags.length > 0)
-      ? constraints.registryTags
-      : buildTagsFromRegistry(mandatoryNodeTypes);
-    if (mandatoryNodeTypes.length > 0) {
-      console.log(`[WorkflowLifecycle] 🔒 Passing ${mandatoryNodeTypes.length} mandatory node type(s) to pipeline: ${mandatoryNodeTypes.join(', ')}`);
-      if (mandatoryNodesWithOperations.length > 0) {
-        console.log(`[WorkflowLifecycle] ✅ Passing operation hints for ${mandatoryNodesWithOperations.length} node(s)`);
-      }
-      if (tagsFromVariation.length > 0) {
-        console.log(`[WorkflowLifecycle] ✅ Passing ${tagsFromVariation.length} tag(s) for ordering/pruning`);
-      }
-    }
-    
-    const { selectedStructuredPrompt, originalPrompt } = this.buildEffectiveStructuredPromptForPipeline(
-      userPrompt,
-      constraints
-    );
-
-    console.log(`[WorkflowLifecycle] Using prompt: "${selectedStructuredPrompt.substring(0, 100)}..."`);
-    if (constraints?.selectedStructuredPrompt) {
-      console.log(`[WorkflowLifecycle] ✅ Using selected structured prompt (original preserved for reference)`);
-    }
-    
-    // Execute pipeline — AI-first, single universal path
-    const { AiFirstPipeline } = await import('./ai/ai-first-pipeline');
-    const aiPipeline = new AiFirstPipeline();
-    const pipelineResult = await aiPipeline.run({
-      userPrompt: selectedStructuredPrompt,
+    const pipelineResult = await new WorkflowGenerationPipeline().run({
+      userPrompt: pipelineUser,
       userId: 'lifecycle',
+      correlationId: randomUUID(),
+      mandatoryNodeTypes: constraints?.mandatoryNodeTypes,
+      onStageComplete: onProgress
+        ? (stageName, progress) => {
+            try { onProgress(0, stageName, progress); } catch (_) {}
+          }
+        : undefined,
     });
 
     if (!pipelineResult.ok) {
-      throw new Error(`Pipeline failed: ${pipelineResult.code} — ${pipelineResult.message}`);
+      throw new Error(`Pipeline failed: ${(pipelineResult as any).error} — ${(pipelineResult as any).message}`);
     }
 
+    // CapabilityOptionsNeeded — should not happen in lifecycle context (no UI interaction)
+    if ((pipelineResult as any).needsCapabilitySelection) {
+      throw new Error('Pipeline requires capability selection — not supported in lifecycle context');
+    }
+
+    const result = pipelineResult as any;
     return {
-      workflow: pipelineResult.workflow,
-      documentation: 'Workflow generated using AI-first pipeline',
-      suggestions: pipelineResult.validationIssues
-        .filter(i => i.severity === 'warning')
-        .map(i => ({ type: 'warning', message: i.description })),
+      workflow: result.workflow,
+      documentation: 'Workflow generated via WorkflowGenerationPipeline',
+      suggestions: (result.validationIssues || [])
+        .filter((i: any) => i.severity === 'warning')
+        .map((i: any) => ({ type: 'warning', message: i.description })),
       estimatedComplexity: 'medium',
+      systemPrompt: undefined,
+      requirements: undefined,
       requiredCredentials: [],
-      confidenceScore: { score: 0.9, factors: [] },
+      confidenceScore: { score: 0.9, factors: ['WorkflowGenerationPipeline', 'build manifest'] },
       analysis: undefined,
     };
   }
@@ -1929,6 +1800,61 @@ export class WorkflowLifecycleManager {
     return false;
   }
 
+  private sanitizeCredentialOwnedMutations(
+    nodeType: string,
+    nodeId: string,
+    originalConfig: Record<string, any>,
+    mutatedConfig: Record<string, any>
+  ): Record<string, any> {
+    const def = unifiedNodeRegistry.get(nodeType);
+    if (!def?.inputSchema) return mutatedConfig;
+
+    const allowedFields = new Set<string>(['credentialId']);
+    for (const [fieldName, fieldDef] of Object.entries(def.inputSchema)) {
+      if (isCredentialOwnership(fieldName, fieldDef as any)) {
+        allowedFields.add(fieldName);
+      }
+    }
+
+    const safeConfig = { ...mutatedConfig };
+    const allKeys = new Set<string>([
+      ...Object.keys(originalConfig || {}),
+      ...Object.keys(mutatedConfig || {}),
+    ]);
+    const revertedFields: string[] = [];
+
+    const hasChanged = (before: unknown, after: unknown): boolean => {
+      if (before === after) return false;
+      try {
+        return JSON.stringify(before) !== JSON.stringify(after);
+      } catch {
+        return true;
+      }
+    };
+
+    for (const key of allKeys) {
+      if (allowedFields.has(key)) continue;
+      const before = originalConfig?.[key];
+      const after = mutatedConfig?.[key];
+      if (!hasChanged(before, after)) continue;
+
+      revertedFields.push(key);
+      if (before === undefined) {
+        delete safeConfig[key];
+      } else {
+        safeConfig[key] = before;
+      }
+    }
+
+    if (revertedFields.length > 0) {
+      console.warn(
+        `[WorkflowLifecycle] Reverted non-credential config mutations for node ${nodeId} (${nodeType}): ${revertedFields.join(', ')}`
+      );
+    }
+
+    return safeConfig;
+  }
+
   /**
    * Inject credentials into workflow nodes
    * 
@@ -1962,7 +1888,8 @@ export class WorkflowLifecycleManager {
     // Inject credentials into nodes using connector registry
     const updatedNodes = workflow.nodes.map((node: WorkflowNode) => {
       const nodeType = unifiedNormalizeNodeType(node);
-      const config = { ...(node.data?.config || {}) };
+      const originalConfig = { ...(node.data?.config || {}) };
+      const config = { ...originalConfig };
       let updated = false;
 
       // Get connector for this node type
@@ -2006,7 +1933,14 @@ export class WorkflowLifecycleManager {
             });
           });
         }
-        return updated ? { ...node, data: { ...node.data, config } } : node;
+        if (!updated) return node;
+        const safeConfig = this.sanitizeCredentialOwnedMutations(
+          nodeType,
+          node.id,
+          originalConfig,
+          config
+        );
+        return { ...node, data: { ...node.data, config: safeConfig } };
       }
 
       // Use connector's credential contract to inject credentials
@@ -2512,7 +2446,14 @@ export class WorkflowLifecycleManager {
         }
       });
 
-      return updated ? { ...node, data: { ...node.data, config } } : node;
+      if (!updated) return node;
+      const safeConfig = this.sanitizeCredentialOwnedMutations(
+        nodeType,
+        node.id,
+        originalConfig,
+        config
+      );
+      return { ...node, data: { ...node.data, config: safeConfig } };
     });
 
     const workflowWithCredentials = {

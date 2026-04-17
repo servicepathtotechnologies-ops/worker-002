@@ -17,6 +17,7 @@ import { nodeLibrary } from '../services/nodes/node-library';
 import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../core/utils/unified-node-type-normalizer';
 import { pendingCredentialStore } from '../services/ai/pending-credential-store';
 import { credentialInjector } from '../services/ai/credential-injector';
+import { buildSyncedGraphPayload } from './workflow-graph-state';
 
 interface ConfirmRequest {
   workflowId: string;
@@ -207,6 +208,7 @@ async function updateWorkflowStateInDatabase(
       if (workflow) {
         updateData.nodes = workflow.nodes;
         updateData.edges = workflow.edges;
+        updateData.graph = buildSyncedGraphPayload(workflow.nodes, workflow.edges);
       }
 
       const { error: updateError } = await supabase
@@ -243,6 +245,7 @@ async function updateWorkflowStateInDatabase(
           name: `Workflow ${workflowId.substring(0, 8)}`,
           nodes: workflow.nodes,
           edges: workflow.edges,
+          graph: buildSyncedGraphPayload(workflow.nodes, workflow.edges),
           status: dbStatus,
           confirmed: state === WorkflowState.STATE_CONFIRMED ? true : false,
         });

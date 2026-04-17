@@ -99,7 +99,7 @@ describe('Integration — AI-assigned field values survive credential injection'
 // ---------------------------------------------------------------------------
 
 describe('Integration — Continuation preserves existing workflow field values', () => {
-  it('AiFirstPipeline merges existingWorkflow node configs into generated workflow', async () => {
+  it('WorkflowGenerationPipeline merges existingWorkflow node configs into generated workflow', async () => {
     // We test the merge logic directly via the pipeline's internal behavior.
     // Since the pipeline makes LLM calls, we test the merge utility in isolation
     // by simulating what the pipeline does after property population.
@@ -196,7 +196,7 @@ describe('Integration — Continuation preserves existing workflow field values'
       ],
     };
 
-    // Apply the same merge logic that AiFirstPipeline.run() uses
+    // Apply the same merge logic that WorkflowGenerationPipeline.run() uses
     const existingNodesByType = new Map<string, any>();
     const existingNodesById = new Map<string, any>();
     for (const existingNode of existingWorkflow.nodes) {

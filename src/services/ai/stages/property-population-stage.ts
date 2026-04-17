@@ -361,7 +361,34 @@ export async function runPropertyPopulationStage(
 
       // ── 2.5 Merge over defaults + existing config (preserve _fillMode, structural snapshots, etc.)
       const prior = node.data?.config && typeof node.data.config === 'object' ? node.data.config : {};
-      node.data.config = { ...nodeDef.defaultConfig(), ...prior, ...filteredLlmValues };
+
+      // ── 2.5a Stamp _fillMode for every AI-written non-empty field ────────
+      // Preserve any existing _fillMode entries from prior (e.g. structural fields
+      // already stamped by an earlier materializer pass).
+      const priorFillMode =
+        typeof (prior as any)._fillMode === 'object' && (prior as any)._fillMode !== null
+          ? { ...(prior as any)._fillMode }
+          : {};
+
+      for (const key of Object.keys(filteredLlmValues)) {
+        const v = filteredLlmValues[key];
+        const isEmpty =
+          v === undefined ||
+          v === null ||
+          v === '' ||
+          (Array.isArray(v) && v.length === 0) ||
+          (typeof v === 'object' && !Array.isArray(v) && Object.keys(v as object).length === 0);
+        if (!isEmpty) {
+          priorFillMode[key] = 'buildtime_ai_once';
+        }
+      }
+
+      node.data.config = {
+        ...nodeDef.defaultConfig(),
+        ...prior,
+        ...filteredLlmValues,
+        _fillMode: priorFillMode, // ← always write the stamped map
+      };
 
       // ── 2.6 Summary tracking ─────────────────────────────────────────────
       const writtenFields = Object.keys(filteredLlmValues);

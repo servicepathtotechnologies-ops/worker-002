@@ -23,9 +23,10 @@ import {
 // ---------------------------------------------------------------------------
 
 describe('STAGE_PROGRESS_MAP', () => {
-  it('defines all 8 stage names', () => {
+  it('defines all 9 stage names', () => {
     const expected = [
       'intent',
+      'capability_selection',
       'structural_prompt',
       'node_selection',
       'edge_reasoning',
@@ -48,7 +49,7 @@ describe('STAGE_PROGRESS_MAP', () => {
 });
 
 describe('STAGE_LOG_LABELS', () => {
-  it('has a non-empty string label for each of the 8 stage names', () => {
+  it('has a non-empty string label for each of the 9 stage names', () => {
     for (const stage of PIPELINE_STAGE_ORDER) {
       expect(typeof STAGE_LOG_LABELS[stage]).toBe('string');
       expect(STAGE_LOG_LABELS[stage].length).toBeGreaterThan(0);
@@ -57,8 +58,8 @@ describe('STAGE_LOG_LABELS', () => {
 });
 
 describe('PIPELINE_STAGE_ORDER', () => {
-  it('contains exactly 8 stage names', () => {
-    expect(PIPELINE_STAGE_ORDER).toHaveLength(8);
+  it('contains exactly 9 stage names', () => {
+    expect(PIPELINE_STAGE_ORDER).toHaveLength(9);
   });
 
   it('matches the keys of STAGE_PROGRESS_MAP', () => {
@@ -71,6 +72,7 @@ describe('PIPELINE_STAGE_ORDER', () => {
 describe('getStageProgress', () => {
   it('returns the mapped value for known stages', () => {
     expect(getStageProgress('intent')).toBe(10);
+    expect(getStageProgress('capability_selection')).toBe(18);
     expect(getStageProgress('field_ownership')).toBe(93);
   });
 

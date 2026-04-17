@@ -267,8 +267,14 @@ export class SemanticEquivalenceAutoGenerator {
       const aliases = schema.keywords || [];
       
       aliases.forEach((alias: string) => {
-        const normalizedAlias = unifiedNormalizeNodeTypeString(alias).toLowerCase();
-        const normalizedCanonical = unifiedNormalizeNodeTypeString(canonical).toLowerCase();
+        const normalizedAlias = unifiedNormalizeNodeTypeString(alias, {
+          phase: 'equivalence',
+          suppressUnknownWarning: true,
+        }).toLowerCase();
+        const normalizedCanonical = unifiedNormalizeNodeTypeString(canonical, {
+          phase: 'equivalence',
+          suppressUnknownWarning: true,
+        }).toLowerCase();
         
         // Only add if alias is different from canonical
         if (normalizedAlias !== normalizedCanonical) {

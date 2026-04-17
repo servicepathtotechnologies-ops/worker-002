@@ -1,4 +1,4 @@
-import { describe, expect, it } from '@jest/globals';
+import { describe, expect, it, jest } from '@jest/globals';
 import {
   unifiedNormalizeNodeTypeString,
   unifiedNormalizeNodeTypeWithInfo,
@@ -14,5 +14,20 @@ describe('unified-node-type-normalizer startup safety', () => {
     expect(typeof info.normalized).toBe('string');
     expect(typeof info.valid).toBe('boolean');
     expect(typeof info.method).toBe('string');
+  });
+
+  it('uses unrecognized_type method for unknown aliases', () => {
+    const info = unifiedNormalizeNodeTypeWithInfo('customm');
+    expect(info.valid).toBe(false);
+    expect(info.method).toBe('unrecognized_type');
+  });
+
+  it('suppresses per-alias warning in startup phase and aggregates later', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    unifiedNormalizeNodeTypeString('customm', { phase: 'startup', suppressUnknownWarning: true });
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining('Runtime unknown node type')
+    );
+    warnSpy.mockRestore();
   });
 });

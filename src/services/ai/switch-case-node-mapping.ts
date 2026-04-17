@@ -70,7 +70,6 @@ export function buildCaseNodeMappingFromPlanChain(
     mapping[caseValue] = {
       targetNodeType: descriptor.targetNodeType,
       targetNodeId: descriptor.targetNodeId ?? explicitId,
-      slot: `case_${i + 1}`,
     };
   }
 

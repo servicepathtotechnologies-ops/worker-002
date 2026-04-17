@@ -229,7 +229,7 @@ class UnifiedGraphOrchestratorImpl implements UnifiedGraphOrchestrator {
   /**
    * Wire switch case edges using the provided SwitchContext.
    * Reads outgoingPorts from the switch node's registry definition and creates
-   * one labeled edge per case (case_1, case_2, … case_n) connecting the switch
+   * one labeled edge per semantic case value connecting the switch
    * node to the correct downstream node from caseNodeMapping.
    *
    * All edge creation goes through edgeReconciliationEngine — no direct workflow.edges.push.
@@ -279,7 +279,9 @@ class UnifiedGraphOrchestratorImpl implements UnifiedGraphOrchestrator {
         targetSpec && typeof targetSpec === 'object' && !Array.isArray(targetSpec)
           ? targetSpec.slot
           : undefined;
-      const portLabel = explicitSlot || outgoingPorts[index] || `case_${index + 1}`;
+      const semanticPort =
+        typeof caseValue === 'string' && caseValue.trim().length > 0 ? caseValue.trim() : undefined;
+      const portLabel = semanticPort || explicitSlot || outgoingPorts[index] || `case_${index + 1}`;
       const targetNodeId =
         targetSpec && typeof targetSpec === 'object' && !Array.isArray(targetSpec)
           ? targetSpec.targetNodeId

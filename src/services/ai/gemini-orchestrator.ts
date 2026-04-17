@@ -82,6 +82,10 @@ export class GeminiOrchestrator {
       max_tokens?: number;
       stream?: boolean;
       model?: string; // Override model selection
+      structuredOutput?: {
+        mimeType?: 'application/json' | 'text/plain';
+        schema?: Record<string, unknown>;
+      };
     }
   ): Promise<any> {
     const startTime = Date.now();
@@ -120,6 +124,7 @@ export class GeminiOrchestrator {
           temperature: options?.temperature ?? this.getDefaultTemperature(type),
           maxTokens: options?.max_tokens ?? this.getDefaultMaxTokens(type),
           stream: options?.stream ?? false,
+          structuredOutput: options?.structuredOutput,
         }
       );
 
@@ -235,7 +240,15 @@ export class GeminiOrchestrator {
   private async executeWithRetry(
     model: string,
     messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
-    options: { temperature?: number; maxTokens?: number; stream?: boolean },
+    options: {
+      temperature?: number;
+      maxTokens?: number;
+      stream?: boolean;
+      structuredOutput?: {
+        mimeType?: 'application/json' | 'text/plain';
+        schema?: Record<string, unknown>;
+      };
+    },
     maxRetries: number = 3
   ): Promise<any> {
     const apiKey = config.geminiApiKey;
@@ -251,6 +264,7 @@ export class GeminiOrchestrator {
           temperature: options.temperature ?? 0.7,
           maxTokens: options.maxTokens,
           stream: options.stream,
+          structuredOutput: options.structuredOutput,
         });
 
         return response;

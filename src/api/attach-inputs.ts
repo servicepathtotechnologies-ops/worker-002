@@ -92,6 +92,7 @@ import {
   mergePersistedBuildAiUsage,
 } from '../core/ai/build-usage-context';
 import { buildPositionSnapshotFromNodes, mergePreservedNodePositions } from '../core/utils/workflow-node-position';
+import { resolveWorkflowGraphState } from './workflow-graph-state';
 
 export function collectEffectiveFillModesForWizard(nodes: any[]): Record<string, string> {
   return (Array.isArray(nodes) ? nodes : []).reduce((acc: Record<string, string>, node: any) => {
@@ -408,41 +409,30 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     let baselineProtectedConfigFingerprint: WorkflowProtectedConfigFingerprint | null = null;
     const freezeBoundary = (workflow as any)?.metadata?.freezeBoundary || null;
     const isPostFreezeReadonly = Boolean(freezeBoundary?.frozen);
+    /**
+     * Config normalization gate: once the workflow has been delivered to the UI
+     * (indicated by buildManifest presence OR freezeBoundary), all node config
+     * normalization must stop. Only edge topology fixes are allowed after this point.
+     * This preserves AI-built values, user-entered values, and credentials exactly as set.
+     */
+    const hasBuildManifest = Boolean((workflow as any)?.metadata?.buildManifest);
+    const isConfigFrozen = isPostFreezeReadonly || hasBuildManifest;
     /** Snapshot of node positions from DB row before normalization (preserve manual layout on save). */
     let attachInputsPositionSnapshot = new Map<string, { x: number; y: number }>();
     try {
-      // ✅ CRITICAL: Parse nodes/edges if they are JSON strings
-      // Supabase JSON columns can be returned as strings or objects
-      let parsedNodes = workflow.nodes;
-      let parsedEdges = workflow.edges;
-      
-      if (typeof parsedNodes === 'string') {
-        try {
-          parsedNodes = JSON.parse(parsedNodes);
-        } catch (parseError) {
-          console.error('[AttachInputs] Failed to parse nodes JSON string:', parseError);
-          parsedNodes = [];
-        }
+      const resolvedGraphState = resolveWorkflowGraphState(workflow as any);
+      if (resolvedGraphState.needsHealing) {
+        console.warn('[AttachInputs] ⚠️ Workflow graph state needed healing:', {
+          workflowId,
+          source: resolvedGraphState.source,
+          inSync: resolvedGraphState.inSync,
+          reason: resolvedGraphState.reason,
+        });
       }
-      
-      if (typeof parsedEdges === 'string') {
-        try {
-          parsedEdges = JSON.parse(parsedEdges);
-        } catch (parseError) {
-          console.error('[AttachInputs] Failed to parse edges JSON string:', parseError);
-          parsedEdges = [];
-        }
-      }
-      
-      // ✅ CRITICAL: Workflow might have graph as object OR nodes/edges as separate fields
-      // ✅ CRITICAL: Workflow might have graph as object OR nodes/edges as separate fields
-      // Safe fallback: use graph if available, otherwise construct from nodes/edges
-      const graphToNormalize = (workflow.graph && typeof workflow.graph === 'object' && Object.keys(workflow.graph).length > 0) 
-        ? workflow.graph 
-        : { 
-            nodes: parsedNodes || [], 
-            edges: parsedEdges || [] 
-          };
+      const graphToNormalize = {
+        nodes: resolvedGraphState.nodes || [],
+        edges: resolvedGraphState.edges || [],
+      };
 
       attachInputsPositionSnapshot = buildPositionSnapshotFromNodes(
         Array.isArray(graphToNormalize.nodes) ? graphToNormalize.nodes : []
@@ -592,7 +582,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     // ✅ CRITICAL: Config-only save normalization (preserve topology)
     const { normalizeWorkflowForSave: normalizeWorkflow } = await import('../core/validation/workflow-save-validator');
     const normalizedBeforeClone = normalizeWorkflow(workflowGraph.nodes, workflowGraph.edges, {
-      structuralMode: isPostFreezeReadonly ? 'post_freeze_readonly' : 'configOnly',
+      structuralMode: isConfigFrozen ? 'post_freeze_readonly' : 'configOnly',
     });
     
     // ✅ DEBUG: Log node IDs AFTER normalization to verify deduplication
@@ -702,6 +692,19 @@ export default async function attachInputsHandler(req: Request, res: Response) {
         // They are handled via OAuth button flow
       }
 
+      // Diagnostic: log buildtime_ai_once stamp presence for observability
+      const stampedBuildtimeFields = Object.entries(
+        (config._fillMode as Record<string, string> | undefined) ?? {}
+      )
+        .filter(([, m]) => m === 'buildtime_ai_once')
+        .map(([f]) => f);
+      if (stampedBuildtimeFields.length > 0) {
+        console.log(
+          `[AttachInputs] Node ${node.id} (${nodeType}) has ${stampedBuildtimeFields.length} buildtime_ai_once stamps:`,
+          stampedBuildtimeFields
+        );
+      }
+
       // ✅ CRITICAL: Idempotent input application
       // Input format: { "nodeId_fieldName": "value" } or { "nodeId": { "fieldName": "value" } }
       // ✅ COMPREHENSIVE: Also handle question IDs: { "cred_nodeId_fieldName": "value", "op_nodeId_fieldName": "value", "config_nodeId_fieldName": "value", "resource_nodeId_fieldName": "value" }
@@ -778,6 +781,11 @@ export default async function attachInputsHandler(req: Request, res: Response) {
                 nodeType,
                 fieldName: modeFieldName,
               });
+              // Clear any stored static value so AI fills it at runtime (req 4.3, 4.4)
+              if ((config as any)[modeFieldName] !== undefined) {
+                delete (config as any)[modeFieldName];
+                updated = true;
+              }
             }
             updated = true;
             console.log(`[AttachInputs] Applied fill mode for ${node.id}.${modeFieldName}: ${modePolicy.mode}`);
@@ -943,7 +951,32 @@ export default async function attachInputsHandler(req: Request, res: Response) {
             if (unifiedDefForNode?.inputSchema?.expression && fieldName === 'expression' && typeof value === 'string') {
               value = value.trim();
             }
-            
+
+            // ── JSON string coercion for array/object fields ──────────────────────────
+            // The wizard serializes array/object values to JSON strings for display.
+            // Parse them back to the correct type before applying.
+            const fieldSchemaType = unifiedDefForNode?.inputSchema?.[fieldName]?.type;
+            if (
+              typeof value === 'string' &&
+              (fieldSchemaType === 'array' || fieldSchemaType === 'object')
+            ) {
+              const trimmed = value.trim();
+              if (
+                (trimmed.startsWith('[') && trimmed.endsWith(']')) ||
+                (trimmed.startsWith('{') && trimmed.endsWith('}'))
+              ) {
+                try {
+                  value = JSON.parse(trimmed);
+                } catch (parseErr) {
+                  console.warn(
+                    `[AttachInputs] Failed to parse JSON string for ${fieldName} on node ${node.id} (${nodeType}), skipping:`,
+                    parseErr
+                  );
+                  continue; // skip — do not store a malformed string
+                }
+              }
+            }
+
             // ✅ CRITICAL: Validate field exists in schema
             // ✅ RELAXED: Accept optional fields even if not in schema (for flexibility)
             const isRequired = schema.configSchema.required?.includes(fieldName);
@@ -1014,10 +1047,20 @@ export default async function attachInputsHandler(req: Request, res: Response) {
           for (const [fieldName, fieldValueRaw] of Object.entries(rawValue as Record<string, any>)) {
             if (isConfigMetaKey(fieldName)) {
               if (fieldName === '_fillMode' && fieldValueRaw && typeof fieldValueRaw === 'object') {
-                (config as any)._fillMode = {
-                  ...((config as any)._fillMode || {}),
-                  ...(fieldValueRaw as object),
-                };
+                const existingFillMode = (config as any)._fillMode || {};
+                const incomingFillMode = fieldValueRaw as Record<string, string>;
+                // ✅ Never downgrade buildtime_ai_once to manual_static via auto-persist.
+                // buildtime_ai_once can only be changed by an explicit user action.
+                const mergedFillMode: Record<string, string> = { ...existingFillMode };
+                for (const [fKey, fVal] of Object.entries(incomingFillMode)) {
+                  const existing = mergedFillMode[fKey];
+                  // Protect: do not overwrite buildtime_ai_once with manual_static
+                  if (existing === 'buildtime_ai_once' && fVal === 'manual_static') {
+                    continue; // keep buildtime_ai_once
+                  }
+                  mergedFillMode[fKey] = fVal;
+                }
+                (config as any)._fillMode = mergedFillMode;
                 updated = true;
               } else if (fieldName === '_ownershipUnlock' && fieldValueRaw && typeof fieldValueRaw === 'object') {
                 (config as any)._ownershipUnlock = {
@@ -1140,6 +1183,27 @@ export default async function attachInputsHandler(req: Request, res: Response) {
 
               if (isRequired || isOptional || nodeType === 'google_gmail') {
                 const existingValue = config[fieldName];
+
+                // ✅ JSON string coercion for array/object fields in nested format
+                const nestedFieldSchemaType = unifiedDefForNode?.inputSchema?.[fieldName]?.type;
+                if (
+                  typeof fieldValue === 'string' &&
+                  (nestedFieldSchemaType === 'array' || nestedFieldSchemaType === 'object')
+                ) {
+                  const trimmed = fieldValue.trim();
+                  if (
+                    (trimmed.startsWith('[') && trimmed.endsWith(']')) ||
+                    (trimmed.startsWith('{') && trimmed.endsWith('}'))
+                  ) {
+                    try {
+                      fieldValue = JSON.parse(trimmed);
+                    } catch {
+                      console.warn(`[AttachInputs] Failed to parse JSON string for ${fieldName} on node ${node.id} (nested), skipping`);
+                      continue;
+                    }
+                  }
+                }
+
                 const preserveNested = shouldPreserveExistingBuildtimeValue(
                   fieldName,
                   unifiedDefForNode?.inputSchema,
@@ -1255,7 +1319,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     
     // Normalize the workflow (config-only: no trigger stripping / switch reconcile)
     const preNormalized = normalizeWorkflowForSave(nodesAfterReplacement, updatedEdges, {
-      structuralMode: isPostFreezeReadonly ? 'post_freeze_readonly' : 'configOnly',
+      structuralMode: isConfigFrozen ? 'post_freeze_readonly' : 'configOnly',
     });
     
     if (preNormalized.migrationsApplied.length > 0) {
@@ -1415,7 +1479,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     const finalNormalizedForSave = normalizeBeforeSave(
       materializedWorkflow.nodes,
       materializedWorkflow.edges,
-      { structuralMode: isPostFreezeReadonly ? 'post_freeze_readonly' : 'configOnly' }
+      { structuralMode: isConfigFrozen ? 'post_freeze_readonly' : 'configOnly' }
     );
     
     if (finalNormalizedForSave.migrationsApplied.length > 0) {
@@ -1696,6 +1760,55 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       attachInputsPositionSnapshot
     );
     const edgesToSave = finalNormalizedGraph.edges;
+    if (isPostFreezeReadonly) {
+      const baselineNodeById = new Map(
+        (normalizedGraph.nodes || []).map((n: any) => [String(n?.id || ''), n])
+      );
+      const structuralDrifts: Array<{ nodeId: string; field: string }> = [];
+      const hasChanged = (before: unknown, after: unknown): boolean => {
+        if (before === after) return false;
+        try {
+          return JSON.stringify(before) !== JSON.stringify(after);
+        } catch {
+          return true;
+        }
+      };
+
+      for (const node of nodesToSave as any[]) {
+        const nodeId = String(node?.id || '');
+        if (!nodeId) continue;
+        const before = baselineNodeById.get(nodeId);
+        if (!before) continue;
+
+        const beforeConfig = (before as any)?.data?.config || {};
+        const afterConfig = (node as any)?.data?.config || {};
+        const nodeType = String((node as any)?.data?.type || (node as any)?.type || '');
+
+        const protectedFields =
+          nodeType === 'switch'
+            ? ['cases', 'rules', 'expression']
+            : nodeType === 'form'
+              ? ['fields']
+              : [];
+
+        for (const field of protectedFields) {
+          if (hasChanged(beforeConfig?.[field], afterConfig?.[field])) {
+            structuralDrifts.push({ nodeId, field });
+          }
+        }
+      }
+
+      if (structuralDrifts.length > 0) {
+        return res.status(409).json(
+          createError(
+            ErrorCode.TOPOLOGY_MUTATION_BLOCKED_CONFIGURING_INPUTS,
+            'Post-freeze structural config drift detected. Switch/form structure cannot be rewritten in this phase.',
+            { workflowId, drifts: structuralDrifts },
+            true
+          )
+        );
+      }
+    }
     if (!isPostFreezeReadonly && (nextPhase === 'ready_for_ownership' || nextPhase === 'ready_for_execution')) {
       const freezeTopology = fingerprintWorkflowTopology(nodesToSave, edgesToSave);
       const freezeProtected = fingerprintWorkflowProtectedConfig(nodesToSave);

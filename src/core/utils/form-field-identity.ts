@@ -69,11 +69,23 @@ export function normalizeFormFieldIdentity(
   const sourceLabel = String(field.label || field.name || field.key || 'Field');
   const sourceKey = String(field.key || field.name || sourceLabel);
   const label = shortenLabel(sourceLabel);
-  const key = safeKey(sourceKey || sourceLabel, usedKeys);
+
+  // ✅ Preserve existing key/name if already valid — only regenerate if missing/invalid
+  const existingKey = typeof field.key === 'string' && field.key.trim() ? field.key.trim() : null;
+  const existingName = typeof field.name === 'string' && field.name.trim() ? field.name.trim() : null;
+  const stableKey = existingKey || existingName || null;
+
+  const key = stableKey && !RESERVED_KEYS.has(stableKey) && !usedKeys.has(stableKey)
+    ? (usedKeys.add(stableKey), stableKey)
+    : safeKey(sourceKey || sourceLabel, usedKeys);
+
+  // ✅ Preserve existing id — only generate if missing
+  const existingId = typeof field.id === 'string' && field.id.trim() ? field.id.trim() : null;
+
   const type = String(field.type || 'text').toLowerCase();
   const required = field.required !== false;
   return {
-    id: String(field.id || `field_${key}`),
+    id: existingId || `field_${key}`,
     key,
     name: key,
     label: label || toTitle(key),
@@ -98,6 +110,12 @@ export function normalizeWorkflowFormFieldIdentities(workflow: Workflow): Workfl
     if (nodeType !== 'form') return node;
     const fields = node.data?.config?.fields;
     if (!Array.isArray(fields) || fields.length === 0) return node;
+
+    // ✅ If fields were set by AI at build time, preserve them exactly as-is.
+    // No normalization, no key regeneration, no identity reconstruction.
+    const fieldsFillMode = (node.data?.config?._fillMode as Record<string, string> | undefined)?.fields;
+    if (fieldsFillMode === 'buildtime_ai_once') return node;
+
     const normalized = normalizeFormFieldsIdentity(fields as Array<Record<string, unknown>>);
     return {
       ...node,

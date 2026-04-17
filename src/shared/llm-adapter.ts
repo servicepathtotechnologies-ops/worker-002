@@ -15,6 +15,10 @@ export interface LLMOptions {
   apiKey?: string;
   stream?: boolean;
   provider?: 'openai' | 'claude' | 'gemini' | 'ollama';
+  structuredOutput?: {
+    mimeType?: 'application/json' | 'text/plain';
+    schema?: Record<string, unknown>;
+  };
   /** When build-time tracking is active (`runWithBuildUsageTracking`), labels this call in snapshots. */
   usageStage?: string;
 }
@@ -361,6 +365,12 @@ export class LLMAdapter {
           generationConfig: {
             temperature: options.temperature ?? 0.7,
             maxOutputTokens: options.maxTokens,
+            ...(options.structuredOutput?.mimeType
+              ? { responseMimeType: options.structuredOutput.mimeType }
+              : {}),
+            ...(options.structuredOutput?.schema
+              ? { responseSchema: options.structuredOutput.schema }
+              : {}),
           },
         }),
       });

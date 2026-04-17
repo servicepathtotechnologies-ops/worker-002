@@ -1311,7 +1311,7 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
         continue;
       }
 
-      // ── switch (case_N) ───────────────────────────────────────────────────
+      // ── switch (semantic case ports) ──────────────────────────────────────
       // Sort case branch heads by their position in execution order.
       const caseHeads = outs
         .map(e => ({ edge: e, idx: orderedNodeIds.indexOf(e.target) }))
@@ -1409,10 +1409,8 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
   private getExclusiveBranchPortFromEdge(edge: WorkflowEdge, forkId: string): string | null {
     if (edge.source !== forkId) return null;
     const t = String(edge.type || edge.sourceHandle || '').toLowerCase();
-    if (t === 'main' || t === '') return null;
-    if (t === 'true' || t === 'false') return t;
-    if (t.startsWith('case_')) return t;
-    return null;
+    if (!t || t === 'main' || t === 'default' || t === 'output') return null;
+    return t;
   }
 
   /**
@@ -1569,9 +1567,7 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
    */
   private edgeUsesBranchPort(edge: WorkflowEdge): boolean {
     const t = String(edge.type || edge.sourceHandle || '').toLowerCase();
-    if (t === 'true' || t === 'false') return true;
-    if (t.startsWith('case_')) return true;
-    return false;
+    return Boolean(t && t !== 'main' && t !== 'default' && t !== 'output');
   }
 
   /**

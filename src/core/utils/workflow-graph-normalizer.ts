@@ -17,6 +17,7 @@ import { Workflow, WorkflowNode } from '../types/ai-types';
 import { validateAndFixEdgeHandles, getDefaultSourceHandle, getDefaultTargetHandle } from './node-handle-registry';
 import { logger } from '../logger';
 import { coerceWorkflowNodePosition } from './workflow-node-position';
+import { extractSwitchCasePortNames } from './branching-node-ports';
 
 export interface NormalizedWorkflowGraph {
   nodes: WorkflowNode[];
@@ -167,10 +168,17 @@ export function normalizeWorkflowGraph(
 
       if (srcType === 'switch') {
         const working = outs.map(getWorkingEdge);
+        const switchCasePorts = extractSwitchCasePortNames((srcNode?.data?.config || {}) as Record<string, any>);
         for (const e of working) {
           if (e?.sourceHandle) continue;
           const t = typeof e?.type === 'string' ? String(e.type) : '';
-          if (t.toLowerCase().startsWith('case_')) {
+          const positionalMatch = /^case_(\d+)$/i.exec(t);
+          if (positionalMatch) {
+            const caseIndex = parseInt(positionalMatch[1], 10) - 1;
+            e.sourceHandle = switchCasePorts[caseIndex] || t;
+            continue;
+          }
+          if (t && t.toLowerCase() !== 'main' && t.toLowerCase() !== 'default') {
             e.sourceHandle = t;
           }
         }

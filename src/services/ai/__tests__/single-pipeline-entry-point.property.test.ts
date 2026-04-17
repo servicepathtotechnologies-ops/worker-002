@@ -1,11 +1,11 @@
 /**
  * Property 19: Single pipeline entry point — no dual paths
  *
- * Feature: ai-first-workflow-generation-pipeline
- * Property 19: generate-workflow.ts invokes AiFirstPipeline directly —
- *   no feature flag check, no conditional branching, no fallback to WorkflowPipelineOrchestrator.
+ * Feature: intelligent-workflow-generation-pipeline
+ * Property 19: generate-workflow.ts invokes WorkflowGenerationPipeline directly —
+ *   no feature flag check, no conditional branching, no fallback to AiFirstPipeline.
  *
- * Validates: Requirements 9.1, 9.3
+ * Validates: Requirements 9.1, 9.3, 6.5
  */
 
 import * as fs from 'fs';
@@ -32,8 +32,8 @@ describe('Property 19: Single pipeline entry point — no dual paths', () => {
     jest.resetModules();
   });
 
-  it('invokes AiFirstPipeline.run for every generation request', async () => {
-    // Feature: ai-first-workflow-generation-pipeline, Property 19: Single pipeline entry point — no dual paths
+  it('invokes WorkflowGenerationPipeline.run for every generation request', async () => {
+    // Feature: intelligent-workflow-generation-pipeline, Property 19: Single pipeline entry point — no dual paths
     const mockRun = jest.fn().mockResolvedValue({
       ok: true,
       workflow: { nodes: [], edges: [] },
@@ -41,9 +41,9 @@ describe('Property 19: Single pipeline entry point — no dual paths', () => {
       stageTrace: [],
     });
 
-    class MockAiFirstPipeline { run = mockRun; }
-    jest.doMock('../ai-first-pipeline', () => ({
-      AiFirstPipeline: MockAiFirstPipeline,
+    class MockWorkflowGenerationPipeline { run = mockRun; }
+    jest.doMock('../pipeline/workflow-generation-pipeline', () => ({
+      WorkflowGenerationPipeline: MockWorkflowGenerationPipeline,
     }));
 
     const { default: generateWorkflow } = await import('../../../api/generate-workflow');
@@ -71,19 +71,21 @@ describe('Property 19: Single pipeline entry point — no dual paths', () => {
   });
 
   it('never references the old hybrid pipeline orchestrator', () => {
-    // Feature: ai-first-workflow-generation-pipeline, Property 19: Single pipeline entry point — no dual paths
+    // Feature: intelligent-workflow-generation-pipeline, Property 19: Single pipeline entry point — no dual paths
     const filePath = path.resolve(__dirname, '../../../api/generate-workflow.ts');
     const source = fs.readFileSync(filePath, 'utf-8');
 
-    // Must import AiFirstPipeline
-    expect(source).toContain('AiFirstPipeline');
+    // Must import WorkflowGenerationPipeline
+    expect(source).toContain('WorkflowGenerationPipeline');
     // Must not have conditional branching on a feature flag
     expect(source).not.toMatch(/if\s*\(.*ENABLE_AI_FIRST/);
     expect(source).not.toMatch(/process\.env\.ENABLE_AI_FIRST/);
+    // Must not import AiFirstPipeline directly
+    expect(source).not.toContain("from '../services/ai/ai-first-pipeline'");
   });
 
   it('returns success:true with workflow on successful pipeline run', async () => {
-    // Feature: ai-first-workflow-generation-pipeline, Property 19: Single pipeline entry point — no dual paths
+    // Feature: intelligent-workflow-generation-pipeline, Property 19: Single pipeline entry point — no dual paths
     const fakeWorkflow = { nodes: [{ id: 'n1', type: 'manual_trigger' }], edges: [] };
     const mockRun = jest.fn().mockResolvedValue({
       ok: true,
@@ -92,9 +94,9 @@ describe('Property 19: Single pipeline entry point — no dual paths', () => {
       stageTrace: [{ stage: 'intent', durationMs: 100 }],
     });
 
-    class MockAiFirstPipeline { run = mockRun; }
-    jest.doMock('../ai-first-pipeline', () => ({
-      AiFirstPipeline: MockAiFirstPipeline,
+    class MockWorkflowGenerationPipeline { run = mockRun; }
+    jest.doMock('../pipeline/workflow-generation-pipeline', () => ({
+      WorkflowGenerationPipeline: MockWorkflowGenerationPipeline,
     }));
 
     const { default: generateWorkflow } = await import('../../../api/generate-workflow');
@@ -113,7 +115,7 @@ describe('Property 19: Single pipeline entry point — no dual paths', () => {
   });
 
   it('returns 422 with error code when pipeline fails', async () => {
-    // Feature: ai-first-workflow-generation-pipeline, Property 19: Single pipeline entry point — no dual paths
+    // Feature: intelligent-workflow-generation-pipeline, Property 19: Single pipeline entry point — no dual paths
     const mockRun = jest.fn().mockResolvedValue({
       ok: false,
       code: 'NO_VALID_NODES',
@@ -121,9 +123,9 @@ describe('Property 19: Single pipeline entry point — no dual paths', () => {
       stageTrace: [],
     });
 
-    class MockAiFirstPipeline { run = mockRun; }
-    jest.doMock('../ai-first-pipeline', () => ({
-      AiFirstPipeline: MockAiFirstPipeline,
+    class MockWorkflowGenerationPipeline { run = mockRun; }
+    jest.doMock('../pipeline/workflow-generation-pipeline', () => ({
+      WorkflowGenerationPipeline: MockWorkflowGenerationPipeline,
     }));
 
     const { default: generateWorkflow } = await import('../../../api/generate-workflow');
@@ -136,10 +138,10 @@ describe('Property 19: Single pipeline entry point — no dual paths', () => {
   });
 
   it('returns 400 when prompt is missing', async () => {
-    // Feature: ai-first-workflow-generation-pipeline, Property 19: Single pipeline entry point — no dual paths
-    class MockAiFirstPipeline { run = jest.fn(); }
-    jest.doMock('../ai-first-pipeline', () => ({
-      AiFirstPipeline: MockAiFirstPipeline,
+    // Feature: intelligent-workflow-generation-pipeline, Property 19: Single pipeline entry point — no dual paths
+    class MockWorkflowGenerationPipeline { run = jest.fn(); }
+    jest.doMock('../pipeline/workflow-generation-pipeline', () => ({
+      WorkflowGenerationPipeline: MockWorkflowGenerationPipeline,
     }));
 
     const { default: generateWorkflow } = await import('../../../api/generate-workflow');

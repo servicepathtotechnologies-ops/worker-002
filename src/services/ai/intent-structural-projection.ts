@@ -114,6 +114,22 @@ export function applyStructuralIntentAlignment(
   if (options?.postFreezeReadonly) {
     return workflow;
   }
+
+  // ✅ CRITICAL: If ANY node in the workflow has buildtime_ai_once stamps, the AI has
+  // already generated all values. Skip structural alignment entirely — the AI's output
+  // is the ground truth. No normalization, pruning, or re-derivation should happen.
+  // From this point forward, only the user can change values (credentials, manual edits)
+  // and AI runtime fields are resolved at execution time, not at save time.
+  const hasAiBuildTimeStamps = (workflow.nodes || []).some((node: any) => {
+    const fillMode = node?.data?.config?._fillMode;
+    if (!fillMode || typeof fillMode !== 'object') return false;
+    return Object.values(fillMode as Record<string, string>).some(
+      (mode) => mode === 'buildtime_ai_once'
+    );
+  });
+  if (hasAiBuildTimeStamps) {
+    return workflow;
+  }
   const formIntentText = getFormStructuralIntentText(workflow);
   const workflowIntentText = getWorkflowIntentText(workflow);
   const intentText = formIntentText
@@ -132,6 +148,13 @@ export function applyStructuralIntentAlignment(
 
     const config = { ...(node.data?.config || {}) } as Record<string, unknown>;
     const currentFields = Array.isArray(config.fields) ? (config.fields as Array<Record<string, unknown>>) : [];
+
+    // ✅ If fields were set by AI at build time, skip intent-based pruning entirely.
+    // The AI already generated the correct fields — do not overwrite or prune them.
+    const fieldsFillMode = (config._fillMode as Record<string, string> | undefined)?.fields;
+    if (fieldsFillMode === 'buildtime_ai_once' && currentFields.length > 0) {
+      return node;
+    }
 
     const keys = deriveOrderedFieldKeysForForm(intentText, w).filter((k) => !isLikelyContaminatedFieldKey(k));
     if (keys.length === 0) return node;
@@ -165,6 +188,14 @@ export function applyStructuralIntentAlignment(
   const nodes2 = (w.nodes || []).map((node: any) => {
     const nodeType = unifiedNormalizeNodeType(node);
     if (nodeType !== 'if_else') return node;
+
+    // ✅ If conditions were set by AI at build time, skip re-derivation.
+    const condFillMode = (node.data?.config?._fillMode as Record<string, string> | undefined)?.conditions;
+    if (condFillMode === 'buildtime_ai_once') {
+      const cond = node.data?.config?.conditions;
+      const hasConditions = cond !== undefined && cond !== null && !(Array.isArray(cond) && cond.length === 0);
+      if (hasConditions) return node;
+    }
 
     const cond = node.data?.config?.conditions;
     const empty = cond === undefined || cond === null || (Array.isArray(cond) && cond.length === 0);

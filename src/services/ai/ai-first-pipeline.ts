@@ -1,16 +1,19 @@
 /**
- * AI-First Pipeline — Single Universal Workflow Generation Pipeline
+ * AI-First Pipeline — DEPRECATED
  *
- * This is the ONLY pipeline. No feature flag. No fallback. No dual paths.
- * Sequences: Intent → Node Selection → Node Hydration → Edge Reasoning → Validation
+ * @deprecated Use WorkflowGenerationPipeline from './pipeline/workflow-generation-pipeline' instead.
+ * This file is kept for backward compatibility with existing tests and imports.
+ * AiFirstPipeline is now a type alias for WorkflowGenerationPipeline.
  *
- * Requirements: 6.3, 6.5, 8.1, 8.2, 8.4, 9.1, 9.3
+ * The actual implementation lives in:
+ *   worker/src/services/ai/pipeline/workflow-generation-pipeline.ts
  */
 
 import { randomUUID } from 'crypto';
 import { logger } from '../../core/logger';
 import { buildNodeCatalogText } from './node-catalog-builder';
 import { runIntentStage } from './stages/intent-stage';
+import { runCapabilitySelectionStage, type CapabilityOptionStep } from './stages/capability-selection-stage';
 import { runStructuralPromptStage } from './stages/structural-prompt-stage';
 import { runNodeSelectionStage } from './stages/node-selection-stage';
 import { runEdgeReasoningStage } from './stages/edge-reasoning-stage';
@@ -38,6 +41,7 @@ import {
   toManifestStructuredIntent,
 } from '../../core/utils/workflow-build-manifest-utils';
 import { getStageProgress, STAGE_LOG_LABELS } from './stage-progress-map';
+import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 
 const STRUCTURAL_BLUEPRINT_MAX_LEN = 4000;
 
@@ -80,6 +84,7 @@ export interface AiPipelineInput {
   userPrompt: string;
   userId: string;
   correlationId?: string;
+  capabilitySelectionsByStep?: Record<string, string[]>;
   /**
    * When set (e.g. summarize-layer authoritative chain), node selection is filtered to these registry types.
    */
@@ -122,6 +127,8 @@ export interface AiPipelineOutput {
   missingCredentials: CredentialRequirement[];
   fieldOwnershipMap: FieldOwnershipMap;
   propertyPopulationSummary: Record<string, string[]>;
+  capabilityOptions?: CapabilityOptionStep[];
+  appliedCapabilitySelectionsByStep?: Record<string, string[]>;
 }
 
 export interface AiPipelineError {
@@ -132,7 +139,8 @@ export interface AiPipelineError {
     | 'INVALID_LLM_RESPONSE'
     | 'ORCHESTRATOR_VALIDATION_FAILED'
     | 'INTENT_FAILED'
-    | 'STRUCTURAL_PROMPT_FAILED';
+    | 'STRUCTURAL_PROMPT_FAILED'
+    | 'CAPABILITY_SELECTION_FAILED';
   message: string;
   stageTrace: StageTrace[];
 }
@@ -183,9 +191,43 @@ export class AiFirstPipeline {
       return { ok: false, code: 'INTENT_FAILED', message: `Intent stage failed: ${intentResult.code}`, stageTrace };
     }
 
-    // ── Stage 2: Structural Prompt ─────────────────────────────────────────
+    // ── Stage 2: Capability Selection ──────────────────────────────────────
+    const csStart = Date.now();
+    const csResult = runCapabilitySelectionStage(intentResult.intent, correlationId);
+    stageTrace.push({
+      stage: 'capability_selection',
+      startedAt: csStart,
+      completedAt: Date.now(),
+      durationMs: csResult.durationMs,
+      inputSummary: `actions=${intentResult.intent.actions.length}`,
+      outputSummary: csResult.ok ? `steps=${csResult.steps.length}` : 'failed',
+      error: csResult.ok ? undefined : csResult.code,
+    });
+    try { input.onStageComplete?.('capability_selection', getStageProgress('capability_selection'), STAGE_LOG_LABELS['capability_selection'] ?? 'capability_selection'); } catch (_) {}
+
+    if (!csResult.ok) {
+      return { ok: false, code: 'CAPABILITY_SELECTION_FAILED', message: `Capability selection stage failed: ${csResult.code}`, stageTrace };
+    }
+
+    const appliedCapabilitySelections = resolveAppliedCapabilitySelections(
+      csResult.steps,
+      input.capabilitySelectionsByStep,
+    );
+    if (!appliedCapabilitySelections.ok) {
+      return {
+        ok: false,
+        code: 'CAPABILITY_SELECTION_FAILED',
+        message: appliedCapabilitySelections.message,
+        stageTrace,
+      };
+    }
+
+    // ── Stage 3: Structural Prompt ─────────────────────────────────────────
     const spStart = Date.now();
-    const spResult = await runStructuralPromptStage(intentResult.intent, nodeCatalog, correlationId);
+    const spResult = await runStructuralPromptStage(intentResult.intent, nodeCatalog, correlationId, {
+      selectedNodeConstraintsByStep: appliedCapabilitySelections.byStep,
+      selectedNodeConstraintsFlat: appliedCapabilitySelections.flat,
+    });
     stageTrace.push({
       stage: 'structural_prompt',
       startedAt: spStart,
@@ -204,9 +246,13 @@ export class AiFirstPipeline {
 
     const structuralPrompt = spResult.structuralPrompt;
 
-    // ── Stage 3: Node Selection ────────────────────────────────────────────
+    // ── Stage 4: Node Selection ────────────────────────────────────────────
     const nsStart = Date.now();
-    const nsResult = await runNodeSelectionStage(intentResult.intent, nodeCatalog, correlationId, structuralPrompt);
+    const nsResult = await runNodeSelectionStage(intentResult.intent, nodeCatalog, correlationId, structuralPrompt, {
+      selectedNodeConstraintsByStep: appliedCapabilitySelections.byStep,
+      selectedNodeConstraintsFlat: appliedCapabilitySelections.flat,
+      requiredNodeTypes: appliedCapabilitySelections.flat,
+    });
     stageTrace.push({
       stage: 'node_selection',
       startedAt: nsStart,
@@ -638,6 +684,8 @@ export class AiFirstPipeline {
         missingCredentials,
         fieldOwnershipMap: foResult.fieldOwnershipMap,
         propertyPopulationSummary: ppResult.propertyPopulationSummary,
+        capabilityOptions: csResult.steps,
+        appliedCapabilitySelectionsByStep: appliedCapabilitySelections.byStep,
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -653,3 +701,54 @@ export class AiFirstPipeline {
 }
 
 export const aiFirstPipeline = new AiFirstPipeline();
+
+function resolveAppliedCapabilitySelections(
+  steps: CapabilityOptionStep[],
+  userSelectionsByStep: Record<string, string[]> | undefined,
+): { ok: true; byStep: Record<string, string[]>; flat: string[] } | { ok: false; message: string } {
+  const hasExplicitSelections = !!(userSelectionsByStep && Object.keys(userSelectionsByStep).length > 0);
+  const byStep: Record<string, string[]> = {};
+  const globalAllowed = new Set(steps.flatMap((step) => step.candidateNodeTypes));
+  const normalizedGlobalRequested = hasExplicitSelections
+    ? [
+        ...new Set(
+          Object.values(userSelectionsByStep || {})
+            .flatMap((raw) => (Array.isArray(raw) ? raw : []))
+            .map((t) => unifiedNodeRegistry.resolveAlias(String(t || '').trim()) || String(t || '').trim())
+            .filter((t) => t.length > 0),
+        ),
+      ]
+    : [];
+  const unknownRequested = normalizedGlobalRequested.filter((t) => !globalAllowed.has(t));
+  if (unknownRequested.length > 0) {
+    return { ok: false, message: `Invalid capability selections (unknown node types: ${unknownRequested.join(', ')})` };
+  }
+  const globallyAssigned = new Set<string>();
+
+  for (const step of steps) {
+    const stepId = step.stepId;
+    const allowed = new Set(step.candidateNodeTypes);
+    const raw = Array.isArray(userSelectionsByStep?.[stepId]) ? userSelectionsByStep?.[stepId] : [];
+    const normalized = raw
+      .map((t) => unifiedNodeRegistry.resolveAlias(String(t || '').trim()) || String(t || '').trim())
+      .filter((t) => t.length > 0);
+    const selectedForStep = [...new Set(normalized.filter((t) => allowed.has(t)))];
+    if (hasExplicitSelections) {
+      const fallbackCompatible = normalizedGlobalRequested.filter((t) => !globallyAssigned.has(t) && allowed.has(t));
+      const combined = [...new Set([...selectedForStep, ...fallbackCompatible])];
+      const limited = step.selectionPolicy.multiSelectAllowed ? combined : combined.slice(0, 1);
+      byStep[stepId] = limited;
+      limited.forEach((x) => globallyAssigned.add(x));
+      continue;
+    }
+
+    // No explicit selections were provided: seed from defaults for first-pass runs.
+    if (!hasExplicitSelections) {
+      byStep[stepId] = step.defaultSuggestedNodeType ? [step.defaultSuggestedNodeType] : [];
+      continue;
+    }
+  }
+
+  const flat = [...new Set(Object.values(byStep).flat())];
+  return { ok: true, byStep, flat };
+}

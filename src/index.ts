@@ -142,6 +142,9 @@ import copyTemplateRoute from './api/copy-template';
 import formTriggerRoute from './api/form-trigger';
 import chatTriggerRoute from './api/chat-trigger';
 import generateWorkflowRoute from './api/generate-workflow';
+import analyzeCapabilitySelection from './api/capability-selection/analyze';
+import generateCapabilityWorkflow from './api/capability-selection/generate';
+import confirmCapabilityWorkflow from './api/capability-selection/confirm';
 import executeAgentRoute from './api/execute-agent';
 import chatbotRoute from './api/chatbot';
 import analyzeWorkflowRequirementsRoute from './api/analyze-workflow-requirements';
@@ -569,6 +572,12 @@ app.post('/api/chat-trigger/:workflowId/:nodeId/message', asyncHandler(chatTrigg
 
 // Workflow Generation
 app.post('/api/generate-workflow', asyncHandler(generateWorkflowRoute));
+
+// Capability-Based Node Selection Flow (3-phase pipeline)
+app.post('/api/capability-selection/analyze', asyncHandler(analyzeCapabilitySelection));
+app.post('/api/capability-selection/generate', asyncHandler(generateCapabilityWorkflow));
+app.post('/api/capability-selection/confirm', asyncHandler(confirmCapabilityWorkflow));
+console.log('🎯 Capability Selection API available at /api/capability-selection/{analyze,generate,confirm}');
 
 // Smart Planner–Driven Workflow Orchestration (planner decides WHAT, system decides HOW)
 app.post('/api/generate', asyncHandler(smartPlannerGenerate));

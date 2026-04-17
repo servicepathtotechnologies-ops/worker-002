@@ -6207,6 +6207,7 @@ The "variations" array MUST contain exactly 4 items, each with a detailed prompt
     const annotatedChain = this.annotateSameTypeBranchTokens(proposedNodeChain);
 
     // Build the structured summary — passes caseNodeMapping so switch cases are shown.
+    // This is the single source for the analyze-phase summary shown in the UI.
     const finalStructuredSummary = this.buildStructuredSummaryFromChain(
       annotatedChain,
       userPrompt,

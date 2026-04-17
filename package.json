@@ -68,7 +68,8 @@
     "validate:enhancements": "ts-node scripts/validate-enhancements.ts",
     "test:15-workflows": "ts-node scripts/test-15-workflows-execution.ts",
     "verify:universality": "node scripts/verify-universality-readiness.js",
-    "test:facebook:permissions": "ts-node scripts/test-facebook-permissions.ts"
+    "test:facebook:permissions": "ts-node scripts/test-facebook-permissions.ts",
+    "check:edge-ownership": "bash ../scripts/check-edge-ownership.sh"
   },
   "keywords": [],
   "author": "",

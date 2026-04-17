@@ -34,6 +34,11 @@ export interface StructuralPromptError {
 
 export type StructuralPromptOutput = StructuralPromptResult | StructuralPromptError;
 
+export interface StructuralPromptConstraints {
+  selectedNodeConstraintsByStep?: Record<string, string[]>;
+  selectedNodeConstraintsFlat?: string[];
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /** Extract plain text from LLM response — handles string, object with .text/.content, or JSON */
@@ -53,6 +58,7 @@ export async function runStructuralPromptStage(
   intent: StructuredIntent,
   nodeCatalog: NodeCatalogText,
   correlationId?: string,
+  constraints?: StructuralPromptConstraints,
 ): Promise<StructuralPromptOutput> {
   const startedAt = Date.now();
   logger.info({
@@ -65,16 +71,61 @@ export async function runStructuralPromptStage(
   const model = 'gemini-2.5-flash';
   const temperature = 0.2;
 
-  const systemPrompt = `You are a workflow architect. Given a structured user intent and a node catalog, produce a concise plain-language blueprint of the workflow.
+  const selectedNodes = (constraints?.selectedNodeConstraintsFlat || []).join(', ') || 'nodes from intent';
 
-The blueprint must describe:
-1. Which nodes are needed and why
-2. How they connect in sequence
-3. What each node does in the context of the user's goal
+  const systemPrompt = `You are a workflow blueprint architect. Your job is to generate a precise, structured, technical-theoretical explanation of a workflow based on the user's intent and selected nodes.
 
-Return ONLY a plain-language paragraph (no JSON, no markdown, no bullet points). Be specific and concrete.`;
+This blueprint serves TWO purposes:
+1. Show the user a clear human-readable explanation of exactly what will be built
+2. Guide the backend AI to correctly wire edges, branches, and operations
 
-  const message = `STRUCTURED_INTENT:\n${JSON.stringify(intent, null, 2)}\n\nNODE_CATALOG:\n${nodeCatalog}`;
+## OUTPUT FORMAT (MANDATORY)
+
+Return ONLY plain text in this exact structure — no JSON, no markdown headers, no code blocks:
+
+WORKFLOW: [One sentence describing the overall automation goal]
+
+TRIGGER: [Trigger node name] — [What event starts this workflow and what data it collects]
+
+FLOW:
+[Step number]. [Node display name] — [Specific operation it performs, e.g. "sends a confirmation email to {{recipient}}"] 
+[For branching nodes, describe each case on its own line:]
+  → Case "[case value]": [Node display name] — [What operation runs in this case]
+  → Case "[case value]": [Node display name] — [What operation runs in this case]
+  → Case "[case value]": [Node display name] — [What operation runs in this case]
+
+CONNECTIONS: [Describe the exact data flow — what data passes from each node to the next, and which field drives branching decisions]
+
+## CRITICAL RULES
+
+1. NEVER repeat the user's original prompt text — generate a NEW technical explanation
+2. For Switch/If-Else nodes: ALWAYS list every branch case with its specific downstream action
+3. Use the node's display name (e.g. "Gmail", "Slack", "Switch") not internal type names
+4. Describe the SPECIFIC OPERATION each node performs (send email, post message, evaluate condition)
+5. For branching: state EXACTLY which field value routes to which branch (e.g. "when status = success → Gmail sends confirmation")
+6. The CONNECTIONS section must describe the data field that drives routing decisions
+7. Be specific about what data flows between nodes — not generic "data is passed"
+
+## EXAMPLE OUTPUT (for a payment status workflow):
+
+WORKFLOW: Route payment notifications based on transaction status using a form submission trigger.
+
+TRIGGER: Form Trigger — collects payment_status and order_id fields from form submission.
+
+FLOW:
+1. Switch — evaluates the payment_status field from the form submission
+  → Case "success": Gmail — sends a payment confirmation email to the customer
+  → Case "pending": Slack — posts a pending payment reminder to the #payments channel
+  → Case "failed": Slack — posts a payment failure alert to the #alerts channel
+
+CONNECTIONS: Form Trigger outputs payment_status and order_id → Switch reads payment_status to route → each branch receives the full form payload for use in message content.
+
+If USER_SELECTED_NODE_CONSTRAINTS are provided, the blueprint MUST only use those node types.`;
+
+  const message = `USER_INTENT:\n${intent.intent}\n\nTRIGGER_TYPE: ${intent.triggerType}\n\nACTIONS:\n${intent.actions.map((a, i) => `${i + 1}. ${a}`).join('\n')}\n\nDATA_FLOWS:\n${intent.dataFlows.map(f => `${f.from} → ${f.to}: ${f.dataDescription}`).join('\n') || 'none specified'}\n\nSELECTED_NODES: ${selectedNodes}\n\nUSER_SELECTED_NODE_CONSTRAINTS:\n${JSON.stringify({
+    selectedNodeConstraintsByStep: constraints?.selectedNodeConstraintsByStep || {},
+    selectedNodeConstraintsFlat: constraints?.selectedNodeConstraintsFlat || [],
+  }, null, 2)}`;
   const promptTokens = Math.ceil((systemPrompt.length + message.length) / 4);
 
   logger.info({ event: 'ai_pipeline_llm_call', stage: 'structural_prompt', correlationId, model, temperature });
@@ -99,7 +150,7 @@ Return ONLY a plain-language paragraph (no JSON, no markdown, no bullet points).
     try {
       const raw2 = await geminiOrchestrator.processRequest(
         'workflow-generation',
-        { system: systemPrompt + '\n\nCRITICAL: Return a non-empty plain-language paragraph describing the workflow blueprint.', message },
+        { system: systemPrompt + '\n\nCRITICAL: You MUST return the workflow blueprint in the exact format specified. Start with "WORKFLOW:" and include TRIGGER:, FLOW:, and CONNECTIONS: sections. Describe every branch case explicitly.', message },
         { model, temperature, cache: false },
       );
       text2 = extractText(raw2);

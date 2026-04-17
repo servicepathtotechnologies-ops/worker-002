@@ -1,7 +1,7 @@
-// Feature: ai-first-workflow-generation-pipeline
+// Feature: intelligent-workflow-generation-pipeline
 
 /**
- * Integration tests: AiFirstPipeline outputs pass validateWorkflow
+ * Integration tests: WorkflowGenerationPipeline outputs pass validateWorkflow
  *
  * Validates: Requirements 9.4
  *
@@ -9,7 +9,7 @@
  * - Mock geminiOrchestrator.processRequest to return realistic structured
  *   responses for each pipeline stage (intent-analysis, node-suggestion,
  *   workflow-generation, workflow-analysis).
- * - Run 10 representative prompts through AiFirstPipeline.run().
+ * - Run 10 representative prompts through WorkflowGenerationPipeline.run().
  * - For every successful result assert that
  *   unifiedGraphOrchestrator.validateWorkflow(result.workflow).valid === true.
  * - If the pipeline returns ok:false the test still passes (we log a warning)
@@ -17,7 +17,7 @@
  */
 
 import { randomUUID } from 'crypto';
-import { AiFirstPipeline } from '../ai-first-pipeline';
+import { WorkflowGenerationPipeline } from '../pipeline/workflow-generation-pipeline';
 import { unifiedGraphOrchestrator } from '../../../core/orchestration/unified-graph-orchestrator';
 import { unifiedNodeRegistry } from '../../../core/registry/unified-node-registry';
 
@@ -138,7 +138,7 @@ const REPRESENTATIVE_PROMPTS = [
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
-describe('AiFirstPipeline integration — validateWorkflow passes on all outputs', () => {
+describe('WorkflowGenerationPipeline integration — validateWorkflow passes on all outputs', () => {
   let triggerType: string;
   let actionType: string;
 
@@ -166,7 +166,7 @@ describe('AiFirstPipeline integration — validateWorkflow passes on all outputs
         buildMockProcessRequest(triggerType, actionType),
       );
 
-      const pipeline = new AiFirstPipeline();
+      const pipeline = new WorkflowGenerationPipeline();
 
       // Act
       const result = await pipeline.run({
@@ -208,7 +208,7 @@ describe('AiFirstPipeline integration — validateWorkflow passes on all outputs
     const mockImpl = buildMockProcessRequest(triggerType, actionType);
     (geminiOrchestrator.processRequest as jest.Mock).mockImplementation(mockImpl);
 
-    const pipeline = new AiFirstPipeline();
+    const pipeline = new WorkflowGenerationPipeline();
     const result = await pipeline.run({
       userPrompt: REPRESENTATIVE_PROMPTS[0],
       userId: 'test-user',
@@ -240,7 +240,7 @@ describe('AiFirstPipeline integration — validateWorkflow passes on all outputs
       buildMockProcessRequest(triggerType, actionType),
     );
 
-    const pipeline = new AiFirstPipeline();
+    const pipeline = new WorkflowGenerationPipeline();
     const result = await pipeline.run({
       userPrompt: 'Trigger a workflow manually and log the result',
       userId: 'test-user',
@@ -264,7 +264,7 @@ describe('AiFirstPipeline integration — validateWorkflow passes on all outputs
       buildMockProcessRequest(triggerType, actionType),
     );
 
-    const pipeline = new AiFirstPipeline();
+    const pipeline = new WorkflowGenerationPipeline();
     const result = await pipeline.run({
       userPrompt: 'Set a variable and use it in a downstream action',
       userId: 'test-user',

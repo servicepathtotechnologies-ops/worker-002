@@ -20,7 +20,47 @@
  */
 
 import { WorkflowNode } from '../types/ai-types';
+import { incrementPipelineCounter } from '../../services/ai/pipeline-observability';
 type ServiceNormalizeResult = { normalized: string; valid: boolean; method: string };
+type NormalizerContext = {
+  phase?: 'startup' | 'equivalence' | 'runtime';
+  suppressUnknownWarning?: boolean;
+};
+
+const startupUnknownTypeCounts = new Map<string, number>();
+let startupUnknownFlushTimer: NodeJS.Timeout | null = null;
+
+function scheduleStartupUnknownFlush(): void {
+  if (process.env.NODE_ENV === 'test') {
+    const snapshot = [...startupUnknownTypeCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 12)
+      .map(([type, count]) => `${type}(${count})`)
+      .join(', ');
+    if (snapshot) {
+      console.warn(
+        `[UnifiedNodeTypeNormalizer] Aggregated startup unknown aliases: ${snapshot}`
+      );
+    }
+    startupUnknownTypeCounts.clear();
+    return;
+  }
+  if (startupUnknownFlushTimer) return;
+  startupUnknownFlushTimer = setTimeout(() => {
+    const snapshot = [...startupUnknownTypeCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 12)
+      .map(([type, count]) => `${type}(${count})`)
+      .join(', ');
+    if (snapshot) {
+      console.warn(
+        `[UnifiedNodeTypeNormalizer] Aggregated startup unknown aliases: ${snapshot}`
+      );
+    }
+    startupUnknownTypeCounts.clear();
+    startupUnknownFlushTimer = null;
+  }, 2000);
+}
 
 function normalizeViaServiceSafely(nodeType: string): ServiceNormalizeResult {
   try {
@@ -36,10 +76,10 @@ function normalizeViaServiceSafely(nodeType: string): ServiceNormalizeResult {
     if (unifiedNodeRegistry.has(nodeType)) {
       return { normalized: nodeType, valid: true, method: 'registry_exact' };
     }
+    return { normalized: nodeType, valid: false, method: 'unrecognized_type' };
   } catch {
-    // Fall through to semantic + raw fallback.
+    return { normalized: nodeType, valid: false, method: 'registry_unavailable' };
   }
-  return { normalized: nodeType, valid: false, method: 'service_unavailable' };
 }
 
 /**
@@ -102,7 +142,7 @@ export function unifiedNormalizeNodeType(input: WorkflowNode | any | string): st
  * @param nodeType - Node type string to normalize
  * @returns Normalized node type string
  */
-export function unifiedNormalizeNodeTypeString(nodeType: string): string {
+export function unifiedNormalizeNodeTypeString(nodeType: string, context?: NormalizerContext): string {
   if (!nodeType || typeof nodeType !== 'string') {
     return nodeType || '';
   }
@@ -115,7 +155,28 @@ export function unifiedNormalizeNodeTypeString(nodeType: string): string {
   }
 
   // Step 2: If resolution fails, return original and let callers fail fast where required.
-  console.warn(`[UnifiedNodeTypeNormalizer] ⚠️  Could not normalize node type: "${nodeType}" (method: ${serviceResult.method})`);
+  const phase = context?.phase || 'runtime';
+  const suppressUnknownWarning = context?.suppressUnknownWarning === true;
+  if (serviceResult.method === 'unrecognized_type') {
+    if (phase === 'startup' || phase === 'equivalence') {
+      startupUnknownTypeCounts.set(nodeType, (startupUnknownTypeCounts.get(nodeType) || 0) + 1);
+      incrementPipelineCounter('normalizer_startup_unknown_aggregated');
+      scheduleStartupUnknownFlush();
+    } else {
+      incrementPipelineCounter('normalizer_runtime_unknown_total');
+      if (!suppressUnknownWarning) {
+        console.warn(
+          `[UnifiedNodeTypeNormalizer] ⚠️  Runtime unknown node type: "${nodeType}" (method: ${serviceResult.method})`
+        );
+      }
+    }
+    return nodeType;
+  }
+
+  // Registry unavailable is a hard infra/init issue and should stay visible.
+  console.error(
+    `[UnifiedNodeTypeNormalizer] ❌ Could not normalize node type: "${nodeType}" (method: ${serviceResult.method})`
+  );
   return nodeType;
 }
 

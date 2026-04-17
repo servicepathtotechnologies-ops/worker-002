@@ -557,15 +557,36 @@ export function normalizeWorkflowForSave(
         }
       }
 
-      // switch: preserve case_* semantics if present on edge.type
+      // switch: canonicalize to semantic case value handles
       if (sourceType === 'switch') {
+        const sourceNode = normalizedNodes.find((n) => n.id === sourceId);
+        const switchCasePorts = extractSwitchCasePortNames(
+          (sourceNode?.data?.config || {}) as Record<string, any>
+        );
         const normalizedOut = outEdges.map((e) => findInPatched(e.id, e)!);
         for (const e of normalizedOut) {
-          if (e.sourceHandle) continue;
-          const t = (e as any).type;
-          const tt = typeof t === 'string' ? t : '';
-          if (tt.toLowerCase().startsWith('case_')) {
-            e.sourceHandle = tt;
+          const current = String(e.sourceHandle || (e as any).type || '').trim();
+          if (!current) continue;
+          const positionalMatch = /^case_(\d+)$/i.exec(current);
+          if (!positionalMatch) {
+            // Keep semantic handles as-is, and sync edge.type for deterministic branch matching.
+            e.sourceHandle = current;
+            (e as any).type = current;
+            continue;
+          }
+
+          const caseIndex = parseInt(positionalMatch[1], 10) - 1;
+          const semanticHandle = switchCasePorts[caseIndex];
+          if (semanticHandle) {
+            e.sourceHandle = semanticHandle;
+            (e as any).type = semanticHandle;
+            migrationsApplied.push(
+              `migrated_switch_handle_${sourceId}_case_${caseIndex + 1}_to_${semanticHandle}`
+            );
+          } else {
+            // Keep positional values only as migration fallback when switch config is not hydrated.
+            e.sourceHandle = current;
+            (e as any).type = current;
           }
         }
       }

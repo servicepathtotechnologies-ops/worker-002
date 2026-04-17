@@ -14,7 +14,7 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
-import { AiFirstPipeline } from '../ai-first-pipeline';
+import { WorkflowGenerationPipeline } from '../pipeline/workflow-generation-pipeline';
 import { unifiedGraphOrchestrator } from '../../../core/orchestration/unified-graph-orchestrator';
 import { unifiedNodeRegistry } from '../../../core/registry/unified-node-registry';
 
@@ -206,7 +206,7 @@ describe('AI pipeline handles prompts that previously failed under keyword match
         buildMockProcessRequest(triggerType, actionType),
       );
 
-      const pipeline = new AiFirstPipeline();
+      const pipeline = new WorkflowGenerationPipeline();
 
       const result = await pipeline.run({
         userPrompt: prompt,

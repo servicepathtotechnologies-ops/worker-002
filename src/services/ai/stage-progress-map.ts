@@ -6,8 +6,9 @@
 
 export const STAGE_PROGRESS_MAP: Record<string, number> = {
   intent:               10,
-  structural_prompt:    20,
-  node_selection:       35,
+  capability_selection: 18,
+  structural_prompt:    28,
+  node_selection:       40,
   edge_reasoning:       50,
   validation:           62,
   property_population:  74,
@@ -17,6 +18,7 @@ export const STAGE_PROGRESS_MAP: Record<string, number> = {
 
 export const STAGE_LOG_LABELS: Record<string, string> = {
   intent:               'Extracting intent...',
+  capability_selection: 'Preparing capability options...',
   structural_prompt:    'Building structural blueprint...',
   node_selection:       'Selecting workflow nodes...',
   edge_reasoning:       'Reasoning about edges...',
@@ -32,6 +34,7 @@ export const STAGE_LOG_LABELS: Record<string, string> = {
  */
 export const PIPELINE_STAGE_ORDER: readonly string[] = [
   'intent',
+  'capability_selection',
   'structural_prompt',
   'node_selection',
   'edge_reasoning',

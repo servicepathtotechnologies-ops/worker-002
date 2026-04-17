@@ -359,7 +359,8 @@ export function materializeStructuralFields(
   workflow: Workflow,
   options?: { postFreezeReadonly?: boolean }
 ): Workflow {
-  if (options?.postFreezeReadonly) {
+  const freezeBoundary = (workflow as any)?.metadata?.freezeBoundary;
+  if (options?.postFreezeReadonly || freezeBoundary?.frozen === true) {
     return workflow;
   }
   const intentText = getWorkflowIntentText(workflow);
@@ -453,6 +454,32 @@ export function materializeStructuralFields(
       }
 
       if (fillMode[fieldName] === 'runtime_ai') {
+        fillMode[fieldName] = 'buildtime_ai_once';
+        changed = true;
+      }
+    }
+
+    // ── NEW: Stamp _fillMode for non-structural buildtime_ai_once fields ─────
+    // property-population-stage may have written values without stamping _fillMode
+    // (pre-fix workflows in DB). Ensure every field with fillMode.default === 'buildtime_ai_once'
+    // and a non-empty stored value carries the stamp so attach-inputs can guard it.
+    for (const [fieldName, fieldDef] of Object.entries(inputSchema)) {
+      if (isStructuralOwnership(fieldName, fieldDef)) continue; // already handled above
+      if (fieldDef.fillMode?.default !== 'buildtime_ai_once') continue;
+      if (fieldDef.ownership === 'credential') continue;
+      if (fillMode[fieldName] !== undefined) continue; // already stamped — don't overwrite
+
+      const storedValue = config[fieldName];
+      const isEmpty =
+        storedValue === undefined ||
+        storedValue === null ||
+        storedValue === '' ||
+        (Array.isArray(storedValue) && storedValue.length === 0) ||
+        (typeof storedValue === 'object' &&
+          !Array.isArray(storedValue) &&
+          Object.keys(storedValue as object).length === 0);
+
+      if (!isEmpty) {
         fillMode[fieldName] = 'buildtime_ai_once';
         changed = true;
       }

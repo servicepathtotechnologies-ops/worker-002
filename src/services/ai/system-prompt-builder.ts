@@ -19,6 +19,7 @@ import type { NodeCatalogText } from './node-catalog-builder';
 
 export type PipelineStage =
   | 'intent'
+  | 'capability_selection'
   | 'node_selection'
   | 'edge_reasoning'
   | 'validation'
@@ -34,7 +35,7 @@ export interface SelectedNode {
 export interface ProposedEdge {
   source: string; // nodeId
   target: string; // nodeId
-  type: 'main' | 'true' | 'false' | string; // case_N etc.
+  type: 'main' | 'true' | 'false' | string; // semantic switch case labels
 }
 
 export interface ValidationIssue {
@@ -48,6 +49,8 @@ export interface StageContext {
   edgeList?: ProposedEdge[];
   validationIssues?: ValidationIssue[];
   cycleInfo?: string; // for edge_reasoning re-prompt
+  selectedNodeConstraintsByStep?: Record<string, string[]>;
+  selectedNodeConstraintsFlat?: string[];
 }
 
 export interface SystemPromptBuilderInput {
@@ -69,7 +72,7 @@ const INTENT_OUTPUT_SCHEMA = {
   required: ['intent', 'triggerType', 'actions', 'dataFlows'],
   properties: {
     intent: { type: 'string' },
-    triggerType: { enum: ['schedule', 'webhook', 'form', 'chat_trigger', 'manual_trigger'] },
+    triggerType: { type: 'string', enum: ['schedule', 'webhook', 'form', 'chat_trigger', 'manual_trigger'] },
     actions: { type: 'array', items: { type: 'string' } },
     dataFlows: {
       type: 'array',
@@ -86,7 +89,7 @@ const INTENT_OUTPUT_SCHEMA = {
   },
 };
 
-const NODE_SELECTION_OUTPUT_SCHEMA = {
+export const NODE_SELECTION_OUTPUT_SCHEMA = {
   type: 'object',
   required: ['selectedNodes'],
   properties: {
@@ -97,8 +100,47 @@ const NODE_SELECTION_OUTPUT_SCHEMA = {
         required: ['type', 'role', 'reason'],
         properties: {
           type: { type: 'string' },
-          role: { enum: ['trigger', 'action', 'logic', 'terminal'] },
+          role: { type: 'string', enum: ['trigger', 'action', 'logic', 'terminal'] },
           reason: { type: 'string' },
+        },
+      },
+    },
+  },
+};
+
+export const CAPABILITY_SELECTION_OUTPUT_SCHEMA = {
+  type: 'object',
+  required: ['steps'],
+  properties: {
+    steps: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: [
+          'stepId',
+          'stepText',
+          'intentClass',
+          'candidateNodeTypes',
+          'defaultSuggestedNodeType',
+          'selectionPolicy',
+        ],
+        properties: {
+          stepId: { type: 'string' },
+          stepText: { type: 'string' },
+          intentClass: {
+            type: 'string',
+            enum: ['trigger', 'data_source', 'communication', 'logic', 'transformation', 'generic_action'],
+          },
+          candidateNodeTypes: { type: 'array', items: { type: 'string' } },
+          defaultSuggestedNodeType: { type: ['string', 'null'] },
+          selectionPolicy: {
+            type: 'object',
+            required: ['multiSelectAllowed', 'required'],
+            properties: {
+              multiSelectAllowed: { type: 'boolean' },
+              required: { type: 'boolean' },
+            },
+          },
         },
       },
     },
@@ -130,14 +172,14 @@ const VALIDATION_OUTPUT_SCHEMA = {
   type: 'object',
   required: ['status', 'issues'],
   properties: {
-    status: { enum: ['pass', 'fail'] },
+    status: { type: 'string', enum: ['pass', 'fail'] },
     issues: {
       type: 'array',
       items: {
         type: 'object',
         required: ['severity', 'description'],
         properties: {
-          severity: { enum: ['error', 'warning'] },
+          severity: { type: 'string', enum: ['error', 'warning'] },
           description: { type: 'string' },
           suggestedFix: { type: 'string' },
         },
@@ -155,7 +197,7 @@ DAG STRUCTURAL CONSTRAINTS — YOU MUST ENFORCE ALL OF THESE:
 3. ALL NON-TERMINAL NODES MUST HAVE AT LEAST ONE OUTGOING EDGE: Every node except the final terminal node(s) must connect to a downstream node.
 4. BRANCHING NODES (if_else, switch) MUST USE LABELED EDGES:
    - if_else: exactly two outgoing edges — one labeled "true", one labeled "false". Both are required.
-   - switch: exactly one outgoing edge per case value, labeled "case_1", "case_2", etc. in order.
+   - switch: exactly one outgoing edge per case value, labeled with the actual semantic case value.
 5. MERGE NODES: If two or more branches reconverge, they MUST connect to a merge node before continuing.
 6. NO ORPHAN NODES: Every non-trigger node must be reachable from the trigger via directed edges. A node is orphaned if no edge points to it (except the trigger itself).
 7. LINEAR BY DEFAULT: Unless the user explicitly requests branching/conditions, use a strictly linear chain: trigger → node1 → node2 → ... → terminal.
@@ -176,8 +218,10 @@ export class SystemPromptBuilder {
     switch (stage) {
       case 'intent':
         return this.buildIntentPrompt(nodeCatalog, userIntent);
+      case 'capability_selection':
+        return this.buildCapabilitySelectionPrompt(nodeCatalog, userIntent);
       case 'node_selection':
-        return this.buildNodeSelectionPrompt(nodeCatalog, userIntent);
+        return this.buildNodeSelectionPrompt(nodeCatalog, userIntent, stageContext);
       case 'edge_reasoning':
         return this.buildEdgeReasoningPrompt(nodeCatalog, userIntent, stageContext);
       case 'validation':
@@ -229,7 +273,46 @@ export class SystemPromptBuilder {
 
   // ── Section 2: Node Selection Stage ───────────────────────────────────────
 
-  private buildNodeSelectionPrompt(nodeCatalog: NodeCatalogText, userIntent: string): SystemPromptBuilderOutput {
+  private buildCapabilitySelectionPrompt(nodeCatalog: NodeCatalogText, userIntent: string): SystemPromptBuilderOutput {
+    const systemPrompt = [
+      '## ROLE AND OBJECTIVE',
+      'You are a capability-node suggestion engine for a workflow automation platform.',
+      'Given user intent, output step-wise capability options using ONLY nodes from the catalog.',
+      'Do not invent node types and do not output explanatory prose.',
+      '',
+      '## NODE CATALOG',
+      nodeCatalog,
+      '',
+      '## OUTPUT FORMAT',
+      'You MUST return ONLY valid JSON conforming exactly to this schema:',
+      JSON.stringify(CAPABILITY_SELECTION_OUTPUT_SCHEMA, null, 2),
+      '',
+      '## HARD CONSTRAINTS',
+      '- Each step must represent one intent action.',
+      '- candidateNodeTypes must include only node types present in NODE CATALOG.',
+      '- defaultSuggestedNodeType must be one of candidateNodeTypes or null if none.',
+      '- selectionPolicy.multiSelectAllowed must be true.',
+      '- Return ONLY the JSON object. No markdown, no extra text.',
+      '',
+      '## USER INTENT',
+      userIntent,
+    ].join('\n');
+
+    return { systemPrompt, outputSchema: CAPABILITY_SELECTION_OUTPUT_SCHEMA };
+  }
+
+  private buildNodeSelectionPrompt(
+    nodeCatalog: NodeCatalogText,
+    userIntent: string,
+    ctx?: StageContext,
+  ): SystemPromptBuilderOutput {
+    const allowedByStepText = ctx?.selectedNodeConstraintsByStep
+      ? JSON.stringify(ctx.selectedNodeConstraintsByStep, null, 2)
+      : '(none)';
+    const allowedFlatText = ctx?.selectedNodeConstraintsFlat?.length
+      ? JSON.stringify(ctx.selectedNodeConstraintsFlat, null, 2)
+      : '(none)';
+
     const systemPrompt = [
       '## ROLE AND OBJECTIVE',
       'You are a node selection engine for a workflow automation platform.',
@@ -238,6 +321,13 @@ export class SystemPromptBuilder {
       '',
       '## NODE CATALOG',
       nodeCatalog,
+      '',
+      '## USER-CONFIRMED NODE CONSTRAINTS',
+      'The user may have explicitly selected node candidates in a prior capability step.',
+      `Allowed by step: ${allowedByStepText}`,
+      `Allowed flat list: ${allowedFlatText}`,
+      'If constraints are provided, selectedNodes MUST only use those node types.',
+      'If allowed flat list is not empty, every selected node type MUST belong to that list.',
       '',
       '## OUTPUT FORMAT',
       'You MUST return ONLY valid JSON conforming exactly to this schema:',

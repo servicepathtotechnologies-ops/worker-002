@@ -25,6 +25,7 @@ import {
 } from '../core/utils/workflow-topology-fingerprint';
 import { unifiedNodeRegistry } from '../core/registry/unified-node-registry';
 import { isCredentialOwnership } from '../core/utils/field-ownership';
+import { buildSyncedGraphPayload, resolveWorkflowGraphState } from './workflow-graph-state';
 
 /** Wizard sends `cred_<nodeId>_<fieldName>` — allow through vault-key filter; injectCredentials maps per node. */
 function credentialPayloadKeyMatchesWorkflowNode(key: string, nodeIds: string[]): boolean {
@@ -226,9 +227,15 @@ export default async function attachCredentialsHandler(req: Request, res: Respon
     // Phase transitions are decided after readiness validation (no eager phase mutation).
 
     // Post-freeze: keep graph immutable (no rewiring/normalization). Only run lightweight safety checks.
-    const workflowGraph = workflow.graph || { nodes: workflow.nodes || [], edges: workflow.edges || [] };
-    const parsedNodes = typeof workflowGraph.nodes === 'string' ? JSON.parse(workflowGraph.nodes) : workflowGraph.nodes;
-    const parsedEdges = typeof workflowGraph.edges === 'string' ? JSON.parse(workflowGraph.edges) : workflowGraph.edges;
+    const resolvedGraphState = resolveWorkflowGraphState(workflow);
+    if (resolvedGraphState.needsHealing) {
+      console.warn('[AttachCredentials] ⚠️ Workflow graph state needed healing:', {
+        workflowId,
+        source: resolvedGraphState.source,
+        inSync: resolvedGraphState.inSync,
+        reason: resolvedGraphState.reason,
+      });
+    }
     const freezeBoundary = (workflow as any)?.metadata?.freezeBoundary || null;
     if (!freezeBoundary?.frozen) {
       return res.status(409).json(
@@ -241,8 +248,8 @@ export default async function attachCredentialsHandler(req: Request, res: Respon
       );
     }
     const workflowGraphReconciled = {
-      nodes: Array.isArray(parsedNodes) ? parsedNodes : [],
-      edges: Array.isArray(parsedEdges) ? parsedEdges : [],
+      nodes: Array.isArray(resolvedGraphState.nodes) ? resolvedGraphState.nodes : [],
+      edges: Array.isArray(resolvedGraphState.edges) ? resolvedGraphState.edges : [],
     };
     const structuralReadiness = validateStructuralReadiness((workflowGraphReconciled as any).nodes || [], { strict: true });
     if (structuralReadiness.errors.length > 0) {
@@ -528,12 +535,17 @@ export default async function attachCredentialsHandler(req: Request, res: Respon
       .update({
         nodes: finalNormalizedGraph.nodes,
         edges: finalNormalizedGraph.edges,
+        graph: buildSyncedGraphPayload(
+          finalNormalizedGraph.nodes,
+          finalNormalizedGraph.edges,
+          (workflow as any)?.metadata
+        ),
         status: finalStatus, // ✅ CRITICAL: Use valid enum value ('active')
         phase: finalPhase, // ✅ CRITICAL: Use TEXT field for execution phase
         updated_at: new Date().toISOString(),
       })
       .eq('id', workflowId)
-      .select('id, status, phase, nodes, edges')
+      .select('id, status, phase, nodes, edges, graph')
       .single();
 
     if (updateError) {
