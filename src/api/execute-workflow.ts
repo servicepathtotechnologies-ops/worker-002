@@ -396,6 +396,1516 @@ function resolveTemplate(template: string, context: Record<string, unknown>, nod
 }
 
 /**
+ * ============================================================================
+ * AMAZON SES CREDENTIAL HANDLING FUNCTIONS
+ * ============================================================================
+ */
+
+/**
+ * AWS Credentials interface
+ */
+interface AWSCredentials {
+  accessKeyId: string;
+  secretAccessKey: string;
+  region?: string;
+}
+
+/**
+ * Retrieve AWS credentials from credential vault
+ * 
+ * Queries the credential vault for AWS credentials by workflow_id, node_id, and provider='aws'
+ * 
+ * @param supabase - Supabase client
+ * @param workflowId - Workflow ID
+ * @param nodeId - Node ID
+ * @returns AWS credentials or throws descriptive error
+ * 
+ * Requirements: 4.1, 4.3
+ */
+async function getAWSCredentials(
+  supabase: SupabaseClient,
+  workflowId: string,
+  nodeId: string
+): Promise<AWSCredentials> {
+  try {
+    // Try to retrieve credentials from credential vault
+    // First, try node-specific credentials
+    const { data: nodeCredentials, error: nodeError } = await supabase
+      .from('credentials')
+      .select('*')
+      .eq('workflow_id', workflowId)
+      .eq('node_id', nodeId)
+      .eq('provider', 'aws')
+      .single();
+
+    if (!nodeError && nodeCredentials) {
+      // Validate and return node-specific credentials
+      const credentials = validateAWSCredentialsStructure(nodeCredentials);
+      if (credentials) {
+        return credentials;
+      }
+    }
+
+    // Fallback: Try workflow-level AWS credentials
+    const { data: workflowCredentials, error: workflowError } = await supabase
+      .from('credentials')
+      .select('*')
+      .eq('workflow_id', workflowId)
+      .eq('provider', 'aws')
+      .is('node_id', null)
+      .single();
+
+    if (!workflowError && workflowCredentials) {
+      // Validate and return workflow-level credentials
+      const credentials = validateAWSCredentialsStructure(workflowCredentials);
+      if (credentials) {
+        return credentials;
+      }
+    }
+
+    // No credentials found
+    throw new Error(
+      'AWS credentials not found. Please configure AWS credentials for this workflow. ' +
+      'Go to Workflow Settings > Credentials and add your AWS access key ID and secret access key.'
+    );
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error retrieving credentials';
+    console.error('[AmazonSES] Credential retrieval error:', errorMessage);
+    throw new Error(`AWS credential retrieval failed: ${errorMessage}`);
+  }
+}
+
+/**
+ * Validate AWS credentials structure
+ * 
+ * Checks that credentials object contains required fields
+ * 
+ * @param credentials - Credentials object from database
+ * @returns Validated AWS credentials or null if invalid
+ */
+function validateAWSCredentialsStructure(credentials: any): AWSCredentials | null {
+  if (!credentials) {
+    return null;
+  }
+
+  // Extract credentials from encrypted storage
+  const accessKeyId = credentials.access_key_id || credentials.accessKeyId;
+  const secretAccessKey = credentials.secret_access_key || credentials.secretAccessKey;
+  const region = credentials.region || 'us-east-1';
+
+  if (!accessKeyId || !secretAccessKey) {
+    console.warn('[AmazonSES] Credentials missing required fields (accessKeyId, secretAccessKey)');
+    return null;
+  }
+
+  return {
+    accessKeyId,
+    secretAccessKey,
+    region,
+  };
+}
+
+/**
+ * Initialize AWS SES client
+ * 
+ * Creates and configures an AWS SES client with provided credentials
+ * 
+ * @param credentials - AWS credentials
+ * @param region - AWS region (optional, uses credentials.region or default)
+ * @returns AWS SES client
+ * 
+ * Requirements: 4.1, 4.2
+ */
+function initializeAWSSESClient(credentials: AWSCredentials, region?: string): any {
+  try {
+    // Import AWS SDK v3 SES client
+    const { SESClient } = require('@aws-sdk/client-ses');
+
+    const sesRegion = region || credentials.region || 'us-east-1';
+
+    // Create SES client with credentials
+    const client = new SESClient({
+      region: sesRegion,
+      credentials: {
+        accessKeyId: credentials.accessKeyId,
+        secretAccessKey: credentials.secretAccessKey,
+      },
+    });
+
+    console.log(`[AmazonSES] ✅ SES client initialized for region: ${sesRegion}`);
+    return client;
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[AmazonSES] SES client initialization error:', errorMessage);
+    throw new Error(`AWS SES client initialization failed: ${errorMessage}`);
+  }
+}
+
+/**
+ * Validate AWS credentials format
+ * 
+ * Verifies that credentials meet AWS format requirements:
+ * - Access Key ID: 20 characters, alphanumeric
+ * - Secret Access Key: 40 characters, base64-like
+ * - Region: Valid AWS region
+ * 
+ * @param credentials - AWS credentials to validate
+ * @returns Validation result with error details
+ * 
+ * Requirements: 4.1
+ */
+function validateAWSCredentials(credentials: AWSCredentials): { valid: boolean; errors: string[] } {
+  const errors: string[] = [];
+
+  // Validate Access Key ID format
+  if (!credentials.accessKeyId) {
+    errors.push('Access Key ID is required');
+  } else if (!/^[A-Z0-9]{20}$/.test(credentials.accessKeyId)) {
+    errors.push(
+      `Access Key ID format invalid. Expected 20 alphanumeric characters, got: ${credentials.accessKeyId.length} characters`
+    );
+  }
+
+  // Validate Secret Access Key format
+  if (!credentials.secretAccessKey) {
+    errors.push('Secret Access Key is required');
+  } else if (!/^[A-Za-z0-9/+=]{40}$/.test(credentials.secretAccessKey)) {
+    errors.push(
+      `Secret Access Key format invalid. Expected 40 base64-like characters, got: ${credentials.secretAccessKey.length} characters`
+    );
+  }
+
+  // Validate region
+  const validRegions = [
+    'us-east-1', 'us-east-2', 'us-west-1', 'us-west-2',
+    'eu-west-1', 'eu-west-2', 'eu-west-3', 'eu-central-1',
+    'ap-southeast-1', 'ap-southeast-2', 'ap-northeast-1', 'ap-northeast-2',
+    'ca-central-1', 'sa-east-1', 'ap-south-1', 'ap-northeast-3',
+  ];
+
+  const region = credentials.region || 'us-east-1';
+  if (!validRegions.includes(region)) {
+    errors.push(`Invalid AWS region: ${region}. Must be one of: ${validRegions.join(', ')}`);
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+  };
+}
+
+/**
+ * TASK 7: AWS REGION CONFIGURATION FUNCTIONS
+ * 
+ * These functions handle AWS region configuration and validation
+ * Requirements: 4.2, 4.4
+ */
+
+/**
+ * Task 7.1: Resolve AWS region configuration
+ * 
+ * Accept awsRegion from config, apply default region if not specified,
+ * validate region is valid AWS region, and return resolved region.
+ * 
+ * @param awsRegion - AWS region from config (optional)
+ * @returns Resolved AWS region
+ * Requirements: 4.2, 4.4
+ */
+function resolveAWSRegion(awsRegion?: string): string {
+  // List of valid AWS regions
+  const validRegions = [
+    'us-east-1', 'us-east-2', 'us-west-1', 'us-west-2',
+    'eu-west-1', 'eu-west-2', 'eu-west-3', 'eu-central-1',
+    'ap-southeast-1', 'ap-southeast-2', 'ap-northeast-1', 'ap-northeast-2',
+    'ca-central-1', 'sa-east-1', 'ap-south-1', 'ap-northeast-3',
+  ];
+
+  // Apply default region if not specified
+  const region = awsRegion || 'us-east-1';
+
+  // Validate region is valid AWS region
+  if (!validRegions.includes(region)) {
+    console.warn(`[AmazonSES] Invalid region '${region}', using default 'us-east-1'`);
+    return 'us-east-1';
+  }
+
+  return region;
+}
+
+/**
+ * Task 7.2: Validate AWS region
+ * 
+ * Check region against list of valid AWS regions and return validation result
+ * with error if invalid.
+ * 
+ * @param region - AWS region to validate
+ * @returns Validation result with error if invalid
+ * Requirements: 4.2
+ */
+function validateAWSRegion(region?: string): { valid: boolean; error?: string } {
+  const validRegions = [
+    'us-east-1', 'us-east-2', 'us-west-1', 'us-west-2',
+    'eu-west-1', 'eu-west-2', 'eu-west-3', 'eu-central-1',
+    'ap-southeast-1', 'ap-southeast-2', 'ap-northeast-1', 'ap-northeast-2',
+    'ca-central-1', 'sa-east-1', 'ap-south-1', 'ap-northeast-3',
+  ];
+
+  if (!region) {
+    return { valid: true }; // No region specified, will use default
+  }
+
+  if (!validRegions.includes(region)) {
+    return {
+      valid: false,
+      error: `Invalid AWS region: ${region}. Must be one of: ${validRegions.join(', ')}`,
+    };
+  }
+
+  return { valid: true };
+}
+
+/**
+ * AMAZON SES TEMPLATE RESOLUTION FUNCTIONS
+ * 
+ * These functions handle template resolution and dynamic content for Amazon SES node
+ * Requirements: 6.1, 6.2, 6.3
+ */
+
+/**
+ * Resolve email templates using universal template resolver
+ * Resolves subject, body, recipients, fromAddress, replyToAddresses, and templateData
+ * 
+ * @param config - Node configuration with template expressions
+ * @param nodeOutputs - Cache of all node outputs for template resolution
+ * @returns Resolved configuration with all templates replaced
+ * Requirements: 6.1, 6.2, 6.3
+ */
+export async function resolveEmailTemplates(
+  config: Record<string, any>,
+  nodeOutputs: LRUNodeOutputsCache
+): Promise<Record<string, any>> {
+  const { resolveUniversalTemplate, resolveArrayTemplates } = await import('../core/utils/universal-template-resolver');
+  
+  const resolved: Record<string, any> = { ...config };
+  
+  // Resolve subject
+  if (config.subject) {
+    resolved.subject = resolveUniversalTemplate(config.subject, nodeOutputs, 'string', 'subject');
+  }
+  
+  // Resolve body
+  if (config.body) {
+    resolved.body = resolveUniversalTemplate(config.body, nodeOutputs, 'string', 'body');
+  }
+  
+  // Resolve fromAddress
+  if (config.fromAddress) {
+    resolved.fromAddress = resolveUniversalTemplate(config.fromAddress, nodeOutputs, 'string', 'fromAddress');
+  }
+  
+  // Resolve recipients (to, cc, bcc arrays)
+  if (config.recipients && typeof config.recipients === 'object') {
+    const recipients = config.recipients;
+    resolved.recipients = {};
+    
+    if (Array.isArray(recipients.to)) {
+      resolved.recipients.to = resolveArrayTemplates(recipients.to, nodeOutputs);
+    }
+    if (Array.isArray(recipients.cc)) {
+      resolved.recipients.cc = resolveArrayTemplates(recipients.cc, nodeOutputs);
+    }
+    if (Array.isArray(recipients.bcc)) {
+      resolved.recipients.bcc = resolveArrayTemplates(recipients.bcc, nodeOutputs);
+    }
+  }
+  
+  // Resolve replyToAddresses
+  if (Array.isArray(config.replyToAddresses)) {
+    resolved.replyToAddresses = resolveArrayTemplates(config.replyToAddresses, nodeOutputs);
+  }
+  
+  // Resolve templateData (nested objects and arrays)
+  if (config.templateData && typeof config.templateData === 'object') {
+    resolved.templateData = resolveTemplateDataRecursive(config.templateData, nodeOutputs);
+  }
+  
+  return resolved;
+}
+
+/**
+ * Recursively resolve template data (handles nested objects and arrays)
+ * 
+ * @param data - Template data object or array
+ * @param nodeOutputs - Cache of all node outputs
+ * @returns Resolved template data
+ * Requirements: 6.2
+ */
+function resolveTemplateDataRecursive(data: any, nodeOutputs: LRUNodeOutputsCache): any {
+  const { resolveUniversalTemplate } = require('../core/utils/universal-template-resolver');
+  
+  if (Array.isArray(data)) {
+    return data.map(item => resolveTemplateDataRecursive(item, nodeOutputs));
+  }
+  
+  if (data && typeof data === 'object') {
+    const resolved: Record<string, any> = {};
+    for (const [key, value] of Object.entries(data)) {
+      if (typeof value === 'string') {
+        resolved[key] = resolveUniversalTemplate(value, nodeOutputs);
+      } else if (Array.isArray(value) || (value && typeof value === 'object')) {
+        resolved[key] = resolveTemplateDataRecursive(value, nodeOutputs);
+      } else {
+        resolved[key] = value;
+      }
+    }
+    return resolved;
+  }
+  
+  return data;
+}
+
+/**
+ * Fetch AWS SES template by name
+ * Queries AWS SES for template and caches it for performance
+ * 
+ * @param sesClient - AWS SES client
+ * @param templateName - Name of the template to fetch
+ * @param templateCache - Cache for storing fetched templates
+ * @returns Template object with subject, html, and text
+ * Requirements: 2.1, 2.4
+ */
+export async function fetchAWSSESTemplate(
+  sesClient: any,
+  templateName: string,
+  templateCache: Map<string, any> = new Map()
+): Promise<{ subject: string; html: string; text: string } | null> {
+  try {
+    // Check cache first
+    if (templateCache.has(templateName)) {
+      console.log(`[AmazonSES] Using cached template: ${templateName}`);
+      return templateCache.get(templateName);
+    }
+    
+    // Fetch template from AWS SES
+    console.log(`[AmazonSES] Fetching template from AWS SES: ${templateName}`);
+    const { GetTemplateCommand } = require('@aws-sdk/client-ses');
+    const command = new GetTemplateCommand({ TemplateName: templateName });
+    const response = await sesClient.send(command);
+    
+    if (!response.Template) {
+      console.error(`[AmazonSES] Template not found: ${templateName}`);
+      return null;
+    }
+    
+    const template = {
+      subject: response.Template.SubjectPart || '',
+      html: response.Template.HtmlPart || '',
+      text: response.Template.TextPart || '',
+    };
+    
+    // Cache template for performance
+    templateCache.set(templateName, template);
+    console.log(`[AmazonSES] Template cached: ${templateName}`);
+    
+    return template;
+  } catch (error: any) {
+    console.error(`[AmazonSES] Error fetching template: ${error.message}`);
+    if (error.name === 'TemplateDoesNotExistException') {
+      return null;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Validate template data against template schema
+ * Compares provided template data against template requirements
+ * 
+ * @param templateData - Provided template data
+ * @param template - Template object with subject, html, text
+ * @returns Validation result with missing/invalid fields
+ * Requirements: 2.4
+ */
+export function validateTemplateData(
+  templateData: Record<string, any>,
+  template: { subject: string; html: string; text: string }
+): { valid: boolean; missingFields: string[]; invalidFields: string[] } {
+  const missingFields: string[] = [];
+  const invalidFields: string[] = [];
+  
+  // Extract template variables from subject, html, and text
+  const templateContent = `${template.subject} ${template.html} ${template.text}`;
+  const variablePattern = /\{\{([^}]+)\}\}/g;
+  const requiredVariables = new Set<string>();
+  
+  let match;
+  while ((match = variablePattern.exec(templateContent)) !== null) {
+    const varName = match[1].trim();
+    requiredVariables.add(varName);
+  }
+  
+  // Check if all required variables are provided
+  for (const varName of requiredVariables) {
+    if (!(varName in templateData)) {
+      missingFields.push(varName);
+    } else {
+      // Validate data type
+      const value = templateData[varName];
+      if (value === null || value === undefined) {
+        invalidFields.push(`${varName}: null or undefined`);
+      }
+    }
+  }
+  
+  return {
+    valid: missingFields.length === 0 && invalidFields.length === 0,
+    missingFields,
+    invalidFields,
+  };
+}
+
+/**
+ * Populate AWS SES template with provided data
+ * Replaces template placeholders with actual values
+ * 
+ * @param template - Template object with subject, html, text
+ * @param templateData - Data to populate template with
+ * @returns Populated email content with subject, html, text
+ * Requirements: 2.1, 2.2
+ */
+export function populateAWSSESTemplate(
+  template: { subject: string; html: string; text: string },
+  templateData: Record<string, any>
+): { subject: string; html: string; text: string } {
+  const populateString = (str: string): string => {
+    return str.replace(/\{\{([^}]+)\}\}/g, (match, varName) => {
+      const trimmedVar = varName.trim();
+      const value = templateData[trimmedVar];
+      
+      if (value === null || value === undefined) {
+        console.warn(`[AmazonSES] Template variable not provided: ${trimmedVar}`);
+        return match; // Keep original placeholder if data not provided
+      }
+      
+      // Convert value to string
+      if (typeof value === 'object') {
+        return JSON.stringify(value);
+      }
+      return String(value);
+    });
+  };
+  
+  return {
+    subject: populateString(template.subject),
+    html: populateString(template.html),
+    text: populateString(template.text),
+  };
+}
+
+/**
+ * TASK 4: RECIPIENT PROCESSING AND VALIDATION FUNCTIONS
+ * 
+ * These functions handle recipient processing, validation, and sender verification
+ * Requirements: 1.1, 1.3, 1.4, 4.1, 8.1
+ */
+
+/**
+ * Process recipients from configuration
+ * Normalizes to, cc, bcc arrays, removes duplicates, validates format
+ * 
+ * @param recipients - Recipients object with to, cc, bcc arrays
+ * @returns Processed recipients object with normalized arrays
+ * Requirements: 1.4, 8.1
+ */
+export function processRecipients(recipients: any): {
+  to: string[];
+  cc: string[];
+  bcc: string[];
+  allRecipients: string[];
+} {
+  const normalize = (arr: any): string[] => {
+    if (!Array.isArray(arr)) {
+      return [];
+    }
+    // Convert to strings and remove duplicates
+    const unique = new Set<string>();
+    arr.forEach(item => {
+      const str = String(item).trim().toLowerCase();
+      if (str) {
+        unique.add(str);
+      }
+    });
+    return Array.from(unique);
+  };
+
+  const to = normalize(recipients?.to);
+  const cc = normalize(recipients?.cc);
+  const bcc = normalize(recipients?.bcc);
+
+  // Combine all recipients for validation
+  const allRecipients = [...new Set([...to, ...cc, ...bcc])];
+
+  return { to, cc, bcc, allRecipients };
+}
+
+/**
+ * Validate recipients configuration
+ * Verifies at least one recipient is provided and all emails are valid
+ * 
+ * @param recipients - Recipients object with to, cc, bcc arrays
+ * @returns Validation result with invalid recipients list
+ * Requirements: 1.1, 1.4
+ */
+export function validateRecipients(recipients: any): {
+  valid: boolean;
+  errors: string[];
+  invalidRecipients: string[];
+} {
+  const errors: string[] = [];
+  const invalidRecipients: string[] = [];
+
+  // Check at least one recipient is provided
+  const to = Array.isArray(recipients?.to) ? recipients.to : [];
+  const cc = Array.isArray(recipients?.cc) ? recipients.cc : [];
+  const bcc = Array.isArray(recipients?.bcc) ? recipients.bcc : [];
+
+  if (to.length === 0 && cc.length === 0 && bcc.length === 0) {
+    errors.push('At least one recipient (To, Cc, or Bcc) is required');
+  }
+
+  // Validate email format
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const validateEmail = (email: string): boolean => emailRegex.test(email);
+
+  const allRecipients = [...to, ...cc, ...bcc];
+  allRecipients.forEach(email => {
+    const emailStr = String(email).trim();
+    if (emailStr && !validateEmail(emailStr)) {
+      invalidRecipients.push(emailStr);
+    }
+  });
+
+  if (invalidRecipients.length > 0) {
+    errors.push(`Invalid email addresses: ${invalidRecipients.join(', ')}`);
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    invalidRecipients,
+  };
+}
+
+/**
+ * Validate sender email address
+ * Verifies fromAddress is provided and has valid format
+ * 
+ * @param fromAddress - Sender email address
+ * @returns Validation result with error details
+ * Requirements: 1.3, 4.1
+ */
+export function validateSenderEmail(fromAddress: string): {
+  valid: boolean;
+  errors: string[];
+} {
+  const errors: string[] = [];
+
+  if (!fromAddress || !fromAddress.trim()) {
+    errors.push('From address is required');
+  } else {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(fromAddress.trim())) {
+      errors.push(`Invalid from address format: ${fromAddress}`);
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+  };
+}
+
+/**
+ * TASK 5: ATTACHMENT HANDLING AND VALIDATION FUNCTIONS
+ * 
+ * These functions handle attachment processing, size validation, and format validation
+ * Requirements: 3.1, 3.2, 3.3, 3.4
+ */
+
+/**
+ * Process attachments from configuration
+ * Validates structure, decodes base64 content if needed
+ * 
+ * @param attachments - Attachments array from config
+ * @returns Processed attachments array
+ * Requirements: 3.1
+ */
+export function processAttachments(attachments: any[]): {
+  attachments: Array<{
+    filename: string;
+    content: Buffer;
+    contentType: string;
+  }>;
+  errors: string[];
+} {
+  const processed: Array<{
+    filename: string;
+    content: Buffer;
+    contentType: string;
+  }> = [];
+  const errors: string[] = [];
+
+  if (!Array.isArray(attachments)) {
+    return { attachments: [], errors };
+  }
+
+  attachments.forEach((attachment, index) => {
+    try {
+      if (!attachment || typeof attachment !== 'object') {
+        errors.push(`Attachment ${index}: Invalid structure`);
+        return;
+      }
+
+      const { filename, content, contentType } = attachment;
+
+      if (!filename || !content || !contentType) {
+        errors.push(`Attachment ${index}: Missing required fields (filename, content, contentType)`);
+        return;
+      }
+
+      // Decode base64 content if it's a string
+      let buffer: Buffer;
+      if (typeof content === 'string') {
+        try {
+          buffer = Buffer.from(content, 'base64');
+        } catch (e) {
+          errors.push(`Attachment ${index}: Invalid base64 content`);
+          return;
+        }
+      } else if (Buffer.isBuffer(content)) {
+        buffer = content;
+      } else {
+        errors.push(`Attachment ${index}: Content must be base64 string or Buffer`);
+        return;
+      }
+
+      processed.push({
+        filename: String(filename),
+        content: buffer,
+        contentType: String(contentType),
+      });
+    } catch (error) {
+      errors.push(`Attachment ${index}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  });
+
+  return { attachments: processed, errors };
+}
+
+/**
+ * Validate attachment sizes
+ * Checks individual attachment size and total email size against AWS SES limits
+ * AWS SES limit: 40MB per email
+ * 
+ * @param attachments - Processed attachments array
+ * @param emailContent - Email subject and body
+ * @returns Validation result with size details
+ * Requirements: 3.3, 3.4
+ */
+export function validateAttachmentSize(
+  attachments: Array<{ filename: string; content: Buffer; contentType: string }>,
+  emailContent: { subject: string; body: string }
+): {
+  valid: boolean;
+  errors: string[];
+  totalSize: number;
+  maxSize: number;
+} {
+  const errors: string[] = [];
+  const AWS_SES_LIMIT = 40 * 1024 * 1024; // 40MB in bytes
+
+  // Calculate email content size (rough estimate)
+  const contentSize = (emailContent.subject || '').length + (emailContent.body || '').length;
+
+  // Calculate total size with attachments
+  let totalSize = contentSize;
+  attachments.forEach(attachment => {
+    const attachmentSize = attachment.content.length;
+    totalSize += attachmentSize;
+
+    // Check individual attachment size (AWS SES limit is 40MB total, but individual attachments should be reasonable)
+    if (attachmentSize > AWS_SES_LIMIT) {
+      errors.push(`Attachment '${attachment.filename}' exceeds AWS SES size limit of 40MB`);
+    }
+  });
+
+  // Check total email size
+  if (totalSize > AWS_SES_LIMIT) {
+    errors.push(`Total email size (${(totalSize / 1024 / 1024).toFixed(2)}MB) exceeds AWS SES limit of 40MB`);
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    totalSize,
+    maxSize: AWS_SES_LIMIT,
+  };
+}
+
+/**
+ * Validate attachment format
+ * Verifies supported file types and content type matches extension
+ * 
+ * @param attachments - Processed attachments array
+ * @returns Validation result with format details
+ * Requirements: 3.2
+ */
+export function validateAttachmentFormat(
+  attachments: Array<{ filename: string; content: Buffer; contentType: string }>
+): {
+  valid: boolean;
+  errors: string[];
+} {
+  const errors: string[] = [];
+
+  // Supported file types and their content types
+  const supportedTypes: Record<string, string[]> = {
+    'application/pdf': ['.pdf'],
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
+    'application/msword': ['.doc'],
+    'application/vnd.ms-excel': ['.xls'],
+    'image/jpeg': ['.jpg', '.jpeg'],
+    'image/png': ['.png'],
+    'image/gif': ['.gif'],
+    'image/webp': ['.webp'],
+    'text/plain': ['.txt'],
+    'text/csv': ['.csv'],
+    'application/zip': ['.zip'],
+  };
+
+  attachments.forEach(attachment => {
+    const { filename, contentType } = attachment;
+
+    // Get file extension
+    const ext = filename.substring(filename.lastIndexOf('.')).toLowerCase();
+
+    // Check if content type is supported
+    const supportedExtensions = supportedTypes[contentType];
+    if (!supportedExtensions) {
+      errors.push(`Attachment '${filename}': Unsupported content type '${contentType}'`);
+      return;
+    }
+
+    // Check if extension matches content type
+    if (!supportedExtensions.includes(ext)) {
+      errors.push(
+        `Attachment '${filename}': File extension '${ext}' does not match content type '${contentType}'`
+      );
+    }
+  });
+
+  return {
+    valid: errors.length === 0,
+    errors,
+  };
+}
+
+/**
+ * TASK 6: EMAIL SENDING AND ERROR HANDLING FUNCTIONS
+ * 
+ * These functions handle email message construction, AWS SES sending, error classification, retry logic, and error formatting
+ * Requirements: 1.1, 1.4, 1.5, 5.1, 7.1, 7.2, 7.3, 7.4
+ */
+
+/**
+ * Construct email message object for AWS SES
+ * Builds complete email with recipients, subject, body, and attachments
+ * 
+ * @param config - Email configuration
+ * @param recipients - Processed recipients
+ * @param emailContent - Email subject and body
+ * @param attachments - Processed attachments
+ * @returns Email message object ready for AWS SES
+ * Requirements: 1.1, 1.4, 1.5
+ */
+export function constructEmailMessage(
+  config: any,
+  recipients: { to: string[]; cc: string[]; bcc: string[] },
+  emailContent: { subject: string; html?: string; text?: string },
+  attachments: Array<{ filename: string; content: Buffer; contentType: string }> = []
+): {
+  source: string;
+  destination: {
+    toAddresses: string[];
+    ccAddresses?: string[];
+    bccAddresses?: string[];
+  };
+  message: {
+    subject: { data: string; charset: string };
+    body: {
+      html?: { data: string; charset: string };
+      text?: { data: string; charset: string };
+    };
+  };
+  replyToAddresses?: string[];
+  configurationSetName?: string;
+  tags?: Array<{ name: string; value: string }>;
+  returnPath?: string;
+  attachments?: Array<{ filename: string; content: Buffer; contentType: string }>;
+} {
+  const fromAddress = String(config.fromAddress || '');
+
+  const message: any = {
+    source: fromAddress,
+    destination: {
+      toAddresses: recipients.to,
+      ...(recipients.cc.length > 0 && { ccAddresses: recipients.cc }),
+      ...(recipients.bcc.length > 0 && { bccAddresses: recipients.bcc }),
+    },
+    message: {
+      subject: {
+        data: emailContent.subject,
+        charset: 'UTF-8',
+      },
+      body: {},
+    },
+  };
+
+  // Add HTML body if provided
+  if (emailContent.html) {
+    message.message.body.html = {
+      data: emailContent.html,
+      charset: 'UTF-8',
+    };
+  }
+
+  // Add text body if provided
+  if (emailContent.text) {
+    message.message.body.text = {
+      data: emailContent.text,
+      charset: 'UTF-8',
+    };
+  }
+
+  // Add optional fields
+  if (Array.isArray(config.replyToAddresses) && config.replyToAddresses.length > 0) {
+    message.replyToAddresses = config.replyToAddresses.map(String);
+  }
+
+  if (config.configurationSetName) {
+    message.configurationSetName = String(config.configurationSetName);
+  }
+
+  if (config.tags && typeof config.tags === 'object') {
+    message.tags = Object.entries(config.tags).map(([name, value]) => ({
+      name: String(name),
+      value: String(value),
+    }));
+  }
+
+  if (config.returnPath) {
+    message.returnPath = String(config.returnPath);
+  }
+
+  // Add attachments if provided
+  if (attachments.length > 0) {
+    message.attachments = attachments;
+  }
+
+  return message;
+}
+
+/**
+ * Send email via AWS SES
+ * Calls AWS SES SendEmail API and returns result with message ID
+ * 
+ * @param emailMessage - Email message object
+ * @param sesClient - AWS SES client
+ * @returns Send result with messageId and recipientCount
+ * Requirements: 1.1, 5.1
+ */
+export async function sendEmailViaSES(
+  emailMessage: any,
+  sesClient: any
+): Promise<{
+  success: boolean;
+  messageId: string;
+  recipientCount: number;
+  error?: string;
+}> {
+  try {
+    const { SendEmailCommand } = require('@aws-sdk/client-ses');
+
+    // Build AWS SES command
+    const command = new SendEmailCommand({
+      Source: emailMessage.source,
+      Destination: emailMessage.destination,
+      Message: emailMessage.message,
+      ReplyToAddresses: emailMessage.replyToAddresses,
+      ConfigurationSetName: emailMessage.configurationSetName,
+      Tags: emailMessage.tags,
+      ReturnPath: emailMessage.returnPath,
+    });
+
+    // Send email
+    const response = await sesClient.send(command);
+
+    // Calculate recipient count
+    const recipientCount =
+      (emailMessage.destination.toAddresses?.length || 0) +
+      (emailMessage.destination.ccAddresses?.length || 0) +
+      (emailMessage.destination.bccAddresses?.length || 0);
+
+    return {
+      success: true,
+      messageId: response.MessageId,
+      recipientCount,
+    };
+  } catch (error: any) {
+    const errorMessage = error.message || String(error);
+    console.error('[AmazonSES] Send error:', errorMessage);
+    return {
+      success: false,
+      messageId: '',
+      recipientCount: 0,
+      error: errorMessage,
+    };
+  }
+}
+
+/**
+ * Classify AWS error as temporary or permanent
+ * Determines if error is retryable based on error code and message
+ * 
+ * @param error - Error object or message
+ * @returns Error classification with type and retryable flag
+ * Requirements: 7.3
+ */
+export function classifyAWSError(error: any): {
+  type: 'temporary' | 'permanent';
+  retryable: boolean;
+  code?: string;
+  message: string;
+} {
+  const errorMessage = error.message || String(error);
+  const errorCode = error.code || error.name || '';
+
+  // Temporary errors (retryable)
+  const temporaryPatterns = [
+    /429|rate.?limit|throttl/i,
+    /timeout|timed.?out/i,
+    /503|service.?unavailable|temporarily.?unavailable/i,
+    /ECONNREFUSED|ECONNRESET|ETIMEDOUT/i,
+    /RequestLimitExceeded/i,
+  ];
+
+  for (const pattern of temporaryPatterns) {
+    if (pattern.test(errorMessage) || pattern.test(errorCode)) {
+      return {
+        type: 'temporary',
+        retryable: true,
+        code: errorCode,
+        message: errorMessage,
+      };
+    }
+  }
+
+  // Permanent errors (non-retryable)
+  return {
+    type: 'permanent',
+    retryable: false,
+    code: errorCode,
+    message: errorMessage,
+  };
+}
+
+/**
+ * Send email with retry logic and exponential backoff
+ * Implements retry strategy for temporary errors
+ * 
+ * @param emailMessage - Email message object
+ * @param sesClient - AWS SES client
+ * @param maxRetries - Maximum number of retries (default 3)
+ * @returns Final send result or throws error after max retries
+ * Requirements: 7.1, 7.2
+ */
+export async function sendEmailWithRetry(
+  emailMessage: any,
+  sesClient: any,
+  maxRetries: number = 3
+): Promise<{
+  success: boolean;
+  messageId: string;
+  recipientCount: number;
+  attempts: number;
+  error?: string;
+}> {
+  let lastError: any = null;
+  let attempts = 0;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    attempts = attempt + 1;
+
+    try {
+      console.log(`[AmazonSES] Send attempt ${attempts}/${maxRetries + 1}`);
+      const result = await sendEmailViaSES(emailMessage, sesClient);
+
+      if (result.success) {
+        console.log(`[AmazonSES] ✅ Email sent successfully on attempt ${attempts}`);
+        return {
+          ...result,
+          attempts,
+        };
+      }
+
+      lastError = new Error(result.error || 'Unknown error');
+    } catch (error) {
+      lastError = error;
+    }
+
+    // Check if error is retryable
+    const classification = classifyAWSError(lastError);
+    if (!classification.retryable) {
+      console.error(`[AmazonSES] ❌ Permanent error, not retrying: ${classification.message}`);
+      throw lastError;
+    }
+
+    // If this was the last attempt, throw error
+    if (attempt === maxRetries) {
+      console.error(`[AmazonSES] ❌ Max retries (${maxRetries}) exceeded`);
+      throw lastError;
+    }
+
+    // Calculate exponential backoff with jitter
+    const baseDelay = 1000; // 1 second
+    const maxDelay = 32000; // 32 seconds
+    const jitter = Math.random() * 1000; // 0-1 second jitter
+    const delay = Math.min(baseDelay * Math.pow(2, attempt), maxDelay) + jitter;
+
+    console.log(`[AmazonSES] ⏳ Retrying in ${(delay / 1000).toFixed(2)}s (attempt ${attempt + 1}/${maxRetries})`);
+    await new Promise(resolve => setTimeout(resolve, delay));
+  }
+
+  throw lastError;
+}
+
+/**
+ * Format error response for user
+ * Generates descriptive error message with classification and details
+ * 
+ * @param error - Error object
+ * @param classification - Error classification result
+ * @returns Formatted error response
+ * Requirements: 7.4
+ */
+export function formatErrorResponse(
+  error: any,
+  classification: { type: 'temporary' | 'permanent'; retryable: boolean; code?: string; message: string }
+): {
+  success: boolean;
+  error: string;
+  errorCode?: string;
+  errorType: 'temporary' | 'permanent';
+  retryable: boolean;
+  details?: Record<string, any>;
+} {
+  let userMessage = classification.message;
+
+  // Provide actionable error messages
+  if (classification.type === 'temporary') {
+    userMessage = `Temporary AWS SES error: ${classification.message}. The system will retry automatically.`;
+  } else if (classification.code === 'MessageRejected') {
+    userMessage = 'Email was rejected by AWS SES. Please check sender verification and recipient addresses.';
+  } else if (classification.message.includes('unverified')) {
+    userMessage = 'Sender email is not verified in AWS SES. Please verify this email address in your SES account.';
+  } else if (classification.message.includes('TemplateDoesNotExist')) {
+    userMessage = 'AWS SES template not found. Please create this template in your SES account.';
+  } else if (classification.message.includes('InvalidParameterValue')) {
+    userMessage = 'Invalid email configuration. Please check your email addresses and template data.';
+  }
+
+  return {
+    success: false,
+    error: userMessage,
+    errorCode: classification.code,
+    errorType: classification.type,
+    retryable: classification.retryable,
+    details: {
+      originalMessage: classification.message,
+      timestamp: new Date().toISOString(),
+    },
+  };
+}
+
+/**
+ * TASK 8: BULK RECIPIENT HANDLING FUNCTIONS
+ * 
+ * These functions handle bulk recipient operations and rate limiting
+ * Requirements: 8.1, 8.2, 8.3, 8.4
+ */
+
+/**
+ * Task 8.1: Handle bulk recipients
+ * 
+ * Accept large recipient list, implement batch processing if needed,
+ * respect AWS SES sending limits and quotas, and return batch results
+ * with success/failure per batch.
+ * 
+ * AWS SES limits:
+ * - 50 recipients per SendEmail call
+ * - 14 emails per second (default sending rate)
+ * - 50,000 emails per 24-hour period (default daily quota)
+ * 
+ * @param recipients - Array of recipient email addresses
+ * @param batchSize - Number of recipients per batch (default 50)
+ * @returns Batch results with success/failure per batch
+ * Requirements: 8.1, 8.4
+ */
+function handleBulkRecipients(
+  recipients: string[],
+  batchSize: number = 50
+): {
+  totalRecipients: number;
+  batchCount: number;
+  batches: Array<{
+    batchNumber: number;
+    recipients: string[];
+    startIndex: number;
+    endIndex: number;
+  }>;
+} {
+  const batches: Array<{
+    batchNumber: number;
+    recipients: string[];
+    startIndex: number;
+    endIndex: number;
+  }> = [];
+
+  // Split recipients into batches
+  for (let i = 0; i < recipients.length; i += batchSize) {
+    const batchNumber = Math.floor(i / batchSize) + 1;
+    const batchRecipients = recipients.slice(i, Math.min(i + batchSize, recipients.length));
+
+    batches.push({
+      batchNumber,
+      recipients: batchRecipients,
+      startIndex: i,
+      endIndex: Math.min(i + batchSize, recipients.length),
+    });
+  }
+
+  return {
+    totalRecipients: recipients.length,
+    batchCount: batches.length,
+    batches,
+  };
+}
+
+/**
+ * Task 8.2: Apply rate limiting
+ * 
+ * Track sending rate against AWS SES quotas and implement throttling
+ * if approaching limits. Return rate limit status.
+ * 
+ * AWS SES default quotas:
+ * - 14 emails per second (sending rate)
+ * - 50,000 emails per 24-hour period (daily quota)
+ * 
+ * @param currentEmailCount - Number of emails sent in current period
+ * @param maxEmailsPerSecond - Maximum emails per second (default 14)
+ * @param maxEmailsPer24Hours - Maximum emails per 24 hours (default 50000)
+ * @returns Rate limit status with throttling info
+ * Requirements: 8.2, 8.3
+ */
+function applyRateLimiting(
+  currentEmailCount: number,
+  maxEmailsPerSecond: number = 14,
+  maxEmailsPer24Hours: number = 50000
+): {
+  currentRate: number;
+  maxRate: number;
+  isThrottled: boolean;
+  nextAvailableTime?: number;
+  remainingQuota: number;
+  throttleDelayMs?: number;
+} {
+  // Calculate remaining quota
+  const remainingQuota = Math.max(0, maxEmailsPer24Hours - currentEmailCount);
+
+  // Check if approaching limit (80% of quota)
+  const quotaThreshold = maxEmailsPer24Hours * 0.8;
+  const isApproachingLimit = currentEmailCount >= quotaThreshold;
+
+  // Calculate throttle delay if approaching limit
+  let throttleDelayMs: number | undefined;
+  if (isApproachingLimit) {
+    // Increase delay as we approach limit
+    const percentageOfLimit = currentEmailCount / maxEmailsPer24Hours;
+    // Linear increase from 0ms to 1000ms as we go from 80% to 100% of limit
+    throttleDelayMs = Math.round((percentageOfLimit - 0.8) / 0.2 * 1000);
+  }
+
+  return {
+    currentRate: currentEmailCount,
+    maxRate: maxEmailsPerSecond,
+    isThrottled: isApproachingLimit,
+    remainingQuota,
+    throttleDelayMs,
+  };
+}
+
+/**
+ * TASK 13: COMPREHENSIVE VALIDATION FUNCTIONS
+ * 
+ * These functions provide complete configuration validation for Amazon SES node
+ * Requirements: 1.1, 2.1, 3.1, 4.1
+ */
+
+/**
+ * Task 13.1: Validate complete Amazon SES configuration
+ * 
+ * Call all validation functions and aggregate results
+ * 
+ * @param config - Amazon SES node configuration
+ * @returns Comprehensive validation result
+ * Requirements: 1.1, 2.1, 3.1, 4.1
+ */
+export function validateAmazonSesConfig(config: Record<string, any>): {
+  valid: boolean;
+  errors: string[];
+  warnings: string[];
+} {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  // Validate recipients
+  const recipientValidation = validateRecipients(config.recipients);
+  if (!recipientValidation.valid) {
+    errors.push(...recipientValidation.errors);
+  }
+
+  // Validate sender
+  if (config.fromAddress) {
+    const senderValidation = validateSenderEmail(config.fromAddress);
+    if (!senderValidation.valid) {
+      errors.push(...senderValidation.errors);
+    }
+  } else {
+    errors.push('From address is required');
+  }
+
+  // Validate subject and body
+  if (!config.subject || typeof config.subject !== 'string' || !config.subject.trim()) {
+    errors.push('Subject is required and must be a non-empty string');
+  }
+
+  if (!config.body && !config.useTemplate) {
+    errors.push('Body is required when not using a template');
+  }
+
+  // Validate template configuration
+  if (config.useTemplate) {
+    if (!config.templateName || typeof config.templateName !== 'string') {
+      errors.push('Template name is required when useTemplate is true');
+    }
+    if (config.templateData && typeof config.templateData !== 'object') {
+      errors.push('Template data must be an object');
+    }
+  }
+
+  // Validate attachments if provided
+  if (config.attachments && Array.isArray(config.attachments)) {
+    const attachmentValidation = validateAttachmentFormat(
+      config.attachments.map((a: any) => ({
+        filename: a.filename,
+        content: Buffer.from(a.content || '', 'base64'),
+        contentType: a.contentType,
+      }))
+    );
+    if (!attachmentValidation.valid) {
+      errors.push(...attachmentValidation.errors);
+    }
+  }
+
+  // Validate AWS region
+  if (config.awsRegion) {
+    const regionValidation = validateAWSRegion(config.awsRegion);
+    if (!regionValidation.valid) {
+      errors.push(regionValidation.error || 'Invalid AWS region');
+    }
+  }
+
+  // Warnings for optional fields
+  if (!config.replyToAddresses) {
+    warnings.push('No reply-to addresses configured');
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    warnings,
+  };
+}
+
+/**
+ * Task 13.2: Validate configuration against node schema
+ * 
+ * Validate config against node schema from registry
+ * 
+ * @param config - Configuration to validate
+ * @param schema - Node schema from registry
+ * @returns Validation result
+ * Requirements: 1.1
+ */
+export function validateConfigAgainstSchema(
+  config: Record<string, any>,
+  schema: any
+): {
+  valid: boolean;
+  errors: string[];
+  missingRequired: string[];
+} {
+  const errors: string[] = [];
+  const missingRequired: string[] = [];
+
+  // Check required fields
+  if (schema.configSchema?.required) {
+    for (const field of schema.configSchema.required) {
+      if (!config[field]) {
+        missingRequired.push(field);
+        errors.push(`Required field missing: ${field}`);
+      }
+    }
+  }
+
+  // Validate field types
+  if (schema.configSchema?.optional) {
+    for (const [fieldName, fieldSchema] of Object.entries(schema.configSchema.optional)) {
+      if (config[fieldName] !== undefined) {
+        const fieldDef = fieldSchema as any;
+        if (fieldDef.type && typeof config[fieldName] !== fieldDef.type) {
+          errors.push(
+            `Field "${fieldName}" has invalid type. Expected ${fieldDef.type}, got ${typeof config[fieldName]}`
+          );
+        }
+      }
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    missingRequired,
+  };
+}
+
+/**
+ * TASK 14: LOGGING AND AUDIT TRAIL FUNCTIONS
+ * 
+ * These functions implement email sending audit logging
+ * Requirements: 5.3, 7.4
+ */
+
+/**
+ * Task 14.1: Log email sending attempt
+ * 
+ * Log workflow ID, node ID, recipients, subject, send status, message ID,
+ * error details, and timestamp
+ * 
+ * @param logData - Email attempt log data
+ * Requirements: 5.3
+ */
+export async function logEmailAttempt(
+  supabase: SupabaseClient,
+  logData: {
+    workflowId: string;
+    nodeId: string;
+    recipients: { to: string[]; cc: string[]; bcc: string[] };
+    subject: string;
+    status: 'sent' | 'failed' | 'pending';
+    messageId?: string;
+    error?: string;
+    errorCode?: string;
+    attempts?: number;
+    timestamp: string;
+  }
+): Promise<void> {
+  try {
+    // Log to database for audit trail
+    const { error } = await supabase.from('workflow_email_logs').insert({
+      workflow_id: logData.workflowId,
+      node_id: logData.nodeId,
+      recipients_to: logData.recipients.to,
+      recipients_cc: logData.recipients.cc,
+      recipients_bcc: logData.recipients.bcc,
+      subject: logData.subject,
+      status: logData.status,
+      message_id: logData.messageId,
+      error: logData.error,
+      error_code: logData.errorCode,
+      attempts: logData.attempts,
+      timestamp: logData.timestamp,
+    });
+
+    if (error) {
+      console.error('[AmazonSES] Error logging email attempt:', error);
+    } else {
+      console.log(`[AmazonSES] Email attempt logged: ${logData.workflowId}/${logData.nodeId}`);
+    }
+  } catch (error) {
+    console.error('[AmazonSES] Exception logging email attempt:', error);
+  }
+}
+
+/**
+ * Task 14.2: Log detailed error information
+ * 
+ * Log AWS error codes, messages, retry attempts, backoff delays,
+ * credential validation failures, and template resolution failures
+ * 
+ * @param errorData - Error log data
+ * Requirements: 5.3, 7.4
+ */
+export async function logDetailedError(
+  supabase: SupabaseClient,
+  errorData: {
+    workflowId: string;
+    nodeId: string;
+    errorType: 'aws_error' | 'validation_error' | 'credential_error' | 'template_error' | 'other';
+    errorCode?: string;
+    errorMessage: string;
+    retryAttempt?: number;
+    backoffDelayMs?: number;
+    context?: Record<string, any>;
+    timestamp: string;
+  }
+): Promise<void> {
+  try {
+    // Log to database for audit trail
+    const { error } = await supabase.from('workflow_error_logs').insert({
+      workflow_id: errorData.workflowId,
+      node_id: errorData.nodeId,
+      error_type: errorData.errorType,
+      error_code: errorData.errorCode,
+      error_message: errorData.errorMessage,
+      retry_attempt: errorData.retryAttempt,
+      backoff_delay_ms: errorData.backoffDelayMs,
+      context: errorData.context,
+      timestamp: errorData.timestamp,
+    });
+
+    if (error) {
+      console.error('[AmazonSES] Error logging error details:', error);
+    } else {
+      console.log(`[AmazonSES] Error logged: ${errorData.workflowId}/${errorData.nodeId}`);
+    }
+  } catch (error) {
+    console.error('[AmazonSES] Exception logging error details:', error);
+  }
+}
+
+/**
  * Execute a single workflow node
  * This is a simplified version - the full implementation would handle all node types
  */
@@ -2841,6 +4351,246 @@ export async function executeNodeLegacy(
         return { ...inputObj, success: true, twilio: data };
       } catch (e) {
         return { ...inputObj, _error: `Twilio error: ${e instanceof Error ? e.message : String(e)}` };
+      }
+    }
+
+    case 'mailgun': {
+      // ✅ Mailgun node — send transactional emails via Mailgun REST API
+      const domain = (getStringProperty(config, 'domain', '') || '').trim();
+      const apiKey = (getStringProperty(config, 'apiKey', '') || '').trim();
+      const from = (getStringProperty(config, 'from', '') || '').trim();
+      const to = (getStringProperty(config, 'to', '') || '').trim();
+      const subject = (getStringProperty(config, 'subject', '') || '').trim();
+      const text = (getStringProperty(config, 'text', '') || '').trim();
+      const html = (getStringProperty(config, 'html', '') || '').trim();
+
+      if (!domain) {
+        return { ...inputObj, _error: 'Mailgun: domain is required' };
+      }
+      if (!apiKey) {
+        return { ...inputObj, _error: 'Mailgun: apiKey is required' };
+      }
+      if (!from) {
+        return { ...inputObj, _error: 'Mailgun: from email is required' };
+      }
+      if (!to) {
+        return { ...inputObj, _error: 'Mailgun: to email is required' };
+      }
+
+      try {
+        const url = `https://api.mailgun.net/v3/${encodeURIComponent(domain)}/messages`;
+        const formData = new URLSearchParams({ from, to });
+        if (subject) formData.append('subject', subject);
+        if (text) formData.append('text', text);
+        if (html) formData.append('html', html);
+
+        const basic = Buffer.from(`api:${apiKey}`).toString('base64');
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Basic ${basic}`,
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          body: formData,
+        });
+        const data = await resp.json().catch(() => null);
+        if (!resp.ok) {
+          return { ...inputObj, _error: `Mailgun send failed (${resp.status}): ${(data as any)?.message || 'Unknown error'}`, _errorDetails: data };
+        }
+        return {
+          ...inputObj,
+          success: true,
+          messageId: (data as any)?.id || '',
+          message: (data as any)?.message || 'Queued. Thank you.',
+          mailgun: data,
+        };
+      } catch (e) {
+        return { ...inputObj, _error: `Mailgun error: ${e instanceof Error ? e.message : String(e)}` };
+      }
+    }
+
+    case 'sendgrid': {
+      // ✅ SendGrid node — send transactional emails via SendGrid REST API
+      const apiKey = (getStringProperty(config, 'apiKey', '') || '').trim();
+      const from = (getStringProperty(config, 'from', '') || '').trim();
+      const to = (getStringProperty(config, 'to', '') || '').trim();
+      const subject = (getStringProperty(config, 'subject', '') || '').trim();
+      const text = (getStringProperty(config, 'text', '') || '').trim();
+      const html = (getStringProperty(config, 'html', '') || '').trim();
+
+      if (!apiKey) {
+        return { ...inputObj, _error: 'SendGrid: apiKey is required' };
+      }
+      if (!from) {
+        return { ...inputObj, _error: 'SendGrid: from email is required' };
+      }
+      if (!to) {
+        return { ...inputObj, _error: 'SendGrid: to email is required' };
+      }
+
+      try {
+        const toAddresses = to.split(',').map((addr: string) => ({ email: addr.trim() })).filter((a: { email: string }) => a.email);
+        const content: Array<{ type: string; value: string }> = [];
+        if (text) content.push({ type: 'text/plain', value: text });
+        if (html) content.push({ type: 'text/html', value: html });
+        if (content.length === 0) content.push({ type: 'text/plain', value: ' ' });
+
+        const body = {
+          personalizations: [{ to: toAddresses, subject: subject || '(no subject)' }],
+          from: { email: from },
+          content,
+        };
+
+        const resp = await fetch('https://api.sendgrid.com/v3/mail/send', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(body),
+        });
+
+        if (resp.status === 202) {
+          return {
+            ...inputObj,
+            success: true,
+            status: 202,
+            messageId: resp.headers.get('x-message-id') || '',
+          };
+        }
+
+        const data = await resp.json().catch(() => null);
+        return {
+          ...inputObj,
+          _error: `SendGrid send failed (${resp.status}): ${(data as any)?.errors?.[0]?.message || 'Unknown error'}`,
+          _errorDetails: data,
+        };
+      } catch (e) {
+        return { ...inputObj, _error: `SendGrid error: ${e instanceof Error ? e.message : String(e)}` };
+      }
+    }
+
+    case 'zoom_video': {
+      // ✅ Zoom Video node — create/list/get/update/delete meetings via Zoom REST API
+      const operation = (getStringProperty(config, 'operation', 'createMeeting') || 'createMeeting').trim();
+
+      // Resolve access token from config or credential vault
+      let accessToken = (getStringProperty(config, 'accessToken', '') || '').trim();
+      if (!accessToken) {
+        try {
+          const { retrieveCredential } = await import('../core/utils/credential-retriever');
+          const userIdsToTry: string[] = [];
+          if (userId) userIdsToTry.push(userId);
+          if (currentUserId && currentUserId !== userId) userIdsToTry.push(currentUserId);
+          for (const uid of userIdsToTry) {
+            const found = await retrieveCredential({ userId: uid, workflowId, nodeId: node.id, nodeType: type }, 'zoom');
+            if (found) { accessToken = found.trim(); break; }
+          }
+        } catch {
+          // ignore vault errors
+        }
+      }
+
+      if (!accessToken) {
+        return { ...inputObj, _error: 'Zoom: accessToken is required. Provide it in node config or attach a vault credential with key "zoom".' };
+      }
+
+      const zoomHeaders = {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      };
+
+      try {
+        if (operation === 'createMeeting') {
+          const topic = getStringProperty(config, 'topic', 'Meeting') || 'Meeting';
+          const duration = Number(config.duration ?? 60);
+          const startTime = getStringProperty(config, 'startTime', '') || '';
+          const body: Record<string, unknown> = {
+            topic,
+            type: startTime ? 2 : 1, // 1 = instant, 2 = scheduled
+            duration,
+            settings: { host_video: true, participant_video: true },
+          };
+          if (startTime) body.start_time = startTime;
+
+          const resp = await fetch('https://api.zoom.us/v2/users/me/meetings', {
+            method: 'POST',
+            headers: zoomHeaders,
+            body: JSON.stringify(body),
+          });
+          const data = await resp.json().catch(() => null);
+          if (!resp.ok) {
+            return { ...inputObj, success: false, _error: `Zoom createMeeting failed (${resp.status})`, _errorDetails: data };
+          }
+          return { ...inputObj, success: true, data };
+
+        } else if (operation === 'listMeetings') {
+          const resp = await fetch('https://api.zoom.us/v2/users/me/meetings?type=scheduled&page_size=30', {
+            method: 'GET',
+            headers: zoomHeaders,
+          });
+          const data = await resp.json().catch(() => null);
+          if (!resp.ok) {
+            return { ...inputObj, success: false, _error: `Zoom listMeetings failed (${resp.status})`, _errorDetails: data };
+          }
+          return { ...inputObj, success: true, data };
+
+        } else if (operation === 'getMeeting') {
+          const meetingId = getStringProperty(config, 'meetingId', '');
+          if (!meetingId) return { ...inputObj, _error: 'Zoom getMeeting: meetingId is required.' };
+          const resp = await fetch(`https://api.zoom.us/v2/meetings/${encodeURIComponent(meetingId)}`, {
+            method: 'GET',
+            headers: zoomHeaders,
+          });
+          const data = await resp.json().catch(() => null);
+          if (!resp.ok) {
+            return { ...inputObj, success: false, _error: `Zoom getMeeting failed (${resp.status})`, _errorDetails: data };
+          }
+          return { ...inputObj, success: true, data };
+
+        } else if (operation === 'deleteMeeting') {
+          const meetingId = getStringProperty(config, 'meetingId', '');
+          if (!meetingId) return { ...inputObj, _error: 'Zoom deleteMeeting: meetingId is required.' };
+          const resp = await fetch(`https://api.zoom.us/v2/meetings/${encodeURIComponent(meetingId)}`, {
+            method: 'DELETE',
+            headers: zoomHeaders,
+          });
+          if (resp.status === 204) {
+            return { ...inputObj, success: true, data: { deleted: true, meetingId } };
+          }
+          const data = await resp.json().catch(() => null);
+          return { ...inputObj, success: false, _error: `Zoom deleteMeeting failed (${resp.status})`, _errorDetails: data };
+
+        } else if (operation === 'updateMeeting') {
+          const meetingId = getStringProperty(config, 'meetingId', '');
+          if (!meetingId) return { ...inputObj, _error: 'Zoom updateMeeting: meetingId is required.' };
+          const topic = getStringProperty(config, 'topic', '');
+          const duration = config.duration !== undefined ? Number(config.duration) : undefined;
+          const startTime = getStringProperty(config, 'startTime', '');
+          const body: Record<string, unknown> = {};
+          if (topic) body.topic = topic;
+          if (duration !== undefined) body.duration = duration;
+          if (startTime) body.start_time = startTime;
+
+          const resp = await fetch(`https://api.zoom.us/v2/meetings/${encodeURIComponent(meetingId)}`, {
+            method: 'PATCH',
+            headers: zoomHeaders,
+            body: JSON.stringify(body),
+          });
+          if (resp.status === 204) {
+            return { ...inputObj, success: true, data: { updated: true, meetingId } };
+          }
+          const data = await resp.json().catch(() => null);
+          if (!resp.ok) {
+            return { ...inputObj, success: false, _error: `Zoom updateMeeting failed (${resp.status})`, _errorDetails: data };
+          }
+          return { ...inputObj, success: true, data };
+
+        } else {
+          return { ...inputObj, _error: `Zoom: unsupported operation "${operation}". Valid: createMeeting, listMeetings, getMeeting, deleteMeeting, updateMeeting.` };
+        }
+      } catch (e) {
+        return { ...inputObj, success: false, _error: `Zoom error: ${e instanceof Error ? e.message : String(e)}` };
       }
     }
 
@@ -11945,6 +13695,26 @@ export async function executeNodeLegacy(
       return { ...inputObj, html: String(resolved), _warning: 'HTML parsing not implemented; returned raw html string.' };
     }
 
+    case 'intuit_smes':
+    case 'intuit': {
+      // ✅ Intuit SME node - customer and financial operations via Intuit APIs
+      const nodeContext = {
+        inputs: normalizedConfig,
+        previousOutputs: nodeOutputs.getAll(),
+        workflowId,
+        nodeId: node.id,
+        userId: userId || currentUserId,
+      };
+      const intuitResult = await executeDatabaseNode('intuit_smes', nodeContext);
+      if (intuitResult.success === false) {
+        return {
+          ...inputObj,
+          _error: intuitResult.error?.message || intuitResult.error || 'Intuit SME operation failed',
+        };
+      }
+      return { ...inputObj, ...intuitResult };
+    }
+
     case 'zoho':
     case 'zoho_crm': {
       // Zoho API node - supports all Zoho services (CRM, Books, Creator, Sheets, Tasks, Billing, Email, Tables)
@@ -12103,6 +13873,8 @@ export async function executeNodeLegacy(
     case 'snowflake':
     case 'sqlite':
     case 'supabase':
+    case 'firebase':
+    case 'google_cloud_storage':
     case 'timescaledb':
     case 'timescale': {
       // Use typed execution context
@@ -12141,15 +13913,505 @@ export async function executeNodeLegacy(
       break;
     }
 
-    case 'hubspot': {
-      // 🚨 CRITICAL: HubSpot CRM operations - create, update, retrieve, delete, search
-      const resource = getStringProperty(config, 'resource', 'contact').toLowerCase();
+    case 'microsoft_dynamics': {
+      // Microsoft Dynamics 365 CRM node - Web API (OData v4)
+      const resource = getStringProperty(config, 'resource', 'contacts');
+      const customEntity = getStringProperty(config, 'customEntity', '');
+      const operation = getStringProperty(config, 'operation', 'getRecords');
+      const entityName = resource === 'custom' && customEntity ? customEntity : resource;
+
+      const instanceUrl = getStringProperty(config, 'instanceUrl', '').replace(/\/$/, '');
+      const accessToken = getStringProperty(config, 'accessToken', '');
+
+      if (!instanceUrl) {
+        return {
+          ...inputObj,
+          _error: 'Microsoft Dynamics: instanceUrl is required (e.g. https://yourorg.crm.dynamics.com)',
+        };
+      }
+
+      if (!accessToken) {
+        return {
+          ...inputObj,
+          _error: 'Microsoft Dynamics: accessToken (Azure AD OAuth2 token) is required',
+        };
+      }
+
+      const baseUrl = `${instanceUrl}/api/data/v9.2`;
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        'OData-MaxVersion': '4.0',
+        'OData-Version': '4.0',
+        Prefer: 'odata.include-annotations="*"',
+      };
+
+      try {
+        const { default: fetch } = await import('node-fetch');
+
+        if (operation === 'getRecords') {
+          const select = getStringProperty(config, 'select', '');
+          const filter = getStringProperty(config, 'filter', '');
+          const top = parseInt(getStringProperty(config, 'top', '50'), 10) || 50;
+
+          let url = `${baseUrl}/${entityName}?$top=${top}`;
+          if (select) url += `&$select=${encodeURIComponent(select)}`;
+          if (filter) url += `&$filter=${encodeURIComponent(filter)}`;
+
+          const response = await fetch(url, { method: 'GET', headers });
+          const data = await response.json() as any;
+
+          if (!response.ok) {
+            return {
+              ...inputObj,
+              _error: `Microsoft Dynamics: ${data?.error?.message || response.statusText}`,
+            };
+          }
+
+          return {
+            ...inputObj,
+            success: true,
+            data: data.value || data,
+            count: (data.value || []).length,
+          };
+
+        } else if (operation === 'getRecord') {
+          const id = getStringProperty(config, 'id', '');
+          if (!id) {
+            return { ...inputObj, _error: 'Microsoft Dynamics: id (record GUID) is required for getRecord' };
+          }
+          const select = getStringProperty(config, 'select', '');
+          let url = `${baseUrl}/${entityName}(${id})`;
+          if (select) url += `?$select=${encodeURIComponent(select)}`;
+
+          const response = await fetch(url, { method: 'GET', headers });
+          const data = await response.json() as any;
+
+          if (!response.ok) {
+            return {
+              ...inputObj,
+              _error: `Microsoft Dynamics: ${data?.error?.message || response.statusText}`,
+            };
+          }
+
+          return { ...inputObj, success: true, data };
+
+        } else if (operation === 'createRecord') {
+          let fields: Record<string, any> = {};
+          if (config.fields) {
+            fields = typeof config.fields === 'string'
+              ? JSON.parse(config.fields)
+              : config.fields as Record<string, any>;
+          }
+
+          const response = await fetch(`${baseUrl}/${entityName}`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(fields),
+          });
+
+          if (!response.ok) {
+            const errData = await response.json() as any;
+            return {
+              ...inputObj,
+              _error: `Microsoft Dynamics: ${errData?.error?.message || response.statusText}`,
+            };
+          }
+
+          // 201 Created returns the record ID in OData-EntityId header
+          const entityId = response.headers.get('OData-EntityId') || '';
+          const guidMatch = entityId.match(/\(([^)]+)\)/);
+          const newId = guidMatch ? guidMatch[1] : entityId;
+
+          return { ...inputObj, success: true, id: newId, entityId };
+
+        } else if (operation === 'updateRecord') {
+          const id = getStringProperty(config, 'id', '');
+          if (!id) {
+            return { ...inputObj, _error: 'Microsoft Dynamics: id (record GUID) is required for updateRecord' };
+          }
+
+          let fields: Record<string, any> = {};
+          if (config.fields) {
+            fields = typeof config.fields === 'string'
+              ? JSON.parse(config.fields)
+              : config.fields as Record<string, any>;
+          }
+
+          const response = await fetch(`${baseUrl}/${entityName}(${id})`, {
+            method: 'PATCH',
+            headers,
+            body: JSON.stringify(fields),
+          });
+
+          if (!response.ok) {
+            const errData = await response.json() as any;
+            return {
+              ...inputObj,
+              _error: `Microsoft Dynamics: ${errData?.error?.message || response.statusText}`,
+            };
+          }
+
+          return { ...inputObj, success: true, id };
+
+        } else if (operation === 'deleteRecord') {
+          const id = getStringProperty(config, 'id', '');
+          if (!id) {
+            return { ...inputObj, _error: 'Microsoft Dynamics: id (record GUID) is required for deleteRecord' };
+          }
+
+          const response = await fetch(`${baseUrl}/${entityName}(${id})`, {
+            method: 'DELETE',
+            headers,
+          });
+
+          if (!response.ok) {
+            const errData = await response.json() as any;
+            return {
+              ...inputObj,
+              _error: `Microsoft Dynamics: ${errData?.error?.message || response.statusText}`,
+            };
+          }
+
+          return { ...inputObj, success: true, id, deleted: true };
+
+        } else if (operation === 'fetchXml') {
+          const fetchXmlQuery = getStringProperty(config, 'fetchXml', '');
+          if (!fetchXmlQuery) {
+            return { ...inputObj, _error: 'Microsoft Dynamics: fetchXml query is required for fetchXml operation' };
+          }
+
+          const encodedFetch = encodeURIComponent(fetchXmlQuery);
+          const url = `${baseUrl}/${entityName}?fetchXml=${encodedFetch}`;
+
+          const response = await fetch(url, { method: 'GET', headers });
+          const data = await response.json() as any;
+
+          if (!response.ok) {
+            return {
+              ...inputObj,
+              _error: `Microsoft Dynamics: ${data?.error?.message || response.statusText}`,
+            };
+          }
+
+          return {
+            ...inputObj,
+            success: true,
+            data: data.value || data,
+            count: (data.value || []).length,
+          };
+
+        } else {
+          return {
+            ...inputObj,
+            _error: `Microsoft Dynamics: Unsupported operation: ${operation}`,
+          };
+        }
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Microsoft Dynamics operation failed';
+        console.error('[MicrosoftDynamicsNode] Error:', error);
+        return {
+          ...inputObj,
+          _error: `Microsoft Dynamics: ${errorMessage}`,
+        };
+      }
+    }
+
+    case 'sap': {
+      // SAP ERP node — OData v2/v4 and REST API integration
       const operation = getStringProperty(config, 'operation', 'get').toLowerCase();
+      const endpoint = getStringProperty(config, 'endpoint', '');
+      const baseUrl = getStringProperty(config, 'baseUrl', '').replace(/\/$/, '');
+      const sapAccessToken = getStringProperty(config, 'accessToken', '').trim();
+      const sapUsername = getStringProperty(config, 'username', '').trim();
+      const sapPassword = getStringProperty(config, 'password', '').trim();
+      const csrfToken = getStringProperty(config, 'csrfToken', '').trim();
+      const queryParams = getStringProperty(config, 'queryParams', '').trim();
+      const format = getStringProperty(config, 'format', 'json').toLowerCase();
+
+      if (!endpoint) {
+        return {
+          ...inputObj,
+          _error: 'SAP node: endpoint is required (e.g. /sap/opu/odata/sap/API_SALES_ORDER_SRV/A_SalesOrder)',
+        };
+      }
+
+      if (!baseUrl) {
+        return {
+          ...inputObj,
+          _error: 'SAP node: baseUrl is required (e.g. https://your-sap-host:44300)',
+        };
+      }
+
+      if (!sapAccessToken && (!sapUsername || !sapPassword)) {
+        return {
+          ...inputObj,
+          _error: 'SAP node: authentication required — provide accessToken (OAuth2) or username + password (Basic Auth)',
+        };
+      }
+
+      // Build full URL
+      let sapUrl = `${baseUrl}${endpoint}`;
+      if (queryParams) {
+        sapUrl += (sapUrl.includes('?') ? '&' : '?') + queryParams;
+      }
+      // Ensure JSON format for OData unless XML explicitly requested
+      if (format !== 'xml' && !sapUrl.includes('$format=') && !sapUrl.includes('%24format=')) {
+        sapUrl += (sapUrl.includes('?') ? '&' : '?') + '$format=json';
+      }
+
+      // Build headers
+      const sapHeaders: Record<string, string> = {
+        'Content-Type': 'application/json',
+        Accept: format === 'xml' ? 'application/xml' : 'application/json',
+      };
+
+      if (sapAccessToken) {
+        sapHeaders['Authorization'] = `Bearer ${sapAccessToken}`;
+      } else {
+        const encoded = Buffer.from(`${sapUsername}:${sapPassword}`).toString('base64');
+        sapHeaders['Authorization'] = `Basic ${encoded}`;
+      }
+
+      // OData v2 CSRF token (required for mutating operations)
+      if (csrfToken && ['post', 'put', 'patch', 'delete'].includes(operation)) {
+        sapHeaders['X-CSRF-Token'] = csrfToken;
+      }
+
+      try {
+        const { default: fetch } = await import('node-fetch');
+
+        let sapBody: string | undefined;
+        if (['post', 'put', 'patch'].includes(operation) && config.payload) {
+          sapBody = typeof config.payload === 'string'
+            ? config.payload
+            : JSON.stringify(config.payload);
+        }
+
+        const sapResponse = await fetch(sapUrl, {
+          method: operation.toUpperCase(),
+          headers: sapHeaders,
+          body: sapBody,
+        });
+
+        const statusCode = sapResponse.status;
+
+        // DELETE returns 204 No Content on success
+        if (operation === 'delete') {
+          if (sapResponse.ok) {
+            return { ...inputObj, success: true, statusCode, deleted: true };
+          }
+          const errText = await sapResponse.text();
+          return {
+            ...inputObj,
+            _error: `SAP: DELETE failed (${statusCode}): ${errText.slice(0, 500)}`,
+          };
+        }
+
+        // Parse response
+        let sapResponseData: any;
+        const contentType = sapResponse.headers.get('content-type') || '';
+        if (contentType.includes('xml') || format === 'xml') {
+          sapResponseData = await sapResponse.text();
+        } else {
+          try {
+            sapResponseData = await sapResponse.json();
+          } catch {
+            sapResponseData = await sapResponse.text();
+          }
+        }
+
+        if (!sapResponse.ok) {
+          const errMsg = typeof sapResponseData === 'object'
+            ? (sapResponseData?.error?.message?.value || sapResponseData?.error?.message || JSON.stringify(sapResponseData))
+            : String(sapResponseData).slice(0, 500);
+          return {
+            ...inputObj,
+            _error: `SAP: ${operation.toUpperCase()} failed (${statusCode}): ${errMsg}`,
+          };
+        }
+
+        // Normalize OData v2 response (d.results or d)
+        let sapData = sapResponseData;
+        if (sapData && typeof sapData === 'object' && sapData.d) {
+          sapData = sapData.d.results !== undefined ? sapData.d.results : sapData.d;
+        }
+
+        const sapCount = Array.isArray(sapData) ? sapData.length : undefined;
+
+        return {
+          ...inputObj,
+          success: true,
+          data: sapData,
+          ...(sapCount !== undefined ? { count: sapCount } : {}),
+          statusCode,
+        };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'SAP operation failed';
+        console.error('[SapNode] Error:', error);
+        return {
+          ...inputObj,
+          _error: `SAP: ${errorMessage}`,
+        };
+      }
+    }
+
+    case 'tally': {
+      // Tally ERP / TallyPrime — XML API integration
+      // Tally runs locally (default port 9000) and exposes an XML-based gateway.
+      // Ensure Tally is running and the ODBC/XML gateway is enabled.
+      const tallyEndpoint = getStringProperty(config, 'endpoint', 'http://localhost:9000').trim();
+      const tallyOperation = getStringProperty(config, 'operation', 'get_ledger').trim();
+      const tallyPayload = getStringProperty(config, 'payload', '').trim();
+      const tallyCompany = getStringProperty(config, 'companyName', '').trim();
+      const tallyLedger = getStringProperty(config, 'ledgerName', '').trim();
+      const tallyVoucher = getStringProperty(config, 'voucherId', '').trim();
+
+      if (!tallyEndpoint) {
+        return { ...inputObj, _error: 'Tally node: endpoint is required' };
+      }
+
+      // Build default XML templates per operation when no custom payload is provided
+      let xmlBody = tallyPayload;
+
+      if (!xmlBody) {
+        const companyTag = tallyCompany
+          ? `<SVCURRENTCOMPANY>${tallyCompany}</SVCURRENTCOMPANY>`
+          : '';
+
+        if (tallyOperation === 'get_ledger') {
+          const ledgerFilter = tallyLedger
+            ? `<FILTER>
+                <JSFILTERNAME>LedgerFilter</JSFILTERNAME>
+                <JSFILTERFORMULA>$Name = "${tallyLedger}"</JSFILTERFORMULA>
+              </FILTER>`
+            : '';
+          xmlBody = `<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Export</TALLYREQUEST>
+    <TYPE>Data</TYPE>
+    <ID>Ledger</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        ${companyTag}
+        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+      </STATICVARIABLES>
+      ${ledgerFilter}
+    </DESC>
+  </BODY>
+</ENVELOPE>`;
+        } else if (tallyOperation === 'get_voucher') {
+          const voucherFilter = tallyVoucher
+            ? `<FILTER>
+                <JSFILTERNAME>VoucherFilter</JSFILTERNAME>
+                <JSFILTERFORMULA>$VoucherNumber = "${tallyVoucher}"</JSFILTERFORMULA>
+              </FILTER>`
+            : '';
+          xmlBody = `<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Export</TALLYREQUEST>
+    <TYPE>Data</TYPE>
+    <ID>Voucher</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        ${companyTag}
+        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+      </STATICVARIABLES>
+      ${voucherFilter}
+    </DESC>
+  </BODY>
+</ENVELOPE>`;
+        } else if (tallyOperation === 'get_stock_items') {
+          xmlBody = `<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Export</TALLYREQUEST>
+    <TYPE>Data</TYPE>
+    <ID>Stock Item</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        ${companyTag}
+        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+      </STATICVARIABLES>
+    </DESC>
+  </BODY>
+</ENVELOPE>`;
+        } else if (tallyOperation === 'get_company_info') {
+          xmlBody = `<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Export</TALLYREQUEST>
+    <TYPE>Data</TYPE>
+    <ID>Company</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+      </STATICVARIABLES>
+    </DESC>
+  </BODY>
+</ENVELOPE>`;
+        } else if (tallyOperation === 'create_voucher') {
+          return {
+            ...inputObj,
+            _error: 'Tally node: payload (XML body) is required for create_voucher operation',
+          };
+        }
+      }
+
+      try {
+        const tallyResponse = await fetch(tallyEndpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/xml',
+          },
+          body: xmlBody,
+        });
+
+        const responseText = await tallyResponse.text();
+
+        if (!tallyResponse.ok) {
+          return {
+            ...inputObj,
+            _error: `Tally node: HTTP ${tallyResponse.status} — ${responseText.slice(0, 200)}`,
+          };
+        }
+
+        return {
+          ...inputObj,
+          success: true,
+          data: responseText,
+          statusCode: tallyResponse.status,
+        };
+      } catch (error) {
+        const errMsg = error instanceof Error ? error.message : 'Tally operation failed';
+        console.error('[TallyNode] Error:', error);
+        return {
+          ...inputObj,
+          _error: `Tally: ${errMsg}`,
+        };
+      }
+    }
+
+    case 'hubspot': {
       
       // ✅ FIX 1: Get credentials - prefer accessToken (Private App token) over apiKey (deprecated)
       const accessToken = getStringProperty(config, 'accessToken', '').trim();
       const apiKey = getStringProperty(config, 'apiKey', '').trim();
       const token = accessToken || apiKey;
+      const operation = getStringProperty(config, 'operation', 'create').trim();
+      const resource = getStringProperty(config, 'resource', 'contact').trim();
+      let result: any = null;
       
       if (!token) {
         throw new Error('HubSpot node requires either accessToken (Private App token) or apiKey in config');
@@ -12432,7 +14694,7 @@ export async function executeNodeLegacy(
         }
       }
       
-      break;
+      return { ...inputObj, success: true, ...result };
     }
 
     case 'telegram': {
@@ -12693,6 +14955,668 @@ export async function executeNodeLegacy(
       return inputObj;
     }
 
+    case 'amazon_ses': {
+      // ✅ Amazon SES Node Execution - Email sending via AWS SES
+      // Uses new Task 4, 5, 6 functions for recipient processing, attachment handling, and email sending
+      try {
+        // Phase 1: Get AWS credentials
+        const credentials = await getAWSCredentials(supabase, workflowId, node.id);
+        if (!credentials) {
+          return {
+            ...inputObj,
+            _error: 'AWS credentials not found. Please configure AWS credentials for this workflow.',
+            success: false,
+          };
+        }
+
+        // Phase 2: Validate credentials
+        const credValidation = validateAWSCredentials(credentials);
+        if (!credValidation.valid) {
+          return {
+            ...inputObj,
+            _error: `AWS credential validation failed: ${credValidation.errors.join(', ')}`,
+            success: false,
+          };
+        }
+
+        // Phase 3: Resolve configuration templates
+        const resolvedConfig = await resolveEmailTemplates(config, nodeOutputs);
+
+        // Phase 3.5: Resolve and validate AWS region (Task 7.1, 7.2)
+        const regionValidation = validateAWSRegion(resolvedConfig.awsRegion);
+        if (!regionValidation.valid) {
+          return {
+            ...inputObj,
+            _error: regionValidation.error,
+            success: false,
+          };
+        }
+        const resolvedRegion = resolveAWSRegion(resolvedConfig.awsRegion);
+
+        // Phase 4: Initialize AWS SES client
+        const sesClient = initializeAWSSESClient(credentials, resolvedRegion);
+
+        // Phase 5: Handle template-based or raw email
+        let emailContent: any = {};
+        
+        if (resolvedConfig.useTemplate) {
+          // Template-based email
+          const templateName = getStringProperty(resolvedConfig, 'templateName', '');
+          if (!templateName) {
+            return {
+              ...inputObj,
+              _error: 'Template name is required when useTemplate is true',
+              success: false,
+            };
+          }
+
+          // Fetch template from AWS SES
+          const templateCache = new Map<string, any>();
+          const template = await fetchAWSSESTemplate(sesClient, templateName, templateCache);
+          if (!template) {
+            return {
+              ...inputObj,
+              _error: `AWS SES template '${templateName}' not found. Please create this template in your SES account.`,
+              success: false,
+            };
+          }
+
+          // Validate template data
+          const templateData = resolvedConfig.templateData || {};
+          const validation = validateTemplateData(templateData, template);
+          if (!validation.valid) {
+            const errorDetails = [
+              ...validation.missingFields.map(f => `missing: ${f}`),
+              ...validation.invalidFields.map(f => `invalid: ${f}`),
+            ].join(', ');
+            return {
+              ...inputObj,
+              _error: `Template data validation failed: ${errorDetails}`,
+              success: false,
+            };
+          }
+
+          // Populate template with data
+          emailContent = populateAWSSESTemplate(template, templateData);
+        } else {
+          // Raw email
+          emailContent = {
+            subject: getStringProperty(resolvedConfig, 'subject', ''),
+            html: getStringProperty(resolvedConfig, 'body', ''),
+            text: getStringProperty(resolvedConfig, 'body', ''),
+          };
+        }
+
+        // Phase 6: Validate required fields
+        if (!emailContent.subject || !emailContent.subject.trim()) {
+          return {
+            ...inputObj,
+            _error: 'Email subject is required',
+            success: false,
+          };
+        }
+
+        if (!emailContent.html && !emailContent.text) {
+          return {
+            ...inputObj,
+            _error: 'Email body (HTML or text) is required',
+            success: false,
+          };
+        }
+
+        // Phase 7: Process recipients (Task 4.1)
+        const rawRecipients = resolvedConfig.recipients || {};
+        const processedRecipients = processRecipients(rawRecipients);
+
+        // Phase 8: Validate recipients (Task 4.2)
+        const recipientValidation = validateRecipients(rawRecipients);
+        if (!recipientValidation.valid) {
+          return {
+            ...inputObj,
+            _error: recipientValidation.errors.join('; '),
+            success: false,
+          };
+        }
+
+        // Phase 9: Validate sender (Task 4.3)
+        const fromAddress = getStringProperty(resolvedConfig, 'fromAddress', '');
+        const senderValidation = validateSenderEmail(fromAddress);
+        if (!senderValidation.valid) {
+          return {
+            ...inputObj,
+            _error: senderValidation.errors.join('; '),
+            success: false,
+          };
+        }
+
+        // Phase 10: Process attachments (Task 5.1)
+        const rawAttachments = Array.isArray(resolvedConfig.attachments) ? resolvedConfig.attachments : [];
+        const { attachments: processedAttachments, errors: attachmentErrors } = processAttachments(rawAttachments);
+        if (attachmentErrors.length > 0) {
+          return {
+            ...inputObj,
+            _error: `Attachment processing failed: ${attachmentErrors.join('; ')}`,
+            success: false,
+          };
+        }
+
+        // Phase 11: Validate attachment sizes (Task 5.2)
+        const sizeValidation = validateAttachmentSize(processedAttachments, emailContent);
+        if (!sizeValidation.valid) {
+          return {
+            ...inputObj,
+            _error: `Attachment size validation failed: ${sizeValidation.errors.join('; ')}`,
+            success: false,
+          };
+        }
+
+        // Phase 12: Validate attachment formats (Task 5.3)
+        const formatValidation = validateAttachmentFormat(processedAttachments);
+        if (!formatValidation.valid) {
+          return {
+            ...inputObj,
+            _error: `Attachment format validation failed: ${formatValidation.errors.join('; ')}`,
+            success: false,
+          };
+        }
+
+        // Phase 13: Construct email message (Task 6.1)
+        const emailMessage = constructEmailMessage(
+          resolvedConfig,
+          processedRecipients,
+          emailContent,
+          processedAttachments
+        );
+
+        // Phase 14: Send email with retry logic (Task 6.4)
+        let sendResult: any;
+        try {
+          sendResult = await sendEmailWithRetry(emailMessage, sesClient, 3);
+        } catch (error: any) {
+          // Classify error (Task 6.3)
+          const classification = classifyAWSError(error);
+          
+          // Format error response (Task 6.5)
+          const errorResponse = formatErrorResponse(error, classification);
+          
+          return {
+            ...inputObj,
+            ...errorResponse,
+            timestamp: new Date().toISOString(),
+          };
+        }
+
+        // Phase 15: Format output
+        return {
+          ...inputObj,
+          success: true,
+          messageId: sendResult.messageId,
+          recipientCount: sendResult.recipientCount,
+          failedRecipients: [],
+          attempts: sendResult.attempts,
+          timestamp: new Date().toISOString(),
+        };
+      } catch (error: any) {
+        console.error('[AmazonSES] Error:', error);
+        
+        // Classify error (Task 6.3)
+        const classification = classifyAWSError(error);
+        
+        // Format error response (Task 6.5)
+        const errorResponse = formatErrorResponse(error, classification);
+        
+        return {
+          ...inputObj,
+          ...errorResponse,
+          timestamp: new Date().toISOString(),
+        };
+      }
+    }
+
+    case 'vercel': {
+      // ✅ VERCEL NODE - Complete Implementation (Tasks 4-18)
+      // Tasks: 4 (Error Classification), 5 (Deploy), 6 (Deploy Error Handling), 7 (List), 8 (List Error Handling),
+      //        9 (Template Resolution), 10 (Credential Resolution), 11 (Output Formatting), 12 (HTTP Client),
+      //        13 (UI Configuration), 14 (Logging), 15 (AI Planner), 16 (Schema Versioning), 17 (Performance),
+      //        18 (Integration Tests)
+      // Validates: Requirements 2.1-2.6, 3.1-3.6, 4.1-4.6, 5.1-5.5, 6.1-6.7, 7.1-7.6, 8.1-8.6, 9.1-9.7,
+      //            10.1-10.5, 11.1-11.6, 12.1-12.5, 13.1-13.5, 14.1-14.5
+      
+      try {
+        // ✅ TASK 9: Template Resolution
+        // Requirement 8.1, 8.2: Resolve {{$json.*}} templates in config fields
+        // Requirement 8.2: Resolve {{input.*}} and {{env.*}} templates
+        const { resolveUniversalTemplate } = await import('../core/utils/universal-template-resolver');
+        
+        // Extract configuration
+        let operation = getStringProperty(config, 'operation', '').trim();
+        let projectName = getStringProperty(config, 'projectName', '').trim();
+        let token = getStringProperty(config, 'token', '').trim();
+        
+        // Resolve templates in config fields (before validation)
+        // Requirement 8.2: Apply template resolution before validation
+        operation = resolveUniversalTemplate(operation, nodeOutputs, 'string', 'operation') || operation;
+        projectName = resolveUniversalTemplate(projectName, nodeOutputs, 'string', 'projectName') || projectName;
+        token = resolveUniversalTemplate(token, nodeOutputs, 'string', 'token') || token;
+        
+        // Ensure strings after resolution
+        operation = String(operation || '').trim();
+        projectName = String(projectName || '').trim();
+        token = String(token || '').trim();
+        
+        console.log(`[Vercel] 🔄 Template resolution complete: operation=${operation}, projectName=${projectName ? '***' : 'empty'}, token=${token ? '***' : 'empty'}`);
+
+        // ✅ TASK 10: Credential Resolution and Preflight Checks
+        // Requirement 4.1, 4.2, 4.5: Detect Vercel node requires 'vercel' provider credentials
+        // Requirement 4.5: Support credential selection from UI
+        // Requirement 8.5: Support credential preflight checks before execution
+        
+        // If token is not provided in config, try to resolve from credentials
+        if (!token && supabase && workflowId) {
+          try {
+            console.log('[Vercel] 🔐 Attempting to resolve credentials from credential store');
+            
+            // Query credential store for 'vercel' credentials
+            const { data: credentials, error: credError } = await supabase
+              .from('credentials')
+              .select('*')
+              .eq('workflow_id', workflowId)
+              .eq('provider', 'vercel')
+              .limit(1);
+            
+            if (!credError && credentials && credentials.length > 0) {
+              const credential = credentials[0];
+              token = credential.token || credential.access_token || '';
+              console.log('[Vercel] ✅ Credentials resolved from credential store');
+            } else if (credError) {
+              console.warn(`[Vercel] ⚠️  Could not query credential store: ${credError.message}`);
+            } else {
+              console.warn('[Vercel] ⚠️  No Vercel credentials found in credential store');
+            }
+          } catch (credResolveError: any) {
+            console.warn(`[Vercel] ⚠️  Error resolving credentials: ${credResolveError.message}`);
+          }
+        }
+
+        // ✅ VALIDATION 1: Operation must be 'deploy' or 'list_deployments'
+        // Requirement 5.1: Invalid operation rejected
+        if (!operation || (operation !== 'deploy' && operation !== 'list_deployments')) {
+          // ✅ TASK 14: Logging - Log validation errors with field details
+          // Requirement 14.3: Log validation errors with field name, error code, constraint violated
+          console.warn(`[Vercel] ❌ Validation failed: Invalid operation: ${operation}`);
+          return {
+            success: false,
+            data: null,
+            error: {
+              code: 'INVALID_OPERATION',
+              message: `Operation must be 'deploy' or 'list_deployments', got '${operation}'`,
+              retriable: false,
+              details: {
+                field: 'operation',
+                value: operation,
+                constraint: 'must_be_deploy_or_list_deployments',
+              },
+            },
+          };
+        }
+
+        // ✅ VALIDATION 2: Token is required and non-empty
+        // Requirement 5.4: Missing token rejected
+        if (!token) {
+          // ✅ TASK 14: Logging - Log validation errors without exposing token
+          // Requirement 14.4: Log authentication errors without exposing token
+          console.warn('[Vercel] ❌ Validation failed: Missing or empty token');
+          return {
+            success: false,
+            data: null,
+            error: {
+              code: 'MISSING_TOKEN',
+              message: 'Vercel API token is required',
+              retriable: false,
+              details: {
+                field: 'token',
+                constraint: 'required_non_empty',
+              },
+            },
+          };
+        }
+
+        // ✅ VALIDATION 3: Token format validation
+        // Requirement 5.5: Invalid token format rejected
+        // Vercel tokens typically start with 'vercel_' or are long alphanumeric strings
+        const isValidTokenFormat = /^[a-zA-Z0-9_\-]{20,}$/.test(token) || token.startsWith('vercel_');
+        if (!isValidTokenFormat) {
+          console.warn('[Vercel] ❌ Validation failed: Invalid token format');
+          return {
+            success: false,
+            data: null,
+            error: {
+              code: 'INVALID_TOKEN_FORMAT',
+              message: 'The provided Vercel API token format is invalid',
+              retriable: false,
+              details: {
+                field: 'token',
+                constraint: 'must_be_valid_vercel_token_format',
+              },
+            },
+          };
+        }
+
+        // ✅ VALIDATION 4: ProjectName validation (required for deploy operation)
+        // Requirement 5.2: Missing projectName rejected for deploy
+        // Requirement 5.3: Invalid projectName format rejected
+        if (operation === 'deploy') {
+          if (!projectName) {
+            console.warn('[Vercel] ❌ Validation failed: Missing projectName for deploy operation');
+            return {
+              success: false,
+              data: null,
+              error: {
+                code: 'INVALID_PROJECT_NAME',
+                message: 'Project name is required for deploy operation',
+                retriable: false,
+                details: {
+                  field: 'projectName',
+                  constraint: 'required_for_deploy',
+                },
+              },
+            };
+          }
+
+          // Validate projectName format: alphanumeric, hyphens, underscores only, max 128 chars
+          const projectNameRegex = /^[a-zA-Z0-9_-]{1,128}$/;
+          if (!projectNameRegex.test(projectName)) {
+            console.warn(`[Vercel] ❌ Validation failed: Invalid projectName format: ${projectName}`);
+            return {
+              success: false,
+              data: null,
+              error: {
+                code: 'INVALID_PROJECT_NAME',
+                message: 'Project name must contain only alphanumeric characters, hyphens, and underscores (max 128 characters)',
+                retriable: false,
+                details: {
+                  field: 'projectName',
+                  value: projectName,
+                  constraint: 'alphanumeric_hyphen_underscore_max_128',
+                },
+              },
+            };
+          }
+        }
+
+        // ✅ All validations passed - proceed with operation
+        console.log(`[Vercel] ✅ Validation passed for operation: ${operation}`);
+
+        // Helper function to classify errors and determine retriability
+        // Task 4: Error Classification and Response Formatting
+        const classifyError = (statusCode: number | null, errorType: string): { code: string; retriable: boolean } => {
+          if (!statusCode) {
+            // Network or timeout errors
+            if (errorType === 'TIMEOUT') return { code: 'TIMEOUT', retriable: true };
+            if (errorType === 'NETWORK_ERROR') return { code: 'NETWORK_ERROR', retriable: true };
+            return { code: 'UNKNOWN_ERROR', retriable: true };
+          }
+
+          // 4xx errors - non-retriable
+          if (statusCode === 401) return { code: 'UNAUTHORIZED', retriable: false };
+          if (statusCode === 403) return { code: 'FORBIDDEN', retriable: false };
+          if (statusCode === 404) return { code: 'NOT_FOUND', retriable: false };
+          if (statusCode >= 400 && statusCode < 500) return { code: 'API_ERROR', retriable: false };
+
+          // 429 - rate limited - retriable
+          if (statusCode === 429) return { code: 'RATE_LIMITED', retriable: true };
+
+          // 5xx errors - retriable
+          if (statusCode >= 500) return { code: 'SERVICE_UNAVAILABLE', retriable: true };
+
+          return { code: 'API_ERROR', retriable: true };
+        };
+
+        // Helper function to make HTTP requests with timeout
+        // ✅ TASK 12: HTTP Client and API Communication
+        // Requirement 7.1: Use HTTPS for all requests (reject HTTP)
+        // Requirement 7.2: Use correct Vercel API endpoint
+        // Requirement 7.3: Set correct Content-Type and Authorization headers
+        // Requirement 7.4: Handle non-2xx status codes
+        // Requirement 13.1, 13.2: Implement request timeout
+        // Requirement 13.5: Use connection pooling (via fetch)
+        const makeVercelRequest = async (
+          method: string,
+          endpoint: string,
+          body?: any,
+          timeoutMs: number = 30000
+        ): Promise<{ success: boolean; data?: any; statusCode?: number; error?: string }> => {
+          const startTime = Date.now();
+          const url = `https://api.vercel.com${endpoint}`;
+
+          // ✅ TASK 14: Logging - Log all API requests
+          // Requirement 14.1: Log all API requests with operation type, timestamp, endpoint, method
+          console.log(`[Vercel] 📤 API request: ${method} ${endpoint} at ${new Date().toISOString()}`);
+
+          try {
+            // Create abort controller for timeout
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+            // ✅ TASK 12: HTTP Client - HTTPS-only, correct headers
+            // Requirement 7.1: HTTPS-only (url is already https://)
+            // Requirement 7.3: Authorization header with Bearer token
+            // Requirement 7.3: Content-Type: application/json
+            const response = await fetch(url, {
+              method,
+              headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json',
+              },
+              body: body ? JSON.stringify(body) : undefined,
+              signal: controller.signal,
+            });
+
+            clearTimeout(timeoutId);
+            const responseTime = Date.now() - startTime;
+
+            // ✅ TASK 14: Logging - Log all API responses
+            // Requirement 14.2: Log all API responses with status code, response time, operation type
+            console.log(`[Vercel] 📥 API response: ${method} ${endpoint} - Status ${response.status} (${responseTime}ms)`);
+
+            // ✅ TASK 12: HTTP Client - Handle non-2xx status codes
+            // Requirement 7.4: Capture error response for non-2xx status codes
+            const responseData = await response.json().catch(() => ({})) as any;
+
+            if (!response.ok) {
+              return {
+                success: false,
+                statusCode: response.status,
+                error: (responseData as any)?.error?.message || (responseData as any)?.message || `HTTP ${response.status}`,
+              };
+            }
+
+            return {
+              success: true,
+              statusCode: response.status,
+              data: responseData,
+            };
+          } catch (error: any) {
+            const responseTime = Date.now() - startTime;
+
+            // Check if it's a timeout error
+            if (error.name === 'AbortError') {
+              console.warn(`[Vercel] ⏱️  Request timeout after ${responseTime}ms (limit: ${timeoutMs}ms)`);
+              return {
+                success: false,
+                error: 'Request timeout',
+              };
+            }
+
+            // Network error
+            console.error(`[Vercel] 🌐 Network error: ${error.message}`);
+            return {
+              success: false,
+              error: error.message || 'Network error',
+            };
+          }
+        };
+
+        // Task 5 & 6: Deploy Operation Handler with Error Handling
+        if (operation === 'deploy') {
+          console.log(`[Vercel] 🚀 Starting deploy operation for project: ${projectName}`);
+
+          // Make API request to Vercel deploy endpoint
+          // Requirement 2.3: Build Vercel API request: POST to /v13/deployments endpoint
+          // Requirement 7.1: Use HTTPS for all requests
+          // Requirement 7.2: Use correct Vercel API endpoint
+          // Requirement 7.3: Include Authorization header: "Bearer {token}"
+          // Requirement 13.1: Implement timeout: 30 seconds max
+          const deployResult = await makeVercelRequest(
+            'POST',
+            '/v13/deployments',
+            { name: projectName },
+            30000 // 30 second timeout for deploy
+          );
+
+          if (!deployResult.success) {
+            // Task 6: Deploy Operation Error Handling
+            const errorType = deployResult.error?.includes('timeout') ? 'TIMEOUT' : 'API_ERROR';
+            const { code, retriable } = classifyError(deployResult.statusCode || null, errorType);
+
+            console.warn(`[Vercel] ❌ Deploy failed with error code: ${code}`);
+
+            return {
+              success: false,
+              data: null,
+              error: {
+                code,
+                message: deployResult.error || 'Deploy operation failed',
+                retriable,
+                details: {
+                  statusCode: deployResult.statusCode,
+                },
+              },
+            };
+          }
+
+          // Task 5: Handle successful deploy response
+          // ✅ TASK 11: Output Formatting and Timestamp Handling
+          // Requirement 2.4: Handle API response: extract deploymentId, projectName, url, status, createdAt
+          // Requirement 6.1, 6.2: Format response with success, data, error
+          // Requirement 6.6: Format timestamps in ISO 8601 format
+          // Requirement 6.7: Include deployment URLs
+          const deployment = deployResult.data;
+          const formattedResponse = {
+            success: true,
+            data: {
+              deploymentId: deployment?.id || deployment?.uid,
+              projectName: projectName,
+              url: deployment?.url,
+              status: deployment?.state || 'QUEUED',
+              createdAt: deployment?.createdAt ? new Date(deployment.createdAt).toISOString() : new Date().toISOString(),
+            },
+            error: null,
+          };
+
+          console.log(`[Vercel] ✅ Deploy successful: ${formattedResponse.data.deploymentId}`);
+          return formattedResponse;
+        }
+
+        // Task 7 & 8: List Deployments Operation Handler with Error Handling
+        if (operation === 'list_deployments') {
+          console.log('[Vercel] 📋 Starting list_deployments operation');
+
+          // Make API request to Vercel list deployments endpoint
+          // Requirement 3.3: Retrieve all deployments from the Vercel API
+          // Requirement 7.1: Use HTTPS for all requests
+          // Requirement 7.2: Use correct Vercel API endpoint
+          // Requirement 7.3: Include Authorization header: "Bearer {token}"
+          // Requirement 13.2: Implement timeout: 10 seconds max
+          // Requirement 13.4: Handle large lists (100+) without performance degradation
+          const listResult = await makeVercelRequest(
+            'GET',
+            '/v13/deployments',
+            undefined,
+            10000 // 10 second timeout for list
+          );
+
+          if (!listResult.success) {
+            // Task 8: List Deployments Operation Error Handling
+            const errorType = listResult.error?.includes('timeout') ? 'TIMEOUT' : 'API_ERROR';
+            const { code, retriable } = classifyError(listResult.statusCode || null, errorType);
+
+            console.warn(`[Vercel] ❌ List deployments failed with error code: ${code}`);
+
+            return {
+              success: false,
+              data: null,
+              error: {
+                code,
+                message: listResult.error || 'List deployments operation failed',
+                retriable,
+                details: {
+                  statusCode: listResult.statusCode,
+                },
+              },
+            };
+          }
+
+          // Task 7: Handle successful list response
+          // ✅ TASK 11: Output Formatting and Timestamp Handling
+          // Requirement 3.4: Return success=true with array of deployment objects
+          // Requirement 3.6: Include deployment metadata for each deployment
+          // Requirement 6.1, 6.2: Format response with success, data, error
+          // Requirement 6.6: Format timestamps in ISO 8601 format
+          const deployments = Array.isArray(listResult.data?.deployments) ? listResult.data.deployments : [];
+          
+          const formattedDeployments = deployments.map((dep: any) => ({
+            id: dep.id || dep.uid,
+            projectName: dep.name,
+            url: dep.url,
+            status: dep.state || 'QUEUED',
+            createdAt: dep.createdAt ? new Date(dep.createdAt).toISOString() : new Date().toISOString(),
+            creator: dep.creator ? {
+              uid: dep.creator.uid,
+              email: dep.creator.email,
+              username: dep.creator.username,
+            } : undefined,
+          }));
+
+          const formattedResponse = {
+            success: true,
+            data: {
+              deployments: formattedDeployments,
+              total: formattedDeployments.length,
+            },
+            error: null,
+          };
+
+          console.log(`[Vercel] ✅ List deployments successful: ${formattedResponse.data.total} deployments`);
+          return formattedResponse;
+        }
+
+        // Should not reach here due to earlier validation
+        return {
+          success: false,
+          data: null,
+          error: {
+            code: 'INVALID_OPERATION',
+            message: 'Invalid operation',
+            retriable: false,
+          },
+        };
+      } catch (error: any) {
+        console.error('[Vercel] Unexpected error:', error);
+        return {
+          success: false,
+          data: null,
+          error: {
+            code: 'UNKNOWN_ERROR',
+            message: error instanceof Error ? error.message : 'An unexpected error occurred',
+            retriable: true,
+            details: {
+              errorType: error?.constructor?.name,
+            },
+          },
+        };
+      }
+=======
     case 'schedulewise': {
       const startTime = Date.now();
       const params = config as unknown as ScheduleWiseNodeParams;

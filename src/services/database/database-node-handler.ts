@@ -16,6 +16,10 @@ import {
   runSQLiteNode,
   runSupabaseNode,
   runTimescaleDBNode,
+  runIntuitSmesNode,
+  runOdooNode,
+  runFirebaseNode,
+  runGCSNode,
 } from './index';
 
 /**
@@ -55,6 +59,19 @@ export async function executeDatabaseNode(
     case 'timescaledb':
     case 'timescale':
       return await runTimescaleDBNode(context);
+
+    case 'intuit_smes':
+    case 'intuit':
+      return await runIntuitSmesNode(context);
+
+    case 'odoo':
+      return await runOdooNode(context);
+
+    case 'firebase':
+      return await runFirebaseNode(context);
+
+    case 'google_cloud_storage':
+      return await runGCSNode(context);
 
     default:
       return {
