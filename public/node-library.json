@@ -374,6 +374,65 @@
     ]
   },
   {
+    "type": "microsoft_dynamics",
+    "category": "crm",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "resource",
+      "operation"
+    ],
+    "optionalConfig": [
+      "instanceUrl",
+      "accessToken",
+      "resource",
+      "customEntity",
+      "operation",
+      "id",
+      "fields",
+      "fetchXml",
+      "select",
+      "filter",
+      "top"
+    ]
+  },
+  {
+    "type": "sap",
+    "category": "crm",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "operation",
+      "endpoint"
+    ],
+    "optionalConfig": [
+      "baseUrl",
+      "operation",
+      "endpoint",
+      "payload",
+      "queryParams",
+      "accessToken",
+      "username",
+      "password",
+      "csrfToken",
+      "format"
+    ]
+  },
+  {
     "type": "clickup",
     "category": "actions",
     "inputs": [
@@ -1275,6 +1334,58 @@
     ]
   },
   {
+    "type": "intuit_smes",
+    "category": "crm",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "operation"
+    ],
+    "optionalConfig": [
+      "apiKey",
+      "accessToken",
+      "credentialId",
+      "operation",
+      "customerId",
+      "name",
+      "email",
+      "amount",
+      "data"
+    ]
+  },
+  {
+    "type": "tally",
+    "category": "crm",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "operation",
+      "endpoint"
+    ],
+    "optionalConfig": [
+      "endpoint",
+      "operation",
+      "payload",
+      "companyName",
+      "ledgerName",
+      "voucherId"
+    ]
+  },
+  {
     "type": "discord",
     "category": "output",
     "inputs": [
@@ -1295,6 +1406,31 @@
       "channelId",
       "message",
       "botToken"
+    ]
+  },
+  {
+    "type": "zoom_video",
+    "category": "communication",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "operation",
+      "accessToken"
+    ],
+    "optionalConfig": [
+      "operation",
+      "accessToken",
+      "topic",
+      "duration",
+      "startTime",
+      "meetingId"
     ]
   },
   {
@@ -2133,6 +2269,98 @@
     ]
   },
   {
+    "type": "mailgun",
+    "category": "output",
+    "inputs": [
+      "text",
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "domain",
+      "apiKey",
+      "from",
+      "to"
+    ],
+    "optionalConfig": [
+      "operation",
+      "domain",
+      "apiKey",
+      "from",
+      "to",
+      "subject",
+      "text",
+      "html"
+    ]
+  },
+  {
+    "type": "sendgrid",
+    "category": "output",
+    "inputs": [
+      "text",
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "apiKey",
+      "from",
+      "to"
+    ],
+    "optionalConfig": [
+      "operation",
+      "apiKey",
+      "from",
+      "to",
+      "subject",
+      "text",
+      "html"
+    ]
+  },
+  {
+    "type": "amazon_ses",
+    "category": "output",
+    "inputs": [
+      "text",
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "recipients",
+      "subject",
+      "body"
+    ],
+    "optionalConfig": [
+      "recipients",
+      "subject",
+      "body",
+      "useTemplate",
+      "templateName",
+      "templateData",
+      "fromAddress",
+      "replyToAddresses",
+      "attachments",
+      "awsRegion",
+      "configurationSetName",
+      "tags",
+      "returnPath"
+    ]
+  },
+  {
     "type": "facebook",
     "category": "social",
     "inputs": [
@@ -2290,6 +2518,58 @@
     ]
   },
   {
+    "type": "firebase",
+    "category": "database",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "projectId",
+      "clientEmail",
+      "privateKey",
+      "operation"
+    ],
+    "optionalConfig": [
+      "collection",
+      "documentId",
+      "data",
+      "filter",
+      "limit",
+      "databaseUrl"
+    ]
+  },
+  {
+    "type": "google_cloud_storage",
+    "category": "database",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "projectId",
+      "clientEmail",
+      "privateKey",
+      "operation",
+      "bucket"
+    ],
+    "optionalConfig": [
+      "fileName",
+      "fileContent",
+      "filter"
+    ]
+  },
+  {
     "type": "redis",
     "category": "database",
     "inputs": [
@@ -2309,6 +2589,36 @@
       "operation",
       "key",
       "value"
+    ]
+  },
+  {
+    "type": "odoo",
+    "category": "crm",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "operation",
+      "model"
+    ],
+    "optionalConfig": [
+      "operation",
+      "model",
+      "domain",
+      "fields",
+      "limit",
+      "offset",
+      "values",
+      "recordId",
+      "method",
+      "methodArgs",
+      "methodKwargs"
     ]
   },
   {
@@ -2794,6 +3104,28 @@
       "description",
       "paymentId",
       "autoCapture"
+    ]
+  },
+  {
+    "type": "vercel",
+    "category": "devops",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "operation",
+      "token"
+    ],
+    "optionalConfig": [
+      "operation",
+      "projectName",
+      "token"
     ]
   }
 ]

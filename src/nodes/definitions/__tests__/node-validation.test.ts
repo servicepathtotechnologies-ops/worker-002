@@ -196,4 +196,178 @@ describe('Node Validation Tests', () => {
       }
     });
   });
+
+  describe('Google Cloud Storage Node', () => {
+    it('should validate with all required fields', () => {
+      const definition = nodeDefinitionRegistry.get('google_cloud_storage');
+      expect(definition).toBeDefined();
+
+      const validation = definition!.validateInputs({
+        projectId: 'my-project',
+        clientEmail: 'sa@project.iam.gserviceaccount.com',
+        privateKey: '-----BEGIN PRIVATE KEY-----',
+        operation: 'upload',
+        bucket: 'my-bucket',
+      });
+
+      expect(validation.valid).toBe(true);
+      expect(validation.errors).toHaveLength(0);
+    });
+
+    it('should reject missing projectId', () => {
+      const definition = nodeDefinitionRegistry.get('google_cloud_storage');
+      const validation = definition!.validateInputs({
+        clientEmail: 'sa@project.iam.gserviceaccount.com',
+        privateKey: '-----BEGIN PRIVATE KEY-----',
+        operation: 'upload',
+        bucket: 'my-bucket',
+      });
+
+      expect(validation.valid).toBe(false);
+      expect(validation.errors).toContain('projectId is required');
+    });
+
+    it('should reject missing clientEmail', () => {
+      const definition = nodeDefinitionRegistry.get('google_cloud_storage');
+      const validation = definition!.validateInputs({
+        projectId: 'my-project',
+        privateKey: '-----BEGIN PRIVATE KEY-----',
+        operation: 'upload',
+        bucket: 'my-bucket',
+      });
+
+      expect(validation.valid).toBe(false);
+      expect(validation.errors).toContain('clientEmail is required');
+    });
+
+    it('should reject missing privateKey', () => {
+      const definition = nodeDefinitionRegistry.get('google_cloud_storage');
+      const validation = definition!.validateInputs({
+        projectId: 'my-project',
+        clientEmail: 'sa@project.iam.gserviceaccount.com',
+        operation: 'upload',
+        bucket: 'my-bucket',
+      });
+
+      expect(validation.valid).toBe(false);
+      expect(validation.errors).toContain('privateKey is required');
+    });
+
+    it('should reject missing operation', () => {
+      const definition = nodeDefinitionRegistry.get('google_cloud_storage');
+      const validation = definition!.validateInputs({
+        projectId: 'my-project',
+        clientEmail: 'sa@project.iam.gserviceaccount.com',
+        privateKey: '-----BEGIN PRIVATE KEY-----',
+        bucket: 'my-bucket',
+      });
+
+      expect(validation.valid).toBe(false);
+      expect(validation.errors).toContain('operation is required');
+    });
+
+    it('should reject invalid operation', () => {
+      const definition = nodeDefinitionRegistry.get('google_cloud_storage');
+      const validation = definition!.validateInputs({
+        projectId: 'my-project',
+        clientEmail: 'sa@project.iam.gserviceaccount.com',
+        privateKey: '-----BEGIN PRIVATE KEY-----',
+        operation: 'invalid_op',
+        bucket: 'my-bucket',
+      });
+
+      expect(validation.valid).toBe(false);
+      expect(validation.errors.length).toBeGreaterThan(0);
+      expect(validation.errors[0]).toContain('operation must be one of');
+    });
+
+    it('should reject missing bucket', () => {
+      const definition = nodeDefinitionRegistry.get('google_cloud_storage');
+      const validation = definition!.validateInputs({
+        projectId: 'my-project',
+        clientEmail: 'sa@project.iam.gserviceaccount.com',
+        privateKey: '-----BEGIN PRIVATE KEY-----',
+        operation: 'upload',
+      });
+
+      expect(validation.valid).toBe(false);
+      expect(validation.errors).toContain('bucket is required');
+    });
+
+    it('should accept valid operations', () => {
+      const definition = nodeDefinitionRegistry.get('google_cloud_storage');
+      const validOps = ['upload', 'download', 'delete', 'list'];
+
+      for (const op of validOps) {
+        const validation = definition!.validateInputs({
+          projectId: 'my-project',
+          clientEmail: 'sa@project.iam.gserviceaccount.com',
+          privateKey: '-----BEGIN PRIVATE KEY-----',
+          operation: op,
+          bucket: 'my-bucket',
+        });
+
+        expect(validation.valid).toBe(true);
+        expect(validation.errors).toHaveLength(0);
+      }
+    });
+
+    it('should return valid default inputs', () => {
+      const definition = nodeDefinitionRegistry.get('google_cloud_storage');
+      const defaults = definition!.defaultInputs();
+
+      expect(defaults).toEqual({
+        projectId: '',
+        clientEmail: '',
+        privateKey: '',
+        operation: 'upload',
+        bucket: '',
+        fileName: '',
+        fileContent: '',
+        filter: '',
+      });
+    });
+
+    it('should reject default inputs (empty required fields)', () => {
+      const definition = nodeDefinitionRegistry.get('google_cloud_storage');
+      const defaults = definition!.defaultInputs();
+      const validation = definition!.validateInputs(defaults);
+
+      expect(validation.valid).toBe(false);
+      expect(validation.errors.length).toBeGreaterThan(0);
+    });
+
+    it('should have correct type, label, category, icon', () => {
+      const definition = nodeDefinitionRegistry.get('google_cloud_storage');
+      expect(definition).toBeDefined();
+      expect(definition!.type).toBe('google_cloud_storage');
+      expect(definition!.label).toBe('Google Cloud Storage');
+      expect(definition!.category).toBe('database');
+      expect(definition!.icon).toBe('Database');
+    });
+
+    it('should have correct requiredInputs', () => {
+      const definition = nodeDefinitionRegistry.get('google_cloud_storage');
+      expect(definition!.requiredInputs).toEqual([
+        'projectId',
+        'clientEmail',
+        'privateKey',
+        'operation',
+        'bucket',
+      ]);
+    });
+
+    it('should have correct ports', () => {
+      const definition = nodeDefinitionRegistry.get('google_cloud_storage');
+      expect(definition!.outgoingPorts).toEqual(['default']);
+      expect(definition!.incomingPorts).toEqual(['default']);
+      expect(definition!.isBranching).toBe(false);
+    });
+
+    it('should have runGCSNode as run function', () => {
+      const definition = nodeDefinitionRegistry.get('google_cloud_storage');
+      expect(definition!.run).toBeDefined();
+      expect(typeof definition!.run).toBe('function');
+    });
+  });
 });
