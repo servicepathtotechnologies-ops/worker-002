@@ -18,6 +18,7 @@ import { validateAndFixEdgeHandles, getDefaultSourceHandle, getDefaultTargetHand
 import { logger } from '../logger';
 import { coerceWorkflowNodePosition } from './workflow-node-position';
 import { extractSwitchCasePortNames } from './branching-node-ports';
+import { unifiedNodeRegistry } from '../registry/unified-node-registry';
 
 export interface NormalizedWorkflowGraph {
   nodes: WorkflowNode[];
@@ -129,57 +130,68 @@ export function normalizeWorkflowGraph(
     for (const [sourceId, outs] of outgoingBySource.entries()) {
       const srcNode = nodesById.get(sourceId);
       const srcType = String(srcNode?.data?.type || srcNode?.type || '').toLowerCase();
+      const srcDef = unifiedNodeRegistry.get(srcType);
       if (!srcType) continue;
 
-      if (srcType === 'if_else') {
-        const working = outs.map(getWorkingEdge);
-        const used = new Set<string>();
-        for (const e of working) {
-          const h = String(e?.sourceHandle || '').toLowerCase();
-          if (h === 'true' || h === 'false') used.add(h);
-        }
-        // Prefer edge.type if it already encodes the branch.
-        for (const e of working) {
-          if (e?.sourceHandle) continue;
-          const t = typeof e?.type === 'string' ? String(e.type).toLowerCase() : '';
-          if (t === 'true' || t === 'false') {
-            e.sourceHandle = t;
-            used.add(t);
+      // ✅ REGISTRY-DRIVEN: Handle branching nodes with fixed semantic ports (e.g. if_else → true/false)
+      if (srcDef?.isBranching && srcDef.outgoingPorts && srcDef.outgoingPorts.length > 0) {
+        const hasSemanticPorts = !srcDef.outgoingPorts.every((p: string) => p === 'output' || p === 'default');
+        if (hasSemanticPorts) {
+          const working = outs.map(getWorkingEdge);
+          const used = new Set<string>();
+          for (const e of working) {
+            const h = String(e?.sourceHandle || '').toLowerCase();
+            if (srcDef.outgoingPorts.includes(h)) used.add(h);
           }
-        }
-        // Assign remaining handle deterministically for any still-missing.
-        for (const e of working) {
-          const h = String(e?.sourceHandle || '').toLowerCase();
-          if (h === 'true' || h === 'false') continue;
-          const next = used.has('true') ? (used.has('false') ? null : 'false') : 'true';
-          if (next) {
-            e.sourceHandle = next;
-            used.add(next);
+          // Prefer edge.type if it already encodes the branch.
+          for (const e of working) {
+            if (e?.sourceHandle) continue;
+            const t = typeof e?.type === 'string' ? String(e.type).toLowerCase() : '';
+            if (srcDef.outgoingPorts.includes(t)) {
+              e.sourceHandle = t;
+              used.add(t);
+            }
           }
-        }
-        // Keep type in sync (helps downstream exclusive-fork detection).
-        for (const e of working) {
-          const h = String(e?.sourceHandle || '').toLowerCase();
-          if (h === 'true' || h === 'false') {
-            e.type = h;
+          // Assign remaining handle deterministically for any still-missing.
+          for (const e of working) {
+            const h = String(e?.sourceHandle || '').toLowerCase();
+            if (srcDef.outgoingPorts.includes(h)) continue;
+            const next = srcDef.outgoingPorts.find(p => !used.has(p)) ?? null;
+            if (next) {
+              e.sourceHandle = next;
+              used.add(next);
+            }
+          }
+          // Keep type in sync.
+          for (const e of working) {
+            const h = String(e?.sourceHandle || '').toLowerCase();
+            if (srcDef.outgoingPorts.includes(h)) {
+              e.type = h;
+            }
           }
         }
       }
 
-      if (srcType === 'switch') {
-        const working = outs.map(getWorkingEdge);
-        const switchCasePorts = extractSwitchCasePortNames((srcNode?.data?.config || {}) as Record<string, any>);
-        for (const e of working) {
-          if (e?.sourceHandle) continue;
-          const t = typeof e?.type === 'string' ? String(e.type) : '';
-          const positionalMatch = /^case_(\d+)$/i.exec(t);
-          if (positionalMatch) {
-            const caseIndex = parseInt(positionalMatch[1], 10) - 1;
-            e.sourceHandle = switchCasePorts[caseIndex] || t;
-            continue;
-          }
-          if (t && t.toLowerCase() !== 'main' && t.toLowerCase() !== 'default') {
-            e.sourceHandle = t;
+      // ✅ REGISTRY-DRIVEN: Handle dynamic branching nodes (switch-like with runtime cases)
+      // These have outgoingPorts: ['output'] as a fallback — not semantic constraints.
+      if (srcDef?.isBranching) {
+        const fixedPorts = srcDef.outgoingPorts || [];
+        const hasSemanticPorts = fixedPorts.length > 0 && !fixedPorts.every((p: string) => p === 'output' || p === 'default');
+        if (!hasSemanticPorts) {
+          const working = outs.map(getWorkingEdge);
+          const switchCasePorts = extractSwitchCasePortNames((srcNode?.data?.config || {}) as Record<string, any>);
+          for (const e of working) {
+            if (e?.sourceHandle) continue;
+            const t = typeof e?.type === 'string' ? String(e.type) : '';
+            const positionalMatch = /^case_(\d+)$/i.exec(t);
+            if (positionalMatch) {
+              const caseIndex = parseInt(positionalMatch[1], 10) - 1;
+              e.sourceHandle = switchCasePorts[caseIndex] || t;
+              continue;
+            }
+            if (t && t.toLowerCase() !== 'main' && t.toLowerCase() !== 'default') {
+              e.sourceHandle = t;
+            }
           }
         }
       }
@@ -256,13 +268,19 @@ export function normalizeWorkflowGraph(
         ].includes(nodeType);
       };
 
+      const isTerminalNode = (n: any): boolean => {
+        const nodeType = getType(n);
+        const nodeDef = unifiedNodeRegistry.get(nodeType);
+        return nodeDef?.isTerminal === true || (nodeDef?.tags || []).includes('terminal');
+      };
+
       const nodeById = new Map<string, any>(normalizedNodes.map((n: any) => [n.id, n]));
-      const logNodes = normalizedNodes.filter((n: any) => getType(n) === 'log_output');
+      const logNodes = normalizedNodes.filter((n: any) => isTerminalNode(n));
       if (logNodes.length > 0) {
         const logNodeIds = new Set(logNodes.map((n: any) => n.id));
         const existingLog = logNodes[0];
 
-        // Remove trigger -> log_output edges and any outgoing from any log_output (sink behavior).
+        // Remove trigger -> terminal edges and any outgoing from any terminal (sink behavior).
         normalizedEdges = normalizedEdges.filter((e: any) => {
           if (logNodeIds.has(e?.source)) return false;
           if (logNodeIds.has(e?.target)) {
@@ -277,16 +295,16 @@ export function normalizeWorkflowGraph(
         const shouldSkipSingleLogRewire = logNodes.length > 1;
         if (shouldSkipSingleLogRewire) {
           logger.debug(
-            `[NormalizeWorkflowGraph] 🔀 Preserving ${logNodes.length} log_output nodes; skipping single-log rewiring`
+            `[NormalizeWorkflowGraph] 🔀 Preserving ${logNodes.length} terminal nodes; skipping single-log rewiring`
           );
         }
         if (!shouldSkipSingleLogRewire) {
-          // Compute terminal nodes (no outgoing), excluding triggers and log_output
+          // Compute terminal nodes (no outgoing), excluding triggers and existing terminal nodes
           const sources = new Set(normalizedEdges.map((e: any) => e.source));
           const terminals = normalizedNodes
             .filter((n: any) => !sources.has(n.id))
             .filter((n: any) => !isTrigger(n))
-            .filter((n: any) => getType(n) !== 'log_output');
+            .filter((n: any) => !isTerminalNode(n));
 
           if (terminals.length > 0) {
           const hasFailureTerminal = terminals.some((n: any) => getType(n) === 'stop_and_error');
@@ -302,14 +320,15 @@ export function normalizeWorkflowGraph(
 
             const basePos = existingLog.position || { x: 0, y: 0 };
             const baseData = existingLog.data || {};
+            const existingType = existingLog.type || getType(existingLog);
             const mkLog = (suffix: string, label: string, message: string, yOffset: number) => ({
               id: `${existingLog.id}_${suffix}_${Date.now()}`,
-              type: existingLog.type || 'log_output',
+              type: existingType,
               position: { x: basePos.x, y: basePos.y + yOffset },
               data: {
                 ...baseData,
                 label,
-                type: 'log_output',
+                type: existingType,
                 config: {
                   ...(baseData.config || {}),
                   level: 'info',
@@ -329,7 +348,8 @@ export function normalizeWorkflowGraph(
             const targetLog = terminalType === 'stop_and_error' ? failureLog : successLog;
 
             const sourceType = terminalType;
-            const targetType = 'log_output';
+            const targetType = getType(targetLog);
+
             const desiredSourceHandle = getDefaultSourceHandle(sourceType);
             const desiredTargetHandle = getDefaultTargetHandle(targetType);
             const { sourceHandle, targetHandle } = validateAndFixEdgeHandles(
@@ -449,11 +469,12 @@ export function normalizeWorkflowGraph(
           }
         }
 
-        // ✅ CRITICAL FIX: Preserve branching structures (If/Else, Switch)
+        // ✅ REGISTRY-DRIVEN: Preserve branching structures (any isBranching node)
         // DO NOT linearize graphs with branching nodes - they have multiple outputs
         const hasBranchingNodes = ordered.some((n: any) => {
           const nodeType = n.data?.type || n.type || '';
-          return nodeType === 'if_else' || nodeType === 'switch';
+          const def = unifiedNodeRegistry.get(nodeType);
+          return def?.isBranching === true;
         });
         const hasBranchingHandles = normalizedEdges.some((e: any) =>
           typeof e?.sourceHandle === 'string' &&

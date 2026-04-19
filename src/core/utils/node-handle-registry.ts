@@ -51,30 +51,22 @@ function generateHandleContractFromRegistry(nodeType: string): NodeHandleContrac
     ? nodeDef.outgoingPorts
     : ['output'];
   
-  // ✅ SPECIAL CASES: Handle nodes with additional output ports
-  // manual_trigger outputs 'inputData' (data field) via 'output' handle
-  if (nodeType === 'manual_trigger' && !outputs.includes('inputData')) {
-    outputs.push('inputData');
-  }
-  
-  // chat_trigger outputs 'message' (data field) via 'output' handle
-  if (nodeType === 'chat_trigger' && !outputs.includes('message')) {
-    outputs.push('message');
-  }
-  
-  // if_else has fixed outputs ['true', 'false']
-  if (nodeType === 'if_else') {
+  // ✅ REGISTRY-DRIVEN: Use outgoingPorts from registry for branching nodes
+  // This replaces hardcoded if_else/switch/manual_trigger/chat_trigger checks
+  if (nodeDef.isBranching) {
+    const ports = nodeDef.outgoingPorts || [];
+    const hasSemanticPorts = ports.length > 0 && !ports.every((p: string) => p === 'output' || p === 'default');
+    if (hasSemanticPorts) {
+      // Fixed-port branching node (e.g. if_else → ['true','false'])
+      return {
+        inputs: nodeDef.incomingPorts && nodeDef.incomingPorts.length > 0 ? nodeDef.incomingPorts : ['input'],
+        outputs: ports,
+      };
+    }
+    // Dynamic branching node (switch with runtime case values) — no fixed output contract
     return {
-      inputs: ['input'],
-      outputs: ['true', 'false'],
-    };
-  }
-  
-  // switch has dynamic outputs (based on cases config)
-  if (nodeType === 'switch') {
-    return {
-      inputs: ['input'],
-      outputs: [], // Dynamic - based on cases config
+      inputs: nodeDef.incomingPorts && nodeDef.incomingPorts.length > 0 ? nodeDef.incomingPorts : ['input'],
+      outputs: [], // Dynamic — resolved at runtime from config.cases
     };
   }
   
@@ -142,12 +134,6 @@ export function getNodeHandleContract(nodeType: string): NodeHandleContract {
  */
 export function getDefaultSourceHandle(nodeType: string): string {
   const contract = getNodeHandleContract(nodeType);
-  
-  // Special cases
-  if (nodeType === 'if_else') {
-    return 'true'; // Default to true path
-  }
-  
   // Return first output handle or 'output'
   return contract.outputs[0] || 'output';
 }
@@ -178,40 +164,37 @@ export function getDynamicOutputHandles(
   nodeType: string,
   nodeConfig?: Record<string, any>
 ): string[] {
-  const contract = getNodeHandleContract(nodeType);
-  
-  // Switch nodes: Dynamic handles based on cases config
-  if (nodeType === 'switch') {
+  const nodeDef = unifiedNodeRegistry.get(nodeType);
+
+  // Branching nodes with dynamic cases (switch-like): read from config
+  if (nodeDef?.isBranching) {
+    const staticPorts = nodeDef.outgoingPorts || [];
+    // If registry declares semantically meaningful fixed ports (e.g. if_else → ['true','false']), use them
+    const hasSemanticPorts = staticPorts.length > 0 && !staticPorts.every((p: string) => p === 'output' || p === 'default');
+    if (hasSemanticPorts) {
+      return staticPorts;
+    }
+    // Dynamic branching node (switch): read cases from config
     if (nodeConfig?.cases) {
       try {
-        const cases = typeof nodeConfig.cases === 'string' 
+        const cases = typeof nodeConfig.cases === 'string'
           ? JSON.parse(nodeConfig.cases)
           : Array.isArray(nodeConfig.cases)
           ? nodeConfig.cases
           : [];
-        
-        // Extract case values as handle IDs
         const caseHandles = cases
           .map((c: any) => c?.value != null ? String(c.value) : null)
           .filter((v: string | null): v is string => v !== null);
-        
-        if (caseHandles.length > 0) {
-          return caseHandles;
-        }
+        if (caseHandles.length > 0) return caseHandles;
       } catch (error) {
-        console.warn(`[getDynamicOutputHandles] Failed to parse switch cases: ${error}`);
+        console.warn(`[getDynamicOutputHandles] Failed to parse cases for ${nodeType}: ${error}`);
       }
     }
-    // If no cases configured, return empty (will be validated at runtime)
-    return [];
+    return []; // Dynamic — no cases configured yet
   }
-  
-  // if_else nodes: Fixed handles
-  if (nodeType === 'if_else') {
-    return ['true', 'false'];
-  }
-  
-  // All other nodes: Use registry
+
+  // Non-branching nodes: use registry ports or default
+  const contract = getNodeHandleContract(nodeType);
   return contract.outputs.length > 0 ? contract.outputs : ['output'];
 }
 
@@ -241,25 +224,33 @@ export function resolveSourceHandleDynamically(
   
   // Get dynamic outputs for this node type
   const validOutputs = getDynamicOutputHandles(sourceType, nodeConfig);
-  
-  // For switch nodes, accept any case value (dynamic - validated at runtime)
-  if (sourceType === 'switch') {
-    return structureSourceOutput; // Switch accepts any case value
+  const nodeDef = unifiedNodeRegistry.get(sourceType);
+
+  // Dynamic branching nodes (switch with runtime case values): accept any non-empty handle
+  if (nodeDef?.isBranching) {
+    const fixedPorts = nodeDef.outgoingPorts || [];
+    const hasSemanticPorts = fixedPorts.length > 0 && !fixedPorts.every((p: string) => p === 'output' || p === 'default');
+    if (!hasSemanticPorts) {
+      return structureSourceOutput; // Dynamic case values — pass through
+    }
   }
-  
+
   // For other nodes, validate against valid outputs
   if (validOutputs.includes(structureSourceOutput)) {
     return structureSourceOutput; // Valid - use as-is
   }
-  
-  // ✅ PRODUCTION-READY: For if_else nodes, FAIL on invalid handles (don't auto-correct)
-  // This preserves intent (true vs false) and prevents silent corruption
-  if (sourceType === 'if_else') {
-    const error = `Invalid sourceOutput "${structureSourceOutput}" for if_else node. ` +
-                  `Must be 'true' or 'false', not '${structureSourceOutput}'. ` +
-                  `This indicates a structure builder error that must be fixed.`;
-    console.error(`[resolveSourceHandleDynamically] ❌ ${error}`);
-    throw new Error(`Workflow invalid: ${error}. if_else edges must have explicit 'true' or 'false' sourceOutput.`);
+
+  // ✅ PRODUCTION-READY: For branching nodes with fixed semantic ports (e.g. if_else), FAIL on invalid handles
+  if (nodeDef?.isBranching && nodeDef.outgoingPorts && nodeDef.outgoingPorts.length > 0) {
+    const fixedPorts = nodeDef.outgoingPorts;
+    const hasSemanticPorts = !fixedPorts.every((p: string) => p === 'output' || p === 'default');
+    if (hasSemanticPorts) {
+      const error = `Invalid sourceOutput "${structureSourceOutput}" for ${sourceType} node. ` +
+                    `Must be one of: ${fixedPorts.join(', ')}. ` +
+                    `This indicates a structure builder error that must be fixed.`;
+      console.error(`[resolveSourceHandleDynamically] ❌ ${error}`);
+      throw new Error(`Workflow invalid: ${error}. Branching edges must have explicit sourceOutput matching declared ports.`);
+    }
   }
   
   // For other nodes, auto-correct with warning (less critical)
@@ -339,9 +330,25 @@ export function isValidHandle(nodeType: string, handleId: string, isSource: bool
   
   // ✅ Use unified registry ports (single source of truth)
   if (isSource) {
-    // For switch nodes, handles are dynamic (case values)
-    if (normalizedType === 'switch') {
-      return true; // Accept any handle ID for switch (validated at runtime)
+    const nodeDef2 = unifiedNodeRegistry.get(normalizedType);
+    // Branching nodes: accept any non-empty handle.
+    // For nodes with fixed ports (e.g. if_else → ['true','false']), the declared ports
+    // are the valid set. For nodes with dynamic case values (e.g. switch), the declared
+    // outgoingPorts is only a fallback for the orchestrator — actual case values like
+    // "editor", "inactive", "shipped" are valid at runtime and must be accepted.
+    if (nodeDef2?.isBranching) {
+      const fixedPorts = nodeDef2.outgoingPorts || [];
+      // If the handle matches a declared port, always valid
+      if (fixedPorts.includes(handleId)) return true;
+      // If the node has fixed ports that are semantically meaningful (not just ['output'] fallback),
+      // reject handles not in that set. 'output' is a generic fallback, not a semantic constraint.
+      const hasSemanticPorts = fixedPorts.length > 0 && !fixedPorts.every((p: string) => p === 'output' || p === 'default');
+      if (hasSemanticPorts) {
+        // Fixed-port branching node (e.g. if_else) — only declared ports are valid
+        return false;
+      }
+      // Dynamic branching node (switch with runtime case values) — any non-empty handle is valid
+      return handleId.length > 0;
     }
     const validPorts = nodeDef.outgoingPorts || [];
     return validPorts.includes(handleId);
@@ -394,14 +401,15 @@ export function normalizeHandleId(
   isSource: boolean
 ): string {
   if (!handleId) {
-    // ✅ CRITICAL FIX: For if_else nodes, don't default to 'true' if handleId is missing
-    // This prevents false path edges from being incorrectly defaulted to true path
-    if (isSource && nodeType === 'if_else') {
-      // For if_else nodes, we MUST have an explicit sourceHandle ('true' or 'false')
-      // Don't default - this indicates a configuration error that should be caught
-      console.warn(`[normalizeHandleId] ⚠️ If/Else edge missing sourceHandle - this should be set explicitly to 'true' or 'false'`);
-      // Still return 'true' as fallback for backward compatibility, but log warning
-      return 'true';
+    // ✅ REGISTRY-DRIVEN: For branching nodes with fixed semantic ports, warn if handle is missing
+    const nodeDef = unifiedNodeRegistry.get(nodeType);
+    if (isSource && nodeDef?.isBranching) {
+      const fixedPorts = nodeDef.outgoingPorts || [];
+      const hasSemanticPorts = fixedPorts.length > 0 && !fixedPorts.every((p: string) => p === 'output' || p === 'default');
+      if (hasSemanticPorts) {
+        console.warn(`[normalizeHandleId] ⚠️ Branching node ${nodeType} edge missing sourceHandle - should be one of: ${fixedPorts.join(', ')}`);
+        return fixedPorts[0]; // Return first declared port as fallback
+      }
     }
     return isSource ? getDefaultSourceHandle(nodeType) : getDefaultTargetHandle(nodeType);
   }
@@ -477,9 +485,10 @@ export function normalizeHandleId(
       }
     }
 
-    // For switch nodes, accept any handle (case values)
-    if (nodeType === 'switch') {
-      return handleId;
+    // ✅ REGISTRY-DRIVEN: Dynamic branching nodes (switch-like) accept any case value
+    const srcDef = unifiedNodeRegistry.get(nodeType);
+    if (srcDef?.isBranching && (!srcDef.outgoingPorts || srcDef.outgoingPorts.length === 0)) {
+      return handleId; // Dynamic case values — pass through as-is
     }
 
     // Default to first valid output handle

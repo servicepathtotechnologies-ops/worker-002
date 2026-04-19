@@ -88,9 +88,13 @@ function resolveAnalyzeCapabilitySelections(
     const selectedForStep = [...new Set(normalized.filter((t) => allowed.has(t)))];
 
     if (hasExplicitSelections) {
-      const fallbackCompatible = normalizedGlobalRequested.filter(
-        (t) => !globallyAssigned.has(t) && allowed.has(t),
-      );
+      const fallbackCompatible = normalizedGlobalRequested.filter((t) => {
+        if (!allowed.has(t)) return false;
+        const def = unifiedNodeRegistry.get(t);
+        // Branching types (switch, if_else) can appear in multiple steps — don't block them
+        if (def?.isBranching === true) return true;
+        return !globallyAssigned.has(t);
+      });
       const combined = [...new Set([...selectedForStep, ...fallbackCompatible])];
       const limited = step.selectionPolicy?.multiSelectAllowed === false ? combined.slice(0, 1) : combined;
       byStep[step.stepId] = limited;

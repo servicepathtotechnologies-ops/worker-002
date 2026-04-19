@@ -103,6 +103,7 @@ import { overrideTool } from './overrides/tool';
 import { overrideWhatsapp } from './overrides/whatsapp';
 import { overrideWhatsappTrigger } from './overrides/whatsapp-trigger';
 import { overrideInstagramTrigger } from './overrides/instagram-trigger';
+
 import { overrideIntuitSmes } from './overrides/intuit-smes';
 import { overrideTally } from './overrides/tally';
 import { overrideOdoo } from './overrides/odoo';
@@ -110,6 +111,7 @@ import { overrideZoomVideo } from './overrides/zoom-video';
 import { overrideMicrosoftDynamics } from './overrides/microsoft-dynamics';
 import { overrideSap } from './overrides/sap';
 import { overrideVercel } from './overrides/vercel';
+import { overrideScheduleWise } from './overrides/schedulewise';
 
 type OverrideFn = (def: UnifiedNodeDefinition, schema: NodeSchema) => UnifiedNodeDefinition;
 
@@ -243,6 +245,8 @@ const overridesByType: Record<string, OverrideFn> = {
   zoom_video: overrideZoomVideo,
   // ✅ BATCH 17: DevOps & Deployment
   vercel: overrideVercel,
+  // ✅ ScheduleWise healthcare scheduling integration
+  schedulewise: overrideScheduleWise,
 };
 
 /**

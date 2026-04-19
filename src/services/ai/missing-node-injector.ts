@@ -37,7 +37,7 @@ export class MissingNodeInjector {
   /**
    * ✅ FIX 3: Detect missing required nodes in DSL
    */
-  detectMissingNodes(dsl: WorkflowDSL): MissingNodeDetection {
+  detectMissingNodes(dsl: WorkflowDSL, userIntent?: string): MissingNodeDetection {
     const missingNodes: MissingNodeDetection['missingNodes'] = [];
     const warnings: string[] = [];
 
@@ -51,8 +51,8 @@ export class MissingNodeInjector {
       });
     }
 
-    // Check for missing terminal output node
-    // Workflows should have at least one output node for visibility
+    // ✅ TASK 14.1: Check for missing terminal output node - INTENT-DRIVEN
+    // Only mark log_output as required if user explicitly requested logging
     const hasOutput = dsl.outputs.length > 0;
     const hasWriteOperation = dsl.dataSources.some(ds => {
       const operation = (ds.operation || '').toLowerCase();
@@ -62,13 +62,16 @@ export class MissingNodeInjector {
       return ['write', 'create', 'update'].includes(operation);
     });
 
-    if (!hasOutput && hasWriteOperation) {
-      // Check if log_output is registered
+    // ✅ TASK 14.1: Check if user explicitly requested logging
+    const intentIncludesLogging = userIntent && /\b(log|output|record|track|observe|monitor)\b/i.test(userIntent);
+
+    if (!hasOutput && hasWriteOperation && intentIncludesLogging) {
+      // Only add log_output if user explicitly requested logging
       if (nodeLibrary.isNodeTypeRegistered('log_output')) {
         missingNodes.push({
           type: 'log_output',
           category: 'output',
-          reason: 'Workflow has write operations but no output node - log_output required for visibility',
+          reason: 'Workflow has write operations and user requested logging - log_output required for visibility',
           required: true
         });
       } else {

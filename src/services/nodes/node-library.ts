@@ -1322,9 +1322,13 @@ export class NodeLibrary {
     this.addSchema(this.createWooCommerceSchema());
     this.addSchema(this.createStripeSchema());
     this.addSchema(this.createPaypalSchema());
+
     
     // DevOps/Deployment Nodes
     this.addSchema(this.createVercelNodeSchema());
+
+    // Integration Nodes
+    this.addSchema(this.createScheduleWiseNodeSchema());
   }
 
   private addSchema(schema: NodeSchema): void {
@@ -10970,6 +10974,7 @@ export class NodeLibrary {
     };
   }
 
+
   private createZoomVideoSchema(): NodeSchema {
     return {
       type: 'zoom_video',
@@ -11138,6 +11143,104 @@ export class NodeLibrary {
         error: {
           type: 'object',
           description: 'Error details if operation failed. Contains code, message, retriable, and optional details',
+  private createScheduleWiseNodeSchema(): NodeSchema {
+    return {
+      type: 'schedulewise',
+      label: 'ScheduleWise',
+      category: 'integration',
+      description: 'ScheduleWise appointment scheduling — retrieve, create, update, and delete appointments via the ScheduleWise REST API',
+      configSchema: {
+        required: ['operation'],
+        optional: {
+          credentialId: {
+            type: 'string',
+            description: 'Credential ID reference to stored ScheduleWise credentials',
+            examples: ['cred_abc123'],
+          },
+          dateFrom: {
+            type: 'string',
+            description: 'Start date filter for getSchedules (ISO 8601, e.g. "2024-01-01"). Supports {{ }} expressions.',
+            examples: ['2024-01-01', '{{$json.startDate}}'],
+          },
+          dateTo: {
+            type: 'string',
+            description: 'End date filter for getSchedules (ISO 8601). Supports {{ }} expressions.',
+            examples: ['2024-01-31', '{{$json.endDate}}'],
+          },
+          patientId: {
+            type: 'string',
+            description: 'Patient identifier. Supports {{ }} expressions.',
+            examples: ['patient_123', '{{$json.patientId}}'],
+          },
+          staffId: {
+            type: 'string',
+            description: 'Staff member identifier. Supports {{ }} expressions.',
+            examples: ['staff_456', '{{$json.staffId}}'],
+          },
+          appointmentId: {
+            type: 'string',
+            description: 'Appointment identifier (required for updateAppointment and deleteAppointment). Supports {{ }} expressions.',
+            examples: ['appt_789', '{{$json.appointmentId}}'],
+          },
+          startDateTime: {
+            type: 'string',
+            description: 'Appointment start date/time (ISO 8601). Supports {{ }} expressions.',
+            examples: ['2024-01-15T09:00:00Z', '{{$json.startDateTime}}'],
+          },
+          endDateTime: {
+            type: 'string',
+            description: 'Appointment end date/time (ISO 8601). Supports {{ }} expressions.',
+            examples: ['2024-01-15T10:00:00Z', '{{$json.endDateTime}}'],
+          },
+          serviceType: {
+            type: 'string',
+            description: 'Type of service for the appointment. Supports {{ }} expressions.',
+            examples: ['consultation', 'follow-up', '{{$json.serviceType}}'],
+          },
+          notes: {
+            type: 'string',
+            description: 'Additional notes for the appointment. Supports {{ }} expressions.',
+            examples: ['Patient requested morning slot', '{{$json.notes}}'],
+          },
+          status: {
+            type: 'string',
+            description: 'Appointment status (for updateAppointment). Supports {{ }} expressions.',
+            examples: ['confirmed', 'cancelled', 'pending', '{{$json.status}}'],
+          },
+          limit: {
+            type: 'number',
+            description: 'Maximum number of results to return for getSchedules.',
+            examples: [10, 50, 100],
+            default: 50,
+          },
+          hardDelete: {
+            type: 'boolean',
+            description: 'When true, permanently deletes the appointment (appends ?hardDelete=true). Default is soft delete.',
+            default: false,
+          },
+          timeoutSec: {
+            type: 'number',
+            description: 'HTTP request timeout in seconds. Default: 30.',
+            examples: [15, 30, 60],
+            default: 30,
+          },
+          retries: {
+            type: 'number',
+            description: 'Number of retry attempts on 5xx or network errors (exponential backoff). Default: 0.',
+            examples: [0, 1, 3],
+            default: 0,
+          },
+          outputFormat: {
+            type: 'string',
+            description: 'Output format: "json" (default) or "raw" (unparsed response body).',
+            examples: ['json', 'raw'],
+            default: 'json',
+          },
+          mockMode: {
+            type: 'boolean',
+            description: 'When true, returns synthetic data without calling the ScheduleWise API. Useful for testing.',
+            default: false,
+          },
         },
       },
       aiSelectionCriteria: {
@@ -11186,6 +11289,48 @@ export class NodeLibrary {
           config: {
             operation: 'list_deployments',
             token: '{{$credentials.vercel.token}}',
+          'User mentions ScheduleWise explicitly',
+          'Appointment scheduling or booking workflows',
+          'Retrieving or managing patient appointments',
+          'Healthcare scheduling automation',
+          'Calendar-based appointment management',
+        ],
+        whenNotToUse: [
+          'Generic calendar events (use Google Calendar)',
+          'Non-ScheduleWise scheduling systems',
+          'Simple reminders or delays',
+        ],
+        keywords: ['schedulewise', 'appointment', 'schedule', 'booking', 'patient', 'calendar'],
+        useCases: [
+          'Retrieve upcoming appointments for a patient',
+          'Create a new appointment booking',
+          'Update appointment status or time',
+          'Cancel or delete an appointment',
+        ],
+        intentDescription: 'ScheduleWise integration node that manages appointments via the ScheduleWise REST API. Supports getSchedules, createAppointment, updateAppointment, and deleteAppointment operations. Used for healthcare scheduling, patient appointment management, and booking automation.',
+        intentCategories: ['scheduling', 'healthcare', 'appointment_management', 'integration', 'booking'],
+      },
+      commonPatterns: [
+        {
+          name: 'getSchedules',
+          description: 'Retrieve appointments within a date range',
+          config: {
+            operation: 'getSchedules',
+            dateFrom: '{{$json.dateFrom}}',
+            dateTo: '{{$json.dateTo}}',
+            limit: 50,
+          },
+        },
+        {
+          name: 'createAppointment',
+          description: 'Create a new appointment',
+          config: {
+            operation: 'createAppointment',
+            startDateTime: '{{$json.startDateTime}}',
+            endDateTime: '{{$json.endDateTime}}',
+            patientId: '{{$json.patientId}}',
+            staffId: '{{$json.staffId}}',
+            serviceType: '{{$json.serviceType}}',
           },
         },
       ],
@@ -11216,6 +11361,34 @@ export class NodeLibrary {
           errorMessage: 'Token is required and must be a non-empty string',
         },
       ],
+
+          validator: (value: any) =>
+            typeof value === 'string' &&
+            value.trim().length > 0 &&
+            ['getSchedules', 'createAppointment', 'updateAppointment', 'deleteAppointment'].includes(value),
+          errorMessage:
+            'Operation is required. Choose one of: getSchedules, createAppointment, updateAppointment, deleteAppointment',
+        },
+      ],
+      outputType: 'object',
+      outputSchema: {
+        success: { type: 'boolean', description: 'Whether the operation succeeded' },
+        operation: { type: 'string', description: 'The operation that was executed' },
+        data: { type: 'object', description: 'Response data from the ScheduleWise API' },
+        executionTimeMs: { type: 'number', description: 'Elapsed time in milliseconds' },
+        error: {
+          type: 'object',
+          description: 'Error details (present only on failure)',
+          properties: {
+            code: { type: 'string' },
+            message: { type: 'string' },
+            httpStatus: { type: 'number' },
+          },
+        },
+      },
+      capabilities: ['scheduling.read', 'scheduling.write', 'appointment.manage'],
+      providers: ['schedulewise'],
+      keywords: ['schedulewise', 'appointment', 'schedule', 'booking', 'patient', 'calendar'],
     };
   }
 

@@ -539,11 +539,10 @@ export async function executeNodeDynamically(
     console.warn(`[DynamicExecutor] Failed to capture resolved inputs for ${node.id}:`, captureError);
   }
 
-  // Effective input: use AI-produced JSON when it is a full object (so code/templates see the structure this node needs); else fallback to normalizer
-  // Branching nodes (switch/if_else) evaluate expressions against upstream data (e.g. $json.response) while also resolving runtime_ai config fields.
-  // Replacing effectiveInput with resolvedInputs alone drops the upstream payload and breaks routing (matchedCase null / expression throws).
+  // Branching nodes (switch/if_else and any future branching type) evaluate expressions
+  // against upstream data while also resolving runtime_ai config fields.
   let effectiveInput: unknown = upstreamPayload;
-  if (nodeType === 'switch' || nodeType === 'if_else') {
+  if (definition.isBranching === true) {
     const up =
       typeof upstreamPayload === 'object' && upstreamPayload !== null && !Array.isArray(upstreamPayload)
         ? (upstreamPayload as Record<string, unknown>)

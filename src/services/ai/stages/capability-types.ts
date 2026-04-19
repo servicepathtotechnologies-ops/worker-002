@@ -123,7 +123,7 @@ export interface StructuralPromptGenerationInput {
 export interface StructuralPromptGenerationResult {
   ok: true;
   structuralPrompt: string;
-  /** Validated by UnifiedGraphOrchestrator.validateWorkflow(). */
+  /** Preview-only workflow — nodes hydrated from registry, edges empty. Real graph built in confirm.ts. */
   workflow: Workflow;
   selectedNodeTypes: string[];
   nodeCount: number;

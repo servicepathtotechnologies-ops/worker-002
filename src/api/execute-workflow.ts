@@ -91,6 +91,46 @@ interface ExecutionLog {
   resolvedInputSources?: Record<string, 'runtime_ai' | 'static_config'>;
 }
 
+export interface ScheduleWiseNodeParams {
+  // Required
+  operation: 'getSchedules' | 'createAppointment' | 'updateAppointment' | 'deleteAppointment';
+  // Credential reference
+  credentialId?: string;
+  // getSchedules fields
+  dateFrom?: string;
+  dateTo?: string;
+  patientId?: string;
+  staffId?: string;
+  limit?: number;
+  // createAppointment fields
+  startDateTime?: string;
+  endDateTime?: string;
+  serviceType?: string;
+  notes?: string;
+  // updateAppointment fields
+  appointmentId?: string;
+  status?: string;
+  // deleteAppointment fields
+  hardDelete?: boolean;
+  // Advanced / shared
+  timeoutSec?: number;
+  retries?: number;
+  outputFormat?: 'json' | 'raw';
+  mockMode?: boolean;
+}
+
+export interface ScheduleWiseNodeOutput {
+  success: boolean;
+  operation: string;
+  data?: Record<string, unknown>;
+  executionTimeMs: number;
+  error?: {
+    code: string;
+    message: string;
+    httpStatus: number;
+  };
+}
+
 /**
  * Topological sort to determine execution order
  */
@@ -1950,6 +1990,235 @@ export async function executeNode(
     `If this node exists, ensure it's registered in unified-node-registry-overrides.ts`
   );
 }
+
+// ─── ScheduleWise helpers ────────────────────────────────────────────────────
+
+function buildScheduleWiseMockResponse(params: ScheduleWiseNodeParams, startTime: number): ScheduleWiseNodeOutput {
+  const executionTimeMs = Date.now() - startTime;
+  switch (params.operation) {
+    case 'getSchedules':
+      return {
+        success: true,
+        operation: 'getSchedules',
+        data: {
+          schedules: [
+            {
+              id: 'mock_sched_001',
+              patientId: params.patientId || 'mock_patient_001',
+              patientName: 'Mock Patient',
+              staffId: params.staffId || 'mock_staff_001',
+              staffName: 'Mock Staff',
+              startTime: params.dateFrom ? `${params.dateFrom}T09:00:00Z` : '2024-01-15T09:00:00Z',
+              endTime: params.dateTo ? `${params.dateTo}T10:00:00Z` : '2024-01-15T10:00:00Z',
+              status: 'confirmed',
+              serviceType: 'consultation',
+              notes: 'Mock appointment',
+            },
+          ],
+          totalCount: 1,
+          nextPageToken: null,
+        },
+        executionTimeMs,
+      };
+    case 'createAppointment':
+      return {
+        success: true,
+        operation: 'createAppointment',
+        data: {
+          appointment: {
+            id: `mock_appt_${Date.now()}`,
+            patientId: params.patientId || 'mock_patient_001',
+            staffId: params.staffId || 'mock_staff_001',
+            startTime: params.startDateTime || '2024-01-15T09:00:00Z',
+            endTime: params.endDateTime || '2024-01-15T10:00:00Z',
+            status: 'confirmed',
+            serviceType: params.serviceType || 'consultation',
+            notes: params.notes || '',
+          },
+        },
+        executionTimeMs,
+      };
+    case 'updateAppointment':
+      return {
+        success: true,
+        operation: 'updateAppointment',
+        data: {
+          appointment: {
+            id: params.appointmentId || 'mock_appt_001',
+            patientId: params.patientId || 'mock_patient_001',
+            staffId: params.staffId || 'mock_staff_001',
+            startTime: params.startDateTime || '2024-01-15T09:00:00Z',
+            endTime: params.endDateTime || '2024-01-15T10:00:00Z',
+            status: params.status || 'confirmed',
+            notes: params.notes || '',
+          },
+        },
+        executionTimeMs,
+      };
+    case 'deleteAppointment':
+      return {
+        success: true,
+        operation: 'deleteAppointment',
+        data: {
+          deletedId: params.appointmentId || 'mock_appt_001',
+          permanent: params.hardDelete === true,
+        },
+        executionTimeMs,
+      };
+    default:
+      return {
+        success: false,
+        operation: params.operation,
+        executionTimeMs,
+        error: { code: 'INVALID_OPERATION', message: 'Unknown operation', httpStatus: 400 },
+      };
+  }
+}
+
+async function executeScheduleWiseRequest(
+  params: ScheduleWiseNodeParams,
+  credential: Record<string, any>,
+  nodeId: string,
+  startTime: number
+): Promise<ScheduleWiseNodeOutput> {
+  const apiUrl = (credential.api_url || 'https://api.schedulewise.com/v1').replace(/\/$/, '');
+  const timeoutSec = params.timeoutSec ?? 30;
+  const maxRetries = params.retries ?? 0;
+
+  // Build auth header
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (credential.access_token) {
+    headers['Authorization'] = `Bearer ${credential.access_token}`;
+  } else if (credential.api_key) {
+    headers['X-Api-Key'] = credential.api_key;
+  }
+
+  // Build request
+  let method: string;
+  let url: string;
+  let body: string | undefined;
+
+  switch (params.operation) {
+    case 'getSchedules': {
+      method = 'GET';
+      const qp = new URLSearchParams();
+      if (params.dateFrom) qp.set('dateFrom', params.dateFrom);
+      if (params.dateTo) qp.set('dateTo', params.dateTo);
+      if (params.patientId) qp.set('patientId', params.patientId);
+      if (params.staffId) qp.set('staffId', params.staffId);
+      if (params.limit != null) qp.set('limit', String(params.limit));
+      const qs = qp.toString();
+      url = `${apiUrl}/appointments${qs ? `?${qs}` : ''}`;
+      break;
+    }
+    case 'createAppointment': {
+      method = 'POST';
+      url = `${apiUrl}/appointments`;
+      body = JSON.stringify({
+        patientId: params.patientId,
+        staffId: params.staffId,
+        startDateTime: params.startDateTime,
+        endDateTime: params.endDateTime,
+        serviceType: params.serviceType,
+        notes: params.notes,
+      });
+      break;
+    }
+    case 'updateAppointment': {
+      method = 'PUT';
+      url = `${apiUrl}/appointments/${params.appointmentId}`;
+      const updateBody: Record<string, any> = {};
+      if (params.startDateTime != null) updateBody.startDateTime = params.startDateTime;
+      if (params.endDateTime != null) updateBody.endDateTime = params.endDateTime;
+      if (params.staffId != null) updateBody.staffId = params.staffId;
+      if (params.status != null) updateBody.status = params.status;
+      if (params.notes != null) updateBody.notes = params.notes;
+      body = JSON.stringify(updateBody);
+      break;
+    }
+    case 'deleteAppointment': {
+      method = 'DELETE';
+      url = `${apiUrl}/appointments/${params.appointmentId}${params.hardDelete ? '?hardDelete=true' : ''}`;
+      break;
+    }
+    default:
+      return {
+        success: false,
+        operation: params.operation,
+        executionTimeMs: Date.now() - startTime,
+        error: { code: 'INVALID_OPERATION', message: 'Unknown operation', httpStatus: 400 },
+      };
+  }
+
+  // Retry loop
+  let lastError: ScheduleWiseNodeOutput | null = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    if (attempt > 0) {
+      const delay = Math.pow(2, attempt - 1) * 1000;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      console.log(`[ScheduleWise] node=${nodeId} retry attempt=${attempt} after ${delay}ms`);
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutSec * 1000);
+
+    try {
+      const response = await fetch(url, { method, headers, body, signal: controller.signal });
+      clearTimeout(timeoutId);
+
+      let data: Record<string, unknown>;
+      const responseText = await response.text();
+      try {
+        data = JSON.parse(responseText);
+      } catch {
+        return {
+          success: false,
+          operation: params.operation,
+          executionTimeMs: Date.now() - startTime,
+          error: { code: 'PARSE_ERROR', message: 'Response body is not valid JSON', httpStatus: response.status },
+        };
+      }
+
+      if (response.ok) {
+        return { success: true, operation: params.operation, data, executionTimeMs: Date.now() - startTime };
+      }
+
+      lastError = {
+        success: false,
+        operation: params.operation,
+        executionTimeMs: Date.now() - startTime,
+        error: {
+          code: 'HTTP_ERROR',
+          message: (data as any)?.message || `HTTP ${response.status}`,
+          httpStatus: response.status,
+        },
+      };
+
+      // Only retry on 5xx
+      if (response.status < 500) break;
+    } catch (err: any) {
+      clearTimeout(timeoutId);
+      if (err.name === 'AbortError') {
+        return {
+          success: false,
+          operation: params.operation,
+          executionTimeMs: Date.now() - startTime,
+          error: { code: 'TIMEOUT', message: 'Request timed out', httpStatus: 408 },
+        };
+      }
+      lastError = {
+        success: false,
+        operation: params.operation,
+        executionTimeMs: Date.now() - startTime,
+        error: { code: 'NETWORK_ERROR', message: err.message || 'Network error', httpStatus: 503 },
+      };
+    }
+  }
+
+  return lastError!;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * LEGACY EXECUTOR - Direct execution without dynamic executor
@@ -15347,6 +15616,47 @@ export async function executeNodeLegacy(
           },
         };
       }
+=======
+    case 'schedulewise': {
+      const startTime = Date.now();
+      const params = config as unknown as ScheduleWiseNodeParams;
+
+      // 1. Validate operation
+      const validOps = ['getSchedules', 'createAppointment', 'updateAppointment', 'deleteAppointment'];
+      if (!params.operation || !validOps.includes(params.operation)) {
+        return {
+          success: false,
+          operation: params.operation || 'unknown',
+          executionTimeMs: Date.now() - startTime,
+          error: { code: 'INVALID_OPERATION', message: 'Unknown operation', httpStatus: 400 },
+        };
+      }
+
+      // 2. Mock mode short-circuit
+      if (params.mockMode) {
+        return buildScheduleWiseMockResponse(params, startTime);
+      }
+
+      // 3. Credential lookup
+      const { data: credential } = await supabase
+        .from('credentials')
+        .select('*')
+        .eq('workflow_id', workflowId)
+        .eq('node_id', node.id)
+        .eq('provider', 'schedulewise')
+        .single();
+
+      if (!credential) {
+        return {
+          success: false,
+          operation: params.operation,
+          executionTimeMs: Date.now() - startTime,
+          error: { code: 'NO_CREDENTIALS', message: 'ScheduleWise credentials not configured', httpStatus: 401 },
+        };
+      }
+
+      // 4. Build and execute HTTP request with retry logic
+      return await executeScheduleWiseRequest(params, credential, node.id, startTime);
     }
 
     default: {

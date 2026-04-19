@@ -34,17 +34,25 @@ export function overrideLogOutput(def: UnifiedNodeDefinition, _schema: NodeSchem
     ...def,
     tags: Array.from(new Set([...(def.tags || []), 'output', 'sink', 'terminal', 'logging'])),
     defaultConfig: enhancedDefaultConfig,
-    // ✅ UNIVERSAL: log_output is REQUIRED on every branch path.
-    // Each branch (true/false for if_else, case_N for switch) must terminate with its own
-    // log_output so the execution console shows the correct output per branch.
-    // An orphaned log_output means edge wiring failed — treat it as a hard error, not a warning.
+    // ✅ INTENT-DRIVEN: log_output is ONLY added when user explicitly requests logging.
+    // Each branch that explicitly mentions logging gets its own log_output node.
+    // No automatic injection - purely intent-driven based on user prompt analysis.
     workflowBehavior: {
-      alwaysRequired: true,         // Required: every branch needs its own log_output terminal
+      alwaysRequired: false,        // ✅ CHANGED: Only add when user requests logging
       alwaysTerminal: true,         // Must be last node (no outgoing edges)
-      exemptFromRemoval: true,      // Never auto-remove — orphan = edge wiring bug, not surplus node
-      autoInject: true,             // Auto-inject if missing
-      injectionPriority: 10,
+      exemptFromRemoval: false,     // ✅ CHANGED: Can be removed if not in user intent
+      autoInject: false,            // ✅ CHANGED: No automatic injection
+      injectionPriority: 0,         // ✅ CHANGED: No priority (not auto-injected)
     },
+    // ✅ TERMINAL NODE CAPABILITY FLAGS
+    // These flags define log_output as a single-input terminal node:
+    // - isTerminal: Enforces zero outgoing edges (terminal node)
+    // - maxOutDegree: Explicitly sets maximum outgoing edges to 0
+    // - allowsMultipleInputs: Explicitly set to false for single-input constraint
+    // log_output is a single-input terminal node - each branch must have its own log_output instance
+    isTerminal: true,
+    maxOutDegree: 0,
+    allowsMultipleInputs: false,    // ✅ SINGLE-INPUT: log_output must have exactly one incoming edge
     execute: async (context) => {
       try {
         const nodeOutputs = new LRUNodeOutputsCache(100, false);

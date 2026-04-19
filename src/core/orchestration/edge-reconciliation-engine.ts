@@ -120,11 +120,12 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
         const sourceLinearType = unifiedNormalizeNodeTypeString(
           sourceNodeForLinear.type || sourceNodeForLinear.data?.type || '',
         );
-        // log_output: inbound wiring is Step 7 (branch-aware); never linear backbone in/out of log terminals
-        if (targetLinearType === 'log_output' || sourceLinearType === 'log_output') {
+        const targetLinearDef = unifiedNodeRegistry.get(targetLinearType);
+        const sourceLinearDef = unifiedNodeRegistry.get(sourceLinearType);
+        // Terminal nodes: inbound wiring is Step 7 (branch-aware); never linear backbone in/out of terminals
+        if (targetLinearDef?.isTerminal === true || sourceLinearDef?.isTerminal === true) {
           continue;
         }
-        const targetLinearDef = unifiedNodeRegistry.get(targetLinearType);
         if (
           targetLinearDef?.workflowBehavior?.alwaysTerminal === true ||
           (targetLinearDef?.tags || []).includes('terminal')
@@ -344,11 +345,12 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
     
     for (const outputNode of outputNodes) {
       const outputNodeType = this.getNodeType(outputNode);
+      const outputNodeDef = unifiedNodeRegistry.get(outputNodeType);
 
-      // ✅ log_output terminals are handled exclusively by Step 7 (branch-aware predecessor logic).
-      // Step 6 must NOT wire log_output nodes — it has no branch awareness and would connect
+      // ✅ Terminal nodes are handled exclusively by Step 7 (branch-aware predecessor logic).
+      // Step 6 must NOT wire terminal nodes — it has no branch awareness and would connect
       // both branch terminals to the same predecessor (the last output node in execution order).
-      if (outputNodeType === 'log_output') continue;
+      if (outputNodeDef?.isTerminal === true) continue;
 
       const outputIndex = orderedNodeIds.indexOf(outputNode.id);
       if (outputIndex < 0) continue;
@@ -430,20 +432,21 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
       }
     }
     
-    // ✅ STEP 7: Ensure ALL output nodes (including log_output) are properly connected
-    // ✅ UNIVERSAL FIX: Check for ALL output nodes using isOutputNode(), not just log_output
-    // This ensures any output node (CRM, email, log_output, etc.) is connected properly
+    // ✅ STEP 7: Ensure ALL output nodes (including terminals) are properly connected
+    // ✅ UNIVERSAL FIX: Check for ALL output nodes using isOutputNode(), not just specific types
+    // This ensures any output node (CRM, email, terminal, etc.) is connected properly
     const allOutputNodes = workflow.nodes.filter(n => {
       return isOutputNode(n);
     });
     
-    const logOutputNodes = allOutputNodes.filter(n => {
+    const terminalNodes = allOutputNodes.filter(n => {
       const nodeType = this.getNodeType(n);
-      return nodeType === 'log_output';
+      const nodeDef = unifiedNodeRegistry.get(nodeType);
+      return nodeDef?.isTerminal === true;
     });
     
     console.log(
-      `[EdgeReconciliationEngine] 🔍 DEBUG STEP 7: Found ${allOutputNodes.length} output node(s) (${logOutputNodes.length} log_output), ` +
+      `[EdgeReconciliationEngine] 🔍 DEBUG STEP 7: Found ${allOutputNodes.length} output node(s) (${terminalNodes.length} terminal), ` +
       `execution order has ${orderedNodeIds.length} nodes: [${orderedNodeIds.map(id => {
         const node = workflow.nodes.find(n => n.id === id);
         const type = node ? this.getNodeType(node) : 'unknown';
@@ -451,33 +454,34 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
       }).join(' → ')}]`
     );
     
-    // Process log_output nodes in execution order (stable wiring for multi-branch terminals)
-    const logOutputNodesSorted = [...logOutputNodes].sort(
+    // Process terminal nodes in execution order (stable wiring for multi-branch terminals)
+    const terminalNodesSorted = [...terminalNodes].sort(
       (a, b) => orderedNodeIds.indexOf(a.id) - orderedNodeIds.indexOf(b.id)
     );
     const usedTerminalPredecessors = new Set<string>();
 
-    for (const logOutputNode of logOutputNodesSorted) {
-      const logOutputIndex = orderedNodeIds.indexOf(logOutputNode.id);
+    for (const terminalNode of terminalNodesSorted) {
+      const terminalIndex = orderedNodeIds.indexOf(terminalNode.id);
+      const terminalType = this.getNodeType(terminalNode);
       console.log(
-        `[EdgeReconciliationEngine] 🔍 DEBUG log_output(${logOutputNode.id.substring(0, 8)}): ` +
-        `index=${logOutputIndex}, ` +
+        `[EdgeReconciliationEngine] 🔍 DEBUG terminal(${terminalNode.id.substring(0, 8)}): ` +
+        `type=${terminalType}, index=${terminalIndex}, ` +
         `totalNodes=${orderedNodeIds.length}`
       );
       
-      if (logOutputIndex < 0) {
-        console.warn(`[EdgeReconciliationEngine] ⚠️  log_output node ${logOutputNode.id} not found in execution order`);
+      if (terminalIndex < 0) {
+        console.warn(`[EdgeReconciliationEngine] ⚠️  Terminal node ${terminalNode.id} not found in execution order`);
         continue;
       }
       
       const structuralSnapshot = [...workingEdges];
-      // Branch-aware predecessor: avoids wiring the wrong branch's communication node into a sibling log
+      // Branch-aware predecessor: avoids wiring the wrong branch's communication node into a sibling terminal
       let lastNonTerminalNodeId = this.pickBranchAwarePredecessorForLogOutput(
         workflow,
         orderedNodeIds,
         structuralSnapshot,
-        logOutputNode.id,
-        logOutputIndex,
+        terminalNode.id,
+        terminalIndex,
         {
           usedPredecessorIds: usedTerminalPredecessors,
           disableLegacyFallback: true,
@@ -486,7 +490,7 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
 
       if (lastNonTerminalNodeId) {
         console.log(
-          `[EdgeReconciliationEngine] ✅ Branch-aware predecessor for log_output(${logOutputNode.id.substring(0, 8)}): ` +
+          `[EdgeReconciliationEngine] ✅ Branch-aware predecessor for terminal(${terminalNode.id.substring(0, 8)}): ` +
             `${lastNonTerminalNodeId.substring(0, 8)}`
         );
       }
@@ -497,16 +501,16 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
         
         // Check if edge already exists
         const edgeExists = workingEdges.some(
-          e => e.source === lastNonTerminalNodeId && e.target === logOutputNode.id
+          e => e.source === lastNonTerminalNodeId && e.target === terminalNode.id
         );
         
         console.log(
           `[EdgeReconciliationEngine] 🔍 DEBUG Edge check: ` +
-          `${sourceType}(${lastNonTerminalNodeId.substring(0, 8)}) → log_output(${logOutputNode.id.substring(0, 8)}): ` +
+          `${sourceType}(${lastNonTerminalNodeId.substring(0, 8)}) → terminal(${terminalNode.id.substring(0, 8)}): ` +
           `exists=${edgeExists}`
         );
         const structuralEdgesSnapshot = [...workingEdges];
-        const existingIncoming = structuralEdgesSnapshot.filter(e => e.target === logOutputNode.id);
+        const existingIncoming = structuralEdgesSnapshot.filter(e => e.target === terminalNode.id);
 
         const hasLineageValidIncoming = existingIncoming.some((inc) => {
           if (inc.source === lastNonTerminalNodeId) return true;
@@ -514,16 +518,33 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
           if (!incomingSourceNode) return false;
           const incomingSourceType = this.getNodeType(incomingSourceNode);
           const incomingSourceDef = unifiedNodeRegistry.get(incomingSourceType);
+          
           // Merge nodes are explicit branch reconvergence points and are valid
           // terminal predecessors even if lineage picker chooses a branch head.
-          return (incomingSourceDef?.tags || []).includes('merge') || incomingSourceType === 'merge';
+          if ((incomingSourceDef?.tags || []).includes('merge') || incomingSourceType === 'merge') {
+            return true;
+          }
+          
+          // ✅ PRIMARY FIX: Case edges from branching nodes are legitimate predecessors
+          // When a terminal is a direct case target of a branching node (switch/if_else),
+          // the case edge (true/false/case_*) is a legitimate connection that should be preserved.
+          // This prevents Step 7 from incorrectly removing case edges as "stale" edges.
+          if (incomingSourceDef?.isBranching === true) {
+            const edgeType = String(inc.type || inc.sourceHandle || '').toLowerCase();
+            const isCaseEdge = edgeType === 'true' || edgeType === 'false' || edgeType.startsWith('case_');
+            if (isCaseEdge) {
+              return true;
+            }
+          }
+          
+          return false;
         });
 
         if (existingIncoming.length > 0 && hasLineageValidIncoming) {
           usedTerminalPredecessors.add(lastNonTerminalNodeId);
           console.log(
             `[EdgeReconciliationEngine] 🔍 Skip log_output wiring: lineage-valid incoming already exists ` +
-              `(${lastNonTerminalNodeId.substring(0, 8)} -> ${logOutputNode.id.substring(0, 8)})`
+              `(${lastNonTerminalNodeId.substring(0, 8)} -> ${terminalNode.id.substring(0, 8)})`
           );
         } else if (!edgeExists) {
           if (existingIncoming.length > 0 && !hasLineageValidIncoming) {
@@ -533,7 +554,7 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
               if (idx >= 0) workingEdges.splice(idx, 1);
             }
             console.warn(
-              `[EdgeReconciliationEngine] ⚠️  Rewiring stale incoming edges for log_output(${logOutputNode.id.substring(0, 8)}): ` +
+              `[EdgeReconciliationEngine] ⚠️  Rewiring stale incoming edges for log_output(${terminalNode.id.substring(0, 8)}): ` +
                 `${existingIncoming.map((e) => e.source.substring(0, 8)).join(', ')}`
             );
           }
@@ -551,13 +572,13 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
               workflow.nodes,
               structuralEdgesSnapshot,
               lastNonTerminalNodeId,
-              logOutputNode.id
+              terminalNode.id
             ) ||
             this.areConsecutivePairExclusiveBranchHeadsByOrder(
               workflow.nodes,
               orderedNodeIds,
               lastNonTerminalNodeId,
-              logOutputNode.id,
+              terminalNode.id,
               structuralEdgesSnapshot
             );
           if (wouldCrossForkFanIn) {
@@ -569,19 +590,19 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
           } else if (crossExclusiveFork) {
             console.log(
               `[EdgeReconciliationEngine] 🔍 Skip log_output wiring: exclusive fork regions ` +
-                `(${lastNonTerminalNodeId.substring(0, 8)} → ${logOutputNode.id.substring(0, 8)})`
+                `(${lastNonTerminalNodeId.substring(0, 8)} → ${terminalNode.id.substring(0, 8)})`
             );
           } else {
             // Create edge from last non-terminal node to log_output
             console.log(
               `[EdgeReconciliationEngine] 🔍 DEBUG Attempting to create edge: ` +
-                `${sourceType}(${lastNonTerminalNodeId.substring(0, 8)}) → log_output(${logOutputNode.id.substring(0, 8)})`
+                `${sourceType}(${lastNonTerminalNodeId.substring(0, 8)}) → log_output(${terminalNode.id.substring(0, 8)})`
             );
 
             const edge = this.createEdgeFromOrder(
               workflow,
               lastNonTerminalNodeId,
-              logOutputNode.id,
+              terminalNode.id,
               executionOrder,
               undefined,
               workingEdges
@@ -592,13 +613,13 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
               workingEdges.push(edge);
               usedTerminalPredecessors.add(lastNonTerminalNodeId);
               console.log(
-                `[EdgeReconciliationEngine] ✅ Connected last non-terminal node (${lastNonTerminalNodeId}) → log_output (${logOutputNode.id})`
+                `[EdgeReconciliationEngine] ✅ Connected last non-terminal node (${lastNonTerminalNodeId}) → log_output (${terminalNode.id})`
               );
             } else {
               // If source already points to a different log_output, treat that as stale lineage wiring
               // and retry once for the lineage-selected terminal.
               const staleOutgoingToOtherLog = workingEdges.find((e) => {
-                if (e.source !== lastNonTerminalNodeId || e.target === logOutputNode.id) return false;
+                if (e.source !== lastNonTerminalNodeId || e.target === terminalNode.id) return false;
                 const tNode = workflow.nodes.find((n) => n.id === e.target);
                 return !!tNode && this.getNodeType(tNode) === 'log_output';
               });
@@ -608,12 +629,12 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
                 if (staleIdx >= 0) workingEdges.splice(staleIdx, 1);
                 console.warn(
                   `[EdgeReconciliationEngine] ⚠️  Rewiring stale outgoing log edge from ${lastNonTerminalNodeId.substring(0, 8)}: ` +
-                    `${staleOutgoingToOtherLog.target.substring(0, 8)} → ${logOutputNode.id.substring(0, 8)}`
+                    `${staleOutgoingToOtherLog.target.substring(0, 8)} → ${terminalNode.id.substring(0, 8)}`
                 );
                 const retriedEdge = this.createEdgeFromOrder(
                   workflow,
                   lastNonTerminalNodeId,
-                  logOutputNode.id,
+                  terminalNode.id,
                   executionOrder,
                   undefined,
                   workingEdges
@@ -623,7 +644,7 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
                   workingEdges.push(retriedEdge);
                   usedTerminalPredecessors.add(lastNonTerminalNodeId);
                   console.log(
-                    `[EdgeReconciliationEngine] ✅ Rewired terminal edge: ${lastNonTerminalNodeId.substring(0, 8)} → ${logOutputNode.id.substring(0, 8)}`
+                    `[EdgeReconciliationEngine] ✅ Rewired terminal edge: ${lastNonTerminalNodeId.substring(0, 8)} → ${terminalNode.id.substring(0, 8)}`
                   );
                   continue;
                 }
@@ -631,7 +652,7 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
               // Linear Step 3 can chain sibling branch heads (e.g. slack → gmail) when hypothetical
               // ports were empty; universal edge service then blocks slack → log. Drop that spine.
               const staleCrossBranchSpine = workingEdges.find((e) => {
-                if (e.source !== lastNonTerminalNodeId || e.target === logOutputNode.id) return false;
+                if (e.source !== lastNonTerminalNodeId || e.target === terminalNode.id) return false;
                 const tNode = workflow.nodes.find((n) => n.id === e.target);
                 if (!tNode) return false;
                 if (this.getNodeType(tNode) === 'log_output') return false;
@@ -654,7 +675,7 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
                 const retriedSpine = this.createEdgeFromOrder(
                   workflow,
                   lastNonTerminalNodeId,
-                  logOutputNode.id,
+                  terminalNode.id,
                   executionOrder,
                   undefined,
                   workingEdges
@@ -665,23 +686,23 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
                   usedTerminalPredecessors.add(lastNonTerminalNodeId);
                   console.log(
                     `[EdgeReconciliationEngine] ✅ Rewired after spine removal: ${lastNonTerminalNodeId.substring(0, 8)} → ` +
-                      `${logOutputNode.id.substring(0, 8)}`
+                      `${terminalNode.id.substring(0, 8)}`
                   );
                   continue;
                 }
               }
               const sourceNodeDef = unifiedNodeRegistry.get(sourceType);
-              const logOutputNodeDef = unifiedNodeRegistry.get('log_output');
+              const terminalNodeDef = unifiedNodeRegistry.get(terminalType);
               console.error(
                 `[EdgeReconciliationEngine] ❌ FAILED to create edge: ` +
-                  `${sourceType}(${lastNonTerminalNodeId.substring(0, 8)}) → log_output(${logOutputNode.id.substring(0, 8)})\n` +
+                  `${sourceType}(${lastNonTerminalNodeId.substring(0, 8)}) → ${terminalType}(${terminalNode.id.substring(0, 8)})\n` +
                   `  Source node: type=${sourceType}, outgoingPorts=[${(sourceNodeDef?.outgoingPorts || []).join(', ')}], ` +
                   `incomingPorts=[${(sourceNodeDef?.incomingPorts || []).join(', ')}]\n` +
-                  `  Target node: type=log_output, outgoingPorts=[${(logOutputNodeDef?.outgoingPorts || []).join(', ')}], ` +
-                  `incomingPorts=[${(logOutputNodeDef?.incomingPorts || []).join(', ')}]`
+                  `  Target node: type=${terminalType}, outgoingPorts=[${(terminalNodeDef?.outgoingPorts || []).join(', ')}], ` +
+                  `incomingPorts=[${(terminalNodeDef?.incomingPorts || []).join(', ')}]`
               );
               warnings.push(
-                `Could not create edge from ${lastNonTerminalNodeId} to log_output (${logOutputNode.id}) - handle resolution failed`
+                `Could not create edge from ${lastNonTerminalNodeId} to ${terminalType} (${terminalNode.id}) - handle resolution failed`
               );
             }
           }
@@ -690,8 +711,8 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
         }
       } else {
         console.warn(
-          `[EdgeReconciliationEngine] ⚠️  No node found to connect to log_output(${logOutputNode.id.substring(0, 8)}) - ` +
-          `logOutputIndex=${logOutputIndex}, orderedNodeIds.length=${orderedNodeIds.length}, lineageAware=true`
+          `[EdgeReconciliationEngine] ⚠️  No node found to connect to terminal(${terminalNode.id.substring(0, 8)}) - ` +
+          `terminalIndex=${terminalIndex}, orderedNodeIds.length=${orderedNodeIds.length}, lineageAware=true`
         );
       }
     }
@@ -859,8 +880,10 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
     let outEdges = [...edges];
     let splitCount = 0;
 
+    // Find log_output nodes that need splitting when they have multiple inputs
     const logNodes = outNodes.filter(n => {
       const t = this.getNodeType(n);
+      // Always split log_output nodes when they have multiple inputs
       return t === 'log_output';
     });
 
@@ -992,10 +1015,10 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
         continue;
       }
       
-      // ✅ RULE: Keep if required by registry
-      const isRequired = 
-        nodeDef?.workflowBehavior?.alwaysRequired === true ||
-        nodeDef?.workflowBehavior?.exemptFromRemoval === true;
+      // ✅ TASK 17.1: Remove alwaysRequired and exemptFromRemoval flag checks
+      // Use intent-driven preservation instead
+      // Only preserve trigger nodes (always required)
+      const isRequired = nodeDef?.category === 'trigger';
       
       const isSolePredecessorOfRequiredTerminal = edges.some((e) => {
         if (e.source !== node.id) return false;
@@ -1003,9 +1026,8 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
         if (!target) return false;
         const targetType = this.getNodeType(target);
         const targetDef = unifiedNodeRegistry.get(targetType);
-        const targetRequired =
-          targetDef?.workflowBehavior?.alwaysRequired === true ||
-          targetDef?.workflowBehavior?.exemptFromRemoval === true;
+        // ✅ TASK 17.1: Only check if target is a trigger (always required)
+        const targetRequired = targetDef?.category === 'trigger';
         if (!targetRequired) return false;
         const incomingCount = edges.filter((ie) => ie.target === target.id).length;
         return incomingCount <= 1;
@@ -1684,26 +1706,21 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
         return;
       }
 
-      // ✅ UNIVERSAL FIX: Remove skip edges to log_output terminals.
-      // A log_output node must only receive an edge from its direct predecessor in execution
-      // order (the node immediately before it). Any edge that skips over intermediate nodes
-      // to reach log_output is invalid and causes the splitMultiInputLogOutputs to fire,
-      // creating a spurious "branch 2" clone node.
-      //
-      // Example of bad skip edge: google_sheets(idx=1) → log_output(idx=3)
-      // when google_gmail(idx=2) sits between them. The correct edge is
-      // google_gmail(idx=2) → log_output(idx=3).
+      // ✅ REGISTRY-DRIVEN: Skip edge validation for terminal nodes
+      // Only validate skip edges for terminal nodes that DON'T allow multiple inputs.
+      // Nodes with allowsMultipleInputs: true (e.g., log_output with merge capability)
+      // can receive edges from multiple sources, so skip edge validation doesn't apply.
       const targetNode = workflow.nodes.find(n => n.id === edge.target);
       if (targetNode) {
         const targetType = this.getNodeType(targetNode);
+        const targetDef = unifiedNodeRegistry.get(targetType);
+        
+        // Always enforce single-input constraint for log_output nodes
         if (targetType === 'log_output') {
-          // The only valid predecessor for log_output is the node at targetIdx - 1
-          // (or a branch output node in a branching workflow).
-          // If the source is NOT the direct predecessor, it's a skip edge — remove it.
+          // Legacy single-input log_output behavior: only allow direct predecessor
           const directPredecessorId = orderedNodeIds[targetIdx - 1];
           if (directPredecessorId && edge.source !== directPredecessorId) {
             // Allow branch edges (true/false/case_*) — these are legitimate multi-input scenarios
-            // that splitMultiInputLogOutputs handles correctly.
             const edgeType = String(edge.type || edge.sourceHandle || '').toLowerCase();
             const isBranchEdge = edgeType === 'true' || edgeType === 'false' || edgeType.startsWith('case_');
             const sourceNodeForLog = workflow.nodes.find(n => n.id === edge.source);
@@ -1764,12 +1781,18 @@ class EdgeReconciliationEngineImpl implements EdgeReconciliationEngine {
       return def?.isBranching === true;
     });
     if (hasBranchingNode) {
-      const logOutputNodes = workflow.nodes.filter((n) => this.getNodeType(n) === 'log_output');
-      for (const logNode of logOutputNodes) {
-        const incomingCount = workflow.edges.filter((e) => e.target === logNode.id).length;
+      // Check terminal nodes - log_output nodes must always have exactly one incoming edge
+      const terminalNodes = workflow.nodes.filter((n) => {
+        const nodeType = this.getNodeType(n);
+        const def = unifiedNodeRegistry.get(nodeType);
+        // Always enforce single-input constraint for log_output nodes
+        return def?.isTerminal === true || nodeType === 'log_output';
+      });
+      for (const terminalNode of terminalNodes) {
+        const incomingCount = workflow.edges.filter((e) => e.target === terminalNode.id).length;
         if (incomingCount !== 1) {
           violations.push(
-            `Terminal lineage violation: branching workflow requires exactly one incoming edge for log_output ${logNode.id} (found ${incomingCount})`
+            `Terminal lineage violation: branching workflow requires exactly one incoming edge for terminal node ${terminalNode.id} (found ${incomingCount})`
           );
         }
       }

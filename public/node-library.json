@@ -3107,8 +3107,11 @@
     ]
   },
   {
+
     "type": "vercel",
     "category": "devops",
+    "type": "schedulewise",
+    "category": "integration",
     "inputs": [
       "input",
       "inputData"
@@ -3126,6 +3129,26 @@
       "operation",
       "projectName",
       "token"
+      "operation"
+    ],
+    "optionalConfig": [
+      "credentialId",
+      "dateFrom",
+      "dateTo",
+      "patientId",
+      "staffId",
+      "appointmentId",
+      "startDateTime",
+      "endDateTime",
+      "serviceType",
+      "notes",
+      "status",
+      "limit",
+      "hardDelete",
+      "timeoutSec",
+      "retries",
+      "outputFormat",
+      "mockMode"
     ]
   }
 ]
