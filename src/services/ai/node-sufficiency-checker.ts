@@ -43,11 +43,9 @@ export function checkNodeSufficiency(
     const idx = instanceCount.get(nodeType) ?? 0;
     instanceCount.set(nodeType, idx + 1);
 
-    // Always-required nodes from registry
-    if (def?.workflowBehavior?.alwaysRequired === true) {
-      rationale.push({ nodeType, instanceIndex: idx, reason: 'Required by registry (alwaysRequired)', intentSource: 'registry' });
-      continue;
-    }
+    // ✅ TASK 15.1: Remove alwaysRequired check - use intent-driven preservation instead
+    // Previously: if (def?.workflowBehavior?.alwaysRequired === true) { ... }
+    // Now: Only preserve nodes that match user intent
 
     // Trigger nodes are always needed
     if (def?.category === 'trigger') {
@@ -55,11 +53,12 @@ export function checkNodeSufficiency(
       continue;
     }
 
-    // log_output: only keep if intent has observability signal OR alwaysTerminal
+    // ✅ TASK 15.1: log_output - only keep if intent has observability signal
+    // Do NOT preserve based on alwaysRequired flag
     if (nodeType === 'log_output' || def?.workflowBehavior?.alwaysTerminal === true) {
       const hasObservabilitySignal = intentKeywords.some(k => observabilityKeywords.some(o => k.includes(o)));
-      if (hasObservabilitySignal || def?.workflowBehavior?.alwaysTerminal === true) {
-        rationale.push({ nodeType, instanceIndex: idx, reason: 'Terminal/observability node', intentSource: 'registry' });
+      if (hasObservabilitySignal) {
+        rationale.push({ nodeType, instanceIndex: idx, reason: 'Terminal/observability node (user requested)', intentSource: 'intent' });
       } else {
         nodesToRemove.push(token);
         rationale.push({ nodeType, instanceIndex: idx, reason: 'Removed: no observability signal in intent', intentSource: 'intent' });

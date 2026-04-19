@@ -2795,5 +2795,40 @@
       "paymentId",
       "autoCapture"
     ]
+  },
+  {
+    "type": "schedulewise",
+    "category": "integration",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "operation"
+    ],
+    "optionalConfig": [
+      "credentialId",
+      "dateFrom",
+      "dateTo",
+      "patientId",
+      "staffId",
+      "appointmentId",
+      "startDateTime",
+      "endDateTime",
+      "serviceType",
+      "notes",
+      "status",
+      "limit",
+      "hardDelete",
+      "timeoutSec",
+      "retries",
+      "outputFormat",
+      "mockMode"
+    ]
   }
 ]

@@ -214,7 +214,7 @@ function validateNodeSelectionObject(
   return parsed.length > 0 ? parsed : null;
 }
 
-function enforceRegistrySelectionContract(
+export function enforceRegistrySelectionContract(
   parsed: Array<{ type: string; role: SelectedNode['role']; reason: string }>,
   correlationId?: string,
   constraints?: NodeSelectionConstraints,
@@ -267,15 +267,19 @@ function enforceRegistrySelectionContract(
   }
   const seen = new Set(withoutExtraTriggers.map((n) => n.type));
   for (const reqType of requiredTypes) {
-    if (seen.has(reqType)) continue;
     const def = unifiedNodeRegistry.get(reqType);
     if (!def) continue;
+    // Branching nodes (switch, if_else) are exempt from type-deduplication —
+    // multiple instances of the same branching type are required for nested workflows.
+    const isBranching = def.isBranching === true;
+    if (!isBranching && seen.has(reqType)) continue;
     withoutExtraTriggers.push({
       type: reqType,
       role: deriveNodeRole(reqType),
       reason: 'Required by user-confirmed capability selection',
       nodeId: randomUUID(),
     });
+    seen.add(reqType);
   }
   return withoutExtraTriggers;
 }
@@ -284,7 +288,8 @@ function deriveNodeRole(nodeType: string): SelectedNode['role'] {
   if (unifiedNodeRegistry.isTrigger(nodeType)) return 'trigger';
   const category = String(unifiedNodeRegistry.getCategory(nodeType) || '').toLowerCase();
   if (category === 'logic') return 'logic';
-  if (nodeType === 'log_output') return 'terminal';
+  // Use registry flag instead of hardcoded type name
+  if (unifiedNodeRegistry.get(nodeType)?.workflowBehavior?.alwaysTerminal === true) return 'terminal';
   return 'action';
 }
 

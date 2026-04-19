@@ -61,7 +61,10 @@ function buildSwitchWorkflowWithNBranches(n: number): {
 
   const caseNodeMapping: CaseNodeMapping = {};
   cases.forEach((v, i) => {
-    caseNodeMapping[v] = 'http_request';
+    caseNodeMapping[v] = {
+      targetNodeType: 'http_request',
+      targetNodeId: `http_${i + 1}`,
+    };
   });
 
   const result = unifiedGraphOrchestrator.initializeWorkflow(

@@ -183,7 +183,121 @@ export class AgenticWorkflowBuilder {
       throw new Error('Invalid PlannedWorkflow structure from Gemini');
     }
 
+    // ✅ TASK 10.1: Analyze steps to detect branch-specific output requirements
+    this.analyzeBranchSpecificOutputs(planned);
+
     return planned;
+  }
+
+  /**
+   * Analyze PlannedWorkflow steps to detect if branching nodes have branch-specific output requirements.
+   * 
+   * This method looks for patterns indicating different branches need different output nodes:
+   * - Step with role "branch" or "switch" followed by multiple steps with different output types
+   * - Steps with metadata indicating branch association (e.g., branchCase: "admin")
+   * 
+   * The analysis results are logged for debugging and can be used by downstream hydration logic.
+   * 
+   * @param planned - The PlannedWorkflow from Gemini
+   */
+  private analyzeBranchSpecificOutputs(planned: PlannedWorkflow): void {
+    const steps = planned.steps;
+    
+    // Find branching nodes (switch, if_else)
+    const branchingNodes: Array<{ index: number; step: PlannedStep; type: string }> = [];
+    
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i];
+      const normalizedType = unifiedNormalizeNodeTypeString(step.type);
+      
+      if (normalizedType === 'switch' || normalizedType === 'if_else') {
+        branchingNodes.push({ index: i, step, type: normalizedType });
+      }
+    }
+
+    if (branchingNodes.length === 0) {
+      // No branching nodes detected - no analysis needed
+      return;
+    }
+
+    // Analyze each branching node for branch-specific outputs
+    for (const branchingNode of branchingNodes) {
+      const { index, step, type } = branchingNode;
+      
+      // Look at steps following this branching node
+      const downstreamSteps = steps.slice(index + 1);
+      
+      // Detect if downstream steps have branch association metadata
+      const branchSpecificSteps = downstreamSteps.filter(s => 
+        s.config?.branchCase || 
+        s.config?.branchParent || 
+        s.config?.metadata?.branchCase ||
+        s.config?.metadata?.branchParent
+      );
+
+      if (branchSpecificSteps.length > 0) {
+        console.log(`[Branch Analysis] Detected branch-specific steps for ${type} node at index ${index}:`, 
+          branchSpecificSteps.map(s => ({
+            type: s.type,
+            branchCase: s.config?.branchCase || s.config?.metadata?.branchCase,
+            branchParent: s.config?.branchParent || s.config?.metadata?.branchParent
+          }))
+        );
+      }
+
+      // Detect if multiple different output types follow the branching node
+      // Check for nodes with 'output', 'sink', or 'terminal' tags
+      const outputTypes = new Set<string>();
+      for (const ds of downstreamSteps) {
+        const normalizedType = unifiedNormalizeNodeTypeString(ds.type);
+        const nodeDef = unifiedNodeRegistry.get(normalizedType);
+        
+        // Check if node is an output node by checking tags or terminal behavior
+        const isOutputNode = nodeDef?.tags?.some(tag => 
+          tag === 'output' || tag === 'sink' || tag === 'terminal'
+        ) || nodeDef?.isTerminal === true;
+        
+        if (isOutputNode) {
+          outputTypes.add(normalizedType);
+        }
+      }
+
+      if (outputTypes.size > 1) {
+        console.log(`[Branch Analysis] Detected multiple output types after ${type} node at index ${index}:`, 
+          Array.from(outputTypes)
+        );
+      }
+
+      // Detect if only some branches mention specific output nodes
+      // This is indicated by steps with different roles or types following the branch
+      const branchOutputMap = new Map<string, string[]>();
+      
+      for (const ds of downstreamSteps) {
+        const branchCase = ds.config?.branchCase || ds.config?.metadata?.branchCase;
+        if (branchCase) {
+          const normalizedType = unifiedNormalizeNodeTypeString(ds.type);
+          const nodeDef = unifiedNodeRegistry.get(normalizedType);
+          
+          // Check if node is an output node
+          const isOutputNode = nodeDef?.tags?.some(tag => 
+            tag === 'output' || tag === 'sink' || tag === 'terminal'
+          ) || nodeDef?.isTerminal === true;
+          
+          if (isOutputNode) {
+            if (!branchOutputMap.has(branchCase)) {
+              branchOutputMap.set(branchCase, []);
+            }
+            branchOutputMap.get(branchCase)!.push(normalizedType);
+          }
+        }
+      }
+
+      if (branchOutputMap.size > 0) {
+        console.log(`[Branch Analysis] Branch-specific output mapping for ${type} node at index ${index}:`, 
+          Object.fromEntries(branchOutputMap)
+        );
+      }
+    }
   }
 
   /**
@@ -309,11 +423,22 @@ export class AgenticWorkflowBuilder {
     const branchingStep = steps[branchingStepIndex];
 
     let branchCount: number;
+    let branchCases: string[] = [];
+    
     if (branchingStep.type === 'switch') {
       const cases = (branchingStep.config as any)?.cases;
       branchCount = Array.isArray(cases) && cases.length > 0 ? cases.length : 2;
+      // Extract case names for metadata
+      if (Array.isArray(cases)) {
+        branchCases = cases.map((c: any, idx: number) => 
+          typeof c === 'string' ? c : `case_${idx + 1}`
+        );
+      } else {
+        branchCases = Array.from({ length: branchCount }, (_, i) => `case_${i + 1}`);
+      }
     } else {
       branchCount = 2;
+      branchCases = ['true', 'false'];
     }
 
     const prefix = steps.slice(0, branchingStepIndex + 1);
@@ -326,14 +451,169 @@ export class AgenticWorkflowBuilder {
     const expanded = [...downstreamSteps];
     const template = downstreamSteps[downstreamSteps.length - 1];
     let seq = 0;
+    
+    // ✅ TASK 11 (9.2): Preserve branch association metadata when expanding
     while (expanded.length < branchCount) {
+      const branchIndex = expanded.length;
+      const branchCase = branchCases[branchIndex] || `case_${branchIndex + 1}`;
+      
       expanded.push({
         ...template,
         id: `${template.type}_branch_${seq++}_${randomUUID().slice(0, 8)}`,
+        // ✅ Preserve branch metadata for downstream processing
+        config: {
+          ...(template.config || {}),
+          metadata: {
+            ...(template.config?.metadata || {}),
+            branchCase,
+            branchParent: branchingStep.id || `${branchingStep.type}_${branchingStepIndex}`,
+          },
+        },
       });
     }
 
     return [...prefix, ...expanded];
+  }
+
+  /**
+   * ✅ TASK 11.1: Detect branching nodes and analyze which branches need which output types.
+   * 
+   * This method scans the expanded steps to identify:
+   * - Branching nodes (switch, if_else)
+   * - Downstream steps for each branch
+   * - Which branches explicitly need log_output vs other output types
+   * 
+   * Returns analysis data used by generateBranchSpecificLogOutputs.
+   */
+  private detectBranchingNodesAndOutputs(steps: PlannedStep[]): {
+    branchingNodes: Array<{
+      index: number;
+      step: PlannedStep;
+      type: 'switch' | 'if_else';
+      branches: Map<string, { needsLogOutput: boolean; hasOtherOutput: boolean }>;
+    }>;
+  } {
+    const branchingNodes: Array<{
+      index: number;
+      step: PlannedStep;
+      type: 'switch' | 'if_else';
+      branches: Map<string, { needsLogOutput: boolean; hasOtherOutput: boolean }>;
+    }> = [];
+
+    // Find all branching nodes
+    steps.forEach((step, index) => {
+      if (step.type === 'switch' || step.type === 'if_else') {
+        const branches = new Map<string, { needsLogOutput: boolean; hasOtherOutput: boolean }>();
+        
+        // Analyze downstream steps to determine branch-specific outputs
+        const downstreamSteps = steps.slice(index + 1);
+        
+        for (const ds of downstreamSteps) {
+          const branchCase = ds.config?.metadata?.branchCase;
+          if (branchCase) {
+            if (!branches.has(branchCase)) {
+              branches.set(branchCase, { needsLogOutput: false, hasOtherOutput: false });
+            }
+            
+            const normalizedType = unifiedNormalizeNodeTypeString(ds.type);
+            const nodeDef = unifiedNodeRegistry.get(normalizedType);
+            
+            // Check if this is an output/terminal node
+            const isOutputNode = nodeDef?.workflowBehavior?.alwaysTerminal === true ||
+                                (nodeDef?.tags || []).includes('terminal') ||
+                                (nodeDef?.tags || []).includes('output');
+            
+            if (isOutputNode) {
+              if (normalizedType === 'log_output') {
+                branches.get(branchCase)!.needsLogOutput = true;
+              } else {
+                branches.get(branchCase)!.hasOtherOutput = true;
+              }
+            }
+          }
+        }
+        
+        branchingNodes.push({
+          index,
+          step,
+          type: step.type as 'switch' | 'if_else',
+          branches,
+        });
+      }
+    });
+
+    return { branchingNodes };
+  }
+
+  /**
+   * ✅ TASK 11.1: Generate separate log_output nodes for branches that need them.
+   * 
+   * For each branch that:
+   * - Doesn't have any output node, OR
+   * - Explicitly needs log_output (based on user intent)
+   * 
+   * Generate a unique log_output node with metadata:
+   * - branchCase: which branch this log_output belongs to
+   * - branchParent: the ID of the branching node
+   * 
+   * This ensures each branch has its own terminal node, preventing invalid merge topologies.
+   */
+  private generateBranchSpecificLogOutputs(
+    existingNodes: WorkflowNode[],
+    branchingAnalysis: ReturnType<typeof this.detectBranchingNodesAndOutputs>,
+    workflowSummary: string
+  ): WorkflowNode[] {
+    const additionalNodes: WorkflowNode[] = [];
+    
+    // ✅ TASK 11.1: Only generate log_output if user intent explicitly includes logging keywords
+    const intentIncludesLogging = /\b(log|output|record|track|observe|monitor)\b/i.test(workflowSummary);
+    
+    // If user didn't request logging, don't generate any log_output nodes
+    if (!intentIncludesLogging) {
+      return additionalNodes;
+    }
+    
+    for (const branchingNode of branchingAnalysis.branchingNodes) {
+      const branchingNodeId = branchingNode.step.id || `${branchingNode.type}_${branchingNode.index}`;
+      
+      for (const [branchCase, branchInfo] of branchingNode.branches.entries()) {
+        // ✅ TASK 11.1: Generate log_output ONLY if:
+        // 1. Branch explicitly needs log_output (detected from prompt analysis), OR
+        // 2. Branch has no other output node AND user requested logging
+        const shouldGenerateLogOutput = 
+          branchInfo.needsLogOutput ||
+          (!branchInfo.hasOtherOutput && intentIncludesLogging);
+        
+        if (shouldGenerateLogOutput && !branchInfo.hasOtherOutput) {
+          // Only generate if this branch doesn't already have an output node
+          const logOutputId = `log_output_${branchCase}_${randomUUID().slice(0, 8)}`;
+          
+          const logOutputNode: WorkflowNode = {
+            id: logOutputId,
+            type: 'log_output',
+            data: {
+              label: `Log Output (${branchCase})`,
+              type: 'log_output',
+              category: 'output',
+              config: {
+                message: `Branch ${branchCase} output`,
+              },
+              metadata: {
+                branchCase,
+                branchParent: branchingNodeId,
+                generatedByTask11: true,
+              },
+            },
+          };
+          
+          additionalNodes.push(logOutputNode);
+          
+          console.log(`[Task 11] Generated log_output for branch "${branchCase}" of ${branchingNode.type} node "${branchingNodeId}"`);
+        }
+      }
+    }
+    
+    return additionalNodes;
   }
 
   /**
@@ -349,6 +629,9 @@ export class AgenticWorkflowBuilder {
   private hydratePlannedWorkflow(planned: PlannedWorkflow): { workflow: Workflow; validation: any } {
     // ── Bug 2 fix: expand collapsed same-type branch steps ──────────────────
     const expandedSteps = this.expandBranchSteps(planned.steps);
+
+    // ✅ TASK 11.1: Detect branching nodes and analyze branch-specific outputs
+    const branchingAnalysis = this.detectBranchingNodesAndOutputs(expandedSteps);
 
     const nodes: WorkflowNode[] = expandedSteps.map((step, index) => {
       const resolvedType = unifiedNodeRegistry.resolvePlannedStepCanonicalType(
@@ -371,6 +654,12 @@ export class AgenticWorkflowBuilder {
       // ✅ AI-FIRST: Map Gemini's role to DSL category
       const aiDeterminedCategory = this.mapRoleToDSLCategory(step.role, resolvedType, config);
 
+      // ✅ TASK 11.1: Preserve branch metadata from expandBranchSteps
+      const branchMetadata = step.config?.metadata?.branchCase ? {
+        branchCase: step.config.metadata.branchCase,
+        branchParent: step.config.metadata.branchParent,
+      } : {};
+
       return {
         id,
         type: resolvedType,
@@ -385,6 +674,7 @@ export class AgenticWorkflowBuilder {
           metadata: {
             aiRole: step.role,
             aiDeterminedCategory,
+            ...branchMetadata,
             ...(aiDeterminedCategory && {
               intendedCapability: aiDeterminedCategory === 'dataSource' ? 'data_source' :
                                   aiDeterminedCategory === 'transformation' ? 'transformation' :
@@ -395,7 +685,16 @@ export class AgenticWorkflowBuilder {
       };
     });
 
-    const { workflow, executionOrder } = unifiedGraphOrchestrator.initializeWorkflow(nodes);
+    // ✅ TASK 11.1: Generate separate log_output nodes per branch if needed
+    const additionalLogOutputNodes = this.generateBranchSpecificLogOutputs(
+      nodes,
+      branchingAnalysis,
+      planned.summary
+    );
+    
+    const allNodes = [...nodes, ...additionalLogOutputNodes];
+
+    const { workflow, executionOrder } = unifiedGraphOrchestrator.initializeWorkflow(allNodes);
     const validation = unifiedGraphOrchestrator.validateWorkflow(workflow, executionOrder);
 
     if (!validation.valid) {

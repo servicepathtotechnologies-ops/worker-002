@@ -17,6 +17,8 @@ export function overrideMerge(
 ): UnifiedNodeDefinition {
   return {
     ...def,
+    // ✅ MERGE CAPABILITY FLAG: Merge nodes allow multiple inputs by design
+    allowsMultipleInputs: true,
     execute: async (context): Promise<NodeExecutionResult> => {
       // ✅ REAL FUNCTIONALITY: Use legacy executor which has merge logic
       // The execution engine already merges multiple inputs in buildNodeInput(),

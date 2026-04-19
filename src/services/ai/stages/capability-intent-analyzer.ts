@@ -32,7 +32,7 @@ const VALID_SEMANTIC_ROLES: UseCaseUnit['semanticRole'][] = [
   'logic',
 ];
 const MIN_UNITS = 1;
-const MAX_UNITS = 20;
+const MAX_UNITS = 30; // Increased to support complex nested branching workflows
 
 // ─── System Prompt ────────────────────────────────────────────────────────────
 
@@ -53,12 +53,42 @@ Each object in the array must have exactly these fields:
 - "orderIndex": zero-based integer position in the ordered list
 
 RULES:
-1. The list must contain between 1 and 20 units (inclusive).
+1. The list must contain between 1 and 30 units (inclusive).
 2. Exactly ONE unit must have semanticRole "trigger". No more, no less.
 3. Every unit must have a non-empty label and a non-empty description.
 4. Units are ordered by execution sequence (trigger first, then subsequent steps).
 5. Do NOT include any node names, node type strings, or implementation details — describe intent only.
 6. Do NOT pre-select or suggest specific nodes — that happens in a later stage.
+
+CRITICAL RULE — BRANCHING WORKFLOWS (switch / if-else):
+When the user's prompt describes conditional routing (e.g. "if X do A, if Y do B", "route by status", "switch on role"), you MUST:
+- Create ONE logic unit for each branching condition (the switch/if-else node itself).
+- Create ONE SEPARATE output unit for EACH branch case/path.
+- NEVER collapse multiple branch outcomes into a single shared output unit.
+- Each branch case must have its own independent output unit with a description specific to that case.
+
+Example — "route by order status: if shipped send email, if processing send Slack, if cancelled send Slack":
+CORRECT (3 separate output units, one per case):
+  { "label": "Route by order status", "semanticRole": "logic", ... }
+  { "label": "Send shipping email (shipped)", "semanticRole": "communication", ... }
+  { "label": "Send processing Slack (processing)", "semanticRole": "communication", ... }
+  { "label": "Send cancellation Slack (cancelled)", "semanticRole": "communication", ... }
+
+WRONG (collapsed into one unit):
+  { "label": "Route by order status", "semanticRole": "logic", ... }
+  { "label": "Send notification", "semanticRole": "communication", ... }  ← WRONG: one unit for 3 cases
+
+NESTED BRANCHING — if a branch case itself contains another condition:
+- Create a logic unit for the inner condition.
+- Create one output unit per inner branch case.
+- Example: "if shipped → if express: send email + Slack; if standard: send email only" requires:
+  - 1 outer switch unit (route by status)
+  - 1 inner switch unit (route by priority, inside the "shipped" branch)
+  - 1 output unit for express email
+  - 1 output unit for express Slack
+  - 1 output unit for standard email
+
+COUNT CHECK: Before returning, verify that the number of output/communication units equals the total number of distinct branch outcomes across all conditions. If a switch has 3 cases, there must be 3 separate output units for that switch.
 
 Example output:
 [

@@ -327,7 +327,19 @@ export class WorkflowGenerationPipeline {
       }
     }
 
-    return { byStep, flat: [...new Set(flat)] };
+    // For branching types, preserve count (multiple instances needed for nested workflows).
+    // For non-branching types, deduplicate.
+    const branchingFlat: string[] = [];
+    const nonBranchingFlat: string[] = [];
+    for (const type of flat) {
+      const def = unifiedNodeRegistry.get(type);
+      if (def?.isBranching === true) {
+        branchingFlat.push(type);
+      } else {
+        nonBranchingFlat.push(type);
+      }
+    }
+    return { byStep, flat: [...branchingFlat, ...new Set(nonBranchingFlat)] };
   }
 
   /**

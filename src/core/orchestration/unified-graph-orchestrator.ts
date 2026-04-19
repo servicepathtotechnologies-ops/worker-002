@@ -189,6 +189,26 @@ class UnifiedGraphOrchestratorImpl implements UnifiedGraphOrchestrator {
       }
     }
 
+    // ✅ TASK 10.1: Validate no multi-input to log_output before edge creation
+    // Check if any log_output node will receive multiple incoming edges
+    const logOutputNodes = seedWorkflow.nodes.filter((n) => {
+      const nodeType = unifiedNormalizeNodeTypeString((n.data as any)?.type || n.type || '');
+      return nodeType === 'log_output';
+    });
+
+    for (const logOutputNode of logOutputNodes) {
+      // Count how many edges would target this log_output from different sources
+      const incomingEdgeCount = seedWorkflow.edges.filter((e) => e.target === logOutputNode.id).length;
+      
+      if (incomingEdgeCount > 1) {
+        throw new Error(
+          `Invalid workflow structure: log_output node "${logOutputNode.id}" has ${incomingEdgeCount} incoming edges. ` +
+          `Multiple branches cannot connect to a single log_output node. ` +
+          `Generate separate log_output nodes per branch that requires logging.`
+        );
+      }
+    }
+
     // Create/reconcile edges from execution order using orchestrator core engine.
     const reconciliationResult = edgeReconciliationEngine.reconcileEdges(
       seedWorkflow,
@@ -353,6 +373,26 @@ class UnifiedGraphOrchestratorImpl implements UnifiedGraphOrchestrator {
       }
 
       assignedNodeIds.add(targetNode.id);
+      
+      // ✅ TASK 10.2: Validate terminal node uniqueness per branch
+      // Check if target node is a terminal node (like log_output)
+      const resolvedTargetNodeType = this.getNodeType(targetNode);
+      const targetNodeDef = unifiedNodeRegistry.get(resolvedTargetNodeType);
+      const isTerminalNode = targetNodeDef?.workflowBehavior?.alwaysTerminal === true;
+      
+      if (isTerminalNode && resolvedTargetNodeType === 'log_output') {
+        // Check if this log_output is already assigned to another case
+        const existingEdgesToThisLogOutput = caseEdges.filter((e) => e.target === targetNode.id);
+        if (existingEdgesToThisLogOutput.length > 0) {
+          console.warn(
+            `[UnifiedGraphOrchestrator] wireSwitchCaseEdges: terminal node "${targetNode.id}" (${resolvedTargetNodeType}) ` +
+            `is already assigned to another case. This violates the single-input constraint for log_output nodes. ` +
+            `Skipping edge for case "${caseValue}".`
+          );
+          return;
+        }
+      }
+      
       caseEdges.push({
         id: `${switchNodeId}-${portLabel}-${targetNode.id}`,
         source: switchNodeId,
@@ -625,15 +665,18 @@ class UnifiedGraphOrchestratorImpl implements UnifiedGraphOrchestrator {
     
     if (orphanedNodes.length > 0) {
       // ✅ AUTO-REMOVAL LOGIC: Separate required vs non-required orphaned nodes
+      // ✅ TASK 16.1: Remove alwaysRequired and exemptFromRemoval flag checks
+      // Use intent-driven preservation instead
       const requiredOrphanedNodes: WorkflowNode[] = [];
       const nonRequiredOrphanedNodes: WorkflowNode[] = [];
       
       orphanedNodes.forEach(n => {
         const nodeType = this.getNodeType(n);
         const nodeDef = unifiedNodeRegistry.get(nodeType);
-        const isRequired = 
-          nodeDef?.workflowBehavior?.alwaysRequired === true ||
-          nodeDef?.workflowBehavior?.exemptFromRemoval === true;
+        
+        // ✅ TASK 16.1: Only preserve trigger nodes (always required)
+        // Do NOT preserve based on alwaysRequired or exemptFromRemoval flags
+        const isRequired = nodeDef?.category === 'trigger';
         
         if (isRequired) {
           requiredOrphanedNodes.push(n);

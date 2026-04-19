@@ -19,6 +19,88 @@ import type {
 } from '../../../core/types/pipeline-contracts';
 import type { SelectedNode } from '../system-prompt-builder';
 
+// ─── Internal BranchTree types ───────────────────────────────────────────────
+
+interface BranchTreeNode {
+  step: StructuralStep;
+  children: Array<StructuralStep | BranchTreeNode>;
+}
+
+/**
+ * Build a branch tree from a flat steps array.
+ *
+ * The first branching node found becomes the root of a BranchTreeNode.
+ * Everything after it (until the next top-level branching node) becomes its
+ * children. Nested branching nodes are recursively processed.
+ *
+ * Returns an array of BranchTreeNode (typically length 1 for the root branch,
+ * but handles multiple top-level branches if they exist).
+ */
+function buildBranchTree(steps: StructuralStep[]): BranchTreeNode[] {
+  const result: BranchTreeNode[] = [];
+  let i = 0;
+
+  while (i < steps.length) {
+    const step = steps[i];
+    const def = unifiedNodeRegistry.get(step.nodeType);
+
+    if (!def?.isBranching) {
+      // Pre-branch linear steps — skip (handled separately in composeText)
+      i++;
+      continue;
+    }
+
+    // Found a branching node — collect its children
+    const children: Array<StructuralStep | BranchTreeNode> = [];
+    i++;
+
+    while (i < steps.length) {
+      const childStep = steps[i];
+      const childDef = unifiedNodeRegistry.get(childStep.nodeType);
+
+      if (childDef?.isBranching) {
+        // Nested branching node — recursively build its sub-tree from this point
+        const nestedTree = buildBranchTree(steps.slice(i));
+        children.push(...nestedTree);
+        break; // the nested tree consumed the rest
+      }
+
+      children.push(childStep);
+      i++;
+    }
+
+    result.push({ step, children });
+  }
+
+  return result;
+}
+
+/**
+ * Render a BranchTreeNode[] into lines with proper indentation.
+ * depth=1 → "  →" (2 spaces), depth=2 → "    →" (4 spaces), etc.
+ */
+function renderBranchTree(tree: BranchTreeNode[], depth: number, lines: string[]): void {
+  const indent = '  '.repeat(depth);
+
+  for (const node of tree) {
+    let caseIdx = 0;
+    for (const child of node.children) {
+      if ('step' in child && 'children' in child) {
+        // Nested BranchTreeNode
+        const nestedBranch = child as BranchTreeNode;
+        lines.push(`${indent}→ Case "nested_branch": ${nestedBranch.step.displayName} — evaluates conditions and routes to the appropriate branch`);
+        renderBranchTree([nestedBranch], depth + 1, lines);
+      } else {
+        // Leaf StructuralStep
+        const leafStep = child as StructuralStep;
+        caseIdx++;
+        const caseLabel = `case_${caseIdx}`;
+        lines.push(`${indent}→ Case "${caseLabel}": ${leafStep.displayName} — ${leafStep.description}`);
+      }
+    }
+  }
+}
+
 const MAX_TEXT_LENGTH = 4000;
 
 export class StructuralPromptGenerator {
@@ -152,10 +234,17 @@ export class StructuralPromptGenerator {
       const def = unifiedNodeRegistry.get(node.type);
       if (!def?.isBranching) continue;
 
-      // For switch nodes: extract case-specific outcomes from actions
-      // For if_else nodes: extract true/false outcomes from actions
-      const downstreamNodes = nodes.slice(i + 1);
-      
+      // Scope downstream to only this node's sub-tree:
+      // ends at the next branching node at the same level (exclusive), or end of array.
+      const nextBranchIdx = nodes.findIndex((n, idx) => {
+        if (idx <= i) return false;
+        return unifiedNodeRegistry.get(n.type)?.isBranching === true;
+      });
+
+      const downstreamNodes = nextBranchIdx === -1
+        ? nodes.slice(i + 1)
+        : nodes.slice(i + 1, nextBranchIdx);
+
       // Find actions that mention the downstream nodes
       const branchOutcomes: string[] = [];
       for (const downstream of downstreamNodes) {
@@ -222,28 +311,21 @@ export class StructuralPromptGenerator {
     const hasBranching = branchingStepIdx >= 0;
 
     if (hasBranching) {
-      // Pre-branching steps
+      // Pre-branching linear steps
       for (let i = 0; i < branchingStepIdx; i++) {
         const step = steps[i];
         lines.push(`${step.stepNumber}. ${step.displayName} — ${step.description}`);
       }
 
-      // Branching step with cases
-      const branchStep = steps[branchingStepIdx];
-      lines.push(`${branchStep.stepNumber}. ${branchStep.displayName} — evaluates conditions and routes to the appropriate branch`);
+      // Build and render the branch tree starting from the first branching step
+      const branchingSteps = steps.slice(branchingStepIdx);
+      const tree = buildBranchTree(branchingSteps);
 
-      // Downstream branch nodes — each gets its own case line
-      const downstreamSteps = steps.slice(branchingStepIdx + 1);
-      const displayNameCount = new Map<string, number>();
-      for (const s of downstreamSteps) {
-        displayNameCount.set(s.displayName, (displayNameCount.get(s.displayName) ?? 0) + 1);
-      }
-      const displayNameIdx = new Map<string, number>();
-      for (const step of downstreamSteps) {
-        const idx = (displayNameIdx.get(step.displayName) ?? 0) + 1;
-        displayNameIdx.set(step.displayName, idx);
-        const caseLabel = `case_${idx}`;
-        lines.push(`  → Case "${caseLabel}": ${step.displayName} — ${step.description}`);
+      // Render the root branching node as a numbered step, then its children
+      if (tree.length > 0) {
+        const rootBranch = tree[0];
+        lines.push(`${rootBranch.step.stepNumber}. ${rootBranch.step.displayName} — evaluates conditions and routes to the appropriate branch`);
+        renderBranchTree(tree, 1, lines);
       }
     } else {
       // Linear flow

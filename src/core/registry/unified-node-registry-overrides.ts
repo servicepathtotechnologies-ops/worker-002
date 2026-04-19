@@ -99,6 +99,7 @@ import { overrideTool } from './overrides/tool';
 import { overrideWhatsapp } from './overrides/whatsapp';
 import { overrideWhatsappTrigger } from './overrides/whatsapp-trigger';
 import { overrideInstagramTrigger } from './overrides/instagram-trigger';
+import { overrideScheduleWise } from './overrides/schedulewise';
 
 type OverrideFn = (def: UnifiedNodeDefinition, schema: NodeSchema) => UnifiedNodeDefinition;
 
@@ -218,6 +219,8 @@ const overridesByType: Record<string, OverrideFn> = {
   // ✅ BATCH 15: AI Infrastructure
   memory: overrideMemory,
   tool: overrideTool,
+  // ✅ ScheduleWise healthcare scheduling integration
+  schedulewise: overrideScheduleWise,
 };
 
 /**
