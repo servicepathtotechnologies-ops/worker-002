@@ -16,6 +16,8 @@ import { logOutputNodeDefinition } from './log-output-node';
 import { httpRequestNodeDefinition } from './http-request-node';
 import { airtableNodeDefinition } from './airtable-node';
 import { pipedriveNodeDefinition } from './pipedrive-node';
+import { intuitSmesNodeDefinition } from './intuit-smes-node';
+import { tallyNodeDefinition } from './tally-node';
 import { notionNodeDefinition } from './notion-node';
 import { twitterNodeDefinition } from './twitter-node';
 import { facebookNodeDefinition } from './facebook-node';
@@ -24,7 +26,6 @@ import { whatsappNodeDefinition } from './whatsapp-node';
 import { googleCalendarNodeDefinition } from './google-calendar-node';
 import { googleVeoNodeDefinition } from './google-veo-node';
 import { lightricksNodeDefinition } from './lightricks-node';
-import { claudeNodeDefinition } from './claude-node';
 import { sqlServerNodeDefinition } from './sql-server-node';
 import { mongoDBNodeDefinition } from './mongodb-node';
 import { mysqlNodeDefinition } from './mysql-node';
@@ -34,20 +35,10 @@ import { snowflakeNodeDefinition } from './snowflake-node';
 import { sqliteNodeDefinition } from './sqlite-node';
 import { supabaseNodeDefinition } from './supabase-node';
 import { timescaleDBNodeDefinition } from './timescaledb-node';
-import { oracleDatabaseNodeDefinition } from './oracle-database-node';
-import { xeroNodeDefinition } from './xero-node';
-import { workdayNodeDefinition } from './workday-node';
-import { netlifyNodeDefinition } from './netlify-node';
-import { wordpressNodeDefinition } from './wordpress-node';
-import { langchainNodeDefinition } from './langchain-node';
-import { pineconeNodeDefinition } from './pinecone-node';
-import { chargebeeNodeDefinition } from './chargebee-node';
-import { typeformNodeDefinition } from './typeform-node';
-import { googleFormsNodeDefinition } from './google-forms-node';
-import { contentfulNodeDefinition } from './contentful-node';
-import { zendeskNodeDefinition } from './zendesk-node';
-import { calendlyNodeDefinition } from './calendly-node';
+import { firebaseNodeDefinition } from './firebase-node';
+import { gcsNodeDefinition } from './gcs-node';
 import { registerNodeDefinitionsFromNodeLibrary } from './from-node-library';
+import { sendgridNodeDefinition } from './sendgrid-node';
 
 // Register all node definitions
 export function registerAllNodeDefinitions() {
@@ -79,14 +70,13 @@ export function registerAllNodeDefinitions() {
   nodeDefinitionRegistry.register(sqliteNodeDefinition);
   nodeDefinitionRegistry.register(supabaseNodeDefinition);
   nodeDefinitionRegistry.register(timescaleDBNodeDefinition);
-  nodeDefinitionRegistry.register(oracleDatabaseNodeDefinition);
-  nodeDefinitionRegistry.register(xeroNodeDefinition);
-  nodeDefinitionRegistry.register(workdayNodeDefinition);
-  nodeDefinitionRegistry.register(netlifyNodeDefinition);
-  nodeDefinitionRegistry.register(wordpressNodeDefinition);
+  nodeDefinitionRegistry.register(firebaseNodeDefinition);
+  nodeDefinitionRegistry.register(gcsNodeDefinition);
 
   // CRM nodes
   nodeDefinitionRegistry.register(pipedriveNodeDefinition);
+  nodeDefinitionRegistry.register(intuitSmesNodeDefinition);
+  nodeDefinitionRegistry.register(tallyNodeDefinition);
 
   // Social nodes
   nodeDefinitionRegistry.register(twitterNodeDefinition);
@@ -94,21 +84,15 @@ export function registerAllNodeDefinitions() {
   nodeDefinitionRegistry.register(instagramNodeDefinition);
   nodeDefinitionRegistry.register(whatsappNodeDefinition);
 
+  // Communication nodes
+  nodeDefinitionRegistry.register(sendgridNodeDefinition);
+
   // Productivity nodes
   nodeDefinitionRegistry.register(googleCalendarNodeDefinition);
 
   // AI/ML nodes
   nodeDefinitionRegistry.register(googleVeoNodeDefinition);
   nodeDefinitionRegistry.register(lightricksNodeDefinition);
-  nodeDefinitionRegistry.register(claudeNodeDefinition);
-  nodeDefinitionRegistry.register(langchainNodeDefinition);
-  nodeDefinitionRegistry.register(pineconeNodeDefinition);
-  nodeDefinitionRegistry.register(chargebeeNodeDefinition);
-  nodeDefinitionRegistry.register(typeformNodeDefinition);
-  nodeDefinitionRegistry.register(googleFormsNodeDefinition);
-  nodeDefinitionRegistry.register(contentfulNodeDefinition);
-  nodeDefinitionRegistry.register(zendeskNodeDefinition);
-  nodeDefinitionRegistry.register(calendlyNodeDefinition);
 
   // TODO: Continue migrating remaining nodes
   // - Database nodes

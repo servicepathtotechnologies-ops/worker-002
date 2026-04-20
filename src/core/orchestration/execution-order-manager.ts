@@ -911,21 +911,22 @@ class ExecutionOrderManagerImpl implements ExecutionOrderManager {
     const nodes = workflow.nodes || [];
     const dependencies = new Map<string, string[]>();
     
-    // ✅ FIX: Separate log_output nodes from other nodes
-    const logOutputNodes: WorkflowNode[] = [];
+    // ✅ FIX: Place alwaysTerminal nodes (e.g. log_output) at the end — registry-driven, no hardcoding
+    const terminalNodes: WorkflowNode[] = [];
     const otherNodes: WorkflowNode[] = [];
     
     for (const node of nodes) {
       const nodeType = this.getNodeType(node);
-      if (nodeType === 'log_output') {
-        logOutputNodes.push(node);
+      const def = unifiedNodeRegistry.get(nodeType);
+      if (def?.workflowBehavior?.alwaysTerminal === true) {
+        terminalNodes.push(node);
       } else {
         otherNodes.push(node);
       }
     }
     
-    // ✅ FIX: Place log_output nodes at the end
-    const sortedNodes = [...otherNodes, ...logOutputNodes];
+    // ✅ FIX: Place alwaysTerminal nodes at the end
+    const sortedNodes = [...otherNodes, ...terminalNodes];
     const orderedNodeIds = sortedNodes.map(n => n.id);
     
     // Build dependencies: each node depends on previous node
@@ -943,7 +944,7 @@ class ExecutionOrderManagerImpl implements ExecutionOrderManager {
       return nodeDef?.category === 'trigger';
     });
     
-    const terminalNodes = nodes.filter(n => {
+    const metadataTerminalNodes = nodes.filter(n => {
       const nodeType = this.getNodeType(n);
       const nodeDef = unifiedNodeRegistry.get(nodeType);
       const tags = nodeDef?.tags || [];
@@ -966,7 +967,7 @@ class ExecutionOrderManagerImpl implements ExecutionOrderManager {
       dependencies,
       metadata: {
         triggerNodeId: triggerNode?.id,
-        terminalNodeIds: terminalNodes.map(n => n.id),
+        terminalNodeIds: metadataTerminalNodes.map(n => n.id),
         branchingNodeIds: branchingNodes.map(n => n.id),
         mergeNodeIds: mergeNodes.map(n => n.id),
       },

@@ -13,4 +13,7 @@ export { runSnowflakeNode } from './snowflakeNode';
 export { runSQLiteNode } from './sqliteNode';
 export { runSupabaseNode } from './supabaseNode';
 export { runTimescaleDBNode } from './timescaleDBNode';
-export { runOracleNode } from './oracleNode';
+export { runIntuitSmesNode } from './intuitSmesNode';
+export { runOdooNode } from './odooNode';
+export { runFirebaseNode } from './firebaseNode';
+export { runGCSNode } from './gcsNode';

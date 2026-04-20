@@ -52,6 +52,8 @@ import { overrideSentimentAnalyzer } from './overrides/sentiment-analyzer';
 import { overrideMicrosoftTeams } from './overrides/microsoft-teams';
 import { overrideWhatsappCloud } from './overrides/whatsapp-cloud';
 import { overrideTwilio } from './overrides/twilio';
+import { overrideMailgun } from './overrides/mailgun';
+import { overrideSendgrid } from './overrides/sendgrid';
 import { overrideGoogleDoc } from './overrides/google-doc';
 import { overrideZoho } from './overrides/zoho';
 import { overrideFilter } from './overrides/filter';
@@ -77,6 +79,8 @@ import { overridePostgresql } from './overrides/postgresql';
 import { overrideSupabase } from './overrides/supabase';
 import { overrideMysql } from './overrides/mysql';
 import { overrideMongodb } from './overrides/mongodb';
+import { overrideFirebase } from './overrides/firebase';
+import { overrideGCS } from './overrides/gcs';
 import { overrideTwitter } from './overrides/twitter';
 import { overrideInstagram } from './overrides/instagram';
 import { overrideDateTime } from './overrides/date-time';
@@ -99,20 +103,15 @@ import { overrideTool } from './overrides/tool';
 import { overrideWhatsapp } from './overrides/whatsapp';
 import { overrideWhatsappTrigger } from './overrides/whatsapp-trigger';
 import { overrideInstagramTrigger } from './overrides/instagram-trigger';
-import { overrideOracleDatabase } from './overrides/oracle-database';
-import { overrideXero } from './overrides/xero';
-import { overrideWorkday } from './overrides/workday';
-import { overrideNetlify } from './overrides/netlify';
-import { overrideClaude } from './overrides/claude';
-import { overrideLangchain } from './overrides/langchain';
-import { overridePinecone } from './overrides/pinecone';
-import { overrideChargebee } from './overrides/chargebee';
-import { overrideTypeform } from './overrides/typeform';
-import { overrideGoogleForms } from './overrides/google-forms';
-import { overrideWordPress } from './overrides/wordpress';
-import { overrideContentful } from './overrides/contentful-node';
-import { overrideZendesk } from './overrides/zendesk-node';
-import { overrideCalendly } from './overrides/calendly';
+
+import { overrideIntuitSmes } from './overrides/intuit-smes';
+import { overrideTally } from './overrides/tally';
+import { overrideOdoo } from './overrides/odoo';
+import { overrideZoomVideo } from './overrides/zoom-video';
+import { overrideMicrosoftDynamics } from './overrides/microsoft-dynamics';
+import { overrideSap } from './overrides/sap';
+import { overrideVercel } from './overrides/vercel';
+import { overrideScheduleWise } from './overrides/schedulewise';
 
 type OverrideFn = (def: UnifiedNodeDefinition, schema: NodeSchema) => UnifiedNodeDefinition;
 
@@ -161,6 +160,10 @@ const overridesByType: Record<string, OverrideFn> = {
   hubspot: overrideHubspot,
   salesforce: overrideSalesforce,
   pipedrive: overridePipedrive,
+  microsoft_dynamics: overrideMicrosoftDynamics,
+  sap: overrideSap,
+  intuit_smes: overrideIntuitSmes,
+  tally: overrideTally,
   email: overrideEmail,
   telegram: overrideTelegram,
   discord: overrideDiscord,
@@ -172,6 +175,8 @@ const overridesByType: Record<string, OverrideFn> = {
   microsoft_teams: overrideMicrosoftTeams,
   whatsapp_cloud: overrideWhatsappCloud,
   twilio: overrideTwilio,
+  mailgun: overrideMailgun,
+  sendgrid: overrideSendgrid,
   google_doc: overrideGoogleDoc,
   zoho: overrideZoho,
   // ✅ BATCH 4: Data Transformation & HTTP
@@ -203,20 +208,10 @@ const overridesByType: Record<string, OverrideFn> = {
   supabase: overrideSupabase,
   mysql: overrideMysql,
   mongodb: overrideMongodb,
-  oracle_database: overrideOracleDatabase,
-  xero: overrideXero,
-  workday: overrideWorkday,
-  netlify: overrideNetlify,
-  wordpress: overrideWordPress,
-  contentful: overrideContentful,
-  zendesk: overrideZendesk,
-  calendly: overrideCalendly,
-  claude: overrideClaude,
-  langchain: overrideLangchain,
-  pinecone: overridePinecone,
-  chargebee: overrideChargebee,
-  typeform: overrideTypeform,
-  google_forms: overrideGoogleForms,
+  firebase: overrideFirebase,
+  google_cloud_storage: overrideGCS,
+  // ✅ CRM: Odoo ERP
+  odoo: overrideOdoo,
   // ✅ BATCH 10: Social Media
   twitter: overrideTwitter,
   instagram: overrideInstagram,
@@ -246,6 +241,12 @@ const overridesByType: Record<string, OverrideFn> = {
   // ✅ BATCH 15: AI Infrastructure
   memory: overrideMemory,
   tool: overrideTool,
+  // ✅ BATCH 16: Video Conferencing
+  zoom_video: overrideZoomVideo,
+  // ✅ BATCH 17: DevOps & Deployment
+  vercel: overrideVercel,
+  // ✅ ScheduleWise healthcare scheduling integration
+  schedulewise: overrideScheduleWise,
 };
 
 /**

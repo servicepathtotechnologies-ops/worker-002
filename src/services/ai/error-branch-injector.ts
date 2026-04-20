@@ -39,10 +39,18 @@ export interface ErrorBranchInjectionResult {
   warnings: string[];
 }
 
-export function injectErrorBranch(workflow: Workflow): ErrorBranchInjectionResult {
+export function injectErrorBranch(workflow: Workflow, userIntent?: string): ErrorBranchInjectionResult {
   const warnings: string[] = [];
   const nodes = [...(workflow.nodes || [])];
   const edges = [...(workflow.edges || [])];
+
+  // ✅ TASK 12.1: Check if user explicitly requested error logging
+  const intentIncludesErrorLogging = userIntent && /\b(error\s+log|log\s+error|error\s+handling|catch\s+error|handle\s+error)\b/i.test(userIntent);
+  
+  // If user didn't request error logging, don't inject error branch
+  if (!intentIncludesErrorLogging) {
+    return { workflow, injected: false, warnings };
+  }
 
   const hasErrorTrigger = nodes.some(n => getType(n) === 'error_trigger');
   const hasLog = nodes.some(n => getType(n) === 'log_output' && (n.data?.config as any)?._autoInjected);

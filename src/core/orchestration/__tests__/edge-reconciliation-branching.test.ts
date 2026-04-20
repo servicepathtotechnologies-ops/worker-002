@@ -800,4 +800,105 @@ describe('edge reconciliation branching completeness', () => {
       expect(incoming.length).toBeLessThanOrEqual(1);
     }
   });
+
+  it('preserves case edges from branching nodes as legitimate predecessors (primary fix validation)', () => {
+    const workflow: any = {
+      nodes: [
+        { id: 'form_1', type: 'form', data: { type: 'form' } },
+        { id: 'switch_1', type: 'switch', data: { type: 'switch' } },
+        { id: 'log_1', type: 'log_output', data: { type: 'log_output' } },
+      ],
+      edges: [
+        { id: 'e0', source: 'form_1', target: 'switch_1', type: 'main' },
+        // Direct case edge from switch to log_output (this should be preserved)
+        { id: 'e1', source: 'switch_1', target: 'log_1', type: 'case_1', sourceHandle: 'case_1' },
+      ],
+    };
+    const executionOrder: ExecutionOrder = {
+      nodeIds: ['form_1', 'switch_1', 'log_1'],
+      dependencies: new Map(),
+      metadata: {
+        triggerNodeId: 'form_1',
+        terminalNodeIds: ['log_1'],
+        branchingNodeIds: ['switch_1'],
+        mergeNodeIds: [],
+      },
+    };
+
+    const result = edgeReconciliationEngine.reconcileEdges(workflow, executionOrder);
+    
+    // The case edge should be preserved (not removed as stale)
+    const caseEdge = result.workflow.edges.find((e: any) => 
+      e.source === 'switch_1' && e.target === 'log_1' && e.type === 'case_1'
+    );
+    expect(caseEdge).toBeDefined();
+    expect(caseEdge?.id).toBe('e1'); // Original edge should be preserved
+    
+    // log_output should have exactly one incoming edge (the case edge)
+    const logIncoming = result.workflow.edges.filter((e: any) => e.target === 'log_1');
+    expect(logIncoming.length).toBe(1);
+    expect(logIncoming[0].source).toBe('switch_1');
+    expect(logIncoming[0].type).toBe('case_1');
+    
+    // No warnings about stale edges should be generated
+    const staleWarnings = result.warnings.filter((w: string) => 
+      w.toLowerCase().includes('stale') || w.toLowerCase().includes('rewiring')
+    );
+    expect(staleWarnings.length).toBe(0);
+  });
+
+  it('preserves if_else true/false edges to log_output as legitimate predecessors', () => {
+    const workflow: any = {
+      nodes: [
+        { id: 'form_1', type: 'form', data: { type: 'form' } },
+        { id: 'if_1', type: 'if_else', data: { type: 'if_else' } },
+        { id: 'log_true', type: 'log_output', data: { type: 'log_output' } },
+        { id: 'log_false', type: 'log_output', data: { type: 'log_output' } },
+      ],
+      edges: [
+        { id: 'e0', source: 'form_1', target: 'if_1', type: 'main' },
+        // Direct branch edges from if_else to log_output nodes (these should be preserved)
+        { id: 'e1', source: 'if_1', target: 'log_true', type: 'true', sourceHandle: 'true' },
+        { id: 'e2', source: 'if_1', target: 'log_false', type: 'false', sourceHandle: 'false' },
+      ],
+    };
+    const executionOrder: ExecutionOrder = {
+      nodeIds: ['form_1', 'if_1', 'log_true', 'log_false'],
+      dependencies: new Map(),
+      metadata: {
+        triggerNodeId: 'form_1',
+        terminalNodeIds: ['log_true', 'log_false'],
+        branchingNodeIds: ['if_1'],
+        mergeNodeIds: [],
+      },
+    };
+
+    const result = edgeReconciliationEngine.reconcileEdges(workflow, executionOrder);
+    
+    // Both branch edges should be preserved
+    const trueEdge = result.workflow.edges.find((e: any) => 
+      e.source === 'if_1' && e.target === 'log_true' && e.type === 'true'
+    );
+    const falseEdge = result.workflow.edges.find((e: any) => 
+      e.source === 'if_1' && e.target === 'log_false' && e.type === 'false'
+    );
+    
+    expect(trueEdge).toBeDefined();
+    expect(falseEdge).toBeDefined();
+    expect(trueEdge?.id).toBe('e1'); // Original edges should be preserved
+    expect(falseEdge?.id).toBe('e2');
+    
+    // Each log_output should have exactly one incoming edge
+    const logTrueIncoming = result.workflow.edges.filter((e: any) => e.target === 'log_true');
+    const logFalseIncoming = result.workflow.edges.filter((e: any) => e.target === 'log_false');
+    
+    expect(logTrueIncoming.length).toBe(1);
+    expect(logFalseIncoming.length).toBe(1);
+    
+    // No warnings about stale edges should be generated
+    const staleWarnings = result.warnings.filter((w: string) => 
+      w.toLowerCase().includes('stale') || w.toLowerCase().includes('rewiring')
+    );
+    expect(staleWarnings.length).toBe(0);
+  });
 });

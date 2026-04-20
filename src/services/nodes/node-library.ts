@@ -1147,8 +1147,10 @@ export class NodeLibrary {
     // ❌ REMOVED: createGmailSchema() - duplicate, use google_gmail instead
     this.addSchema(this.createOutlookSchema()); // ✅ Added: outlook node
     this.addSchema(this.createSalesforceSchema());
+    this.addSchema(this.createMicrosoftDynamicsSchema());
+    this.addSchema(this.createSapSchema()); // ✅ Added: SAP ERP/CRM node
     this.addSchema(this.createClickUpSchema());
-    schemaCount += 12;
+    schemaCount += 14;
 
     // Transformation Nodes
     this.addSchema(this.createSetNodeSchema());
@@ -1209,11 +1211,12 @@ export class NodeLibrary {
     this.addSchema(this.createNotionSchema());
     this.addSchema(this.createZohoCrmSchema());
     this.addSchema(this.createPipedriveSchema());
-    this.addSchema(this.createXeroSchema());
-    this.addSchema(this.createWorkdaySchema());
+    this.addSchema(this.createIntuitSmesSchema());
+    this.addSchema(this.createTallySchema());
     
     // Missing Communication Nodes
     this.addSchema(this.createDiscordSchema());
+    this.addSchema(this.createZoomVideoSchema());
     
     // Missing Data Nodes
     this.addSchema(this.createJsonParserSchema());
@@ -1272,6 +1275,9 @@ export class NodeLibrary {
     this.addSchema(this.createMicrosoftTeamsSchema());
     this.addSchema(this.createWhatsappCloudSchema());
     this.addSchema(this.createTwilioSchema());
+    this.addSchema(this.createMailgunSchema());
+    this.addSchema(this.createSendgridSchema());
+    this.addSchema(this.createAmazonSesSchema());
     
     // Missing Social Media Nodes
     this.addSchema(this.createFacebookSchema());
@@ -1284,8 +1290,10 @@ export class NodeLibrary {
     // Missing Database Nodes
     this.addSchema(this.createMysqlSchema());
     this.addSchema(this.createMongodbSchema());
+    this.addSchema(this.createFirebaseSchema());
+    this.addSchema(this.createGoogleCloudStorageSchema());
     this.addSchema(this.createRedisSchema());
-    this.addSchema(this.createOracleDatabaseSchema());
+    this.addSchema(this.createOdooSchema());
     
     // Missing CRM Nodes
     this.addSchema(this.createFreshdeskSchema());
@@ -1308,13 +1316,6 @@ export class NodeLibrary {
     this.addSchema(this.createBitbucketSchema());
     this.addSchema(this.createJiraSchema());
     this.addSchema(this.createJenkinsSchema());
-    this.addSchema(this.createNetlifySchema());
-
-    // Claude AI Node
-    this.addSchema(this.createClaudeSchema());
-
-    // LangChain AI Orchestration Node
-    this.addSchema(this.createLangchainSchema());
     
     // Missing E-commerce Nodes
     this.addSchema(this.createShopifySchema());
@@ -1322,25 +1323,12 @@ export class NodeLibrary {
     this.addSchema(this.createStripeSchema());
     this.addSchema(this.createPaypalSchema());
 
-    // Vector Database Nodes
-    this.addSchema(this.createPineconeSchema());
+    
+    // DevOps/Deployment Nodes
+    this.addSchema(this.createVercelNodeSchema());
 
-    // Payment / Billing Nodes
-    this.addSchema(this.createChargebeeSchema());
-
-    // Productivity Nodes
-    this.addSchema(this.createTypeformSchema());
-    this.addSchema(this.createGoogleFormsSchema());
-
-    // CMS Nodes
-    this.addSchema(this.createWordPressSchema());
-    this.addSchema(this.createContentfulSchema());
-
-    // CRM / Support Nodes
-    this.addSchema(this.createZendeskSchema());
-
-    // Productivity / Scheduling Nodes
-    this.addSchema(this.createCalendlySchema());
+    // Integration Nodes
+    this.addSchema(this.createScheduleWiseNodeSchema());
   }
 
   private addSchema(schema: NodeSchema): void {
@@ -4748,6 +4736,163 @@ export class NodeLibrary {
     };
   }
 
+  private createMicrosoftDynamicsSchema(): NodeSchema {
+    return {
+      type: 'microsoft_dynamics',
+      label: 'Microsoft Dynamics',
+      category: 'crm',
+      description: 'Manage CRM data in Microsoft Dynamics 365 (contacts, leads, accounts, opportunities, and more) via the Web API',
+      configSchema: {
+        required: ['resource', 'operation'],
+        optional: {
+          instanceUrl: {
+            type: 'string',
+            description: 'Microsoft Dynamics 365 instance URL (e.g. https://yourorg.crm.dynamics.com)',
+            examples: ['https://yourorg.crm.dynamics.com'],
+          },
+          accessToken: {
+            type: 'string',
+            description: 'Azure AD OAuth2 access token (stored as credential)',
+          },
+          resource: {
+            type: 'string',
+            description: 'Dynamics 365 entity logical name (e.g. contacts, leads, accounts)',
+            examples: ['contacts', 'leads', 'accounts', 'opportunities', 'incidents'],
+            default: 'contacts',
+          },
+          customEntity: {
+            type: 'string',
+            description: 'Custom entity logical name when resource is "custom" (e.g. new_customentity)',
+            examples: ['new_customentity', 'cr123_invoice'],
+          },
+          operation: {
+            type: 'string',
+            description: 'Operation to perform: getRecords, getRecord, createRecord, updateRecord, deleteRecord, fetchXml, associate, disassociate',
+            examples: ['getRecords', 'getRecord', 'createRecord', 'updateRecord', 'deleteRecord', 'fetchXml'],
+            default: 'getRecords',
+          },
+          id: {
+            type: 'string',
+            description: 'Record GUID (required for getRecord, updateRecord, deleteRecord)',
+            examples: ['00000000-0000-0000-0000-000000000000'],
+          },
+          fields: {
+            type: 'object',
+            description: 'Field map for createRecord/updateRecord operations (use Dynamics 365 logical field names)',
+            examples: [{ firstname: 'John', lastname: 'Doe', emailaddress1: 'john@example.com' }],
+          },
+          fetchXml: {
+            type: 'string',
+            description: 'FetchXML query string (required for fetchXml operation)',
+            examples: ['<fetch><entity name="contact"><attribute name="fullname"/></entity></fetch>'],
+          },
+          select: {
+            type: 'string',
+            description: 'OData $select — comma-separated field names to return',
+            examples: ['fullname,emailaddress1,telephone1'],
+          },
+          filter: {
+            type: 'string',
+            description: "OData $filter expression to filter records",
+            examples: ["emailaddress1 eq 'john@example.com'"],
+          },
+          top: {
+            type: 'number',
+            description: 'OData $top — maximum number of records to return (max 5000)',
+            default: 50,
+          },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: [
+          'User mentions Microsoft Dynamics explicitly',
+          'User mentions Dynamics 365 or Dynamics CRM',
+          'CRM workflows involving Microsoft ecosystem',
+          'Syncing data with Microsoft Dynamics 365',
+          'Managing contacts, leads, or accounts in Dynamics',
+        ],
+        whenNotToUse: [
+          'Non-Microsoft CRMs (use Salesforce/HubSpot/Zoho)',
+          'Simple spreadsheets (use Google Sheets)',
+          'Microsoft Teams messaging (use microsoft_teams)',
+        ],
+        keywords: [
+          'microsoft dynamics', 'dynamics 365', 'dynamics crm', 'ms dynamics',
+          'microsoft crm', 'dynamics', 'dynamics365', 'msdynamics',
+          'dynamics contact', 'dynamics lead', 'dynamics account',
+          'dynamics opportunity', 'dynamics record', 'dynamics api'
+        ],
+        useCases: [
+          'Create/update Dynamics 365 contacts or leads from form submissions',
+          'Query Dynamics 365 data and use it downstream',
+          'Sync deals or opportunities from other systems into Dynamics',
+          'Automate CRM workflows with Microsoft Dynamics 365',
+        ],
+        intentDescription: 'Microsoft Dynamics 365 CRM integration node that manages CRM entities (contacts, leads, accounts, opportunities, cases) via the Dynamics 365 Web API (OData v4). Performs CRM operations including listing, retrieving, creating, updating, and deleting records, as well as advanced FetchXML queries. Used for CRM automation, syncing data with Dynamics 365, and managing Microsoft CRM records.',
+        intentCategories: ['crm', 'microsoft', 'customer_relationship_management', 'data_sync', 'business_automation'],
+      },
+      commonPatterns: [
+        {
+          name: 'get_contacts',
+          description: 'Get contacts from Dynamics 365',
+          config: {
+            resource: 'contacts',
+            operation: 'getRecords',
+            select: 'fullname,emailaddress1,telephone1',
+            top: 50,
+          },
+        },
+        {
+          name: 'create_lead',
+          description: 'Create a new lead in Dynamics 365',
+          config: {
+            resource: 'leads',
+            operation: 'createRecord',
+            fields: {
+              firstname: '{{$json.firstName}}',
+              lastname: '{{$json.lastName}}',
+              emailaddress1: '{{$json.email}}',
+              subject: '{{$json.subject}}',
+            },
+          },
+        },
+      ],
+      validationRules: [
+        {
+          field: 'operation',
+          validator: (value: any) =>
+            ['getRecords', 'getRecord', 'createRecord', 'updateRecord', 'deleteRecord', 'fetchXml', 'associate', 'disassociate'].includes(value),
+          errorMessage: 'Microsoft Dynamics operation must be one of: getRecords, getRecord, createRecord, updateRecord, deleteRecord, fetchXml, associate, disassociate',
+        },
+        {
+          field: 'resource',
+          validator: (value: any) => typeof value === 'string' && value.length > 0,
+          errorMessage: 'Microsoft Dynamics resource (entity name) is required',
+        },
+      ],
+      capabilities: ['crm.read', 'crm.write', 'dynamics.crm'],
+      providers: ['microsoft'],
+      keywords: [
+        'microsoft dynamics', 'dynamics 365', 'dynamics crm', 'ms dynamics',
+        'microsoft crm', 'dynamics365', 'msdynamics',
+        'dynamics contact', 'dynamics lead', 'dynamics account',
+        'dynamics opportunity', 'dynamics api', 'dynamics record'
+      ],
+      outputType: 'object',
+      outputSchema: {
+        success: { type: 'boolean' },
+        data: { type: 'object' },
+        error: { type: 'object' },
+      },
+      nodeCapability: {
+        inputType: ['object'],
+        outputType: 'object',
+        acceptsArray: false,
+        producesArray: false,
+      },
+    };
+  }
+
   // ============================================
   // AI NODES
   // ============================================
@@ -5038,6 +5183,176 @@ export class NodeLibrary {
           errorMessage: 'maxTokens must be a number between 1 and 100000',
         },
       ],
+    };
+  }
+
+  private createSapSchema(): NodeSchema {
+    return {
+      type: 'sap',
+      label: 'SAP',
+      category: 'crm',
+      description: 'Interact with SAP systems via OData/REST APIs — read and write business objects such as sales orders, purchase orders, materials, customers, and more.',
+      capabilities: ['erp.read', 'erp.write', 'sap.odata', 'sap.rest'],
+      providers: ['sap'],
+      keywords: [
+        'sap', 'sap erp', 'sap s4hana', 's/4hana', 's4hana', 'sap hana',
+        'sap odata', 'sap api', 'sap business one', 'sap b1',
+        'sap sales order', 'sap purchase order', 'sap material',
+        'sap customer', 'sap vendor', 'sap bapi', 'sap rfc',
+        'sap integration', 'sap connect', 'sap data',
+      ],
+      configSchema: {
+        required: ['operation', 'endpoint'],
+        optional: {
+          baseUrl: {
+            type: 'string',
+            description: 'SAP system base URL (e.g. https://your-sap-host:44300)',
+            examples: ['https://sap.example.com:44300', 'https://my-sap.s4hana.ondemand.com'],
+          },
+          operation: {
+            type: 'string',
+            description: 'HTTP method for the SAP OData/REST call',
+            default: 'get',
+            options: [
+              { label: 'GET (Read)', value: 'get' },
+              { label: 'POST (Create)', value: 'post' },
+              { label: 'PUT (Replace)', value: 'put' },
+              { label: 'PATCH (Update)', value: 'patch' },
+              { label: 'DELETE (Remove)', value: 'delete' },
+            ],
+          },
+          endpoint: {
+            type: 'string',
+            description: 'OData or REST endpoint path (relative to base URL)',
+            examples: [
+              '/sap/opu/odata/sap/API_SALES_ORDER_SRV/A_SalesOrder',
+              '/sap/opu/odata/sap/API_BUSINESS_PARTNER/A_BusinessPartner',
+              '/sap/opu/odata/sap/API_MATERIAL_DOCUMENT_SRV/A_MaterialDocumentHeader',
+            ],
+          },
+          payload: {
+            type: 'object',
+            description: 'Request body for POST/PUT/PATCH operations',
+            examples: [{ SalesOrderType: 'OR', SoldToParty: '{{$json.customerId}}' }],
+          },
+          queryParams: {
+            type: 'string',
+            description: 'OData query string parameters (e.g. $top=10&$filter=...)',
+            examples: ['$top=10&$select=SalesOrder,SoldToParty', "$filter=SalesOrderType eq 'OR'"],
+          },
+          accessToken: {
+            type: 'string',
+            description: 'OAuth2 / SAML bearer token for SAP authentication (stored as credential)',
+          },
+          username: {
+            type: 'string',
+            description: 'SAP Basic Auth username (used when no OAuth token is provided)',
+          },
+          password: {
+            type: 'string',
+            description: 'SAP Basic Auth password (used when no OAuth token is provided)',
+          },
+          csrfToken: {
+            type: 'string',
+            description: 'X-CSRF-Token value (required for POST/PUT/PATCH/DELETE on OData v2 services)',
+          },
+          format: {
+            type: 'string',
+            description: 'Response format preference',
+            default: 'json',
+            options: [
+              { label: 'JSON', value: 'json' },
+              { label: 'XML', value: 'xml' },
+            ],
+          },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: [
+          'User mentions SAP explicitly',
+          'ERP workflows involving SAP systems',
+          'Reading or writing SAP business objects (sales orders, materials, customers, vendors)',
+          'Integrating SAP S/4HANA or SAP Business One with other systems',
+          'OData API calls to SAP',
+        ],
+        whenNotToUse: [
+          'Non-SAP ERP systems (use Microsoft Dynamics or Salesforce)',
+          'Simple database queries (use PostgreSQL/Supabase)',
+          'Generic HTTP calls not targeting SAP (use HTTP Request node)',
+        ],
+        keywords: [
+          'sap', 'sap erp', 's4hana', 'sap hana', 'sap odata', 'sap api',
+          'sap sales order', 'sap purchase order', 'sap material', 'sap customer',
+          'sap vendor', 'sap bapi', 'sap integration', 'sap business one',
+        ],
+        useCases: [
+          'Fetch SAP sales orders and process them downstream',
+          'Create purchase orders in SAP from workflow data',
+          'Sync SAP customer/vendor master data with CRM',
+          'Read SAP material stock levels for inventory workflows',
+          'Update SAP records from form submissions or external triggers',
+        ],
+        intentDescription: 'SAP ERP integration node that interacts with SAP systems via OData and REST APIs. Supports reading and writing SAP business objects including sales orders, purchase orders, materials, customers, and vendors. Used for SAP S/4HANA, SAP Business One, and SAP ECC integrations.',
+        intentCategories: ['erp', 'sap', 'enterprise_resource_planning', 'data_sync', 'business_automation'],
+      },
+      commonPatterns: [
+        {
+          name: 'get_sales_orders',
+          description: 'Fetch SAP sales orders',
+          config: {
+            operation: 'get',
+            endpoint: '/sap/opu/odata/sap/API_SALES_ORDER_SRV/A_SalesOrder',
+            queryParams: '$top=10&$format=json',
+          },
+        },
+        {
+          name: 'create_sales_order',
+          description: 'Create a new SAP sales order',
+          config: {
+            operation: 'post',
+            endpoint: '/sap/opu/odata/sap/API_SALES_ORDER_SRV/A_SalesOrder',
+            payload: {
+              SalesOrderType: 'OR',
+              SoldToParty: '{{$json.customerId}}',
+            },
+          },
+        },
+        {
+          name: 'get_business_partner',
+          description: 'Fetch SAP business partner (customer/vendor)',
+          config: {
+            operation: 'get',
+            endpoint: '/sap/opu/odata/sap/API_BUSINESS_PARTNER/A_BusinessPartner',
+            queryParams: "$top=10&$filter=BusinessPartnerCategory eq '1'&$format=json",
+          },
+        },
+      ],
+      validationRules: [
+        {
+          field: 'operation',
+          validator: (value: any) => ['get', 'post', 'put', 'patch', 'delete'].includes(value),
+          errorMessage: 'SAP operation must be one of: get, post, put, patch, delete',
+        },
+        {
+          field: 'endpoint',
+          validator: (value: any) => typeof value === 'string' && value.length > 0,
+          errorMessage: 'SAP endpoint path is required',
+        },
+      ],
+      outputType: 'object',
+      outputSchema: {
+        success: { type: 'boolean' },
+        data: { type: 'object', description: 'SAP API response data (d.results for OData v2)' },
+        count: { type: 'number', description: 'Number of records returned (for GET list operations)' },
+        statusCode: { type: 'number', description: 'HTTP status code from SAP' },
+      },
+      schemaVersion: '1.0.0',
+      nodeCapability: {
+        inputType: 'object',
+        outputType: 'object',
+        acceptsArray: false,
+        producesArray: false,
+      },
     };
   }
 
@@ -5944,394 +6259,213 @@ export class NodeLibrary {
     };
   }
 
-  private createXeroSchema(): NodeSchema {
+  private createIntuitSmesSchema(): NodeSchema {
     return {
-      type: 'xero',
-      label: 'Xero',
-      category: 'http_api',
-      description: 'Create, fetch, update, and search Xero accounting records such as contacts, invoices, items, and payments.',
+      type: 'intuit_smes',
+      label: "Intuit - SME'S",
+      category: 'crm',
+      description: "Intuit SME integration for managing customer data and financial operations via Intuit APIs",
       configSchema: {
-        required: ['resource', 'operation'],
+        required: ['operation'],
         optional: {
+          apiKey: {
+            type: 'string',
+            description: 'Intuit API Key or Access Token (required for authentication)',
+            examples: ['your-intuit-api-key'],
+          },
           accessToken: {
             type: 'string',
-            description: 'Xero OAuth 2.0 access token',
-            examples: ['{{$credentials.xero.accessToken}}'],
+            description: 'Intuit OAuth2 Access Token (alternative to API key)',
+            examples: ['your-oauth-access-token'],
           },
-          tenantId: {
+          credentialId: {
             type: 'string',
-            description: 'Xero tenant ID / connected organisation ID',
-            examples: ['{{$credentials.xero.tenantId}}'],
-          },
-          resource: {
-            type: 'string',
-            description: 'Xero Accounting API resource to target',
-            default: 'invoices',
-            examples: ['contacts', 'invoices', 'items', 'payments', 'accounts'],
-            options: [
-              { label: 'Contacts', value: 'contacts' },
-              { label: 'Invoices', value: 'invoices' },
-              { label: 'Items', value: 'items' },
-              { label: 'Payments', value: 'payments' },
-              { label: 'Accounts', value: 'accounts' },
-            ],
+            description: 'Credential ID reference to stored Intuit credentials',
+            examples: ['cred_123'],
           },
           operation: {
             type: 'string',
-            description: 'Action to perform on the selected resource',
-            default: 'get_many',
-            examples: ['get_many', 'get_by_id', 'create', 'update'],
-            options: [
-              { label: 'Get Many', value: 'get_many' },
-              { label: 'Get By ID', value: 'get_by_id' },
-              { label: 'Create', value: 'create' },
-              { label: 'Update', value: 'update' },
-            ],
+            description: 'Intuit SME operation to perform',
+            examples: ['getCustomers', 'createInvoice', 'getInvoices', 'createCustomer', 'updateCustomer'],
+            default: 'getCustomers',
           },
-          recordId: {
+          customerId: {
             type: 'string',
-            description: 'Record ID for get_by_id or update operations',
-            examples: ['{{$json.InvoiceID}}', '{{$json.ContactID}}'],
+            description: 'Customer ID (required for customer-specific operations)',
+            examples: ['CUST-123'],
           },
-          payload: {
+          name: {
+            type: 'string',
+            description: 'Customer name (for createCustomer operation)',
+            examples: ['Acme Corp'],
+          },
+          email: {
+            type: 'string',
+            description: 'Customer email (for createCustomer operation)',
+            examples: ['contact@acme.com'],
+          },
+          amount: {
+            type: 'number',
+            description: 'Invoice amount (for createInvoice operation)',
+            examples: [1000, 2500],
+          },
+          data: {
             type: 'object',
-            description: 'Request body for create or update operations',
-            default: {},
-            examples: [
-              { Name: 'Acme Supplies Pvt Ltd' },
-              { Type: 'ACCREC', Contact: { ContactID: '{{$json.ContactID}}' }, LineItems: [{ Description: 'Consulting', Quantity: 1, UnitAmount: 1000, AccountCode: '200' }] },
-            ],
-          },
-          where: {
-            type: 'string',
-            description: 'Xero where filter expression for list operations',
-            examples: ['Status=="AUTHORISED"', 'Name!=null'],
-          },
-          order: {
-            type: 'string',
-            description: 'Sort order for list operations',
-            examples: ['Date DESC', 'Name ASC'],
-          },
-          page: {
-            type: 'number',
-            description: 'Page number for paginated resources',
-            default: 1,
-            examples: [1, 2],
-          },
-          modifiedAfter: {
-            type: 'string',
-            description: 'ISO date/time — fetch only records modified after this time',
-            examples: ['2026-04-01T00:00:00Z'],
-          },
-          summarizeErrors: {
-            type: 'boolean',
-            description: 'Request summarized validation errors from Xero',
-            default: true,
-          },
-          includeArchived: {
-            type: 'boolean',
-            description: 'Include archived/inactive records when supported',
-            default: false,
-          },
-          unitdp: {
-            type: 'number',
-            description: 'Unit decimal places (2 or 4)',
-            default: 2,
+            description: 'Additional data for create/update operations',
+            examples: [{ name: 'Acme Corp', email: 'contact@acme.com' }],
           },
         },
       },
       aiSelectionCriteria: {
         whenToUse: [
-          'User wants to read or write accounting data in Xero',
-          'User needs invoices, contacts, items, payments, or accounts from Xero',
-          'User wants to sync finance records between Xero and another system',
+          'User mentions Intuit or QuickBooks',
+          'SME financial or customer data management',
+          'Creating or managing invoices via Intuit',
+          'Fetching customer data from Intuit',
         ],
         whenNotToUse: [
-          'User needs generic REST calls to a non-Xero API',
-          'User wants raw SQL/database access',
-          'User needs payroll, files, or assets features not yet supported',
+          'Other CRMs (use HubSpot/Salesforce/Pipedrive)',
+          'Non-Intuit financial systems',
         ],
         keywords: [
-          'xero', 'xero invoices', 'xero contacts', 'xero accounting',
-          'xero payments', 'xero items', 'bookkeeping', 'xero api',
-          'xero integration', 'xero accounting api', 'xero finance',
+          'intuit', 'intuit smes', 'intuit_smes', 'quickbooks', 'intuit quickbooks',
+          'intuit crm', 'intuit customer', 'intuit invoice', 'intuit api',
+          'intuit integration', 'sme customer', 'sme invoice', 'sme financial',
         ],
         useCases: [
-          'Fetch unpaid invoices',
-          'Create contacts',
-          'Create draft sales invoices',
-          'Sync item catalogs',
-          'Record invoice payments',
+          'Fetch SME customer list',
+          'Create invoices for customers',
+          'Manage SME customer data',
+          'Financial operations via Intuit',
         ],
-        intentDescription: 'Use this node when the workflow must interact directly with Xero Accounting API resources. Supports contacts, invoices, items, payments, and accounts via OAuth 2.0 with multi-tenant support.',
-        intentCategories: ['accounting', 'finance', 'bookkeeping', 'crm', 'api'],
+        intentDescription: "Intuit SME integration node that manages customer data and financial operations via Intuit APIs. Supports fetching customers, creating invoices, managing customer records, and other SME financial operations. Used for Intuit QuickBooks integrations and SME business workflows.",
+        intentCategories: ['crm', 'intuit', 'finance', 'sme', 'customer_management', 'invoice_management'],
       },
-      commonPatterns: [
-        {
-          name: 'list_authorised_invoices',
-          description: 'Fetch authorised invoices from Xero',
-          config: { resource: 'invoices', operation: 'get_many', where: 'Status=="AUTHORISED"', page: 1 },
-        },
-        {
-          name: 'create_contact',
-          description: 'Create a new contact in Xero',
-          config: { resource: 'contacts', operation: 'create', payload: { Name: 'Acme Supplies Pvt Ltd' } },
-        },
-        {
-          name: 'create_sales_invoice',
-          description: 'Create a draft sales invoice in Xero',
-          config: {
-            resource: 'invoices',
-            operation: 'create',
-            payload: {
-              Type: 'ACCREC',
-              Contact: { ContactID: '{{$json.ContactID}}' },
-              LineItems: [{ Description: 'Website Development', Quantity: 1, UnitAmount: 25000, AccountCode: '200' }],
-              Status: 'DRAFT',
-            },
-          },
-        },
-        {
-          name: 'list_items',
-          description: 'Fetch item catalog from Xero',
-          config: { resource: 'items', operation: 'get_many', page: 1 },
-        },
-      ],
-      validationRules: [
-        {
-          field: 'resource',
-          validator: (value) => ['contacts', 'invoices', 'items', 'payments', 'accounts'].includes(value),
-          errorMessage: 'Invalid Xero resource.',
-        },
-        {
-          field: 'operation',
-          validator: (value) => ['get_many', 'get_by_id', 'create', 'update'].includes(value),
-          errorMessage: 'Invalid Xero operation.',
-        },
-      ],
-      outputType: 'object',
-      outputSchema: {
-        success: { type: 'boolean' },
-        resource: { type: 'string' },
-        operation: { type: 'string' },
-        tenantId: { type: 'string' },
-        record: { type: 'object' },
-        records: { type: 'array' },
-        count: { type: 'number' },
-        pagination: { type: 'object' },
-        meta: { type: 'object' },
-        error: { type: 'object' },
-      },
-      schemaVersion: '1.0.0',
-      capabilities: ['accounting.read', 'accounting.write', 'xero.invoices', 'xero.contacts'],
-      providers: ['xero'],
+      commonPatterns: [],
+      validationRules: [],
+      capabilities: ['crm.read', 'crm.write', 'intuit.customer', 'intuit.invoice'],
+      providers: ['intuit'],
       keywords: [
-        'xero', 'xero invoices', 'xero contacts', 'xero accounting',
-        'xero payments', 'xero items', 'bookkeeping', 'xero api',
-        'xero integration', 'xero accounting api', 'xero finance',
+        'intuit', 'intuit smes', 'intuit_smes', 'quickbooks', 'intuit quickbooks',
+        'intuit crm', 'intuit customer', 'intuit invoice', 'intuit api',
+        'intuit integration', 'sme customer', 'sme invoice',
       ],
-      nodeCapability: {
-        inputType: ['object', 'array'],
-        outputType: 'object',
-        acceptsArray: true,
-        producesArray: false,
-      },
     };
   }
 
-  private createWorkdaySchema(): NodeSchema {
+  private createTallySchema(): NodeSchema {
     return {
-      type: 'workday',
-      label: 'Workday',
-      category: 'http_api',
-      description: 'Read and manage Workday HR, staffing, and organizational data through the Workday REST APIs. Supports workers, jobs, organizations, supervisory organizations, and positions.',
+      type: 'tally',
+      label: 'Tally Solutions',
+      category: 'crm',
+      description: 'Interact with Tally ERP / TallyPrime via XML API to fetch or push accounting data',
       configSchema: {
-        required: ['resource', 'operation'],
+        required: ['operation', 'endpoint'],
         optional: {
-          baseUrl: {
+          endpoint: {
             type: 'string',
-            description: 'Workday REST API base URL (e.g. https://wd2-impl-services1.workday.com/ccx/api/v1/)',
-            examples: ['https://wd2-impl-services1.workday.com/ccx/api/v1/'],
-          },
-          tenant: {
-            type: 'string',
-            description: 'Workday tenant identifier used to construct API base URLs',
-            examples: ['{{$credentials.workday.tenant}}', 'mycompany'],
-          },
-          authType: {
-            type: 'string',
-            description: 'Authentication method: oauth2 (default) or basic',
-            default: 'oauth2',
-            options: [
-              { label: 'OAuth 2.0', value: 'oauth2' },
-              { label: 'Basic Auth', value: 'basic' },
-            ],
-          },
-          accessToken: {
-            type: 'string',
-            description: 'OAuth 2.0 Bearer token for Workday API authentication',
-            examples: ['{{$credentials.workday.accessToken}}'],
-          },
-          username: {
-            type: 'string',
-            description: 'Basic auth username (service account)',
-            examples: ['{{$credentials.workday.username}}'],
-          },
-          password: {
-            type: 'string',
-            description: 'Basic auth password (service account)',
-            examples: ['{{$credentials.workday.password}}'],
-          },
-          resource: {
-            type: 'string',
-            description: 'Workday API resource to target',
-            default: 'workers',
-            examples: ['workers', 'jobs', 'organizations', 'supervisoryOrganizations', 'positions'],
-            options: [
-              { label: 'Workers', value: 'workers' },
-              { label: 'Jobs', value: 'jobs' },
-              { label: 'Organizations', value: 'organizations' },
-              { label: 'Supervisory Organizations', value: 'supervisoryOrganizations' },
-              { label: 'Positions', value: 'positions' },
-            ],
+            description: 'Tally XML API server URL',
+            default: 'http://localhost:9000',
+            examples: ['http://localhost:9000', 'http://192.168.1.10:9000'],
           },
           operation: {
             type: 'string',
-            description: 'Action to perform on the selected resource',
-            default: 'get_many',
-            examples: ['get_many', 'get_by_id', 'create', 'update'],
+            description: 'Tally operation to perform',
+            default: 'get_ledger',
             options: [
-              { label: 'Get Many', value: 'get_many' },
-              { label: 'Get By ID', value: 'get_by_id' },
-              { label: 'Create', value: 'create' },
-              { label: 'Update', value: 'update' },
+              { label: 'Get Ledger', value: 'get_ledger' },
+              { label: 'Get Voucher', value: 'get_voucher' },
+              { label: 'Create Voucher', value: 'create_voucher' },
+              { label: 'Get Stock Items', value: 'get_stock_items' },
+              { label: 'Get Company Info', value: 'get_company_info' },
             ],
-          },
-          recordId: {
-            type: 'string',
-            description: 'Record ID for get_by_id or update operations',
-            examples: ['{{$json.id}}', '{{$json.workerId}}'],
+            examples: ['get_ledger', 'get_voucher', 'create_voucher', 'get_stock_items', 'get_company_info'],
           },
           payload: {
-            type: 'object',
-            description: 'Request body for create or update operations',
-            default: {},
-            examples: [
-              { firstName: 'Jane', lastName: 'Doe', jobTitle: 'Software Engineer' },
-            ],
-          },
-          limit: {
-            type: 'number',
-            description: 'Maximum number of records to return per page',
-            default: 50,
-            examples: [25, 50, 100],
-          },
-          offset: {
-            type: 'number',
-            description: 'Number of records to skip for pagination',
-            default: 0,
-            examples: [0, 50, 100],
-          },
-          rawPath: {
             type: 'string',
-            description: 'Override: arbitrary Workday API path to bypass the resource/operation abstraction',
-            examples: ['/workers/{{$json.workerId}}/staffingInformation'],
+            description: 'Custom XML request body (overrides the default template for the selected operation)',
+          },
+          companyName: {
+            type: 'string',
+            description: 'Tally company name to scope requests',
+            examples: ['My Company Ltd'],
+          },
+          ledgerName: {
+            type: 'string',
+            description: 'Ledger name (required for get_ledger operation)',
+            examples: ['Cash', 'Bank Account'],
+          },
+          voucherId: {
+            type: 'string',
+            description: 'Voucher ID or number (required for get_voucher operation)',
+            examples: ['VCH-001'],
           },
         },
       },
       aiSelectionCriteria: {
         whenToUse: [
-          'User wants to read or write HR data in Workday',
-          'User needs worker, job, organization, or position data from Workday',
-          'User wants to sync HR records between Workday and another system',
-          'User needs to manage staffing or organizational hierarchy in Workday',
-          'User wants to retrieve employee information from Workday HCM',
+          'User mentions Tally or TallyPrime',
+          'User needs Tally ERP integration',
+          'Fetching ledger or voucher data from Tally',
+          'Pushing accounting entries to Tally',
+          'Indian accounting or ERP automation',
         ],
         whenNotToUse: [
-          'User needs generic REST calls to a non-Workday API',
-          'User wants raw SQL/database access',
-          'User needs payroll processing outside of Workday',
-          'User is working with a different HR system (e.g., BambooHR, Workable)',
+          'Other ERP systems (use SAP or Odoo)',
+          'Non-Tally accounting software',
         ],
         keywords: [
-          'workday', 'workday hr', 'workday hcm', 'workday workers', 'workday staffing',
-          'workday organizations', 'workday positions', 'workday jobs', 'hr data',
-          'human resources', 'employee data', 'workforce management', 'workday api',
-          'workday integration', 'workday rest api', 'hcm', 'hrms',
-          'supervisory organization', 'workday tenant',
+          'tally', 'tally erp', 'tallyprime', 'tally solutions', 'tally prime',
+          'tally accounting', 'tally ledger', 'tally voucher', 'tally xml',
+          'tally integration', 'tally api', 'tally stock', 'tally company',
         ],
         useCases: [
-          'Fetch all active workers from Workday',
-          'Get worker details by ID',
-          'List open positions in Workday',
-          'Retrieve organizational hierarchy',
-          'Create or update job records',
-          'Sync employee data to another system',
-          'Pull staffing information for reporting',
+          'Fetch ledger details from Tally',
+          'Retrieve voucher data',
+          'Create accounting vouchers in Tally',
+          'Fetch stock item list',
+          'Get company information from Tally',
         ],
-        intentDescription: 'Use this node when the workflow must interact directly with Workday REST APIs for HR, staffing, and organizational data. Supports workers, jobs, organizations, supervisory organizations, and positions via OAuth 2.0 or Basic Auth.',
-        intentCategories: ['hr', 'staffing', 'workforce', 'hcm', 'api', 'human_resources'],
+        intentDescription: 'Tally Solutions integration node that connects to Tally ERP / TallyPrime via its XML API. Supports fetching ledgers, vouchers, stock items, and company info, as well as creating vouchers. Ideal for Indian accounting and ERP automation workflows.',
+        intentCategories: ['crm', 'accounting', 'erp', 'finance', 'tally'],
       },
       commonPatterns: [
         {
-          name: 'list_workers',
-          description: 'Fetch all workers from Workday',
-          config: { resource: 'workers', operation: 'get_many', limit: 50, offset: 0 },
+          name: 'get_ledger',
+          description: 'Fetch ledger details from Tally',
+          config: { operation: 'get_ledger', endpoint: 'http://localhost:9000' },
         },
         {
-          name: 'get_worker_by_id',
-          description: 'Get a specific worker by ID',
-          config: { resource: 'workers', operation: 'get_by_id', recordId: '{{$json.workerId}}' },
-        },
-        {
-          name: 'list_open_positions',
-          description: 'Fetch open positions from Workday',
-          config: { resource: 'positions', operation: 'get_many', limit: 50, offset: 0 },
-        },
-        {
-          name: 'list_organizations',
-          description: 'Fetch organizations from Workday',
-          config: { resource: 'organizations', operation: 'get_many', limit: 50, offset: 0 },
+          name: 'get_stock_items',
+          description: 'Fetch stock item list from Tally',
+          config: { operation: 'get_stock_items', endpoint: 'http://localhost:9000' },
         },
       ],
       validationRules: [
         {
-          field: 'resource',
-          validator: (value) => ['workers', 'jobs', 'organizations', 'supervisoryOrganizations', 'positions'].includes(value),
-          errorMessage: 'resource must be one of: workers, jobs, organizations, supervisoryOrganizations, positions',
-        },
-        {
           field: 'operation',
-          validator: (value) => ['get_many', 'get_by_id', 'create', 'update'].includes(value),
-          errorMessage: 'operation must be one of: get_many, get_by_id, create, update',
+          validator: (v: any) =>
+            ['get_ledger', 'get_voucher', 'create_voucher', 'get_stock_items', 'get_company_info'].includes(v),
+          errorMessage: 'Invalid operation. Must be one of: get_ledger, get_voucher, create_voucher, get_stock_items, get_company_info',
         },
       ],
       outputType: 'object',
       outputSchema: {
         success: { type: 'boolean' },
-        resource: { type: 'string' },
-        operation: { type: 'string' },
-        tenant: { type: 'string' },
-        record: { type: 'object' },
-        records: { type: 'array' },
-        count: { type: 'number' },
-        pagination: { type: 'object' },
-        meta: { type: 'object' },
-        error: { type: 'string' },
+        data: { type: 'string', description: 'XML response from Tally' },
+        error: { type: 'object' },
       },
       schemaVersion: '1.0.0',
-      capabilities: ['hr.read', 'hr.write', 'workday.workers', 'workday.organizations'],
-      providers: ['workday'],
+      capabilities: ['api.call', 'tally.read', 'tally.write'],
+      providers: ['tally'],
       keywords: [
-        'workday', 'workday hr', 'workday hcm', 'workday workers', 'workday staffing',
-        'workday organizations', 'workday positions', 'workday jobs', 'hr data',
-        'human resources', 'employee data', 'workforce management', 'workday api',
-        'workday integration', 'workday rest api', 'hcm', 'hrms',
+        'tally', 'tally erp', 'tallyprime', 'tally solutions', 'tally prime',
+        'tally accounting', 'tally ledger', 'tally voucher', 'tally xml',
       ],
       nodeCapability: {
-        inputType: ['object', 'array'],
+        inputType: ['object'],
         outputType: 'object',
-        acceptsArray: true,
+        acceptsArray: false,
         producesArray: false,
       },
     };
@@ -8295,9 +8429,451 @@ export class NodeLibrary {
     };
   }
 
-  // Missing Social Media Nodes
-  private createFacebookSchema(): NodeSchema {
+  private createMailgunSchema(): NodeSchema {
     return {
+      type: 'mailgun',
+      label: 'Mailgun',
+      category: 'output',
+      description: 'Send transactional emails using the Mailgun API.',
+      configSchema: {
+        required: ['domain', 'apiKey', 'from', 'to'],
+        optional: {
+          operation: {
+            type: 'string',
+            description: 'Mailgun operation to perform',
+            default: 'send_email',
+            options: [{ label: 'Send Email', value: 'send_email' }],
+          },
+          domain: {
+            type: 'string',
+            description: 'Mailgun sending domain',
+            examples: ['mg.yourdomain.com', 'sandbox.mailgun.org'],
+          },
+          apiKey: {
+            type: 'string',
+            description: 'Mailgun Private API Key',
+            examples: ['key-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'],
+          },
+          from: {
+            type: 'string',
+            description: 'Sender email address (must be from your verified Mailgun domain)',
+            examples: ['noreply@mg.yourdomain.com'],
+          },
+          to: {
+            type: 'string',
+            description: 'Recipient email address(es), comma-separated',
+            examples: ['user@example.com', '{{$json.email}}'],
+          },
+          subject: {
+            type: 'string',
+            description: 'Email subject line',
+            examples: ['Hello!', '{{$json.subject}}'],
+          },
+          text: {
+            type: 'string',
+            description: 'Plain text body of the email',
+            examples: ['Your message here', '{{$json.message}}'],
+          },
+          html: {
+            type: 'string',
+            description: 'HTML body of the email (overrides plain text for HTML clients)',
+            examples: ['<p>Your message</p>', '{{$json.htmlBody}}'],
+          },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: [
+          'User wants to send email via Mailgun',
+          'Transactional email sending required',
+          'User mentions Mailgun',
+        ],
+        whenNotToUse: [
+          'User wants Gmail or Google email',
+          'SMS or messaging platforms needed',
+        ],
+        keywords: [
+          'mailgun', 'mailgun email', 'mailgun send', 'mailgun api',
+          'mailgun transactional', 'mailgun message', 'send via mailgun',
+        ],
+        useCases: ['Transactional emails', 'Notification emails', 'Welcome emails'],
+        intentDescription: 'Send transactional emails via the Mailgun REST API. Supports plain text and HTML bodies.',
+        intentCategories: ['mailgun', 'email', 'transactional_email', 'communication'],
+      },
+      commonPatterns: [
+        {
+          name: 'send_plain_text',
+          description: 'Send a plain text email',
+          config: {
+            operation: 'send_email',
+            domain: 'mg.yourdomain.com',
+            from: 'noreply@mg.yourdomain.com',
+            to: 'recipient@example.com',
+            subject: 'Hello!',
+            text: 'Your message here.',
+          },
+        },
+      ],
+      validationRules: [
+        {
+          field: 'domain',
+          validator: (value: unknown) => typeof value === 'string' && value.length > 0,
+          errorMessage: 'Mailgun domain is required',
+        },
+        {
+          field: 'apiKey',
+          validator: (value: unknown) => typeof value === 'string' && value.length > 0,
+          errorMessage: 'Mailgun API key is required',
+        },
+        {
+          field: 'to',
+          validator: (value: unknown) => typeof value === 'string' && value.length > 0,
+          errorMessage: 'Recipient email is required',
+        },
+        {
+          field: 'from',
+          validator: (value: unknown) => typeof value === 'string' && value.length > 0,
+          errorMessage: 'Sender email is required',
+        },
+      ],
+      outputType: 'object',
+      outputSchema: {
+        success: { type: 'boolean' },
+        messageId: { type: 'string' },
+        message: { type: 'string' },
+        error: { type: 'object' },
+      },
+      capabilities: ['email.send', 'mailgun.send', 'transactional_email', 'terminal'],
+      providers: ['mailgun'],
+      keywords: [
+        'mailgun', 'mailgun email', 'mailgun send', 'mailgun api',
+        'mailgun transactional', 'send via mailgun',
+      ],
+      schemaVersion: '1.0.0',
+    };
+  }
+
+  private createSendgridSchema(): NodeSchema {
+    return {
+      type: 'sendgrid',
+      label: 'SendGrid',
+      category: 'output',
+      description: 'Send transactional emails using the SendGrid API.',
+      configSchema: {
+        required: ['apiKey', 'from', 'to'],
+        optional: {
+          operation: {
+            type: 'string',
+            description: 'SendGrid operation to perform',
+            default: 'send_email',
+            options: [{ label: 'Send Email', value: 'send_email' }],
+          },
+          apiKey: {
+            type: 'string',
+            description: 'SendGrid API Key (must have Mail Send permission)',
+            examples: ['SG.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'],
+          },
+          from: {
+            type: 'string',
+            description: 'Sender email address (must be a verified sender in SendGrid)',
+            examples: ['noreply@yourdomain.com'],
+          },
+          to: {
+            type: 'string',
+            description: 'Recipient email address(es), comma-separated',
+            examples: ['user@example.com', '{{$json.email}}'],
+          },
+          subject: {
+            type: 'string',
+            description: 'Email subject line',
+            examples: ['Hello!', '{{$json.subject}}'],
+          },
+          text: {
+            type: 'string',
+            description: 'Plain text body of the email',
+            examples: ['Your message here', '{{$json.message}}'],
+          },
+          html: {
+            type: 'string',
+            description: 'HTML body of the email (overrides plain text for HTML clients)',
+            examples: ['<p>Your message</p>', '{{$json.htmlBody}}'],
+          },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: [
+          'User wants to send email via SendGrid',
+          'Transactional email sending required',
+          'User mentions SendGrid',
+        ],
+        whenNotToUse: [
+          'User wants Gmail or Google email',
+          'SMS or messaging platforms needed',
+          'User explicitly mentions Mailgun',
+        ],
+        keywords: [
+          'sendgrid', 'sendgrid email', 'sendgrid send', 'sendgrid api',
+          'sendgrid transactional', 'sendgrid message', 'send via sendgrid',
+        ],
+        useCases: ['Transactional emails', 'Notification emails', 'Welcome emails', 'Marketing emails'],
+        intentDescription: 'Send transactional emails via the SendGrid REST API. Supports plain text and HTML bodies with comma-separated recipients.',
+        intentCategories: ['sendgrid', 'email', 'transactional_email', 'communication'],
+      },
+      commonPatterns: [
+        {
+          name: 'send_plain_text',
+          description: 'Send a plain text email via SendGrid',
+          config: {
+            operation: 'send_email',
+            from: 'noreply@yourdomain.com',
+            to: 'recipient@example.com',
+            subject: 'Hello!',
+            text: 'Your message here.',
+          },
+        },
+      ],
+      validationRules: [
+        {
+          field: 'apiKey',
+          validator: (value: unknown) => typeof value === 'string' && value.length > 0,
+          errorMessage: 'SendGrid API key is required',
+        },
+        {
+          field: 'to',
+          validator: (value: unknown) => typeof value === 'string' && value.length > 0,
+          errorMessage: 'Recipient email is required',
+        },
+        {
+          field: 'from',
+          validator: (value: unknown) => typeof value === 'string' && value.length > 0,
+          errorMessage: 'Sender email is required',
+        },
+      ],
+      outputType: 'object',
+      outputSchema: {
+        success: { type: 'boolean' },
+        messageId: { type: 'string' },
+        status: { type: 'number' },
+        error: { type: 'object' },
+      },
+      capabilities: ['email.send', 'sendgrid.send', 'transactional_email', 'terminal'],
+      providers: ['sendgrid'],
+      keywords: [
+        'sendgrid', 'sendgrid email', 'sendgrid send', 'sendgrid api',
+        'sendgrid transactional', 'send via sendgrid',
+      ],
+      schemaVersion: '1.0.0',
+    };
+  }
+
+  private createAmazonSesSchema(): NodeSchema {
+    return {
+      type: 'amazon_ses',
+      label: 'Amazon SES',
+      category: 'output',
+      description: 'Send emails through Amazon Simple Email Service (SES)',
+      configSchema: {
+        required: ['recipients', 'subject', 'body'],
+        optional: {
+          // Email content
+          recipients: {
+            type: 'object',
+            description: 'Email recipients (To, Cc, Bcc)',
+            examples: [
+              { to: ['user@example.com'] },
+              { to: ['{{$json.email}}'], cc: ['manager@example.com'] },
+            ],
+          },
+          subject: {
+            type: 'string',
+            description: 'Email subject line',
+            examples: ['Order Confirmation', '{{$json.subject}}'],
+          },
+          body: {
+            type: 'string',
+            description: 'Email body content (HTML or plain text)',
+            examples: ['Hello {{$json.name}}, your order is confirmed.'],
+          },
+
+          // Template support
+          useTemplate: {
+            type: 'boolean',
+            description: 'Use AWS SES template instead of raw email',
+            default: false,
+          },
+          templateName: {
+            type: 'string',
+            description: 'AWS SES template name (required if useTemplate is true)',
+            examples: ['OrderConfirmation', 'WelcomeEmail'],
+            requiredIf: { field: 'useTemplate', equals: true },
+          },
+          templateData: {
+            type: 'object',
+            description: 'Template variables as JSON object',
+            examples: [{ name: 'John', orderId: '12345' }],
+          },
+
+          // Sender configuration
+          fromAddress: {
+            type: 'string',
+            description: 'Sender email address (must be verified in SES)',
+            examples: ['noreply@example.com', '{{$json.senderEmail}}'],
+          },
+          replyToAddresses: {
+            type: 'array',
+            description: 'Reply-to email addresses',
+            examples: [['support@example.com']],
+          },
+
+          // Attachments
+          attachments: {
+            type: 'array',
+            description: 'Email attachments',
+            examples: [
+              [
+                {
+                  filename: 'report.pdf',
+                  content: '{{$json.pdfContent}}',
+                  contentType: 'application/pdf',
+                },
+              ],
+            ],
+          },
+
+          // AWS Configuration
+          awsRegion: {
+            type: 'string',
+            description: 'AWS region for SES service',
+            default: 'us-east-1',
+            examples: ['us-east-1', 'eu-west-1', 'ap-southeast-1'],
+          },
+
+          // Advanced options
+          configurationSetName: {
+            type: 'string',
+            description: 'SES configuration set for tracking',
+            examples: ['my-config-set'],
+          },
+          tags: {
+            type: 'object',
+            description: 'Email tags for tracking and filtering',
+            examples: [{ campaign: 'newsletter', type: 'promotional' }],
+          },
+          returnPath: {
+            type: 'string',
+            description: 'Bounce handling email address',
+            examples: ['bounces@example.com'],
+          },
+        },
+      },
+      outputType: 'object',
+      outputSchema: {
+        success: { type: 'boolean' },
+        messageId: { type: 'string' },
+        recipientCount: { type: 'number' },
+        failedRecipients: { type: 'array' },
+        error: { type: 'string' },
+        timestamp: { type: 'string' },
+      },
+      aiSelectionCriteria: {
+        whenToUse: [
+          'User wants to send emails from workflow',
+          'Transactional email notifications needed',
+          'Marketing email campaigns',
+          'Email alerts and notifications',
+        ],
+        whenNotToUse: [
+          'SMS messaging required',
+          'Slack notifications needed',
+          'No AWS SES account available',
+        ],
+        keywords: [
+          'email', 'ses', 'send', 'notification', 'aws', 'mail',
+          'amazon ses', 'amazon email', 'aws email', 'ses send',
+          'transactional email', 'email notification',
+        ],
+        useCases: [
+          'Order confirmations',
+          'User notifications',
+          'Alert emails',
+          'Marketing campaigns',
+          'Transactional emails',
+        ],
+        intentDescription: 'Amazon SES node for sending emails through AWS Simple Email Service. Supports both raw email and AWS SES templates, with comprehensive validation and error handling. Used for transactional emails, notifications, and marketing campaigns.',
+        intentCategories: ['email', 'communication', 'aws', 'notification', 'transactional_email'],
+      },
+      commonPatterns: [
+        {
+          name: 'send_basic_email',
+          description: 'Send a basic email to recipients',
+          config: {
+            recipients: { to: ['user@example.com'] },
+            subject: 'Hello',
+            body: 'This is a test email',
+            fromAddress: 'noreply@example.com',
+          },
+        },
+        {
+          name: 'send_templated_email',
+          description: 'Send email using AWS SES template',
+          config: {
+            recipients: { to: ['{{$json.email}}'] },
+            useTemplate: true,
+            templateName: 'OrderConfirmation',
+            templateData: { orderId: '{{$json.orderId}}', name: '{{$json.name}}' },
+            fromAddress: 'noreply@example.com',
+          },
+        },
+        {
+          name: 'send_with_attachment',
+          description: 'Send email with file attachment',
+          config: {
+            recipients: { to: ['user@example.com'] },
+            subject: 'Your Report',
+            body: 'Please find your report attached',
+            attachments: [{ filename: 'report.pdf', content: '{{$json.pdfContent}}' }],
+            fromAddress: 'noreply@example.com',
+          },
+        },
+      ],
+      validationRules: [
+        {
+          field: 'recipients',
+          validator: (value) => {
+            if (!value) return false;
+            const { to, cc, bcc } = value;
+            return (to && to.length > 0) || (cc && cc.length > 0) || (bcc && bcc.length > 0);
+          },
+          errorMessage: 'At least one recipient (To, Cc, or Bcc) is required',
+        },
+        {
+          field: 'subject',
+          validator: (value) => typeof value === 'string' && value.trim().length > 0,
+          errorMessage: 'Subject must be a non-empty string',
+        },
+        {
+          field: 'body',
+          validator: (value) => typeof value === 'string' && value.trim().length > 0,
+          errorMessage: 'Body must be a non-empty string',
+        },
+        {
+          field: 'fromAddress',
+          validator: (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value),
+          errorMessage: 'From address must be a valid email address',
+        },
+      ],
+      capabilities: ['email.send', 'ses.send', 'aws.email', 'transactional_email', 'terminal'],
+      providers: ['aws'],
+      keywords: [
+        'email', 'ses', 'send', 'notification', 'aws', 'mail',
+        'amazon ses', 'amazon email', 'aws email', 'ses send',
+        'transactional email', 'email notification',
+      ],
+      schemaVersion: '1.0.0',
+    };
+  }
+
+  // Missing Social Media Nodes
+  private createFacebookSchema(): NodeSchema {    return {
       type: 'facebook',
       label: 'Facebook',
       category: 'social',
@@ -8414,323 +8990,6 @@ export class NodeLibrary {
     };
   }
 
-  private createOracleDatabaseSchema(): NodeSchema {
-    return {
-      type: 'oracle_database',
-      label: 'Oracle Database',
-      category: 'database',
-      description:
-        'Execute SQL and perform select, insert, update, upsert, and delete operations on Oracle Database tables.',
-      configSchema: {
-        required: ['operation'],
-        optional: {
-          operation: {
-            type: 'string',
-            description: 'The Oracle Database action to perform.',
-            default: 'select',
-            examples: ['select', 'insert', 'update', 'insert_or_update', 'delete', 'execute_sql'],
-            options: [
-              { label: 'Select', value: 'select' },
-              { label: 'Insert', value: 'insert' },
-              { label: 'Update', value: 'update' },
-              { label: 'Insert or Update (Upsert)', value: 'insert_or_update' },
-              { label: 'Delete', value: 'delete' },
-              { label: 'Execute SQL', value: 'execute_sql' },
-            ],
-          },
-          schemaMode: {
-            type: 'string',
-            description: 'How the schema is selected.',
-            default: 'from_list',
-            examples: ['from_list', 'by_name'],
-            options: [
-              { label: 'From List', value: 'from_list' },
-              { label: 'By Name', value: 'by_name' },
-            ],
-          },
-          schema: {
-            type: 'string',
-            description: 'The Oracle schema that contains the table to work with.',
-            examples: ['HR', 'APP_SCHEMA', '{{$json.schema}}'],
-          },
-          tableMode: {
-            type: 'string',
-            description: 'How the table is selected.',
-            default: 'from_list',
-            examples: ['from_list', 'by_name'],
-            options: [
-              { label: 'From List', value: 'from_list' },
-              { label: 'By Name', value: 'by_name' },
-            ],
-          },
-          table: {
-            type: 'string',
-            description: 'The Oracle table to read from or write to.',
-            examples: ['EMPLOYEES', 'ORDERS', '{{$json.table}}'],
-          },
-          mappingColumnMode: {
-            type: 'string',
-            description:
-              'How incoming fields are mapped to Oracle columns for insert, update, and upsert operations.',
-            default: 'manual',
-            examples: ['manual', 'auto'],
-            options: [
-              { label: 'Manual', value: 'manual' },
-              { label: 'Auto', value: 'auto' },
-            ],
-          },
-          columnMappings: {
-            type: 'array',
-            description:
-              'Manual column-to-value mappings used when mappingColumnMode is manual.',
-            default: [],
-            examples: [
-              [
-                { column: 'FIRST_NAME', value: 'John' },
-                { column: 'LAST_NAME', value: 'Doe' },
-              ],
-            ],
-          },
-          selectRows: {
-            type: 'array',
-            description:
-              'Filter conditions for selecting, updating, or deleting rows. Each condition includes a column, operator, and value.',
-            default: [],
-            examples: [
-              [
-                { column: 'ID', operator: '=', value: 10 },
-                { column: 'STATUS', operator: '=', value: 'ACTIVE' },
-              ],
-            ],
-          },
-          combineConditions: {
-            type: 'string',
-            description: 'How to combine multiple row-selection conditions.',
-            default: 'AND',
-            examples: ['AND', 'OR'],
-            options: [
-              { label: 'AND', value: 'AND' },
-              { label: 'OR', value: 'OR' },
-            ],
-          },
-          sort: {
-            type: 'array',
-            description: 'Sort configuration for select operations.',
-            default: [],
-            examples: [[{ column: 'CREATED_AT', direction: 'DESC' }]],
-          },
-          returnAll: {
-            type: 'boolean',
-            description: 'Whether to return all rows for select operations.',
-            default: false,
-            examples: [true, false],
-          },
-          limit: {
-            type: 'number',
-            description: 'Maximum number of rows to return when returnAll is false.',
-            default: 50,
-            examples: [10, 100],
-          },
-          deleteCommand: {
-            type: 'string',
-            description: 'Delete behavior for the delete operation.',
-            default: 'delete',
-            examples: ['delete', 'truncate', 'drop'],
-            options: [
-              { label: 'Delete Rows', value: 'delete' },
-              { label: 'Truncate Table', value: 'truncate' },
-              { label: 'Drop Table', value: 'drop' },
-            ],
-          },
-          statement: {
-            type: 'string',
-            description: 'The SQL or PL/SQL statement to execute (execute_sql operation).',
-            examples: [
-              'SELECT * FROM EMPLOYEES WHERE EMPLOYEE_ID = :id',
-              'BEGIN demo(:1, :2); END',
-              '{{$json.sql}}',
-            ],
-          },
-          bindParams: {
-            type: 'object',
-            description: 'Named or positional bind values for SQL execution.',
-            default: {},
-            examples: [{ id: 100 }, [100, 'ACTIVE']],
-          },
-          statementBatching: {
-            type: 'string',
-            description: 'How incoming items should be executed against the database.',
-            default: 'single_statement',
-            examples: ['single_statement', 'independently', 'transaction'],
-            options: [
-              { label: 'Single Statement', value: 'single_statement' },
-              { label: 'Independently', value: 'independently' },
-              { label: 'Transaction', value: 'transaction' },
-            ],
-          },
-          autoCommit: {
-            type: 'boolean',
-            description: 'Whether to automatically commit after statement execution.',
-            default: true,
-            examples: [true, false],
-          },
-          outputColumns: {
-            type: 'array',
-            description:
-              'Which columns to include in the output for insert, update, and upsert operations.',
-            default: [],
-            examples: [['ID', 'NAME', 'UPDATED_AT']],
-          },
-          outputNumbersAsString: {
-            type: 'boolean',
-            description: 'Whether numeric values should be returned as strings in select operations.',
-            default: false,
-            examples: [true, false],
-          },
-          fetchArraySize: {
-            type: 'number',
-            description: 'Internal Oracle fetch buffer size for query performance tuning.',
-            default: 100,
-            examples: [100, 1000],
-          },
-          prefetchRows: {
-            type: 'number',
-            description: 'Number of rows the driver should prefetch for query tuning.',
-            default: 100,
-            examples: [50, 500],
-          },
-        },
-      },
-      aiSelectionCriteria: {
-        whenToUse: [
-          'User wants to read data from an Oracle Database table',
-          'User wants to insert or update business records in Oracle',
-          'User wants to run a custom SQL or PL/SQL statement against Oracle Database',
-          'User wants to delete, truncate, or drop Oracle table data',
-          'User needs direct Oracle Database access for CRUD operations',
-        ],
-        whenNotToUse: [
-          'The user needs a REST API call rather than direct database access',
-          'The user wants to connect to Oracle Cloud services that are not Oracle Database',
-          'The user needs a trigger/webhook node instead of a database action node',
-          'The user should use a generic HTTP Request node for a non-database Oracle service',
-        ],
-        keywords: [
-          'oracle', 'oracle database', 'oracledb', 'oracle db',
-          'oracle sql', 'oracle plsql', 'oracle select', 'oracle insert',
-          'oracle update', 'oracle upsert', 'oracle delete', 'oracle truncate',
-          'oracle table', 'oracle schema', 'oracle query', 'run oracle sql',
-          'oracle connection', 'oracle integration', 'oracle node',
-        ],
-        useCases: [
-          'Read customer data',
-          'Sync ERP records',
-          'Run SQL scripts',
-          'Update order status',
-          'Bulk insert rows',
-          'Database maintenance',
-        ],
-        intentDescription:
-          'Use this node when a workflow needs direct access to Oracle Database for table-level CRUD operations or for executing custom SQL or PL/SQL. It fits database automation scenarios where the workflow should select rows, insert records, update existing data, upsert data, delete rows, or run raw SQL safely with bind variables. Requires Oracle Database 19c or later.',
-        intentCategories: ['database', 'data-access', 'sql', 'enterprise-data', 'storage'],
-      },
-      commonPatterns: [
-        {
-          name: 'select_active_rows',
-          description: 'Select active rows from a table',
-          config: {
-            operation: 'select',
-            schema: 'APP_SCHEMA',
-            table: 'CUSTOMERS',
-            selectRows: [{ column: 'STATUS', operator: '=', value: 'ACTIVE' }],
-            combineConditions: 'AND',
-            returnAll: false,
-            limit: 50,
-          },
-        },
-        {
-          name: 'insert_new_record',
-          description: 'Insert a new row into an Oracle table',
-          config: {
-            operation: 'insert',
-            schema: 'APP_SCHEMA',
-            table: 'ORDERS',
-            mappingColumnMode: 'manual',
-            columnMappings: [
-              { column: 'ORDER_ID', value: '{{$json.orderId}}' },
-              { column: 'CUSTOMER_ID', value: '{{$json.customerId}}' },
-              { column: 'STATUS', value: 'NEW' },
-            ],
-            autoCommit: true,
-          },
-        },
-        {
-          name: 'run_custom_sql',
-          description: 'Execute a custom SQL query with bind parameters',
-          config: {
-            operation: 'execute_sql',
-            statement: 'SELECT * FROM EMPLOYEES WHERE DEPARTMENT_ID = :deptId',
-            bindParams: { deptId: '{{$json.departmentId}}' },
-            fetchArraySize: 100,
-            prefetchRows: 100,
-          },
-        },
-      ],
-      validationRules: [
-        {
-          field: 'operation',
-          validator: (value) =>
-            ['select', 'insert', 'update', 'insert_or_update', 'delete', 'execute_sql'].includes(value),
-          errorMessage: 'Invalid Oracle operation.',
-        },
-        {
-          field: 'limit',
-          validator: (value) => value === undefined || value === null || (Number.isInteger(value) && value > 0),
-          errorMessage: 'Limit must be a positive integer.',
-        },
-        {
-          field: 'deleteCommand',
-          validator: (value) =>
-            value === undefined || ['delete', 'truncate', 'drop'].includes(value),
-          errorMessage: 'Delete command must be delete, truncate, or drop.',
-        },
-        {
-          field: 'statement',
-          validator: (value) => !value || !String(value).trimEnd().endsWith(';'),
-          errorMessage: 'SQL statement must not end with a semicolon (node-oracledb requirement).',
-        },
-      ],
-      outputType: 'object',
-      outputSchema: {
-        success: { type: 'boolean' },
-        operation: { type: 'string' },
-        schema: { type: 'string' },
-        table: { type: 'string' },
-        rows: { type: 'array' },
-        rowsAffected: { type: 'number' },
-        meta: { type: 'object' },
-        warning: { type: 'string' },
-        error: { type: 'object' },
-      },
-      schemaVersion: '1.0.0',
-      capabilities: ['database.read', 'database.write', 'oracle.sql', 'oracle.plsql'],
-      providers: ['oracle'],
-      keywords: [
-        'oracle', 'oracle database', 'oracledb', 'oracle db',
-        'oracle sql', 'oracle plsql', 'oracle select', 'oracle insert',
-        'oracle update', 'oracle upsert', 'oracle delete', 'oracle truncate',
-        'oracle table', 'oracle schema', 'oracle query', 'run oracle sql',
-        'oracle connection', 'oracle integration', 'oracle node',
-      ],
-      nodeCapability: {
-        inputType: ['object', 'array'],
-        outputType: 'object',
-        acceptsArray: true,
-        producesArray: false,
-      },
-    };
-  }
-
   private createMongodbSchema(): NodeSchema {
     return {
       type: 'mongodb',
@@ -8795,6 +9054,373 @@ export class NodeLibrary {
         'mongodb query', 'mongo query', 'mongodb insert',
         'mongodb update', 'mongodb delete', 'mongodb find'
       ],
+    };
+  }
+
+  private createFirebaseSchema(): NodeSchema {
+    return {
+      type: 'firebase',
+      label: 'Firebase',
+      category: 'database',
+      description: 'Interact with Firebase Firestore and Realtime Database',
+      providers: ['firebase'],
+      configSchema: {
+        required: ['projectId', 'clientEmail', 'privateKey', 'operation'],
+        optional: {
+          collection: {
+            type: 'string',
+            description: 'Firestore collection name',
+          },
+          documentId: {
+            type: 'string',
+            description: 'Document ID for get/update/delete',
+          },
+          data: {
+            type: 'object',
+            description: 'Data for add/update/realtime_set',
+          },
+          filter: {
+            type: 'object',
+            description: 'Query filter conditions',
+          },
+          limit: {
+            type: 'number',
+            description: 'Max documents to return for query',
+          },
+          databaseUrl: {
+            type: 'string',
+            description: 'Realtime Database URL',
+          },
+        },
+      },
+      aiSelectionCriteria: {
+        keywords: ['firebase', 'firestore', 'realtime database', 'google firebase', 'nosql', 'document database'],
+        whenToUse: [
+          'Storing structured data in Firestore',
+          'Reading documents by ID from Firestore',
+          'Querying Firestore collections',
+          'Real-time database read/write operations',
+          'Google Firebase integration',
+        ],
+        whenNotToUse: ['SQL databases', 'PostgreSQL', 'MySQL'],
+        useCases: ['Document storage', 'Real-time sync', 'NoSQL queries'],
+        intentDescription: 'Firebase integration node for Firestore and Realtime Database operations.',
+        intentCategories: ['database', 'firebase', 'nosql', 'document_database', 'realtime'],
+      },
+      commonPatterns: [
+        {
+          name: 'get_document',
+          description: 'Get a document by ID from Firestore',
+          config: { operation: 'get', collection: 'users', documentId: '{{$json.id}}' },
+        },
+        {
+          name: 'add_document',
+          description: 'Add a new document to a Firestore collection',
+          config: { operation: 'add', collection: 'users', data: { name: '{{$json.name}}' } },
+        },
+        {
+          name: 'query_collection',
+          description: 'Query documents from a Firestore collection',
+          config: { operation: 'query', collection: 'users', filter: { status: 'active' }, limit: 100 },
+        },
+      ],
+      validationRules: [
+        {
+          field: 'projectId',
+          validator: (value: any) => typeof value === 'string' && value.length > 0,
+          errorMessage: 'projectId is required',
+        },
+        {
+          field: 'clientEmail',
+          validator: (value: any) => typeof value === 'string' && value.length > 0,
+          errorMessage: 'clientEmail is required',
+        },
+        {
+          field: 'privateKey',
+          validator: (value: any) => typeof value === 'string' && value.length > 0,
+          errorMessage: 'privateKey is required',
+        },
+        {
+          field: 'operation',
+          validator: (value: any) => ['get', 'add', 'update', 'delete', 'query', 'realtime_get', 'realtime_set'].includes(value),
+          errorMessage: 'operation must be one of: get, add, update, delete, query, realtime_get, realtime_set',
+        },
+      ],
+      outputSchema: {
+        success: { type: 'boolean' },
+        data: { type: 'object_or_array' },
+        documentId: { type: 'string' },
+        count: { type: 'number' },
+      },
+    };
+  }
+
+  private createGoogleCloudStorageSchema(): NodeSchema {
+    return {
+      type: 'google_cloud_storage',
+      label: 'Google Cloud Storage',
+      category: 'database',
+      description: 'Interact with Google Cloud Storage buckets (upload, download, delete, list)',
+      providers: ['google_cloud_storage'],
+      configSchema: {
+        required: ['projectId', 'clientEmail', 'privateKey', 'operation', 'bucket'],
+        optional: {
+          fileName: {
+            type: 'string',
+            description: 'File name/path in bucket',
+          },
+          fileContent: {
+            type: 'string',
+            description: 'File content for upload',
+          },
+          filter: {
+            type: 'string',
+            description: 'Prefix filter for list operations',
+          },
+        },
+      },
+      aiSelectionCriteria: {
+        keywords: ['google cloud storage', 'gcs', 'cloud storage', 'object storage', 'file storage', 'google storage'],
+        whenToUse: [
+          'Uploading files to cloud storage',
+          'Downloading files from cloud storage',
+          'Deleting files from cloud storage',
+          'Listing files in a bucket',
+        ],
+        whenNotToUse: ['Local file operations', 'SQL databases', 'Document databases'],
+        useCases: ['File storage', 'Data archival', 'Backup operations', 'File sharing'],
+        intentDescription: 'Google Cloud Storage integration node for object storage operations.',
+        intentCategories: ['database', 'google_cloud_storage', 'object_storage', 'file_storage', 'cloud_storage'],
+      },
+      commonPatterns: [
+        {
+          name: 'upload_file',
+          description: 'Upload a file to a GCS bucket',
+          config: { operation: 'upload', bucket: 'my-bucket', fileName: '{{$json.fileName}}', fileContent: '{{$json.content}}' },
+        },
+        {
+          name: 'download_file',
+          description: 'Download a file from a GCS bucket',
+          config: { operation: 'download', bucket: 'my-bucket', fileName: '{{$json.fileName}}' },
+        },
+        {
+          name: 'delete_file',
+          description: 'Delete a file from a GCS bucket',
+          config: { operation: 'delete', bucket: 'my-bucket', fileName: '{{$json.fileName}}' },
+        },
+        {
+          name: 'list_files',
+          description: 'List files in a GCS bucket',
+          config: { operation: 'list', bucket: 'my-bucket', filter: '{{$json.prefix}}' },
+        },
+      ],
+      validationRules: [
+        {
+          field: 'projectId',
+          validator: (value: any) => typeof value === 'string' && value.length > 0,
+          errorMessage: 'projectId is required',
+        },
+        {
+          field: 'clientEmail',
+          validator: (value: any) => typeof value === 'string' && value.length > 0,
+          errorMessage: 'clientEmail is required',
+        },
+        {
+          field: 'privateKey',
+          validator: (value: any) => typeof value === 'string' && value.length > 0,
+          errorMessage: 'privateKey is required',
+        },
+        {
+          field: 'bucket',
+          validator: (value: any) => typeof value === 'string' && value.length > 0,
+          errorMessage: 'bucket is required',
+        },
+        {
+          field: 'operation',
+          validator: (value: any) => ['upload', 'download', 'delete', 'list'].includes(value),
+          errorMessage: 'operation must be one of: upload, download, delete, list',
+        },
+      ],
+      outputSchema: {
+        success: { type: 'boolean' },
+        data: { type: 'object_or_array' },
+        fileName: { type: 'string' },
+        fileSize: { type: 'number' },
+        count: { type: 'number' },
+      },
+    };
+  }
+
+  private createOdooSchema(): NodeSchema {
+    return {
+      type: 'odoo',
+      label: 'Odoo',
+      category: 'crm',
+      description: 'Interact with Odoo ERP system (customers, invoices, products, and more)',
+
+      configSchema: {
+        required: ['operation', 'model'],
+        optional: {
+          operation: {
+            type: 'string',
+            default: 'getRecords',
+            options: [
+              { label: 'Get Records', value: 'getRecords' },
+              { label: 'Create Record', value: 'createRecord' },
+              { label: 'Update Record', value: 'updateRecord' },
+              { label: 'Delete Record', value: 'deleteRecord' },
+              { label: 'Execute Method', value: 'executeMethod' },
+            ],
+            description: 'Odoo operation to perform',
+          },
+          model: {
+            type: 'string',
+            description: 'Odoo model name',
+            examples: ['res.partner', 'sale.order', 'account.invoice', 'product.product'],
+          },
+          domain: {
+            type: 'array',
+            description: 'Odoo domain filter (for getRecords)',
+            examples: [[['active', '=', true]]],
+          },
+          fields: {
+            type: 'array',
+            description: 'Fields to return (empty = all fields)',
+            examples: [['id', 'name', 'email']],
+          },
+          limit: {
+            type: 'number',
+            description: 'Maximum number of records to return',
+            examples: [100],
+          },
+          offset: {
+            type: 'number',
+            description: 'Pagination offset',
+            examples: [0],
+          },
+          values: {
+            type: 'object',
+            description: 'Field values for create/update operations',
+            examples: [{ name: 'Acme Corp', email: 'info@acme.com' }],
+          },
+          recordId: {
+            type: 'number',
+            description: 'Record ID for update/delete operations',
+            examples: [42],
+          },
+          method: {
+            type: 'string',
+            description: 'Custom method name for executeMethod operation',
+            examples: ['action_confirm', 'action_invoice_open'],
+          },
+          methodArgs: {
+            type: 'array',
+            description: 'Positional arguments for executeMethod',
+            examples: [[]],
+          },
+          methodKwargs: {
+            type: 'object',
+            description: 'Keyword arguments for executeMethod',
+            examples: [{}],
+          },
+        },
+      },
+
+      aiSelectionCriteria: {
+        whenToUse: [
+          'User wants to interact with Odoo ERP',
+          'User needs to manage customers, invoices, or products in Odoo',
+          'User mentions Odoo, ERP, or open-source CRM',
+        ],
+        whenNotToUse: [
+          'User needs a simple REST API call',
+          'User is using a different CRM like HubSpot or Salesforce',
+        ],
+        keywords: [
+          'odoo', 'odoo erp', 'odoo crm', 'open erp', 'openerp',
+          'odoo partner', 'odoo invoice', 'odoo sale', 'odoo product',
+          'odoo record', 'odoo model', 'odoo integration',
+        ],
+        useCases: [
+          'Fetch customers from Odoo',
+          'Create a new sale order in Odoo',
+          'Update an invoice in Odoo',
+          'Delete a contact from Odoo',
+          'Call a custom Odoo method',
+        ],
+        intentDescription:
+          'Odoo ERP integration node that interacts with Odoo models via JSON-RPC. Supports reading, creating, updating, and deleting records as well as calling custom model methods. Used for Odoo ERP automation, CRM management, and business process integration.',
+        intentCategories: ['crm', 'erp', 'odoo', 'business_process', 'data_management'],
+      },
+
+      commonPatterns: [
+        {
+          name: 'fetch_customers',
+          description: 'Get active customers from Odoo',
+          config: {
+            operation: 'getRecords',
+            model: 'res.partner',
+            domain: [['customer_rank', '>', 0]],
+            fields: ['id', 'name', 'email', 'phone'],
+            limit: 100,
+          },
+        },
+        {
+          name: 'create_contact',
+          description: 'Create a new contact in Odoo',
+          config: {
+            operation: 'createRecord',
+            model: 'res.partner',
+            values: { name: '{{$json.name}}', email: '{{$json.email}}' },
+          },
+        },
+        {
+          name: 'get_sale_orders',
+          description: 'Fetch sale orders from Odoo',
+          config: {
+            operation: 'getRecords',
+            model: 'sale.order',
+            domain: [['state', '=', 'sale']],
+            fields: ['id', 'name', 'partner_id', 'amount_total'],
+            limit: 50,
+          },
+        },
+      ],
+
+      validationRules: [
+        {
+          field: 'operation',
+          validator: (value: string) =>
+            ['getRecords', 'createRecord', 'updateRecord', 'deleteRecord', 'executeMethod'].includes(value),
+          errorMessage: 'operation must be one of: getRecords, createRecord, updateRecord, deleteRecord, executeMethod',
+        },
+      ],
+
+      outputType: 'object',
+
+      outputSchema: {
+        success: { type: 'boolean' },
+        operation: { type: 'string' },
+        model: { type: 'string' },
+        data: { type: 'any' },
+        error: { type: 'object' },
+      },
+
+      schemaVersion: '1.0.0',
+      capabilities: ['crm.read', 'crm.write', 'erp.read', 'erp.write'],
+      providers: ['odoo'],
+      keywords: [
+        'odoo', 'odoo erp', 'odoo crm', 'open erp', 'openerp',
+        'odoo partner', 'odoo invoice', 'odoo sale', 'odoo product',
+        'odoo record', 'odoo model', 'odoo integration',
+      ],
+
+      nodeCapability: {
+        inputType: ['object'],
+        outputType: 'object',
+        acceptsArray: false,
+        producesArray: false,
+      },
     };
   }
 
@@ -10348,6 +10974,424 @@ export class NodeLibrary {
     };
   }
 
+
+  private createZoomVideoSchema(): NodeSchema {
+    return {
+      type: 'zoom_video',
+      label: 'Zoom Video',
+      category: 'communication',
+      description: 'Create and manage Zoom meetings via the Zoom API',
+      configSchema: {
+        required: ['operation', 'accessToken'],
+        optional: {
+          operation: {
+            type: 'string',
+            description: 'Zoom operation to perform',
+            default: 'createMeeting',
+            options: [
+              { label: 'Create Meeting', value: 'createMeeting' },
+              { label: 'List Meetings', value: 'listMeetings' },
+              { label: 'Get Meeting', value: 'getMeeting' },
+              { label: 'Delete Meeting', value: 'deleteMeeting' },
+              { label: 'Update Meeting', value: 'updateMeeting' },
+            ],
+          },
+          accessToken: {
+            type: 'string',
+            description: 'Zoom OAuth 2.0 access token',
+          },
+          topic: {
+            type: 'string',
+            description: 'Meeting topic/title',
+            examples: ['Team Sync', 'Weekly Standup'],
+            fillMode: { default: 'buildtime_ai_once', supportsRuntimeAI: true, supportsBuildtimeAI: true },
+          },
+          duration: {
+            type: 'number',
+            description: 'Meeting duration in minutes',
+            examples: [30, 60],
+            default: 60,
+          },
+          startTime: {
+            type: 'string',
+            description: 'Scheduled start time in ISO 8601 format (leave blank for instant meeting)',
+            examples: ['2026-05-01T10:00:00Z'],
+          },
+          meetingId: {
+            type: 'string',
+            description: 'Zoom meeting ID (required for get, delete, update operations)',
+            examples: ['123456789'],
+          },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: [
+          'User wants to create a Zoom meeting',
+          'User wants to schedule a video call via Zoom',
+          'User wants to list, get, update, or delete Zoom meetings',
+          'Workflow needs to automate Zoom meeting management',
+        ],
+        whenNotToUse: [
+          'User needs email notifications (use google_gmail)',
+          'User needs Slack messaging (use slack_message)',
+          'User needs database operations',
+        ],
+        keywords: [
+          'zoom', 'zoom meeting', 'zoom video', 'zoom call', 'video call',
+          'zoom api', 'zoom integration', 'create meeting', 'schedule meeting',
+          'zoom schedule', 'zoom create', 'zoom list', 'zoom get', 'zoom delete',
+          'zoom update', 'video conference', 'zoom conference', 'zoom webinar',
+        ],
+        useCases: [
+          'Create Zoom meetings automatically',
+          'Schedule video calls via Zoom',
+          'List all Zoom meetings',
+          'Get Zoom meeting details',
+          'Delete or update Zoom meetings',
+        ],
+        intentDescription: 'Zoom Video integration node that creates and manages Zoom meetings via the Zoom API. Supports creating, listing, getting, updating, and deleting meetings. Used for automating Zoom meeting management, scheduling video calls, and integrating Zoom into workflows.',
+        intentCategories: ['communication', 'video_conferencing', 'meeting_management', 'zoom', 'scheduling'],
+      },
+      commonPatterns: [
+        {
+          name: 'create_meeting',
+          description: 'Create a new Zoom meeting',
+          config: { operation: 'createMeeting', topic: '{{$json.topic}}', duration: 60 },
+        },
+        {
+          name: 'list_meetings',
+          description: 'List all Zoom meetings',
+          config: { operation: 'listMeetings' },
+        },
+      ],
+      validationRules: [],
+      outputType: 'object',
+      outputSchema: {
+        success: { type: 'boolean' },
+        data: { type: 'object' },
+        error: { type: 'object' },
+      },
+      schemaVersion: '1.0.0',
+      capabilities: ['meeting.create', 'meeting.list', 'meeting.get', 'zoom.api'],
+      providers: ['zoom'],
+      keywords: [
+        'zoom', 'zoom meeting', 'zoom video', 'zoom call', 'video call',
+        'zoom api', 'zoom integration', 'create meeting', 'schedule meeting',
+        'video conference', 'zoom conference',
+      ],
+      nodeCapability: {
+        inputType: ['object'],
+        outputType: 'object',
+        acceptsArray: false,
+        producesArray: false,
+      },
+    };
+  }
+
+  private createVercelNodeSchema(): NodeSchema {
+    return {
+      type: 'vercel',
+      label: 'Vercel',
+      category: 'devops',
+      description: 'Deploy projects and manage deployments on Vercel',
+      capabilities: [
+        'deployment.deploy',
+        'deployment.list',
+        'vercel.deploy',
+        'vercel.list',
+        'devops.deploy',
+      ],
+      providers: ['vercel'],
+      keywords: [
+        'vercel', 'deploy', 'deployment', 'release', 'production',
+        'vercel deploy', 'vercel deployment', 'deploy to vercel',
+        'vercel release', 'vercel production', 'vercel project',
+        'deployment management', 'deployment list', 'list deployments',
+      ],
+      configSchema: {
+        required: ['operation', 'token'],
+        optional: {
+          operation: {
+            type: 'string',
+            description: 'Operation to perform: deploy a project or list all deployments',
+            default: 'deploy',
+            examples: ['deploy', 'list_deployments'],
+            options: [
+              { label: 'Deploy Project', value: 'deploy' },
+              { label: 'List Deployments', value: 'list_deployments' },
+            ],
+          },
+          projectName: {
+            type: 'string',
+            description: 'Vercel project name (required for deploy operation). Can use template syntax like {{$json.projectName}}',
+            examples: ['my-app', 'my-project', '{{$json.projectName}}'],
+            requiredIf: { field: 'operation', equals: 'deploy' },
+          },
+          token: {
+            type: 'string',
+            description: 'Vercel API token (Bearer token). Use credential selection or template syntax like {{$credentials.vercel.token}}',
+            examples: ['vercel_***', '{{$credentials.vercel.token}}'],
+          },
+        },
+      },
+      outputSchema: {
+        success: { type: 'boolean', description: 'Whether the operation succeeded' },
+        data: {
+          type: 'object',
+          description: 'Operation result data. For deploy: deploymentId, projectName, url, status, createdAt. For list: deployments array and total count',
+        },
+        error: {
+          type: 'object',
+          description: 'Error details if operation failed. Contains code, message, retriable, and optional details',
+  private createScheduleWiseNodeSchema(): NodeSchema {
+    return {
+      type: 'schedulewise',
+      label: 'ScheduleWise',
+      category: 'integration',
+      description: 'ScheduleWise appointment scheduling — retrieve, create, update, and delete appointments via the ScheduleWise REST API',
+      configSchema: {
+        required: ['operation'],
+        optional: {
+          credentialId: {
+            type: 'string',
+            description: 'Credential ID reference to stored ScheduleWise credentials',
+            examples: ['cred_abc123'],
+          },
+          dateFrom: {
+            type: 'string',
+            description: 'Start date filter for getSchedules (ISO 8601, e.g. "2024-01-01"). Supports {{ }} expressions.',
+            examples: ['2024-01-01', '{{$json.startDate}}'],
+          },
+          dateTo: {
+            type: 'string',
+            description: 'End date filter for getSchedules (ISO 8601). Supports {{ }} expressions.',
+            examples: ['2024-01-31', '{{$json.endDate}}'],
+          },
+          patientId: {
+            type: 'string',
+            description: 'Patient identifier. Supports {{ }} expressions.',
+            examples: ['patient_123', '{{$json.patientId}}'],
+          },
+          staffId: {
+            type: 'string',
+            description: 'Staff member identifier. Supports {{ }} expressions.',
+            examples: ['staff_456', '{{$json.staffId}}'],
+          },
+          appointmentId: {
+            type: 'string',
+            description: 'Appointment identifier (required for updateAppointment and deleteAppointment). Supports {{ }} expressions.',
+            examples: ['appt_789', '{{$json.appointmentId}}'],
+          },
+          startDateTime: {
+            type: 'string',
+            description: 'Appointment start date/time (ISO 8601). Supports {{ }} expressions.',
+            examples: ['2024-01-15T09:00:00Z', '{{$json.startDateTime}}'],
+          },
+          endDateTime: {
+            type: 'string',
+            description: 'Appointment end date/time (ISO 8601). Supports {{ }} expressions.',
+            examples: ['2024-01-15T10:00:00Z', '{{$json.endDateTime}}'],
+          },
+          serviceType: {
+            type: 'string',
+            description: 'Type of service for the appointment. Supports {{ }} expressions.',
+            examples: ['consultation', 'follow-up', '{{$json.serviceType}}'],
+          },
+          notes: {
+            type: 'string',
+            description: 'Additional notes for the appointment. Supports {{ }} expressions.',
+            examples: ['Patient requested morning slot', '{{$json.notes}}'],
+          },
+          status: {
+            type: 'string',
+            description: 'Appointment status (for updateAppointment). Supports {{ }} expressions.',
+            examples: ['confirmed', 'cancelled', 'pending', '{{$json.status}}'],
+          },
+          limit: {
+            type: 'number',
+            description: 'Maximum number of results to return for getSchedules.',
+            examples: [10, 50, 100],
+            default: 50,
+          },
+          hardDelete: {
+            type: 'boolean',
+            description: 'When true, permanently deletes the appointment (appends ?hardDelete=true). Default is soft delete.',
+            default: false,
+          },
+          timeoutSec: {
+            type: 'number',
+            description: 'HTTP request timeout in seconds. Default: 30.',
+            examples: [15, 30, 60],
+            default: 30,
+          },
+          retries: {
+            type: 'number',
+            description: 'Number of retry attempts on 5xx or network errors (exponential backoff). Default: 0.',
+            examples: [0, 1, 3],
+            default: 0,
+          },
+          outputFormat: {
+            type: 'string',
+            description: 'Output format: "json" (default) or "raw" (unparsed response body).',
+            examples: ['json', 'raw'],
+            default: 'json',
+          },
+          mockMode: {
+            type: 'boolean',
+            description: 'When true, returns synthetic data without calling the ScheduleWise API. Useful for testing.',
+            default: false,
+          },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: [
+          'User wants to deploy a project to Vercel',
+          'User needs to check deployment status',
+          'User wants to list all deployments',
+          'User needs to manage Vercel deployments',
+          'User mentions release or production deployment',
+        ],
+        whenNotToUse: [
+          'User wants to deploy to other platforms (AWS, Azure, Heroku)',
+          'User needs local deployment only',
+          'User wants to manage non-Vercel infrastructure',
+        ],
+        keywords: [
+          'vercel', 'deploy', 'deployment', 'release', 'production',
+          'vercel deploy', 'vercel deployment', 'deploy to vercel',
+          'vercel release', 'vercel production', 'vercel project',
+          'deployment management', 'deployment list', 'list deployments',
+        ],
+        useCases: [
+          'CI/CD automation',
+          'Deployment management',
+          'Release automation',
+          'Production deployment',
+          'Deployment monitoring',
+        ],
+        // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
+        intentDescription: 'Vercel deployment node that enables deploying projects to Vercel and managing deployments. Supports two operations: deploy (deploy a project to Vercel with specified project name) and list_deployments (retrieve all deployments from a Vercel account). Requires Vercel API token for authentication. Returns unified output structure with success status, deployment data, and error details.',
+        intentCategories: ['deployment', 'devops', 'vercel', 'release_management', 'infrastructure'],
+      },
+      commonPatterns: [
+        {
+          name: 'deploy_project',
+          description: 'Deploy a project to Vercel',
+          config: {
+            operation: 'deploy',
+            projectName: 'my-app',
+            token: '{{$credentials.vercel.token}}',
+          },
+        },
+        {
+          name: 'list_all_deployments',
+          description: 'List all deployments from Vercel account',
+          config: {
+            operation: 'list_deployments',
+            token: '{{$credentials.vercel.token}}',
+          'User mentions ScheduleWise explicitly',
+          'Appointment scheduling or booking workflows',
+          'Retrieving or managing patient appointments',
+          'Healthcare scheduling automation',
+          'Calendar-based appointment management',
+        ],
+        whenNotToUse: [
+          'Generic calendar events (use Google Calendar)',
+          'Non-ScheduleWise scheduling systems',
+          'Simple reminders or delays',
+        ],
+        keywords: ['schedulewise', 'appointment', 'schedule', 'booking', 'patient', 'calendar'],
+        useCases: [
+          'Retrieve upcoming appointments for a patient',
+          'Create a new appointment booking',
+          'Update appointment status or time',
+          'Cancel or delete an appointment',
+        ],
+        intentDescription: 'ScheduleWise integration node that manages appointments via the ScheduleWise REST API. Supports getSchedules, createAppointment, updateAppointment, and deleteAppointment operations. Used for healthcare scheduling, patient appointment management, and booking automation.',
+        intentCategories: ['scheduling', 'healthcare', 'appointment_management', 'integration', 'booking'],
+      },
+      commonPatterns: [
+        {
+          name: 'getSchedules',
+          description: 'Retrieve appointments within a date range',
+          config: {
+            operation: 'getSchedules',
+            dateFrom: '{{$json.dateFrom}}',
+            dateTo: '{{$json.dateTo}}',
+            limit: 50,
+          },
+        },
+        {
+          name: 'createAppointment',
+          description: 'Create a new appointment',
+          config: {
+            operation: 'createAppointment',
+            startDateTime: '{{$json.startDateTime}}',
+            endDateTime: '{{$json.endDateTime}}',
+            patientId: '{{$json.patientId}}',
+            staffId: '{{$json.staffId}}',
+            serviceType: '{{$json.serviceType}}',
+          },
+        },
+      ],
+      validationRules: [
+        {
+          field: 'operation',
+          validator: (value) => value === 'deploy' || value === 'list_deployments',
+          errorMessage: 'Operation must be either "deploy" or "list_deployments"',
+        },
+        {
+          field: 'projectName',
+          validator: (value) => {
+            // projectName validation: alphanumeric, hyphens, underscores only, max 128 chars
+            // Note: This is a basic format check; conditional requirement (required for deploy) is handled by requiredIf
+            if (value && typeof value === 'string') {
+              // Validate format: alphanumeric, hyphens, underscores only, max 128 chars
+              if (!/^[a-zA-Z0-9_-]{1,128}$/.test(value)) {
+                return false;
+              }
+            }
+            return true;
+          },
+          errorMessage: 'ProjectName must contain only alphanumeric characters, hyphens, and underscores (max 128 characters)',
+        },
+        {
+          field: 'token',
+          validator: (value) => typeof value === 'string' && value.trim() !== '',
+          errorMessage: 'Token is required and must be a non-empty string',
+        },
+      ],
+
+          validator: (value: any) =>
+            typeof value === 'string' &&
+            value.trim().length > 0 &&
+            ['getSchedules', 'createAppointment', 'updateAppointment', 'deleteAppointment'].includes(value),
+          errorMessage:
+            'Operation is required. Choose one of: getSchedules, createAppointment, updateAppointment, deleteAppointment',
+        },
+      ],
+      outputType: 'object',
+      outputSchema: {
+        success: { type: 'boolean', description: 'Whether the operation succeeded' },
+        operation: { type: 'string', description: 'The operation that was executed' },
+        data: { type: 'object', description: 'Response data from the ScheduleWise API' },
+        executionTimeMs: { type: 'number', description: 'Elapsed time in milliseconds' },
+        error: {
+          type: 'object',
+          description: 'Error details (present only on failure)',
+          properties: {
+            code: { type: 'string' },
+            message: { type: 'string' },
+            httpStatus: { type: 'number' },
+          },
+        },
+      },
+      capabilities: ['scheduling.read', 'scheduling.write', 'appointment.manage'],
+      providers: ['schedulewise'],
+      keywords: ['schedulewise', 'appointment', 'schedule', 'booking', 'patient', 'calendar'],
+    };
+  }
+
   /**
    * Register virtual node types (aliases)
    * 
@@ -10367,1495 +11411,6 @@ export class NodeLibrary {
     console.log('[NodeLibrary] 🔗 Virtual node types: NONE (aliases handled by node-type-resolver.ts)');
     console.log('[NodeLibrary] ✅ Aliases resolve to canonical types: gmail→google_gmail, mail→google_gmail, ai→ai_chat_model');
     // ✅ PERMANENT: No virtual nodes registered - aliases are resolved by node-type-resolver.ts only
-  }
-
-  private createNetlifySchema(): NodeSchema {
-    return {
-      type: 'netlify',
-      label: 'Netlify',
-      category: 'devops',
-      description: 'Deploy sites, manage builds, and interact with Netlify APIs. Supports listing and retrieving sites, creating and listing deploys, and querying forms.',
-      providers: ['netlify'],
-      configSchema: {
-        required: ['resource', 'operation'],
-        optional: {
-          accessToken: {
-            type: 'string',
-            description: 'Netlify Personal Access Token passed as Bearer token',
-            examples: ['{{$credentials.netlify.accessToken}}'],
-          },
-          siteId: {
-            type: 'string',
-            description: 'Netlify site ID — required for all operations except list_sites',
-            examples: ['{{$json.siteId}}', 'abc123'],
-          },
-          deployId: {
-            type: 'string',
-            description: 'Netlify deploy ID — required for get_deploy',
-            examples: ['{{$json.deployId}}'],
-          },
-          resource: {
-            type: 'string',
-            description: 'Netlify API resource to target',
-            default: 'sites',
-            examples: ['sites', 'deploys', 'forms'],
-            options: [
-              { label: 'Sites', value: 'sites' },
-              { label: 'Deploys', value: 'deploys' },
-              { label: 'Forms', value: 'forms' },
-            ],
-          },
-          operation: {
-            type: 'string',
-            description: 'Action to perform on the selected resource',
-            default: 'list_sites',
-            examples: ['list_sites', 'get_site', 'create_deploy', 'list_deploys', 'get_deploy'],
-            options: [
-              { label: 'List Sites', value: 'list_sites' },
-              { label: 'Get Site', value: 'get_site' },
-              { label: 'Create Deploy', value: 'create_deploy' },
-              { label: 'List Deploys', value: 'list_deploys' },
-              { label: 'Get Deploy', value: 'get_deploy' },
-            ],
-          },
-          payload: {
-            type: 'object',
-            description: 'Request body for create_deploy (e.g. { "branch": "main" })',
-            default: {},
-            examples: [{ branch: 'main' }],
-          },
-          limit: {
-            type: 'number',
-            description: 'Maximum number of records to return (maps to per_page)',
-            default: 25,
-            examples: [25, 50, 100],
-          },
-        },
-      },
-      aiSelectionCriteria: {
-        whenToUse: [
-          'User wants to deploy a site to Netlify',
-          'User needs to list or retrieve Netlify sites or deploys',
-          'User wants to trigger a Netlify build or deployment',
-          'User needs to query Netlify forms or deploy status',
-          'User wants to automate Netlify CI/CD workflows',
-        ],
-        whenNotToUse: [
-          'User needs to deploy to a different platform (use github, gitlab, or jenkins)',
-          'User wants generic REST calls to a non-Netlify API',
-          'User needs raw database access',
-        ],
-        keywords: [
-          'netlify', 'netlify deploy', 'netlify sites', 'netlify builds',
-          'netlify api', 'netlify integration', 'site deployment', 'deploy site',
-          'netlify forms', 'netlify ci', 'netlify cd', 'static site deploy',
-          'jamstack deploy', 'netlify build', 'netlify hosting',
-        ],
-        useCases: [
-          'List all Netlify sites',
-          'Get site details by site ID',
-          'Create a new deploy for a site',
-          'List deploys for a site',
-          'Get deploy status by deploy ID',
-          'Trigger a Netlify build from a workflow',
-          'Monitor deploy status in automated pipelines',
-        ],
-        intentDescription: 'Use this node when the workflow must interact with the Netlify REST API to deploy sites, manage builds, or query site/deploy/form data. Supports list_sites, get_site, create_deploy, list_deploys, and get_deploy operations via Personal Access Token authentication.',
-        intentCategories: ['devops', 'deployment', 'ci_cd', 'hosting', 'api', 'netlify'],
-      },
-      commonPatterns: [
-        {
-          name: 'list_sites',
-          description: 'List all Netlify sites',
-          config: { resource: 'sites', operation: 'list_sites', limit: 25 },
-        },
-        {
-          name: 'get_site',
-          description: 'Get a specific Netlify site by ID',
-          config: { resource: 'sites', operation: 'get_site', siteId: '{{$json.siteId}}' },
-        },
-        {
-          name: 'create_deploy',
-          description: 'Create a new deploy for a Netlify site',
-          config: { resource: 'deploys', operation: 'create_deploy', siteId: '{{$json.siteId}}', payload: { branch: 'main' } },
-        },
-        {
-          name: 'list_deploys',
-          description: 'List deploys for a Netlify site',
-          config: { resource: 'deploys', operation: 'list_deploys', siteId: '{{$json.siteId}}', limit: 25 },
-        },
-      ],
-      validationRules: [
-        {
-          field: 'resource',
-          validator: (value) => ['sites', 'deploys', 'forms'].includes(value),
-          errorMessage: 'resource must be one of: sites, deploys, forms',
-        },
-        {
-          field: 'operation',
-          validator: (value) => ['list_sites', 'get_site', 'create_deploy', 'list_deploys', 'get_deploy'].includes(value),
-          errorMessage: 'operation must be one of: list_sites, get_site, create_deploy, list_deploys, get_deploy',
-        },
-      ],
-      outputType: 'object',
-      outputSchema: {
-        success: { type: 'boolean' },
-        resource: { type: 'string' },
-        operation: { type: 'string' },
-        record: { type: 'object' },
-        records: { type: 'array' },
-        count: { type: 'number' },
-        meta: { type: 'object' },
-        error: { type: 'string' },
-      },
-      schemaVersion: '1.0.0',
-      capabilities: ['deploy.create', 'deploy.read', 'site.read', 'netlify.sites', 'netlify.deploys'],
-      keywords: [
-        'netlify', 'netlify deploy', 'netlify sites', 'netlify builds',
-        'netlify api', 'netlify integration', 'site deployment', 'deploy site',
-        'netlify forms', 'netlify ci', 'netlify cd', 'static site deploy',
-      ],
-      nodeCapability: {
-        inputType: ['object', 'array'],
-        outputType: 'object',
-        acceptsArray: true,
-        producesArray: false,
-      },
-    };
-  }
-
-  private createLangchainSchema(): NodeSchema {
-    return {
-      type: 'langchain',
-      label: 'LangChain',
-      category: 'ai',
-      description: 'Orchestrate AI chains and agents using LangChain with configurable LLM providers (OpenAI, Anthropic). Run sequential LLM pipelines (chains) or tool-using reasoning agents within automated workflows.',
-      providers: ['openai', 'anthropic'],
-      configSchema: {
-        required: ['operation', 'prompt'],
-        optional: {
-          provider: {
-            type: 'string',
-            description: 'LLM provider to use for chain or agent execution',
-            default: 'openai',
-            options: [
-              { label: 'OpenAI', value: 'openai' },
-              { label: 'Anthropic / Claude', value: 'anthropic' },
-            ],
-          },
-          tools: {
-            type: 'array',
-            description: 'JSON array of tool definitions available to the agent (agent mode only)',
-            default: [],
-          },
-          memory: {
-            type: 'boolean',
-            description: 'Retain conversation context across chain steps',
-            default: false,
-          },
-          apiKey: {
-            type: 'string',
-            description: 'API key for the selected LLM provider',
-            default: '',
-            examples: ['{{$credentials.openai.apiKey}}', '{{$credentials.anthropic.apiKey}}'],
-          },
-          operation: {
-            type: 'string',
-            description: 'LangChain execution mode: run a sequential chain or a tool-using agent',
-            default: 'run_chain',
-            options: [
-              { label: 'Run Chain', value: 'run_chain' },
-              { label: 'Run Agent', value: 'run_agent' },
-            ],
-          },
-        },
-      },
-      aiSelectionCriteria: {
-        whenToUse: [
-          'User wants to orchestrate AI chains or agents using LangChain',
-          'User needs to run a sequential LLM pipeline (chain)',
-          'User needs a tool-using reasoning agent (agent mode)',
-          'User wants to use OpenAI or Anthropic as the LLM provider in a chain',
-          'User needs AI workflow orchestration with LangChain',
-          'User wants to build multi-step LLM reasoning workflows',
-        ],
-        whenNotToUse: [
-          'User only needs a single LLM call without chaining (use the claude or openai node)',
-          'User needs image generation (use a dedicated image generation node)',
-          'User needs local LLM inference (use the ollama node)',
-        ],
-        keywords: [
-          'langchain', 'agent', 'chain', 'ai workflow', 'llm', 'orchestration',
-          'openai', 'anthropic', 'lang chain', 'ai agent', 'ai chain',
-          'llm chain', 'llm agent', 'ai orchestration', 'run chain', 'run agent',
-        ],
-        useCases: [
-          'Run a LangChain chain with a prompt and OpenAI or Anthropic as the LLM',
-          'Execute a LangChain agent that uses tools to complete a task',
-          'Orchestrate multi-step AI reasoning workflows',
-          'Build AI pipelines that chain multiple LLM calls',
-          'Use LangChain agents for autonomous task completion',
-          'Integrate LangChain into automated workflows',
-        ],
-        intentDescription: 'Use this node when the workflow must orchestrate AI chains or agents via LangChain, supporting both sequential LLM pipelines (run_chain) and tool-using reasoning agents (run_agent) with configurable LLM providers (OpenAI or Anthropic).',
-        intentCategories: ['ai_orchestration', 'llm_chain', 'ai_agent', 'workflow_automation'],
-      },
-      commonPatterns: [
-        {
-          name: 'run_chain',
-          description: 'Run a LangChain chain with a prompt using OpenAI',
-          config: { operation: 'run_chain', provider: 'openai', prompt: '{{$json.prompt}}' },
-        },
-        {
-          name: 'run_agent',
-          description: 'Run a LangChain agent with tools using Anthropic',
-          config: { operation: 'run_agent', provider: 'anthropic', prompt: '{{$json.task}}', tools: [] },
-        },
-      ],
-      validationRules: [
-        {
-          field: 'operation',
-          validator: (value) => ['run_chain', 'run_agent'].includes(value),
-          errorMessage: 'operation must be one of: run_chain, run_agent',
-        },
-        {
-          field: 'provider',
-          validator: (value) => value === undefined || value === null || ['openai', 'anthropic'].includes(value),
-          errorMessage: 'provider must be one of: openai, anthropic',
-        },
-        {
-          field: 'prompt',
-          validator: (value) => typeof value === 'string' && value.trim().length > 0,
-          errorMessage: 'prompt is required and must be a non-empty string',
-        },
-      ],
-      outputType: 'object',
-      outputSchema: {
-        success: { type: 'boolean' },
-        response: { type: 'string' },
-        steps: { type: 'array' },
-        error: { type: 'object' },
-      },
-      schemaVersion: '1.0',
-      capabilities: ['ai.chain', 'ai.agent', 'langchain.run', 'llm.orchestration', 'openai.api', 'anthropic.api'],
-      keywords: ['langchain', 'lang_chain', 'ai_agent', 'chain', 'agent'],
-      nodeCapability: {
-        inputType: ['object', 'array', 'text'],
-        outputType: 'object',
-        acceptsArray: false,
-        producesArray: false,
-      },
-    };
-  }
-
-  private createClaudeSchema(): NodeSchema {
-    const SUPPORTED_MODELS = [
-      'claude-opus-4-5',
-      'claude-sonnet-4-5',
-      'claude-haiku-4-5',
-      'claude-3-5-sonnet-20241022',
-      'claude-3-5-haiku-20241022',
-      'claude-3-opus-20240229',
-    ];
-
-    return {
-      type: 'claude',
-      label: 'Claude',
-      category: 'ai',
-      description: 'Send prompts to Anthropic\'s Claude AI models and generate text responses. Supports all Claude model variants with optional system prompts, token limits, and temperature control.',
-      providers: ['anthropic'],
-      configSchema: {
-        required: ['model', 'prompt'],
-        optional: {
-          apiKey: {
-            type: 'string',
-            description: 'Anthropic API key passed as x-api-key header',
-            examples: ['{{$credentials.anthropic.apiKey}}'],
-          },
-          systemPrompt: {
-            type: 'string',
-            description: 'Optional system instruction that sets the assistant\'s behavior and persona',
-            default: '',
-            examples: ['You are a helpful assistant.'],
-          },
-          maxTokens: {
-            type: 'number',
-            description: 'Maximum number of tokens to generate in the response',
-            default: 1024,
-            examples: [512, 1024, 4096],
-          },
-          temperature: {
-            type: 'number',
-            description: 'Sampling temperature between 0 and 1. Lower values are more deterministic, higher values more creative.',
-            default: 1,
-            examples: [0, 0.5, 1],
-          },
-          model: {
-            type: 'string',
-            description: 'Claude model identifier to use for inference',
-            default: 'claude-sonnet-4-5',
-            options: [
-              { label: 'Claude Opus 4.5', value: 'claude-opus-4-5' },
-              { label: 'Claude Sonnet 4.5', value: 'claude-sonnet-4-5' },
-              { label: 'Claude Haiku 4.5', value: 'claude-haiku-4-5' },
-              { label: 'Claude 3.5 Sonnet', value: 'claude-3-5-sonnet-20241022' },
-              { label: 'Claude 3.5 Haiku', value: 'claude-3-5-haiku-20241022' },
-              { label: 'Claude 3 Opus', value: 'claude-3-opus-20240229' },
-            ],
-          },
-        },
-      },
-      aiSelectionCriteria: {
-        whenToUse: [
-          'User wants to generate text using Claude AI',
-          'User needs to send a prompt to Anthropic\'s Claude API',
-          'User wants AI-powered text generation, summarization, or analysis',
-          'User needs to process natural language with a large language model',
-          'User wants to use Claude for chat, Q&A, or content creation',
-          'User needs Anthropic Claude for reasoning or code generation tasks',
-        ],
-        whenNotToUse: [
-          'User needs image generation (use a dedicated image generation node)',
-          'User wants to use OpenAI GPT models (use the openai node)',
-          'User needs Google Gemini (use the google_gemini node)',
-          'User wants local LLM inference (use the ollama node)',
-        ],
-        keywords: [
-          'claude', 'anthropic', 'claude ai', 'claude api', 'anthropic claude',
-          'claude sonnet', 'claude opus', 'claude haiku', 'llm', 'large language model',
-          'ai text generation', 'ai prompt', 'ai chat', 'ai messages', 'anthropic api',
-          'claude messages', 'text generation', 'natural language processing', 'nlp',
-          'ai summarization', 'ai analysis', 'ai writing', 'ai assistant',
-        ],
-        useCases: [
-          'Generate text responses from a prompt using Claude',
-          'Summarize documents or data with Claude AI',
-          'Answer questions using Claude\'s reasoning capabilities',
-          'Generate code or technical content with Claude',
-          'Analyze and classify text using Claude',
-          'Create conversational AI responses in workflows',
-          'Process and transform text with AI assistance',
-          'Draft emails, reports, or content using Claude',
-        ],
-        intentDescription: 'Use this node when the workflow must call the Anthropic Claude API to generate text, answer questions, summarize content, or perform any AI-powered natural language task. Supports all Claude model variants via the Anthropic Messages API with optional system prompts and configurable token/temperature settings.',
-        intentCategories: ['ai_generation', 'text_processing', 'nlp', 'llm', 'anthropic', 'ai_chat', 'ai_summarization'],
-      },
-      commonPatterns: [
-        {
-          name: 'generate_text',
-          description: 'Generate text from a prompt using Claude Sonnet',
-          config: { model: 'claude-sonnet-4-5', prompt: '{{$json.prompt}}', maxTokens: 1024 },
-        },
-        {
-          name: 'summarize',
-          description: 'Summarize content using Claude',
-          config: { model: 'claude-sonnet-4-5', prompt: 'Summarize the following: {{$json.content}}', maxTokens: 512 },
-        },
-        {
-          name: 'chat_with_system_prompt',
-          description: 'Chat with Claude using a custom system prompt',
-          config: { model: 'claude-sonnet-4-5', prompt: '{{$json.message}}', systemPrompt: 'You are a helpful assistant.', maxTokens: 1024 },
-        },
-      ],
-      validationRules: [
-        {
-          field: 'model',
-          validator: (value) => SUPPORTED_MODELS.includes(value),
-          errorMessage: `model must be one of: ${SUPPORTED_MODELS.join(', ')}`,
-        },
-        {
-          field: 'temperature',
-          validator: (value) => value === undefined || value === null || (typeof value === 'number' && value >= 0 && value <= 1),
-          errorMessage: 'temperature must be between 0 and 1',
-        },
-      ],
-      outputType: 'object',
-      outputSchema: {
-        success: { type: 'boolean' },
-        model: { type: 'string' },
-        content: { type: 'string' },
-        inputTokens: { type: 'number' },
-        outputTokens: { type: 'number' },
-        stopReason: { type: 'string' },
-        error: { type: 'string' },
-      },
-      schemaVersion: '1.0',
-      capabilities: ['ai.generate', 'ai.chat', 'ai.text', 'claude.messages', 'anthropic.api'],
-      keywords: [
-        'claude', 'anthropic', 'claude ai', 'claude api', 'llm',
-        'ai text generation', 'ai prompt', 'ai chat', 'claude messages',
-      ],
-      nodeCapability: {
-        inputType: ['object', 'array', 'text'],
-        outputType: 'object',
-        acceptsArray: false,
-        producesArray: false,
-      },
-    };
-  }
-
-  private createPineconeSchema(): NodeSchema {
-    return {
-      type: 'pinecone',
-      label: 'Pinecone',
-      category: 'database',
-      description: 'Interact with Pinecone vector database to upsert, query, or delete high-dimensional vectors. Enables semantic similarity search and nearest-neighbor retrieval for AI-powered workflows using embeddings.',
-      configSchema: {
-        required: ['operation', 'index'],
-        optional: {
-          apiKey: {
-            type: 'string',
-            description: 'Pinecone API key passed as the Api-Key header',
-            examples: ['{{$credentials.pinecone.apiKey}}'],
-          },
-          vector: {
-            type: 'array',
-            description: 'Embedding vector as a JSON array of floats. Used by upsert and query operations.',
-            default: null,
-            examples: [[0.1, 0.2, 0.3]],
-          },
-          topK: {
-            type: 'number',
-            description: 'Number of nearest-neighbor results to return for a query operation.',
-            default: 5,
-            examples: [5, 10, 20],
-          },
-          id: {
-            type: 'string',
-            description: 'Vector ID used to address a specific vector for upsert or delete operations.',
-            default: '',
-            examples: ['vec-001', '{{$json.id}}'],
-          },
-          metadata: {
-            type: 'object',
-            description: 'Arbitrary metadata object to store alongside the vector during upsert.',
-            default: {},
-            examples: [{ source: 'document', page: 1 }],
-          },
-          namespace: {
-            type: 'string',
-            description: 'Pinecone namespace to scope the operation within the index.',
-            default: '',
-            examples: ['default', 'production'],
-          },
-        },
-      },
-      aiSelectionCriteria: {
-        whenToUse: [
-          'User needs to store or retrieve vector embeddings',
-          'User wants to perform semantic similarity search',
-          'User needs nearest-neighbor search over high-dimensional data',
-          'User wants to upsert vectors with metadata into Pinecone',
-          'User needs to query a Pinecone index for similar vectors',
-          'User wants to delete vectors from a Pinecone index by ID',
-          'User is building a RAG (retrieval-augmented generation) pipeline',
-          'User needs a managed vector database for AI workflows',
-        ],
-        whenNotToUse: [
-          'User needs a relational database (use PostgreSQL or MySQL node)',
-          'User needs key-value storage (use Redis node)',
-          'User needs document storage (use MongoDB node)',
-          'User does not need vector similarity search',
-        ],
-        keywords: [
-          'pinecone', 'vector database', 'embeddings', 'similarity search',
-          'nearest neighbor', 'vector search', 'semantic search', 'ann',
-          'approximate nearest neighbor', 'vector store', 'vector index',
-          'rag', 'retrieval augmented generation', 'embedding search',
-          'pinecone index', 'pinecone upsert', 'pinecone query', 'pinecone delete',
-        ],
-        useCases: [
-          'Store document embeddings in Pinecone for semantic retrieval',
-          'Query Pinecone for the top-K most similar vectors to a query embedding',
-          'Delete outdated or stale vectors from a Pinecone index',
-          'Build a RAG pipeline that retrieves relevant context from Pinecone',
-          'Power semantic search features using Pinecone vector similarity',
-          'Manage vector lifecycle (upsert, query, delete) in AI workflows',
-        ],
-        intentDescription: 'Use this node when the workflow must interact with the Pinecone managed vector database to upsert embeddings with metadata, query for semantically similar vectors using approximate nearest-neighbor search, or delete vectors by ID. Ideal for RAG pipelines, semantic search, and any workflow that requires high-dimensional vector storage and retrieval.',
-        intentCategories: ['vector_database', 'semantic_search', 'embeddings', 'rag', 'ai_retrieval', 'database'],
-      },
-      capabilities: ['vector.upsert', 'vector.query', 'vector.delete', 'pinecone.index'],
-      keywords: [
-        'pinecone', 'vector database', 'embeddings', 'similarity search', 'nearest neighbor',
-        'vector store', 'semantic search', 'rag', 'ann',
-      ],
-      commonPatterns: [
-        {
-          name: 'upsert_vector',
-          description: 'Upsert a vector with metadata into a Pinecone index',
-          config: {
-            operation: 'upsert',
-            index: '{{$json.indexName}}',
-            id: '{{$json.id}}',
-            vector: '{{$json.embedding}}',
-            metadata: { source: '{{$json.source}}' },
-            namespace: '',
-          },
-        },
-        {
-          name: 'query_similar',
-          description: 'Query a Pinecone index for the top-K nearest neighbors',
-          config: {
-            operation: 'query',
-            index: '{{$json.indexName}}',
-            vector: '{{$json.queryEmbedding}}',
-            topK: 5,
-            namespace: '',
-          },
-        },
-        {
-          name: 'delete_vector',
-          description: 'Delete a vector by ID from a Pinecone index',
-          config: {
-            operation: 'delete',
-            index: '{{$json.indexName}}',
-            id: '{{$json.id}}',
-            namespace: '',
-          },
-        },
-      ],
-      validationRules: [
-        {
-          field: 'operation',
-          validator: (value) => ['upsert', 'query', 'delete'].includes(value),
-          errorMessage: 'operation must be one of: upsert, query, delete',
-        },
-      ],
-      outputType: 'object',
-      outputSchema: {
-        success: { type: 'boolean' },
-        operation: { type: 'string' },
-        matches: { type: 'array' },
-        upsertedCount: { type: 'number' },
-        error: { type: 'string' },
-      },
-      schemaVersion: '1.0',
-      nodeCapability: {
-        inputType: ['object', 'array', 'text'],
-        outputType: 'object',
-        acceptsArray: false,
-        producesArray: false,
-      },
-    };
-  }
-
-  private createChargebeeSchema(): NodeSchema {
-    return {
-      type: 'chargebee',
-      label: 'Chargebee',
-      category: 'payment',
-      description: 'Automate subscription billing and customer lifecycle operations with Chargebee. Create customers, manage subscriptions, retrieve customer data, and cancel subscriptions via the Chargebee REST API.',
-      providers: ['chargebee'],
-      configSchema: {
-        required: ['operation', 'apiKey', 'site'],
-        optional: {
-          operation: {
-            type: 'string',
-            description: 'Chargebee operation to perform',
-            default: 'create_customer',
-            options: [
-              { label: 'Create Customer', value: 'create_customer' },
-              { label: 'Create Subscription', value: 'create_subscription' },
-              { label: 'Get Customer', value: 'get_customer' },
-              { label: 'Cancel Subscription', value: 'cancel_subscription' },
-            ],
-          },
-          apiKey: {
-            type: 'string',
-            description: 'Chargebee API key (used as HTTP Basic Auth username with empty password)',
-            examples: ['{{$credentials.chargebee.apiKey}}'],
-          },
-          site: {
-            type: 'string',
-            description: 'Chargebee site name (subdomain), e.g. "your-company" for https://your-company.chargebee.com',
-            examples: ['your-company'],
-          },
-          customerId: {
-            type: 'string',
-            description: 'Chargebee customer ID — required for create_subscription, get_customer, and cancel_subscription',
-            examples: ['{{$json.customerId}}', 'cust_abc123'],
-          },
-          email: {
-            type: 'string',
-            description: 'Customer email address — required for create_customer',
-            examples: ['{{$json.email}}', 'user@example.com'],
-          },
-          planId: {
-            type: 'string',
-            description: 'Chargebee plan / item price ID — required for create_subscription',
-            examples: ['{{$json.planId}}', 'basic-monthly'],
-          },
-          subscriptionId: {
-            type: 'string',
-            description: 'Chargebee subscription ID — required for cancel_subscription',
-            examples: ['{{$json.subscriptionId}}', 'sub_xyz789'],
-          },
-        },
-      },
-      aiSelectionCriteria: {
-        whenToUse: [
-          'User wants to create a billing customer in Chargebee',
-          'User needs to start a subscription for a customer',
-          'User wants to retrieve customer billing data from Chargebee',
-          'User needs to cancel a subscription in Chargebee',
-          'User wants to automate SaaS subscription lifecycle management',
-          'User needs recurring billing or subscription management',
-        ],
-        whenNotToUse: [
-          'User needs one-time payment processing (use stripe or paypal instead)',
-          'User wants generic REST calls to a non-Chargebee API',
-          'User needs raw database access',
-          'User wants to manage invoices or coupons not covered by these operations',
-        ],
-        keywords: [
-          'chargebee', 'subscription', 'billing', 'payment', 'recurring',
-          'customer', 'plan', 'saas billing', 'subscription management',
-          'chargebee api', 'chargebee integration', 'recurring billing',
-          'subscription lifecycle', 'cancel subscription', 'create subscription',
-        ],
-        useCases: [
-          'Create a new billing customer in Chargebee',
-          'Start a subscription for an existing customer',
-          'Retrieve customer billing details',
-          'Cancel an active subscription',
-          'Automate SaaS onboarding with subscription creation',
-          'Sync subscription status with internal systems',
-        ],
-        intentDescription: 'Use this node when the workflow must interact with the Chargebee subscription billing API. Supports create_customer, create_subscription, get_customer, and cancel_subscription operations using HTTP Basic Auth.',
-        intentCategories: ['billing.subscription', 'payment.recurring', 'saas.billing', 'customer.management', 'api'],
-      },
-      commonPatterns: [
-        {
-          name: 'create_subscription',
-          description: 'Create a new subscription for an existing Chargebee customer',
-          config: {
-            operation: 'create_subscription',
-            customerId: '{{$json.customerId}}',
-            planId: '{{$json.planId}}',
-          },
-        },
-        {
-          name: 'create_customer',
-          description: 'Create a new billing customer in Chargebee',
-          config: {
-            operation: 'create_customer',
-            email: '{{$json.email}}',
-          },
-        },
-        {
-          name: 'get_customer',
-          description: 'Retrieve a Chargebee customer by ID',
-          config: {
-            operation: 'get_customer',
-            customerId: '{{$json.customerId}}',
-          },
-        },
-        {
-          name: 'cancel_subscription',
-          description: 'Cancel an active Chargebee subscription',
-          config: {
-            operation: 'cancel_subscription',
-            subscriptionId: '{{$json.subscriptionId}}',
-          },
-        },
-      ],
-      validationRules: [
-        {
-          field: 'operation',
-          validator: (value) => ['create_customer', 'create_subscription', 'get_customer', 'cancel_subscription'].includes(value),
-          errorMessage: 'operation must be one of: create_customer, create_subscription, get_customer, cancel_subscription',
-        },
-      ],
-      outputType: 'object',
-      outputSchema: {
-        success: { type: 'boolean' },
-        operation: { type: 'string' },
-        customer: { type: 'object' },
-        subscription: { type: 'object' },
-        customerId: { type: 'string' },
-        subscriptionId: { type: 'string' },
-        error: { type: 'string' },
-      },
-      schemaVersion: '1.0.0',
-      capabilities: [
-        'billing.customer.create',
-        'billing.subscription.create',
-        'billing.customer.read',
-        'billing.subscription.cancel',
-        'chargebee.billing',
-        'chargebee.subscriptions',
-      ],
-      keywords: ['chargebee', 'subscription', 'billing', 'payment', 'recurring', 'customer', 'plan', 'saas billing'],
-      nodeCapability: {
-        inputType: ['object', 'array'],
-        outputType: 'object',
-        acceptsArray: true,
-        producesArray: false,
-      },
-    };
-  }
-
-  private createTypeformSchema(): NodeSchema {
-    return {
-      type: 'typeform',
-      label: 'Typeform',
-      category: 'productivity',
-      description: 'Interact with the Typeform API to retrieve form responses, create forms, and fetch form definitions.',
-      providers: ['typeform'],
-      configSchema: {
-        required: ['operation', 'apiKey'],
-        optional: {
-          operation: {
-            type: 'string',
-            description: 'Typeform operation to perform',
-            default: 'get_responses',
-            options: [
-              { label: 'Get Responses', value: 'get_responses' },
-              { label: 'Create Form',   value: 'create_form'   },
-              { label: 'Get Form',      value: 'get_form'      },
-            ],
-          },
-          apiKey: {
-            type: 'string',
-            description: 'Typeform personal access token used as Bearer token',
-            examples: ['{{$credentials.typeform.apiKey}}'],
-          },
-          formId: {
-            type: 'string',
-            description: 'The Typeform form ID — required for get_responses and get_form',
-            examples: ['{{$json.formId}}', 'abc123'],
-            requiredIf: { field: 'operation', equals: 'get_responses' },
-          },
-          title: {
-            type: 'string',
-            description: 'Title for the new form — required for create_form',
-            examples: ['{{$json.title}}', 'My New Form'],
-            requiredIf: { field: 'operation', equals: 'create_form' },
-          },
-        },
-      },
-      aiSelectionCriteria: {
-        whenToUse: [
-          'User wants to retrieve responses from a Typeform form',
-          'User needs to create a new Typeform form programmatically',
-          'User wants to fetch a Typeform form definition by ID',
-          'User needs to automate form-based data collection workflows',
-          'User wants to integrate survey results into a workflow',
-          'User needs to build forms or collect structured data via Typeform',
-        ],
-        whenNotToUse: [
-          'User needs a generic web form not tied to Typeform',
-          'User wants to process form submissions from a different provider',
-          'User needs raw database access or non-form data collection',
-          'User wants to send emails or notifications (use gmail or slack instead)',
-        ],
-        keywords: [
-          'typeform', 'form', 'survey', 'responses', 'form builder',
-          'data collection', 'typeform api', 'typeform integration',
-          'form responses', 'create form', 'get form', 'survey responses',
-          'online form', 'questionnaire', 'form submission',
-        ],
-        useCases: [
-          'Retrieve all responses from a Typeform survey',
-          'Create a new Typeform form with a given title',
-          'Fetch a Typeform form definition by ID',
-          'Automate survey data collection and processing',
-          'Sync Typeform responses with a CRM or database',
-          'Trigger workflows based on new form submissions',
-        ],
-        intentDescription: 'Use this node when the workflow must interact with the Typeform REST API. Supports get_responses, create_form, and get_form operations using a Bearer token for authentication.',
-        intentCategories: ['forms.survey', 'data.collection', 'productivity.forms'],
-      },
-      commonPatterns: [
-        {
-          name: 'get_responses',
-          description: 'Retrieve all responses for a Typeform form',
-          config: {
-            operation: 'get_responses',
-            formId: '{{$json.formId}}',
-          },
-        },
-        {
-          name: 'create_form',
-          description: 'Create a new Typeform form with a given title',
-          config: {
-            operation: 'create_form',
-            title: '{{$json.title}}',
-          },
-        },
-        {
-          name: 'get_form',
-          description: 'Fetch a Typeform form definition by ID',
-          config: {
-            operation: 'get_form',
-            formId: '{{$json.formId}}',
-          },
-        },
-      ],
-      validationRules: [
-        {
-          field: 'operation',
-          validator: (value) => ['get_responses', 'create_form', 'get_form'].includes(value),
-          errorMessage: 'operation must be one of: get_responses, create_form, get_form',
-        },
-      ],
-      outputType: 'object',
-      outputSchema: {
-        // get_responses
-        page_count: { type: 'number', description: 'Number of pages in the response (get_responses)' },
-        total_items: { type: 'number', description: 'Total number of response items (get_responses)' },
-        items: { type: 'array', description: 'Array of form response objects (get_responses)' },
-        // create_form
-        id: { type: 'string', description: 'ID of the created or fetched form (create_form, get_form)' },
-        title: { type: 'string', description: 'Title of the form (create_form, get_form)' },
-        type: { type: 'string', description: 'Form type (create_form)' },
-        _links: { type: 'object', description: 'Hypermedia links for the form (create_form)' },
-        // get_form
-        fields: { type: 'array', description: 'Array of field definitions in the form (get_form)' },
-        settings: { type: 'object', description: 'Form settings object (get_form)' },
-        // shared error field
-        error: { type: 'string', description: 'Error message if the operation failed' },
-      },
-      schemaVersion: '1.0.0',
-      capabilities: [
-        'forms.responses.read',
-        'forms.create',
-        'forms.read',
-        'typeform.forms',
-        'typeform.responses',
-      ],
-      keywords: ['typeform', 'form', 'survey', 'responses', 'form builder', 'data collection'],
-      nodeCapability: {
-        inputType: ['object'],
-        outputType: 'object',
-        acceptsArray: false,
-        producesArray: false,
-      },
-    };
-  }
-
-  private createGoogleFormsSchema(): NodeSchema {
-    return {
-      type: 'google_forms',
-      label: 'Google Forms',
-      category: 'google',
-      description: 'Create Google Forms and fetch responses using the Google Forms API.',
-      providers: ['google'],
-      configSchema: {
-        required: ['operation', 'accessToken'],
-        optional: {
-          operation: {
-            type: 'string',
-            description: 'Google Forms operation to perform',
-            default: 'get_responses',
-            options: [
-              { label: 'Get Responses', value: 'get_responses' },
-              { label: 'Create Form',   value: 'create_form'   },
-              { label: 'Get Form',      value: 'get_form'      },
-            ],
-          },
-          accessToken: {
-            type: 'string',
-            description: 'Google OAuth 2.0 access token',
-            examples: ['{{$credentials.google.accessToken}}'],
-          },
-          formId: {
-            type: 'string',
-            description: 'Google Form ID — required for get_responses and get_form',
-            examples: ['{{$json.formId}}'],
-            requiredIf: { field: 'operation', equals: 'get_responses' },
-          },
-          title: {
-            type: 'string',
-            description: 'Form title — required for create_form',
-            examples: ['My Survey'],
-            requiredIf: { field: 'operation', equals: 'create_form' },
-          },
-        },
-      },
-      aiSelectionCriteria: {
-        whenToUse: [
-          'User wants to retrieve responses from a Google Form',
-          'User needs to create a new Google Form programmatically',
-          'User wants to fetch a Google Form definition by ID',
-          'User needs to automate Google Forms data collection workflows',
-          'User wants to integrate Google survey results into a workflow',
-        ],
-        whenNotToUse: [
-          'User needs a generic web form not tied to Google Forms',
-          'User wants to process form submissions from Typeform or another provider',
-          'User needs raw database access or non-form data collection',
-        ],
-        keywords: [
-          'google forms', 'google form', 'gform', 'form responses',
-          'create form', 'get form', 'survey', 'google survey',
-          'form submission', 'questionnaire', 'google forms api',
-        ],
-        useCases: [
-          'Retrieve all responses from a Google Form survey',
-          'Create a new Google Form with a given title',
-          'Fetch a Google Form definition by ID',
-          'Automate survey data collection and processing',
-          'Sync Google Forms responses with a CRM or database',
-        ],
-        intentDescription: 'Use this node when the workflow must interact with the Google Forms API. Supports get_responses, create_form, and get_form operations using an OAuth 2.0 access token.',
-        intentCategories: ['forms.survey', 'data.collection', 'google.forms'],
-      },
-      commonPatterns: [
-        {
-          name: 'get_responses',
-          description: 'Retrieve all responses for a Google Form',
-          config: { operation: 'get_responses' },
-        },
-        {
-          name: 'create_form',
-          description: 'Create a new Google Form with a given title',
-          config: { operation: 'create_form' },
-        },
-        {
-          name: 'get_form',
-          description: 'Fetch a Google Form definition by ID',
-          config: { operation: 'get_form' },
-        },
-      ],
-      validationRules: [
-        {
-          field: 'operation',
-          validator: (v) => ['get_responses', 'create_form', 'get_form'].includes(v),
-          errorMessage: 'operation must be one of: get_responses, create_form, get_form',
-        },
-      ],
-      outputType: 'object',
-      outputSchema: {
-        success: { type: 'boolean', description: 'Whether the operation succeeded' },
-        data: { type: 'object', description: 'Google Forms API response data' },
-        error: { type: 'string', description: 'Error message if the operation failed' },
-      },
-      schemaVersion: '1.0.0',
-      capabilities: [
-        'forms.responses.read',
-        'forms.create',
-        'forms.read',
-        'google.forms',
-        'google.forms.responses',
-      ],
-      keywords: ['google forms', 'google form', 'gform', 'form', 'survey', 'responses', 'data collection'],
-      nodeCapability: {
-        inputType: ['object'],
-        outputType: 'object',
-        acceptsArray: false,
-        producesArray: false,
-      },
-    };
-  }
-  private createWordPressSchema(): NodeSchema {
-    return {
-      type: 'wordpress',
-      label: 'WordPress',
-      category: 'cms',
-      description: 'Create, read, update, and delete posts on any self-hosted WordPress site via the WordPress REST API using Application Password authentication.',
-      providers: ['wordpress'],
-      keywords: ['wordpress', 'wp', 'blog', 'cms', 'post', 'content management'],
-      capabilities: ['post.create', 'post.read', 'post.update', 'post.delete', 'wordpress.posts', 'cms.posts'],
-      configSchema: {
-        required: ['operation', 'siteUrl', 'username', 'password'],
-        optional: {
-          postId: {
-            type: 'string',
-            description: 'WordPress post ID — required for update_post and delete_post',
-            examples: ['{{$json.id}}', '42'],
-          },
-          title: {
-            type: 'string',
-            description: 'Post title — required for create_post',
-            examples: ['My New Post'],
-          },
-          content: {
-            type: 'string',
-            description: 'Post body content (HTML or plain text)',
-            examples: ['<p>Hello world</p>'],
-          },
-          status: {
-            type: 'string',
-            description: 'Post status',
-            default: 'publish',
-            examples: ['publish', 'draft', 'pending'],
-          },
-          limit: {
-            type: 'number',
-            description: 'Maximum number of posts to return (per_page) for get_posts',
-            default: 10,
-            examples: [10, 25, 100],
-          },
-          operation: {
-            type: 'string',
-            description: 'WordPress operation to perform',
-            default: 'get_posts',
-            options: [
-              { label: 'Create Post', value: 'create_post' },
-              { label: 'Get Posts',   value: 'get_posts'   },
-              { label: 'Update Post', value: 'update_post' },
-              { label: 'Delete Post', value: 'delete_post' },
-            ],
-          },
-          siteUrl: {
-            type: 'string',
-            description: 'Base URL of the WordPress site (no trailing slash)',
-            examples: ['https://example.com'],
-          },
-          username: {
-            type: 'string',
-            description: 'WordPress username for Basic Auth',
-            examples: ['admin'],
-          },
-          password: {
-            type: 'string',
-            description: 'WordPress Application Password for Basic Auth',
-            examples: ['xxxx xxxx xxxx xxxx xxxx xxxx'],
-          },
-        },
-      },
-      aiSelectionCriteria: {
-        whenToUse: [
-          'User wants to create a new blog post on a WordPress site',
-          'User needs to fetch recent posts from a WordPress site',
-          'User wants to update or delete an existing WordPress post',
-          'User needs to automate content publishing to WordPress',
-          'User wants to sync content from another system to WordPress',
-        ],
-        whenNotToUse: [
-          'User needs to manage WordPress plugins, themes, or users',
-          'User wants to interact with a non-WordPress CMS',
-          'User needs raw database access to WordPress',
-        ],
-        keywords: [
-          'wordpress', 'wp', 'blog', 'cms', 'post', 'content management',
-          'wordpress post', 'wordpress api', 'wordpress rest', 'create post',
-          'publish post', 'blog post', 'wordpress site', 'wp rest api',
-        ],
-        useCases: [
-          'Create a new blog post on a WordPress site',
-          'Fetch recent posts from a WordPress site',
-          'Update an existing WordPress post',
-          'Delete a WordPress post',
-          'Automate content publishing to WordPress',
-          'Sync content from another system to WordPress',
-        ],
-        intentDescription: 'Use this node when the workflow must create, read, update, or delete posts on a self-hosted WordPress site via the WordPress REST API. Authenticates using HTTP Basic Auth with WordPress Application Passwords.',
-        intentCategories: ['cms', 'blog', 'content', 'publishing', 'wordpress', 'api'],
-      },
-      commonPatterns: [
-        {
-          name: 'get_posts',
-          description: 'Fetch recent posts from a WordPress site',
-          config: { operation: 'get_posts', limit: 10 },
-        },
-        {
-          name: 'create_post',
-          description: 'Create a new post on a WordPress site',
-          config: { operation: 'create_post', title: 'My New Post', content: '<p>Post content here</p>', status: 'publish' },
-        },
-        {
-          name: 'update_post',
-          description: 'Update an existing WordPress post',
-          config: { operation: 'update_post', postId: '{{$json.id}}', title: 'Updated Title' },
-        },
-        {
-          name: 'delete_post',
-          description: 'Delete a WordPress post',
-          config: { operation: 'delete_post', postId: '{{$json.id}}' },
-        },
-      ],
-      validationRules: [
-        {
-          field: 'operation',
-          validator: (value) => ['create_post', 'get_posts', 'update_post', 'delete_post'].includes(value),
-          errorMessage: 'operation must be one of: create_post, get_posts, update_post, delete_post',
-        },
-      ],
-      outputType: 'object',
-      outputSchema: {
-        success: { type: 'boolean' },
-        data:    { type: 'object' },
-        error:   { type: 'object' },
-      },
-      schemaVersion: '1.0.0',
-      nodeCapability: {
-        inputType: ['object', 'array'],
-        outputType: 'object',
-        acceptsArray: true,
-        producesArray: false,
-      },
-    };
-  }
-  private createContentfulSchema(): NodeSchema {
-    return {
-      type: 'contentful',
-      label: 'Contentful',
-      category: 'cms',
-      description: 'Create, read, update, and delete content entries on any Contentful space via the Contentful Content Management API, authenticated with a personal access token.',
-      providers: ['contentful'],
-      keywords: ['contentful', 'cms', 'headless', 'content', 'entries', 'content management', 'headless cms'],
-      capabilities: ['entry.create', 'entry.read', 'entry.update', 'entry.delete', 'contentful.entries', 'cms.entries'],
-      configSchema: {
-        required: ['operation', 'spaceId', 'accessToken'],
-        optional: {
-          environment: {
-            type: 'string',
-            description: 'Contentful environment name (defaults to master)',
-            default: 'master',
-            examples: ['master', 'staging'],
-          },
-          contentType: {
-            type: 'string',
-            description: 'Contentful content type ID — required for create_entry, optional filter for get_entries',
-            examples: ['blogPost', 'product'],
-          },
-          entryId: {
-            type: 'string',
-            description: 'Contentful entry ID — required for get_entry, update_entry, and delete_entry',
-            examples: ['{{$json.sys.id}}', 'abc123'],
-          },
-          fields: {
-            type: 'string',
-            description: 'JSON string of entry fields for create_entry or update_entry',
-            examples: ['{"title":{"en-US":"Hello World"}}'],
-          },
-          operation: {
-            type: 'string',
-            description: 'Contentful operation to perform',
-            default: 'get_entries',
-            options: [
-              { label: 'Get Entries',   value: 'get_entries'   },
-              { label: 'Get Entry',     value: 'get_entry'     },
-              { label: 'Create Entry',  value: 'create_entry'  },
-              { label: 'Update Entry',  value: 'update_entry'  },
-              { label: 'Delete Entry',  value: 'delete_entry'  },
-            ],
-          },
-          spaceId: {
-            type: 'string',
-            description: 'Contentful space ID',
-            examples: ['abc123xyz'],
-          },
-          accessToken: {
-            type: 'string',
-            description: 'Contentful Content Management API personal access token (Bearer token)',
-            examples: ['CFPAT-xxxxxxxxxxxx'],
-          },
-        },
-      },
-      aiSelectionCriteria: {
-        whenToUse: [
-          'User wants to fetch content entries from a Contentful space',
-          'User needs to create a new content entry in Contentful',
-          'User wants to update or delete an existing Contentful entry',
-          'User needs to automate content publishing via a headless CMS',
-          'User wants to sync content between Contentful and another system',
-          'User needs to manage structured content in a headless CMS',
-        ],
-        whenNotToUse: [
-          'User needs to manage Contentful spaces, environments, or content models',
-          'User wants to interact with a non-Contentful CMS',
-          'User needs to manage Contentful assets or media',
-          'User wants to use the Contentful Delivery API (read-only CDN)',
-        ],
-        keywords: [
-          'contentful', 'cms', 'headless', 'content', 'entries', 'content management',
-          'headless cms', 'contentful api', 'contentful entries', 'contentful space',
-          'content entry', 'structured content', 'contentful cma',
-        ],
-        useCases: [
-          'Fetch all entries of a given content type from Contentful',
-          'Get a single Contentful entry by ID',
-          'Create a new content entry in Contentful',
-          'Update an existing Contentful entry',
-          'Delete a Contentful entry',
-          'Automate content publishing workflows via Contentful',
-          'Sync content from another system into Contentful',
-        ],
-        intentDescription: 'Use this node when the workflow must create, read, update, or delete content entries on a Contentful space via the Contentful Content Management API. Authenticates using a Bearer personal access token.',
-        intentCategories: ['cms', 'headless', 'content', 'publishing', 'contentful', 'api'],
-      },
-      commonPatterns: [
-        {
-          name: 'get_entries',
-          description: 'Fetch all entries from a Contentful space',
-          config: { operation: 'get_entries', environment: 'master' },
-        },
-        {
-          name: 'get_entry',
-          description: 'Get a single Contentful entry by ID',
-          config: { operation: 'get_entry', entryId: '{{$json.sys.id}}', environment: 'master' },
-        },
-        {
-          name: 'create_entry',
-          description: 'Create a new content entry in Contentful',
-          config: { operation: 'create_entry', contentType: 'blogPost', fields: '{"title":{"en-US":"New Entry"}}', environment: 'master' },
-        },
-        {
-          name: 'update_entry',
-          description: 'Update an existing Contentful entry',
-          config: { operation: 'update_entry', entryId: '{{$json.sys.id}}', fields: '{"title":{"en-US":"Updated Title"}}', environment: 'master' },
-        },
-        {
-          name: 'delete_entry',
-          description: 'Delete a Contentful entry',
-          config: { operation: 'delete_entry', entryId: '{{$json.sys.id}}', environment: 'master' },
-        },
-      ],
-      validationRules: [
-        {
-          field: 'operation',
-          validator: (value) => ['get_entries', 'get_entry', 'create_entry', 'update_entry', 'delete_entry'].includes(value),
-          errorMessage: 'operation must be one of: get_entries, get_entry, create_entry, update_entry, delete_entry',
-        },
-      ],
-      outputType: 'object',
-      outputSchema: {
-        success: { type: 'boolean' },
-        data:    { type: 'object' },
-        error:   { type: 'object' },
-      },
-      schemaVersion: '1.0.0',
-      nodeCapability: {
-        inputType: ['object', 'array'],
-        outputType: 'object',
-        acceptsArray: true,
-        producesArray: false,
-      },
-    };
-  }
-
-  private createZendeskSchema(): NodeSchema {
-    return {
-      type: 'zendesk',
-      label: 'Zendesk',
-      category: 'crm',
-      description: 'Manage Zendesk support tickets and users via the Zendesk REST API, authenticated with HTTP Basic Auth using an agent email and API token.',
-      providers: ['zendesk'],
-      keywords: ['zendesk', 'support', 'helpdesk', 'ticket', 'customer service', 'crm', 'support tickets'],
-      capabilities: [
-        'ticket.create',
-        'ticket.read',
-        'ticket.update',
-        'ticket.delete',
-        'zendesk.tickets',
-        'support.tickets',
-        'helpdesk.tickets',
-      ],
-      configSchema: {
-        required: ['operation', 'subdomain', 'email', 'apiToken'],
-        optional: {
-          ticketId: {
-            type: 'string',
-            description: 'Zendesk ticket ID — required for get_ticket, update_ticket, and delete_ticket',
-            examples: ['{{$json.id}}', '12345'],
-          },
-          subject: {
-            type: 'string',
-            description: 'Ticket subject — required for create_ticket',
-            examples: ['Issue with login', 'Billing question'],
-          },
-          description: {
-            type: 'string',
-            description: 'Ticket body / description for create_ticket',
-            examples: ['User cannot log in after password reset.'],
-          },
-          status: {
-            type: 'string',
-            description: 'Ticket status',
-            default: 'open',
-            options: [
-              { label: 'New',     value: 'new'     },
-              { label: 'Open',    value: 'open'    },
-              { label: 'Pending', value: 'pending' },
-              { label: 'Hold',    value: 'hold'    },
-              { label: 'Solved',  value: 'solved'  },
-              { label: 'Closed',  value: 'closed'  },
-            ],
-          },
-          priority: {
-            type: 'string',
-            description: 'Ticket priority',
-            default: 'normal',
-            options: [
-              { label: 'Low',    value: 'low'    },
-              { label: 'Normal', value: 'normal' },
-              { label: 'High',   value: 'high'   },
-              { label: 'Urgent', value: 'urgent' },
-            ],
-          },
-          assigneeId: {
-            type: 'string',
-            description: 'Zendesk agent ID to assign the ticket to (for update_ticket)',
-            examples: ['{{$json.assignee_id}}', '67890'],
-          },
-          limit: {
-            type: 'number',
-            description: 'Maximum number of records to return (per_page) for list operations',
-            default: 25,
-            examples: [10, 25, 50, 100],
-          },
-        },
-      },
-      aiSelectionCriteria: {
-        whenToUse: [
-          'User wants to fetch, create, update, or delete Zendesk support tickets',
-          'User needs to list or retrieve Zendesk users',
-          'User wants to automate customer support workflows via Zendesk',
-          'User needs to sync support ticket data between Zendesk and another system',
-          'User wants to create tickets from form submissions or webhook events',
-          'User needs to update ticket status or priority programmatically',
-        ],
-        whenNotToUse: [
-          'User needs a non-Zendesk helpdesk or ticketing system',
-          'User wants to manage Zendesk macros, triggers, or automations',
-          'User needs Zendesk Chat or Talk features',
-          'User wants raw REST calls to a non-Zendesk API',
-        ],
-        keywords: [
-          'zendesk', 'support ticket', 'helpdesk', 'customer support', 'crm',
-          'ticket management', 'zendesk api', 'support tickets', 'zendesk tickets',
-          'customer service', 'help desk', 'zendesk users', 'ticket status',
-        ],
-        useCases: [
-          'Fetch all open support tickets from Zendesk',
-          'Get a single Zendesk ticket by ID',
-          'Create a new support ticket in Zendesk',
-          'Update ticket status or priority',
-          'Delete a Zendesk ticket',
-          'List Zendesk users',
-          'Automate ticket creation from form submissions',
-          'Sync Zendesk tickets with a CRM or project management tool',
-        ],
-        intentDescription: 'Use this node when the workflow must create, read, update, or delete support tickets or retrieve users on a Zendesk account via the Zendesk REST API. Authenticates using HTTP Basic Auth with an agent email and API token.',
-        intentCategories: ['crm', 'support', 'helpdesk', 'ticketing', 'customer_service', 'api'],
-      },
-      commonPatterns: [
-        {
-          name: 'get_tickets',
-          description: 'Fetch all tickets from Zendesk',
-          config: { operation: 'get_tickets', limit: 25 },
-        },
-        {
-          name: 'get_ticket',
-          description: 'Get a single Zendesk ticket by ID',
-          config: { operation: 'get_ticket', ticketId: '{{$json.id}}' },
-        },
-        {
-          name: 'create_ticket',
-          description: 'Create a new support ticket in Zendesk',
-          config: { operation: 'create_ticket', subject: 'New Issue', description: 'Describe the issue here.', status: 'open', priority: 'normal' },
-        },
-        {
-          name: 'update_ticket',
-          description: 'Update an existing Zendesk ticket',
-          config: { operation: 'update_ticket', ticketId: '{{$json.id}}', status: 'solved' },
-        },
-        {
-          name: 'delete_ticket',
-          description: 'Delete a Zendesk ticket',
-          config: { operation: 'delete_ticket', ticketId: '{{$json.id}}' },
-        },
-        {
-          name: 'get_users',
-          description: 'List Zendesk users',
-          config: { operation: 'get_users', limit: 25 },
-        },
-      ],
-      validationRules: [
-        {
-          field: 'operation',
-          validator: (value) => ['get_tickets', 'get_ticket', 'create_ticket', 'update_ticket', 'delete_ticket', 'get_users'].includes(value),
-          errorMessage: 'operation must be one of: get_tickets, get_ticket, create_ticket, update_ticket, delete_ticket, get_users',
-        },
-      ],
-      outputType: 'object',
-      outputSchema: {
-        success: { type: 'boolean' },
-        data:    { type: 'object' },
-        error:   { type: 'object' },
-      },
-      schemaVersion: '1.0.0',
-      nodeCapability: {
-        inputType: ['object', 'array'],
-        outputType: 'object',
-        acceptsArray: true,
-        producesArray: false,
-      },
-    };
-  }
-
-  private createCalendlySchema(): NodeSchema {
-    return {
-      type: 'calendly',
-      label: 'Calendly',
-      category: 'productivity',
-      description: 'Manage Calendly scheduling data — fetch events, event types, scheduled meetings, and user info.',
-      providers: ['calendly'],
-      keywords: ['calendly', 'scheduling', 'meetings', 'calendar', 'events', 'appointments', 'booking'],
-      capabilities: ['calendar.read', 'events.read'],
-      configSchema: {
-        required: ['operation'],
-        optional: {
-          operation: {
-            type: 'string',
-            description: 'Action to perform on Calendly',
-            default: 'get_events',
-            options: [
-              { label: 'Get Events', value: 'get_events' },
-              { label: 'Get Event Types', value: 'get_event_types' },
-              { label: 'Get Scheduled Events', value: 'get_scheduled_events' },
-              { label: 'Get User', value: 'get_user' },
-            ],
-          },
-          userUri: { type: 'string', description: 'Calendly user URI (required for get_event_types and get_scheduled_events)' },
-          eventTypeUri: { type: 'string', description: 'Calendly event type URI (optional filter)' },
-        },
-      },
-      aiSelectionCriteria: {
-        whenToUse: ['User wants to fetch Calendly meetings or scheduling data', 'User needs to list events or event types from Calendly'],
-        whenNotToUse: ['User wants Google Calendar', 'User wants database queries'],
-        keywords: ['calendly', 'meetings', 'schedule', 'booking', 'appointments', 'event types'],
-        useCases: ['Fetch scheduled meetings', 'List event types', 'Get user info from Calendly'],
-        intentDescription: 'Calendly scheduling automation',
-        intentCategories: ['productivity', 'calendar', 'scheduling'],
-      },
-      outputType: 'object',
-      outputSchema: {
-        success: { type: 'boolean' },
-        data: { type: 'object' },
-        error: { type: 'object' },
-      },
-      commonPatterns: [
-        {
-          name: 'get_events',
-          description: 'Fetch scheduled events from Calendly',
-          config: { operation: 'get_events' },
-        },
-        {
-          name: 'get_user',
-          description: 'Get current Calendly user info',
-          config: { operation: 'get_user' },
-        },
-      ],
-      validationRules: [
-        {
-          field: 'operation',
-          validator: (value) => ['get_events', 'get_event_types', 'get_scheduled_events', 'get_user'].includes(value),
-          errorMessage: 'operation must be one of: get_events, get_event_types, get_scheduled_events, get_user',
-        },
-      ],
-      schemaVersion: '1.0.0',
-      nodeCapability: {
-        inputType: ['object'],
-        outputType: 'object',
-        acceptsArray: false,
-        producesArray: false,
-      },
-    };
   }
 }
 

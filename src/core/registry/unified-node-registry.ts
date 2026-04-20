@@ -89,6 +89,16 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     'microsoft_mail': 'outlook',
     'outlook_mail': 'outlook',
     'smtp': 'email',           // generic SMTP → email node
+    // ── Amazon SES ───────────────────────────────────────────────────────────
+    'amazon_ses': 'amazon_ses',
+    'ses': 'amazon_ses',
+    'amazon-ses': 'amazon_ses',
+    'aws-ses': 'amazon_ses',
+    'aws_ses': 'amazon_ses',
+    'amazon ses': 'amazon_ses',
+    'aws ses': 'amazon_ses',
+    'send via amazon ses': 'amazon_ses',
+    'send via aws ses': 'amazon_ses',
     // ── Slack ────────────────────────────────────────────────────────────────
     'slack': 'slack_message',
     'slack_send': 'slack_message',
@@ -106,7 +116,6 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     'google_document': 'google_doc',
     'google_doc': 'google_doc',
     'gdrive': 'google_drive',
-    'google_storage': 'google_drive',
     'google_drive': 'google_drive',
     'drive': 'google_drive',
     'gcal': 'google_calendar',
@@ -156,17 +165,6 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     'text_summarizer': 'text_summarizer',
     'summarizer': 'text_summarizer',
     'sentiment_analyzer': 'sentiment_analyzer',
-    'claude': 'claude',
-    'claude_ai': 'claude',
-    'anthropic': 'claude',
-    'anthropic_claude': 'claude',
-    'claude_messages': 'claude',
-    // ── LangChain ────────────────────────────────────────────────────────────
-    'langchain': 'langchain',
-    'lang_chain': 'langchain',
-    'langchain_agent': 'langchain',
-    'langchain_chain': 'langchain',
-    'ai_chain': 'langchain',
     // ── Communication ────────────────────────────────────────────────────────
     'telegram': 'telegram',
     'telegram_send': 'telegram',
@@ -178,6 +176,24 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     'whatsapp_cloud': 'whatsapp_cloud',
     'twilio': 'twilio',
     'sms': 'twilio',
+    // ── Mailgun ──────────────────────────────────────────────────────────────
+    'mailgun': 'mailgun',
+    'mailgun_email': 'mailgun',
+    'mailgun email': 'mailgun',
+    'mailgun_send': 'mailgun',
+    'mailgun send': 'mailgun',
+    'send via mailgun': 'mailgun',
+    'mail_gun': 'mailgun',
+    // ── SendGrid ─────────────────────────────────────────────────────────────
+    'sendgrid': 'sendgrid',
+    'send_grid': 'sendgrid',
+    'sendgrid_email': 'sendgrid',
+    'sendgrid email': 'sendgrid',
+    'sendgrid_send': 'sendgrid',
+    'sendgrid send': 'sendgrid',
+    'send via sendgrid': 'sendgrid',
+    'email service': 'sendgrid',
+    'send email sendgrid': 'sendgrid',
     // ── CRM ──────────────────────────────────────────────────────────────────
     'hubspot': 'hubspot',
     'hub_spot': 'hubspot',
@@ -189,7 +205,55 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     'zoho': 'zoho_crm',
     'pipedrive': 'pipedrive',
     'pipe_drive': 'pipedrive',
+    'intuit': 'intuit_smes',
+    'intuit_smes': 'intuit_smes',
+    'intuit smes': 'intuit_smes',
+    'quickbooks': 'intuit_smes',
+    'intuit quickbooks': 'intuit_smes',
     'notion': 'notion',
+    // ── Tally ERP ────────────────────────────────────────────────────────────
+    'tally': 'tally',
+    'tally erp': 'tally',
+    'tallyprime': 'tally',
+    'tally prime': 'tally',
+    'tally solutions': 'tally',
+    'tally_erp': 'tally',
+    'tally_prime': 'tally',
+    'tally_solutions': 'tally',
+    'tally accounting': 'tally',
+    'tally_accounting': 'tally',
+    // ── Microsoft Dynamics ───────────────────────────────────────────────────
+    'microsoft_dynamics': 'microsoft_dynamics',
+    'dynamics': 'microsoft_dynamics',
+    'dynamics_365': 'microsoft_dynamics',
+    'dynamics365': 'microsoft_dynamics',
+    'dynamics crm': 'microsoft_dynamics',
+    'dynamics_crm': 'microsoft_dynamics',
+    'ms dynamics': 'microsoft_dynamics',
+    'ms_dynamics': 'microsoft_dynamics',
+    'microsoft dynamics': 'microsoft_dynamics',
+    'microsoft dynamics 365': 'microsoft_dynamics',
+    'msdynamics': 'microsoft_dynamics',
+    // ── SAP ERP ──────────────────────────────────────────────────────────────
+    'sap': 'sap',
+    'sap_erp': 'sap',
+    'sap erp': 'sap',
+    'sap_api': 'sap',
+    'sap api': 'sap',
+    'sap_odata': 'sap',
+    'sap odata': 'sap',
+    's4hana': 'sap',
+    's/4hana': 'sap',
+    'sap_s4hana': 'sap',
+    'sap s4hana': 'sap',
+    'sap hana': 'sap',
+    'sap_hana': 'sap',
+    'sap business one': 'sap',
+    'sap_business_one': 'sap',
+    'sap_b1': 'sap',
+    'sap b1': 'sap',
+    'sap_ecc': 'sap',
+    'sap ecc': 'sap',
     // ── Database ─────────────────────────────────────────────────────────────
     'postgresql': 'postgresql',
     'postgres': 'postgresql',
@@ -200,78 +264,24 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     'mongo_db': 'mongodb',
     'supabase': 'supabase',
     'redis': 'redis',
+    'firebase': 'firebase',
+    'firestore': 'firebase',
+    'firebase_firestore': 'firebase',
+    'firebase_realtime': 'firebase',
+    'firebase_realtime_database': 'firebase',
+    'gcs': 'google_cloud_storage',
+    'google_storage': 'google_cloud_storage',
+    'cloud_storage': 'google_cloud_storage',
+    'google_cloud_storage': 'google_cloud_storage',
+    // ── Odoo ERP ─────────────────────────────────────────────────────────────
+    'odoo': 'odoo',
+    'odoo erp': 'odoo',
+    'odoo crm': 'odoo',
+    'open erp': 'odoo',
+    'openerp': 'odoo',
+    'erp': 'odoo',
     'database_write': 'database_write',
     'database_read': 'database_read',
-    // Oracle
-    'oracle': 'oracle_database',
-    'oracle_db': 'oracle_database',
-    'oracledb': 'oracle_database',
-    'oracle_database': 'oracle_database',
-    'oracle_sql': 'oracle_database',
-    // Xero
-    'xero': 'xero',
-    'xero_accounting': 'xero',
-    'xero_invoices': 'xero',
-    'xero_contacts': 'xero',
-    'xero_payments': 'xero',
-    'xero_items': 'xero',
-    // Workday
-    'workday': 'workday',
-    'workday_hr': 'workday',
-    'workday_workers': 'workday',
-    'workday_staffing': 'workday',
-    'workday_api': 'workday',
-    // Netlify
-    'netlify': 'netlify',
-    'netlify_deploy': 'netlify',
-    'netlify_sites': 'netlify',
-    'netlify_builds': 'netlify',
-    'netlify_api': 'netlify',
-    // WordPress
-    'wordpress': 'wordpress',
-    'wp': 'wordpress',
-    'blog': 'wordpress',
-    'cms': 'wordpress',
-    // Contentful
-    'contentful': 'contentful',
-    'contentful_cms': 'contentful',
-    'contentful_entries': 'contentful',
-    'headless_cms': 'contentful',
-    // Zendesk
-    'zendesk': 'zendesk',
-    'zendesk tickets': 'zendesk',
-    'support tickets': 'zendesk',
-    'helpdesk': 'zendesk',
-    // ── Calendly ─────────────────────────────────────────────────────────────
-    'calendly': 'calendly',
-    'calendar scheduling': 'calendly',
-    'meeting scheduler': 'calendly',
-    'schedule meetings': 'calendly',
-    'calendly events': 'calendly',
-    'calendly meetings': 'calendly',
-    // ── Pinecone ─────────────────────────────────────────────────────────────
-    'pinecone': 'pinecone',
-    'pinecone_db': 'pinecone',
-    'pinecone_vector': 'pinecone',
-    'pinecone_index': 'pinecone',
-    'pinecone_query': 'pinecone',
-    'pinecone_upsert': 'pinecone',
-    'vector_database': 'pinecone',
-    // ── Chargebee ────────────────────────────────────────────────────────────
-    'chargebee': 'chargebee',
-    'subscription_billing': 'chargebee',
-    'billing': 'chargebee',
-    // ── Typeform ─────────────────────────────────────────────────────────────
-    'typeform': 'typeform',
-    'forms': 'typeform',
-    'survey': 'typeform',
-    'form builder': 'typeform',
-    // ── Google Forms ─────────────────────────────────────────────────────────
-    'google_forms': 'google_forms',
-    'google form': 'google_forms',
-    'gform': 'google_forms',
-    'forms google': 'google_forms',
-    'google_form': 'google_forms',
     // ── HTTP ─────────────────────────────────────────────────────────────────
     'http_request': 'http_request',
     'http': 'http_request',
@@ -335,6 +345,15 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     'limit': 'limit',
     'wait': 'wait',
     'delay': 'delay',
+    // ── Video Conferencing ───────────────────────────────────────────────────
+    'zoom': 'zoom_video',
+    'zoom_video': 'zoom_video',
+    'zoom_meeting': 'zoom_video',
+    'zoom meeting': 'zoom_video',
+    'video call': 'zoom_video',
+    'video_call': 'zoom_video',
+    'zoom_call': 'zoom_video',
+    'zoom call': 'zoom_video',
   };
   
   private constructor() {
@@ -685,9 +704,8 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     const defaultConfig = () => {
       const config: Record<string, any> = {};
       for (const [fieldName, fieldDef] of Object.entries(inputSchema)) {
-        if (fieldDef.default !== undefined) {
-          config[fieldName] = fieldDef.default;
-        }
+        // Include all fields, even those with null, empty string, or undefined defaults
+        config[fieldName] = fieldDef.default;
       }
       return config;
     };
@@ -949,7 +967,7 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     // (isCommunication and isSocialMedia already defined above)
     
     // CRM nodes
-    const crmTypes = ['hubspot', 'salesforce', 'zoho', 'pipedrive', 'crm', 'freshdesk', 'intercom', 'mailchimp', 'activecampaign'];
+    const crmTypes = ['hubspot', 'salesforce', 'zoho', 'pipedrive', 'crm', 'freshdesk', 'intercom', 'mailchimp', 'activecampaign', 'sap', 'dynamics', 'odoo'];
     const isCrm = crmTypes.some(crm => nodeType.includes(crm));
     
     // Database nodes
@@ -1181,8 +1199,7 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     if (typeLower.includes('anthropic') || typeLower.includes('claude')) return 'anthropic';
     if (typeLower.includes('notion')) return 'notion';
     if (typeLower.includes('airtable')) return 'airtable';
-    if (typeLower.includes('xero')) return 'xero';
-    if (typeLower.includes('workday')) return 'workday';
+    if (typeLower.includes('vercel')) return 'vercel';
     return undefined;
   }
   
@@ -1377,10 +1394,10 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     if (fromBase) return fromBase;
     if (t === 'http_request' || t === 'http_post' || t === 'graphql' || t === 'webhook_response') return 'http';
     if (t === 'email') return 'email';
-    if (t.includes('database_') || t === 'postgresql' || t === 'supabase' || t === 'mysql' || t === 'mongodb' || t === 'redis' || t === 'oracle_database')
+    if (t.includes('database_') || t === 'postgresql' || t === 'supabase' || t === 'mysql' || t === 'mongodb' || t === 'redis')
       return 'database';
-    if (t === 'xero') return 'xero';
     if (t === 'linkedin' || t === 'twitter' || t === 'instagram' || t === 'facebook') return t.split('_')[0];
+    if (t === 'vercel') return 'vercel';
     return undefined;
   }
 
@@ -1394,6 +1411,7 @@ export class UnifiedNodeRegistry implements INodeRegistry {
       return [];
     }
     if (t === 'linkedin') return ['r_liteprofile', 'r_emailaddress'];
+    if (provider === 'vercel' || t === 'vercel') return ['deployments:read', 'deployments:write'];
     return [];
   }
 

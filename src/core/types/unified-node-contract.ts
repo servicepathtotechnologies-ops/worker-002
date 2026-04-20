@@ -225,6 +225,29 @@ export interface UnifiedNodeDefinition {
   outgoingPorts: string[]; // Port names for outgoing edges (e.g., ['default', 'true', 'false'])
   isBranching: boolean; // true if node can have multiple outgoing edges
   
+  /**
+   * When true, this node may legally receive more than one incoming edge.
+   * Used by DAG validator, edge reconciliation, and branching validator to permit multi-input.
+   * Defaults to undefined (falsy) for all existing nodes — no regressions.
+   * Example: log_output (merge-capable terminal), merge (explicit merge node)
+   */
+  allowsMultipleInputs?: boolean;
+  
+  /**
+   * When true, this node must have zero outgoing edges (terminal node).
+   * Used by DAG validator to enforce out-degree = 0.
+   * Example: log_output (terminal output node)
+   */
+  isTerminal?: boolean;
+  
+  /**
+   * Maximum number of outgoing edges this node may have.
+   * When set to 0, enforcement layers reject any outgoing edges from this node.
+   * Used by DAG validator to enforce out-degree constraints.
+   * Example: log_output (maxOutDegree: 0)
+   */
+  maxOutDegree?: number;
+  
   // ============================================
   // BACKWARD COMPATIBILITY
   // ============================================

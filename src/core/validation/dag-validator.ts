@@ -129,13 +129,23 @@ export class DAGValidator {
       const inDegree = degrees.in;
       const outDegree = degrees.out;
 
+      // ✅ UNIVERSAL: Skip trigger nodes - they have special degree requirements (in=0, out=1)
+      const nodeDef = unifiedNodeRegistry.get(normalizedType);
+      if (nodeDef?.category === 'trigger') {
+        // Trigger nodes: in-degree = 0, out-degree = 1 (already checked above)
+        if (inDegree !== 0) {
+          errors.push(`Trigger node ${node.id} (${normalizedType}) must have 0 inputs, found ${inDegree}`);
+        }
+        return; // Skip remaining checks for trigger nodes
+      }
+
       // ✅ UNIVERSAL: Normal action nodes: in-degree = 1, out-degree = 1
       // Check if node has special degree requirements using registry
-      const nodeDef = unifiedNodeRegistry.get(normalizedType);
       const isSpecialNode = normalizedType === 'if_else' || 
                            normalizedType === 'switch' ||
                            normalizedType === 'merge' ||
-                           normalizedType === 'log_output' ||
+                           normalizedType === 'log_output' || // ✅ RESTORED: Hardcoded log_output special handling
+                           nodeDef?.allowsMultipleInputs === true || // ✅ FIX: Registry-driven multi-input check
                            (nodeDef?.tags || []).includes('conditional') ||
                            (nodeDef?.tags || []).includes('merge') ||
                            (nodeDef?.tags || []).includes('terminal');
@@ -192,13 +202,31 @@ export class DAGValidator {
         }
       }
 
-      // LOG node: in-degree = 1, out-degree = 0
+      // ✅ RESTORED: Hardcoded log_output in-degree check
+      // LOG_OUTPUT node: in-degree = 1, out-degree = 0 (terminal)
       if (normalizedType === 'log_output') {
         if (inDegree !== 1) {
-          errors.push(`LOG node ${node.id} must have exactly 1 input, found ${inDegree}`);
+          errors.push(`LOG_OUTPUT node ${node.id} must have exactly 1 input, found ${inDegree}`);
         }
         if (outDegree !== 0) {
-          errors.push(`LOG node ${node.id} must have 0 outputs (terminal), found ${outDegree}`);
+          errors.push(`LOG_OUTPUT node ${node.id} must have 0 outputs (terminal), found ${outDegree}`);
+        }
+      }
+
+      // ✅ FIX: Registry-driven terminal node validation
+      // Nodes with allowsMultipleInputs can have any in-degree >= 1
+      // Nodes with isTerminal or maxOutDegree = 0 must have out-degree = 0
+      if (nodeDef?.allowsMultipleInputs === true) {
+        // Multi-input nodes: permit any in-degree >= 1
+        if (inDegree < 1) {
+          errors.push(`Multi-input node ${node.id} (${normalizedType}) must have at least 1 input, found ${inDegree}`);
+        }
+      }
+      
+      if (nodeDef?.isTerminal === true || nodeDef?.maxOutDegree === 0) {
+        // Terminal nodes: must have out-degree = 0
+        if (outDegree !== 0) {
+          errors.push(`Terminal node ${node.id} (${normalizedType}) must have 0 outputs, found ${outDegree}`);
         }
       }
     });
@@ -262,16 +290,39 @@ export class DAGValidator {
       errors.push(`Unreachable nodes from trigger: ${unreachableNodes.map(n => n.id).join(', ')}`);
     }
 
-    // 9. Check for LOG nodes connected from multiple paths without MERGE
-    const logNodes = structure.nodes.filter(n => 
-      unifiedNormalizeNodeTypeString(n.type) === 'log_output'
-    );
+    // 9. Check for terminal nodes connected from multiple paths without MERGE
+    // ✅ RESTORED: Hardcoded log_output check - always enforce single-input for log_output
+    // ✅ FIX: Only check nodes that DON'T allow multiple inputs (for other terminal nodes)
+    const terminalNodesRequiringMerge = structure.nodes.filter(n => {
+      const normalizedType = unifiedNormalizeNodeTypeString(n.type);
+      const nodeDef = unifiedNodeRegistry.get(normalizedType);
+      
+      // ✅ RESTORED: Always check log_output nodes regardless of allowsMultipleInputs flag
+      if (normalizedType === 'log_output') {
+        return true; // Always enforce single-input for log_output
+      }
+      
+      // Only check other terminal nodes that don't allow multiple inputs
+      // If allowsMultipleInputs is true, skip this check entirely
+      if (nodeDef?.allowsMultipleInputs === true) {
+        return false; // Skip nodes that explicitly allow multiple inputs
+      }
+      // Check for terminal nodes using registry flags
+      return nodeDef?.isTerminal === true || (nodeDef?.tags || []).includes('terminal');
+    });
     
-    logNodes.forEach(logNode => {
-      const inDegree = nodeDegrees.get(logNode.id)?.in || 0;
+    terminalNodesRequiringMerge.forEach(terminalNode => {
+      const normalizedType = unifiedNormalizeNodeTypeString(terminalNode.type);
+      const inDegree = nodeDegrees.get(terminalNode.id)?.in || 0;
       if (inDegree > 1) {
-        // Check if all paths go through MERGE
-        const incomingEdges = structure.connections.filter(c => c.target === logNode.id);
+        // ✅ RESTORED: For log_output, always emit error when in-degree > 1
+        if (normalizedType === 'log_output') {
+          errors.push(`LOG_OUTPUT node ${terminalNode.id} connected from ${inDegree} paths - log_output must have exactly 1 input`);
+          return;
+        }
+        
+        // For other terminal nodes, check if all paths go through MERGE
+        const incomingEdges = structure.connections.filter(c => c.target === terminalNode.id);
         const sourceNodes = incomingEdges.map(e => {
           if (e.source === triggerId) return triggerId;
           return structure.nodes.find(n => n.id === e.source);
@@ -284,7 +335,7 @@ export class DAGValidator {
         });
         
         if (!hasMerge && inDegree > 1) {
-          errors.push(`LOG node ${logNode.id} connected from ${inDegree} paths without MERGE node`);
+          errors.push(`Terminal node ${terminalNode.id} (${normalizedType}) connected from ${inDegree} paths without MERGE node`);
         }
       }
     });

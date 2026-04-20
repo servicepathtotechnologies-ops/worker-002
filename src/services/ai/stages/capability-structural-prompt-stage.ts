@@ -11,9 +11,9 @@
 
 import { randomUUID } from 'crypto';
 import { unifiedNodeRegistry } from '../../../core/registry/unified-node-registry';
-import { unifiedGraphOrchestrator } from '../../../core/orchestration/unified-graph-orchestrator';
 import { geminiOrchestrator } from '../gemini-orchestrator';
 import { logger } from '../../../core/logger';
+import { aiDrivenWorkflowSummaryGenerator } from '../ai-driven-workflow-summary-generator';
 import type { WorkflowNode } from '../../../core/types/ai-types';
 import type {
   StructuralPromptGenerationInput,
@@ -62,69 +62,26 @@ async function generateStructuralPromptWithGemini(
   selectedNodeTypes: string[],
   correlationId?: string,
 ): Promise<string> {
-  const nodeDescriptions = selectedNodeTypes.map((type, idx) => {
-    const def = unifiedNodeRegistry.get(type);
-    const label = def?.label ?? type;
-    const category = def?.category ?? 'utility';
-    const isBranching = def?.isBranching ?? false;
-    return `${idx + 1}. ${label} (${category}${isBranching ? ', branching node' : ''})`;
-  }).join('\n');
-
-  const systemPrompt = `You are a workflow blueprint architect. Generate a precise, structured, technical-theoretical explanation of a workflow based on the user's intent and selected nodes.
-
-This blueprint serves TWO purposes:
-1. Show the user a clear human-readable explanation of exactly what will be built
-2. Guide the backend AI to correctly wire edges, branches, and operations
-
-## OUTPUT FORMAT (MANDATORY)
-
-Return ONLY plain text in this exact structure — no JSON, no markdown headers, no code blocks:
-
-WORKFLOW: [One sentence describing the overall automation goal — do NOT copy the user's raw prompt]
-
-TRIGGER: [Trigger node display name] — [What event starts this workflow and what data it collects]
-
-FLOW:
-[Step number]. [Node display name] — [Specific operation it performs]
-[For Switch/If-Else nodes, list EVERY branch case on its own line:]
-  → Case "[case value]": [Node display name] — [What specific operation runs in this case]
-  → Case "[case value]": [Node display name] — [What specific operation runs in this case]
-
-CONNECTIONS: [Name the exact data field that drives routing decisions and describe what data flows between nodes]
-
-## CRITICAL RULES
-
-1. NEVER copy the user's original prompt text — generate a NEW technical explanation
-2. For Switch nodes: ALWAYS list every branch case with its specific downstream action and the exact field value that triggers it (e.g. "status = success", "status = pending", "status = failed")
-3. For If/Else nodes: describe the true branch and false branch with their specific actions
-4. Use the node's display name (e.g. "Gmail", "Slack", "Switch") — never internal type names like "google_gmail"
-5. Describe the SPECIFIC OPERATION each node performs (send confirmation email, post Slack alert, evaluate payment status)
-6. The CONNECTIONS section must name the exact data field that drives routing (e.g. "payment_status", "order_status", "age")
-7. Be specific — never use generic phrases like "data is passed" or "sends a message"
-8. Each branch case must describe a DIFFERENT action — not the same action repeated`;
-
-  const message = `USER_INTENT: ${userPrompt}
-
-SELECTED_NODES (in execution order — these are the ONLY nodes to use):
-${nodeDescriptions}
-
-Generate the workflow blueprint for these exact nodes in this exact order. Infer the branch cases and specific operations from the user's intent.`;
-
   try {
-    const raw = await geminiOrchestrator.processRequest(
-      'workflow-generation',
-      { system: systemPrompt, message },
-      { model: MODEL, temperature: TEMPERATURE, cache: false },
-    );
-    const text = typeof raw === 'string' ? raw : (raw as any)?.text ?? (raw as any)?.content ?? '';
-    if (text && text.trim().length > 20) {
-      logger.info({
-        event: 'capability_structural_prompt_llm_success',
-        correlationId,
-        promptLen: text.trim().length,
-      });
-      return text.trim();
-    }
+    // Use AI-driven summary generator
+    const aiInput = {
+      userPrompt,
+      nodeChain: selectedNodeTypes,
+    };
+    
+    const aiResult = await aiDrivenWorkflowSummaryGenerator.generateSummary(aiInput);
+    
+    // Summary is already in frontend format - use directly
+    const formatted = aiResult.summary;
+    
+    logger.info({
+      event: 'capability_structural_prompt_llm_success',
+      correlationId,
+      promptLen: formatted.trim().length,
+      source: 'ai-driven-generator',
+    });
+    
+    return formatted.trim();
   } catch (err) {
     logger.warn({
       event: 'capability_structural_prompt_llm_failed',
@@ -229,49 +186,18 @@ export async function runCapabilityStructuralPromptStage(
   // Hydrate nodes with registry defaults
   const hydratedNodes: WorkflowNode[] = finalNodeTypes.map((nodeType) => hydrateNode(nodeType));
 
-  // Construct graph via orchestrator — never write edges directly
-  let workflow;
-  let executionOrder;
-  try {
-    ({ workflow, executionOrder } = unifiedGraphOrchestrator.initializeWorkflow(hydratedNodes));
-  } catch (err) {
-    const durationMs = Date.now() - startedAt;
-    logger.error({
-      event: 'capability_structural_prompt_error',
-      stage: 'capability-structural-prompt-stage',
-      correlationId,
-      error: 'ORCHESTRATOR_VALIDATION_FAILED',
-      message: `initializeWorkflow failed: ${String(err)}`,
-      durationMs,
-    });
-    return {
-      ok: false,
-      code: 'ORCHESTRATOR_VALIDATION_FAILED',
-      message: `Workflow initialization failed: ${String(err)}`,
-      durationMs,
-    } satisfies StructuralPromptGenerationError;
-  }
-
-  // Validate workflow
-  const validation = unifiedGraphOrchestrator.validateWorkflow(workflow, executionOrder);
-  if (!validation.valid) {
-    const durationMs = Date.now() - startedAt;
-    const violationSummary = validation.errors.join('; ');
-    logger.error({
-      event: 'capability_structural_prompt_error',
-      stage: 'capability-structural-prompt-stage',
-      correlationId,
-      error: 'ORCHESTRATOR_VALIDATION_FAILED',
-      violations: validation.errors,
-      durationMs,
-    });
-    return {
-      ok: false,
-      code: 'ORCHESTRATOR_VALIDATION_FAILED',
-      message: `Workflow validation failed: ${violationSummary}`,
-      durationMs,
-    } satisfies StructuralPromptGenerationError;
-  }
+  // Build a preview-only workflow — no edge wiring at this stage.
+  //
+  // This workflow is used ONLY for:
+  //   1. Showing execution steps in the CapabilityReviewStep UI (workflow.nodes list)
+  //   2. Passing to Phase 3 /confirm which rebuilds the graph from scratch after
+  //      property population fills in switch cases and if_else conditions.
+  //
+  // We intentionally skip initializeWorkflow here because it wires nodes linearly
+  // and then the EdgeReconciliationEngine removes branching nodes and their downstream
+  // nodes as "orphaned" (since it doesn't know the case values yet). The real graph
+  // is built in confirm.ts after property population.
+  const workflow = { nodes: hydratedNodes, edges: [] };
 
   // Generate structured prompt via Gemini (with registry fallback)
   const structuralPrompt = await generateStructuralPromptWithGemini(

@@ -87,16 +87,18 @@ export class GraphBranchingValidator {
    * Check if a node allows multiple incoming edges (merge nodes)
    */
   allowsMultipleInputs(nodeType: string): boolean {
+    // Add explicit log_output rejection
+    if (nodeType === 'log_output') return false;
+    
     const nodeDef = unifiedNodeRegistry.get(nodeType);
     
     if (!nodeDef) {
       return false;
     }
     
-    // Merge nodes allow multiple inputs
-    return nodeDef.category === 'logic' && 
-           nodeDef.isBranching &&
-           (nodeDef.tags || []).some(tag => tag.toLowerCase() === 'merge');
+    // Restore category/tag heuristic for allowsMultipleInputs
+    const tags = nodeDef.tags || [];
+    return nodeDef.category === 'logic' && nodeDef.isBranching && tags.includes('merge');
   }
   
   /**

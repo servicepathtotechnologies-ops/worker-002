@@ -1118,7 +1118,7 @@ export class ProductionWorkflowBuilder {
         if (!workflow) {
           throw new Error('Workflow is undefined - cannot ensure log_output node');
         }
-        const terminalNodesResult = await this.ensureAlwaysRequiredTerminalNodes(workflow);
+        const terminalNodesResult = await this.ensureAlwaysRequiredTerminalNodes(workflow, originalPrompt);
         workflow = terminalNodesResult.workflow;
         
         // ✅ UPDATE requiredNodes: Remove nodes that were auto-removed as orphaned during terminal node reconciliation
@@ -2186,6 +2186,24 @@ export class ProductionWorkflowBuilder {
               if (resolveTargetForCase(i, sc)) {
                 continue;
               }
+              
+              // ✅ INTENT-DRIVEN: Only create log_output stub if user explicitly requests logging
+              const hasLoggingIntent = (): boolean => {
+                if (!originalPrompt) {
+                  return false; // No prompt = no intent = don't add log_output
+                }
+                
+                const loggingKeywords = ['log', 'output', 'record', 'track', 'observe', 'monitor', 'capture', 'store', 'save'];
+                const promptLower = originalPrompt.toLowerCase();
+                
+                return loggingKeywords.some(keyword => promptLower.includes(keyword));
+              };
+              
+              if (!hasLoggingIntent()) {
+                console.log(`[ProductionWorkflowBuilder] 🎯 Intent-driven: Skipping log_output stub for switch case "${sc.label || sc.value}" - no logging keywords detected in prompt`);
+                continue; // Skip creating log_output stub if no logging intent
+              }
+              
               const logStub = this.createSwitchBranchLogStub(sc.label || sc.value);
               const stubInj = await unifiedGraphOrchestrator.injectNode(workflow, logStub, {
                 type: 'user_requested',
@@ -3830,7 +3848,7 @@ export class ProductionWorkflowBuilder {
    * Queries registry for nodes that are both always-required and always-terminal
    * This is registry-driven - works for infinite workflows without hardcoding
    */
-  private async ensureAlwaysRequiredTerminalNodes(workflow: Workflow): Promise<{
+  private async ensureAlwaysRequiredTerminalNodes(workflow: Workflow, originalPrompt?: string): Promise<{
     workflow: Workflow;
     removedNodeTypes: string[]; // ✅ NEW: Track removed node types from reconciliation
   }> {
@@ -3848,6 +3866,38 @@ export class ProductionWorkflowBuilder {
       return { workflow, removedNodeTypes: [] };
     }
     
+    // ✅ INTENT-DRIVEN: Check if user prompt contains logging keywords for log_output nodes
+    const hasLoggingIntent = (nodeType: string, prompt?: string): boolean => {
+      // For non-log_output nodes, use registry default behavior
+      if (nodeType !== 'log_output') {
+        return true;
+      }
+      
+      // For log_output nodes, ONLY add if user explicitly requests logging
+      if (!prompt) {
+        return false; // No prompt = no intent = don't add log_output
+      }
+      
+      const loggingKeywords = ['log', 'output', 'record', 'track', 'observe', 'monitor', 'capture', 'store', 'save'];
+      const promptLower = prompt.toLowerCase();
+      
+      return loggingKeywords.some(keyword => promptLower.includes(keyword));
+    };
+    
+    // ✅ INTENT-DRIVEN: Filter nodes based on user intent
+    const intentDrivenNodes = alwaysRequiredTerminalNodes.filter(nodeDef => {
+      const hasIntent = hasLoggingIntent(nodeDef.type, originalPrompt);
+      if (!hasIntent) {
+        console.log(`[ProductionWorkflowBuilder] 🎯 Intent-driven: Skipping ${nodeDef.type} - no logging keywords detected in prompt`);
+      }
+      return hasIntent;
+    });
+    
+    if (intentDrivenNodes.length === 0) {
+      console.log(`[ProductionWorkflowBuilder] 🎯 Intent-driven: No terminal nodes needed based on user intent`);
+      return { workflow, removedNodeTypes: [] };
+    }
+    
     // ✅ Track all removed node types from all reconciliations in this method
     const allRemovedNodeTypes: string[] = [];
 
@@ -3860,8 +3910,8 @@ export class ProductionWorkflowBuilder {
       outgoingEdgesMap.get(edge.source)!.push(edge);
     });
 
-    // Process each always-required terminal node from registry
-    for (const nodeDef of alwaysRequiredTerminalNodes) {
+    // Process each intent-driven terminal node from registry
+    for (const nodeDef of intentDrivenNodes) {
       // Check if node already exists
       let existingNode = workflow.nodes.find(node => {
         const nodeType = unifiedNormalizeNodeTypeString(node.type || node.data?.type || '');

@@ -111,15 +111,11 @@ export function isOutputNode(node: WorkflowNode | string): boolean {
     return true;
   }
   
-  // ✅ SPECIAL: log_output is always an output
-  if (nodeType === 'log_output') {
+  // ✅ REGISTRY-DRIVEN: single lookup covers both alwaysTerminal and category checks
+  const nodeDef = unifiedNodeRegistry.get(nodeType);
+  if (nodeDef?.workflowBehavior?.alwaysTerminal === true) {
     return true;
   }
-  
-  // ✅ FALLBACK: Check unified node registry category
-  // Valid categories: "ai" | "data" | "trigger" | "utility" | "logic" | "communication" | "transformation"
-  // Output nodes are typically in "communication" category
-  const nodeDef = unifiedNodeRegistry.get(nodeType);
   if (nodeDef?.category === 'communication') {
     return true;
   }

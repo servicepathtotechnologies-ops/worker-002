@@ -129,10 +129,23 @@ export function resolvePreferredTerminalNodeType(): string {
       unifiedNodeRegistry.hasTag(t, 'terminal') &&
       unifiedNodeRegistry.hasTag(t, 'sink'),
   );
-  if (terminalTagged.includes('log_output')) return 'log_output';
+  // Prefer nodes with isTerminal flag
+  const terminalWithFlag = terminalTagged.find((t) => {
+    const def = unifiedNodeRegistry.get(t);
+    return def?.isTerminal === true;
+  });
+  if (terminalWithFlag) return terminalWithFlag;
   if (terminalTagged.length > 0) return terminalTagged[0];
   const anyTerminal = types.find((t) => unifiedNodeRegistry.hasTag(t, 'terminal'));
-  return anyTerminal ?? 'log_output';
+  // Fallback: find any node with isTerminal flag
+  if (!anyTerminal) {
+    const terminalFlagged = types.find((t) => {
+      const def = unifiedNodeRegistry.get(t);
+      return def?.isTerminal === true;
+    });
+    if (terminalFlagged) return terminalFlagged;
+  }
+  return anyTerminal ?? 'log_output'; // Ultimate fallback
 }
 
 type Multiset = Map<string, number>;
