@@ -99,6 +99,20 @@ import { overrideTool } from './overrides/tool';
 import { overrideWhatsapp } from './overrides/whatsapp';
 import { overrideWhatsappTrigger } from './overrides/whatsapp-trigger';
 import { overrideInstagramTrigger } from './overrides/instagram-trigger';
+import { overrideOracleDatabase } from './overrides/oracle-database';
+import { overrideXero } from './overrides/xero';
+import { overrideWorkday } from './overrides/workday';
+import { overrideNetlify } from './overrides/netlify';
+import { overrideClaude } from './overrides/claude';
+import { overrideLangchain } from './overrides/langchain';
+import { overridePinecone } from './overrides/pinecone';
+import { overrideChargebee } from './overrides/chargebee';
+import { overrideTypeform } from './overrides/typeform';
+import { overrideGoogleForms } from './overrides/google-forms';
+import { overrideWordPress } from './overrides/wordpress';
+import { overrideContentful } from './overrides/contentful-node';
+import { overrideZendesk } from './overrides/zendesk-node';
+import { overrideCalendly } from './overrides/calendly';
 
 type OverrideFn = (def: UnifiedNodeDefinition, schema: NodeSchema) => UnifiedNodeDefinition;
 
@@ -189,6 +203,20 @@ const overridesByType: Record<string, OverrideFn> = {
   supabase: overrideSupabase,
   mysql: overrideMysql,
   mongodb: overrideMongodb,
+  oracle_database: overrideOracleDatabase,
+  xero: overrideXero,
+  workday: overrideWorkday,
+  netlify: overrideNetlify,
+  wordpress: overrideWordPress,
+  contentful: overrideContentful,
+  zendesk: overrideZendesk,
+  calendly: overrideCalendly,
+  claude: overrideClaude,
+  langchain: overrideLangchain,
+  pinecone: overridePinecone,
+  chargebee: overrideChargebee,
+  typeform: overrideTypeform,
+  google_forms: overrideGoogleForms,
   // ✅ BATCH 10: Social Media
   twitter: overrideTwitter,
   instagram: overrideInstagram,

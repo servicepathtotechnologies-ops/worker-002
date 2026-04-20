@@ -156,6 +156,17 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     'text_summarizer': 'text_summarizer',
     'summarizer': 'text_summarizer',
     'sentiment_analyzer': 'sentiment_analyzer',
+    'claude': 'claude',
+    'claude_ai': 'claude',
+    'anthropic': 'claude',
+    'anthropic_claude': 'claude',
+    'claude_messages': 'claude',
+    // ── LangChain ────────────────────────────────────────────────────────────
+    'langchain': 'langchain',
+    'lang_chain': 'langchain',
+    'langchain_agent': 'langchain',
+    'langchain_chain': 'langchain',
+    'ai_chain': 'langchain',
     // ── Communication ────────────────────────────────────────────────────────
     'telegram': 'telegram',
     'telegram_send': 'telegram',
@@ -191,6 +202,76 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     'redis': 'redis',
     'database_write': 'database_write',
     'database_read': 'database_read',
+    // Oracle
+    'oracle': 'oracle_database',
+    'oracle_db': 'oracle_database',
+    'oracledb': 'oracle_database',
+    'oracle_database': 'oracle_database',
+    'oracle_sql': 'oracle_database',
+    // Xero
+    'xero': 'xero',
+    'xero_accounting': 'xero',
+    'xero_invoices': 'xero',
+    'xero_contacts': 'xero',
+    'xero_payments': 'xero',
+    'xero_items': 'xero',
+    // Workday
+    'workday': 'workday',
+    'workday_hr': 'workday',
+    'workday_workers': 'workday',
+    'workday_staffing': 'workday',
+    'workday_api': 'workday',
+    // Netlify
+    'netlify': 'netlify',
+    'netlify_deploy': 'netlify',
+    'netlify_sites': 'netlify',
+    'netlify_builds': 'netlify',
+    'netlify_api': 'netlify',
+    // WordPress
+    'wordpress': 'wordpress',
+    'wp': 'wordpress',
+    'blog': 'wordpress',
+    'cms': 'wordpress',
+    // Contentful
+    'contentful': 'contentful',
+    'contentful_cms': 'contentful',
+    'contentful_entries': 'contentful',
+    'headless_cms': 'contentful',
+    // Zendesk
+    'zendesk': 'zendesk',
+    'zendesk tickets': 'zendesk',
+    'support tickets': 'zendesk',
+    'helpdesk': 'zendesk',
+    // ── Calendly ─────────────────────────────────────────────────────────────
+    'calendly': 'calendly',
+    'calendar scheduling': 'calendly',
+    'meeting scheduler': 'calendly',
+    'schedule meetings': 'calendly',
+    'calendly events': 'calendly',
+    'calendly meetings': 'calendly',
+    // ── Pinecone ─────────────────────────────────────────────────────────────
+    'pinecone': 'pinecone',
+    'pinecone_db': 'pinecone',
+    'pinecone_vector': 'pinecone',
+    'pinecone_index': 'pinecone',
+    'pinecone_query': 'pinecone',
+    'pinecone_upsert': 'pinecone',
+    'vector_database': 'pinecone',
+    // ── Chargebee ────────────────────────────────────────────────────────────
+    'chargebee': 'chargebee',
+    'subscription_billing': 'chargebee',
+    'billing': 'chargebee',
+    // ── Typeform ─────────────────────────────────────────────────────────────
+    'typeform': 'typeform',
+    'forms': 'typeform',
+    'survey': 'typeform',
+    'form builder': 'typeform',
+    // ── Google Forms ─────────────────────────────────────────────────────────
+    'google_forms': 'google_forms',
+    'google form': 'google_forms',
+    'gform': 'google_forms',
+    'forms google': 'google_forms',
+    'google_form': 'google_forms',
     // ── HTTP ─────────────────────────────────────────────────────────────────
     'http_request': 'http_request',
     'http': 'http_request',
@@ -1100,6 +1181,8 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     if (typeLower.includes('anthropic') || typeLower.includes('claude')) return 'anthropic';
     if (typeLower.includes('notion')) return 'notion';
     if (typeLower.includes('airtable')) return 'airtable';
+    if (typeLower.includes('xero')) return 'xero';
+    if (typeLower.includes('workday')) return 'workday';
     return undefined;
   }
   
@@ -1294,8 +1377,9 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     if (fromBase) return fromBase;
     if (t === 'http_request' || t === 'http_post' || t === 'graphql' || t === 'webhook_response') return 'http';
     if (t === 'email') return 'email';
-    if (t.includes('database_') || t === 'postgresql' || t === 'supabase' || t === 'mysql' || t === 'mongodb' || t === 'redis')
+    if (t.includes('database_') || t === 'postgresql' || t === 'supabase' || t === 'mysql' || t === 'mongodb' || t === 'redis' || t === 'oracle_database')
       return 'database';
+    if (t === 'xero') return 'xero';
     if (t === 'linkedin' || t === 'twitter' || t === 'instagram' || t === 'facebook') return t.split('_')[0];
     return undefined;
   }

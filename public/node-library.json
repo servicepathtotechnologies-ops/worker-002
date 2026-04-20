@@ -1275,6 +1275,70 @@
     ]
   },
   {
+    "type": "xero",
+    "category": "http_api",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "resource",
+      "operation"
+    ],
+    "optionalConfig": [
+      "accessToken",
+      "tenantId",
+      "resource",
+      "operation",
+      "recordId",
+      "payload",
+      "where",
+      "order",
+      "page",
+      "modifiedAfter",
+      "summarizeErrors",
+      "includeArchived",
+      "unitdp"
+    ]
+  },
+  {
+    "type": "workday",
+    "category": "http_api",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "resource",
+      "operation"
+    ],
+    "optionalConfig": [
+      "baseUrl",
+      "tenant",
+      "authType",
+      "accessToken",
+      "username",
+      "password",
+      "resource",
+      "operation",
+      "recordId",
+      "payload",
+      "limit",
+      "offset",
+      "rawPath"
+    ]
+  },
+  {
     "type": "discord",
     "category": "output",
     "inputs": [
@@ -2312,6 +2376,45 @@
     ]
   },
   {
+    "type": "oracle_database",
+    "category": "database",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "operation"
+    ],
+    "optionalConfig": [
+      "operation",
+      "schemaMode",
+      "schema",
+      "tableMode",
+      "table",
+      "mappingColumnMode",
+      "columnMappings",
+      "selectRows",
+      "combineConditions",
+      "sort",
+      "returnAll",
+      "limit",
+      "deleteCommand",
+      "statement",
+      "bindParams",
+      "statementBatching",
+      "autoCommit",
+      "outputColumns",
+      "outputNumbersAsString",
+      "fetchArraySize",
+      "prefetchRows"
+    ]
+  },
+  {
     "type": "freshdesk",
     "category": "crm",
     "inputs": [
@@ -2685,6 +2788,80 @@
     ]
   },
   {
+    "type": "netlify",
+    "category": "devops",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "resource",
+      "operation"
+    ],
+    "optionalConfig": [
+      "accessToken",
+      "siteId",
+      "deployId",
+      "resource",
+      "operation",
+      "payload",
+      "limit"
+    ]
+  },
+  {
+    "type": "claude",
+    "category": "ai",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "model",
+      "prompt"
+    ],
+    "optionalConfig": [
+      "apiKey",
+      "systemPrompt",
+      "maxTokens",
+      "temperature",
+      "model"
+    ]
+  },
+  {
+    "type": "langchain",
+    "category": "ai",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "operation",
+      "prompt"
+    ],
+    "optionalConfig": [
+      "provider",
+      "tools",
+      "memory",
+      "apiKey",
+      "operation"
+    ]
+  },
+  {
     "type": "shopify",
     "category": "ecommerce",
     "inputs": [
@@ -2794,6 +2971,210 @@
       "description",
       "paymentId",
       "autoCapture"
+    ]
+  },
+  {
+    "type": "pinecone",
+    "category": "database",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "operation",
+      "index"
+    ],
+    "optionalConfig": [
+      "apiKey",
+      "vector",
+      "topK",
+      "id",
+      "metadata",
+      "namespace"
+    ]
+  },
+  {
+    "type": "chargebee",
+    "category": "payment",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "operation",
+      "apiKey",
+      "site"
+    ],
+    "optionalConfig": [
+      "operation",
+      "apiKey",
+      "site",
+      "customerId",
+      "email",
+      "planId",
+      "subscriptionId"
+    ]
+  },
+  {
+    "type": "typeform",
+    "category": "productivity",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "operation",
+      "apiKey"
+    ],
+    "optionalConfig": [
+      "operation",
+      "apiKey",
+      "formId",
+      "title"
+    ]
+  },
+  {
+    "type": "google_forms",
+    "category": "google",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "operation",
+      "accessToken"
+    ],
+    "optionalConfig": [
+      "operation",
+      "accessToken",
+      "formId",
+      "title"
+    ]
+  },
+  {
+    "type": "wordpress",
+    "category": "cms",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "operation",
+      "siteUrl",
+      "username",
+      "password"
+    ],
+    "optionalConfig": [
+      "postId",
+      "title",
+      "content",
+      "status",
+      "limit",
+      "operation",
+      "siteUrl",
+      "username",
+      "password"
+    ]
+  },
+  {
+    "type": "contentful",
+    "category": "cms",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "operation",
+      "spaceId",
+      "accessToken"
+    ],
+    "optionalConfig": [
+      "environment",
+      "contentType",
+      "entryId",
+      "fields",
+      "operation",
+      "spaceId",
+      "accessToken"
+    ]
+  },
+  {
+    "type": "zendesk",
+    "category": "crm",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "operation",
+      "subdomain",
+      "email",
+      "apiToken"
+    ],
+    "optionalConfig": [
+      "ticketId",
+      "subject",
+      "description",
+      "status",
+      "priority",
+      "assigneeId",
+      "limit"
+    ]
+  },
+  {
+    "type": "calendly",
+    "category": "productivity",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "operation"
+    ],
+    "optionalConfig": [
+      "operation",
+      "userUri",
+      "eventTypeUri"
     ]
   }
 ]

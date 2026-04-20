@@ -11823,6 +11823,254 @@ export async function executeNodeLegacy(
       }
     }
 
+    // Xero Accounting API node
+    case 'xero': {
+      const resource = getStringProperty(config, 'resource', 'invoices').toLowerCase();
+      const operation = getStringProperty(config, 'operation', 'get_many').toLowerCase();
+      const accessToken = getStringProperty(config, 'accessToken', '').trim();
+      const tenantId = getStringProperty(config, 'tenantId', '').trim();
+
+      if (!accessToken) {
+        return { ...inputObj, _error: 'Xero node: accessToken is required' };
+      }
+      if (!tenantId) {
+        return { ...inputObj, _error: 'Xero node: tenantId is required' };
+      }
+
+      const XERO_BASE = 'https://api.xero.com/api.xro/2.0';
+      const endpointMap: Record<string, string> = {
+        contacts: '/Contacts',
+        invoices: '/Invoices',
+        items: '/Items',
+        payments: '/Payments',
+        accounts: '/Accounts',
+      };
+
+      const basePath = endpointMap[resource];
+      if (!basePath) {
+        return { ...inputObj, _error: `Xero node: unsupported resource "${resource}"` };
+      }
+
+      try {
+        const execContext = createTypedContext();
+        const headers: Record<string, string> = {
+          'Authorization': `Bearer ${accessToken}`,
+          'Xero-Tenant-Id': tenantId,
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+        };
+
+        // Optional Xero headers
+        const summarizeErrors = config.summarizeErrors !== false;
+        if (summarizeErrors) headers['summarizeErrors'] = 'true';
+        const unitdp = config.unitdp ?? 2;
+
+        let url = `${XERO_BASE}${basePath}`;
+        let method = 'GET';
+        let body: string | undefined;
+
+        if (operation === 'get_by_id') {
+          const recordId = getStringProperty(config, 'recordId', '').trim();
+          if (!recordId) {
+            return { ...inputObj, _error: 'Xero node: recordId is required for get_by_id' };
+          }
+          url = `${url}/${encodeURIComponent(recordId)}`;
+        } else if (operation === 'get_many') {
+          const params = new URLSearchParams();
+          const where = getStringProperty(config, 'where', '').trim();
+          const order = getStringProperty(config, 'order', '').trim();
+          const page = Number(config.page ?? 1);
+          const modifiedAfter = getStringProperty(config, 'modifiedAfter', '').trim();
+          const includeArchived = config.includeArchived === true;
+
+          if (where) params.set('where', where);
+          if (order) params.set('order', order);
+          if (page && page > 1) params.set('page', String(page));
+          if (unitdp !== 2) params.set('unitdp', String(unitdp));
+          if (includeArchived) params.set('includeArchived', 'true');
+          if (modifiedAfter) headers['If-Modified-Since'] = modifiedAfter;
+
+          const qs = params.toString();
+          if (qs) url = `${url}?${qs}`;
+        } else if (operation === 'create') {
+          let payload = config.payload;
+          if (!payload || typeof payload !== 'object') {
+            return { ...inputObj, _error: 'Xero node: payload is required for create' };
+          }
+          // Resolve templates in payload
+          if (typeof payload === 'string') {
+            payload = safeParse(resolveTypedValue(payload, execContext) as string, {});
+          }
+          method = 'PUT';
+          // Xero uses PUT for create on most resources
+          const resourceKey = resource.charAt(0).toUpperCase() + resource.slice(1);
+          body = JSON.stringify({ [resourceKey]: [payload] });
+          const params = new URLSearchParams();
+          if (summarizeErrors) params.set('summarizeErrors', 'true');
+          if (unitdp !== 2) params.set('unitdp', String(unitdp));
+          const qs = params.toString();
+          if (qs) url = `${url}?${qs}`;
+        } else if (operation === 'update') {
+          const recordId = getStringProperty(config, 'recordId', '').trim();
+          if (!recordId) {
+            return { ...inputObj, _error: 'Xero node: recordId is required for update' };
+          }
+          let payload = config.payload;
+          if (!payload || typeof payload !== 'object') {
+            return { ...inputObj, _error: 'Xero node: payload is required for update' };
+          }
+          if (typeof payload === 'string') {
+            payload = safeParse(resolveTypedValue(payload, execContext) as string, {});
+          }
+          method = 'POST';
+          url = `${url}/${encodeURIComponent(recordId)}`;
+          const resourceKey = resource.charAt(0).toUpperCase() + resource.slice(1);
+          body = JSON.stringify({ [resourceKey]: [payload] });
+          const params = new URLSearchParams();
+          if (summarizeErrors) params.set('summarizeErrors', 'true');
+          if (unitdp !== 2) params.set('unitdp', String(unitdp));
+          const qs = params.toString();
+          if (qs) url = `${url}?${qs}`;
+        } else {
+          return { ...inputObj, _error: `Xero node: unsupported operation "${operation}"` };
+        }
+
+        const fetchOptions: RequestInit = { method, headers };
+        if (body) fetchOptions.body = body;
+
+        const response = await fetch(url, fetchOptions);
+        const responseText = await response.text();
+        let responseData: any = {};
+        try { responseData = JSON.parse(responseText); } catch { responseData = { raw: responseText }; }
+
+        if (!response.ok) {
+          const errMsg = responseData?.Detail || responseData?.Message || responseData?.message || `HTTP ${response.status}`;
+          return {
+            ...inputObj,
+            success: false,
+            resource,
+            operation,
+            tenantId,
+            records: [],
+            record: null,
+            count: 0,
+            error: { message: errMsg, code: String(response.status), details: responseData?.Elements || [] },
+          };
+        }
+
+        // Normalize response
+        const resourceKey = resource.charAt(0).toUpperCase() + resource.slice(1);
+        const records: any[] = responseData[resourceKey] || [];
+        const isSingle = operation === 'get_by_id' || operation === 'update';
+
+        return {
+          success: true,
+          resource,
+          operation,
+          tenantId,
+          record: isSingle ? (records[0] ?? null) : null,
+          records: isSingle ? [] : records,
+          count: records.length,
+          pagination: {
+            page: config.page ?? 1,
+            pageSize: records.length,
+            hasMore: records.length === 100,
+          },
+          meta: {
+            endpoint: url,
+            rateLimitRemaining: Number(response.headers.get('x-rate-limit-remaining') ?? -1),
+          },
+          error: null,
+        };
+      } catch (err: any) {
+        return {
+          ...inputObj,
+          _error: `Xero node: ${err.message ?? 'Request failed'}`,
+        };
+      }
+    }
+
+    // Chargebee Subscription Billing API node
+    case 'chargebee': {
+      try {
+        const operation = getStringProperty(config, 'operation', '');
+        const customerId = getStringProperty(config, 'customerId', '');
+        const email = getStringProperty(config, 'email', '');
+        const planId = getStringProperty(config, 'planId', '');
+        const subscriptionId = getStringProperty(config, 'subscriptionId', '');
+        const credentials = (node as any).data?.credentials;
+        const apiKey = (getStringProperty(config, 'apiKey', '') || getStringProperty(credentials || {}, 'apiKey', '')).trim();
+        const site = (getStringProperty(config, 'site', '') || getStringProperty(credentials || {}, 'site', '')).trim();
+
+        const baseUrl = `https://${site}.chargebee.com/api/v2`;
+        const authHeader = `Basic ${Buffer.from(apiKey + ':').toString('base64')}`;
+
+        let url: string;
+        let method: string;
+        let body: string | undefined;
+        const headers: Record<string, string> = {
+          'Authorization': authHeader,
+        };
+
+        if (operation === 'create_customer') {
+          url = `${baseUrl}/customers`;
+          method = 'POST';
+          headers['Content-Type'] = 'application/x-www-form-urlencoded';
+          body = new URLSearchParams({ email }).toString();
+        } else if (operation === 'create_subscription') {
+          url = `${baseUrl}/customers/${customerId}/subscriptions`;
+          method = 'POST';
+          headers['Content-Type'] = 'application/x-www-form-urlencoded';
+          body = new URLSearchParams({ plan_id: planId }).toString();
+        } else if (operation === 'get_customer') {
+          url = `${baseUrl}/customers/${customerId}`;
+          method = 'GET';
+        } else if (operation === 'cancel_subscription') {
+          url = `${baseUrl}/subscriptions/${subscriptionId}/cancel`;
+          method = 'POST';
+          headers['Content-Type'] = 'application/x-www-form-urlencoded';
+          body = '';
+        } else {
+          return { success: false, error: `Chargebee node: unsupported operation "${operation}"` };
+        }
+
+        const fetchOptions: RequestInit = { method, headers };
+        if (body !== undefined) fetchOptions.body = body;
+
+        const response = await fetch(url, fetchOptions);
+
+        if (!response.ok) {
+          if (response.status === 401 || response.status === 403) {
+            return { success: false, error: 'Chargebee authentication failed — verify your API key and site name' };
+          }
+          if (response.status === 404) {
+            return { success: false, error: 'Chargebee resource not found — verify the ID is correct' };
+          }
+          if (response.status === 429) {
+            return { success: false, error: 'Chargebee rate limit exceeded — retry after a delay' };
+          }
+          let errorBody: any = {};
+          try { errorBody = await response.json(); } catch { errorBody = {}; }
+          return { success: false, error: `Chargebee API error ${response.status}: ${errorBody.message || JSON.stringify(errorBody)}` };
+        }
+
+        const responseData: any = await response.json();
+
+        if (operation === 'create_customer') {
+          return { success: true, operation: 'create_customer', customer: responseData.customer, customerId: responseData.customer?.id };
+        } else if (operation === 'create_subscription') {
+          return { success: true, operation: 'create_subscription', subscription: responseData.subscription, subscriptionId: responseData.subscription?.id, customerId };
+        } else if (operation === 'get_customer') {
+          return { success: true, operation: 'get_customer', customer: responseData.customer, customerId: responseData.customer?.id };
+        } else {
+          // cancel_subscription
+          return { success: true, operation: 'cancel_subscription', subscription: responseData.subscription, subscriptionId: responseData.subscription?.id };
+        }
+      } catch (error: any) {
+        return { success: false, error: error.message };
+      }
+    }
+
     // Database nodes
     case 'sql_server':
     case 'mssql':
@@ -11835,7 +12083,9 @@ export async function executeNodeLegacy(
     case 'sqlite':
     case 'supabase':
     case 'timescaledb':
-    case 'timescale': {
+    case 'timescale':
+    case 'oracle':
+    case 'oracle_database': {
       // Use typed execution context
       const execContext = createTypedContext();
       
@@ -12338,12 +12588,205 @@ export async function executeNodeLegacy(
             'Authorization': `Bearer ${accessToken}`,
           },
           body: JSON.stringify({
-            message: {
-              subject: resolvedSubject,
-              body: {
-                contentType: 'HTML',
-                content: resolvedBody,
-              },
+    case 'noop': {
+      // NoOp node - passthrough
+      return inputObj;
+    }
+
+    // Typeform REST API node
+    case 'typeform': {
+      const operation = getStringProperty(config, 'operation', 'get_responses');
+      const apiKey    = getStringProperty(config, 'apiKey', '');
+      const formId    = getStringProperty(config, 'formId', '');
+      const title     = getStringProperty(config, 'title', '');
+
+      if (!apiKey.trim()) {
+        return { success: false, error: 'apiKey is required' };
+      }
+
+      const headers: Record<string, string> = {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      };
+
+      let url: string;
+      let method = 'GET';
+      let body: string | undefined;
+
+      if (operation === 'get_responses') {
+        if (!formId.trim()) return { success: false, error: 'formId is required for this operation' };
+        url = `https://api.typeform.com/forms/${formId}/responses`;
+      } else if (operation === 'create_form') {
+        if (!title.trim()) return { success: false, error: 'title is required for create_form' };
+        url = 'https://api.typeform.com/forms';
+        method = 'POST';
+        body = JSON.stringify({ title });
+      } else if (operation === 'get_form') {
+        if (!formId.trim()) return { success: false, error: 'formId is required for this operation' };
+        url = `https://api.typeform.com/forms/${formId}`;
+      } else {
+        return { success: false, error: `Unknown operation: ${operation}` };
+      }
+
+      const response = await fetch(url, { method, headers, body });
+      if (!response.ok) {
+        const errBody = await response.text();
+        return { success: false, error: `HTTP ${response.status}: ${errBody}` };
+      }
+      return await response.json();
+    }
+
+    // Calendly scheduling API node
+    case 'calendly': {
+      try {
+        const operation   = getStringProperty(config, 'operation', 'get_events');
+        const accessToken = getStringProperty(config, 'accessToken', '');
+        const userUri     = getStringProperty(config, 'userUri', '');
+
+        if (!accessToken.trim()) {
+          return { success: false, error: 'accessToken is required' };
+        }
+
+        const baseUrl = 'https://api.calendly.com';
+        const headers: Record<string, string> = {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        };
+
+        let url: string;
+
+        switch (operation) {
+          case 'get_user':
+            url = `${baseUrl}/users/me`;
+            break;
+          case 'get_events':
+            url = `${baseUrl}/scheduled_events`;
+            break;
+          case 'get_event_types':
+            if (!userUri.trim()) return { success: false, error: 'userUri is required for get_event_types' };
+            url = `${baseUrl}/event_types?user=${encodeURIComponent(userUri)}`;
+            break;
+          case 'get_scheduled_events':
+            if (!userUri.trim()) return { success: false, error: 'userUri is required for get_scheduled_events' };
+            url = `${baseUrl}/scheduled_events?user=${encodeURIComponent(userUri)}`;
+            break;
+          default:
+            return { success: false, error: `Unknown operation: ${operation}` };
+        }
+
+        const response = await fetch(url, { method: 'GET', headers });
+        if (!response.ok) {
+          const errBody = await response.text();
+          return { success: false, error: `HTTP ${response.status}: ${errBody}` };
+        }
+        return { success: true, data: await response.json() };
+      } catch (error: any) {
+        return { success: false, error: error.message };
+      }
+    }
+
+    default: {Forms API node
+    case 'google_forms': {
+      try {
+        const operation   = getStringProperty(config, 'operation', 'get_responses');
+        const accessToken = getStringProperty(config, 'accessToken', '');
+        const formId      = getStringProperty(config, 'formId', '');
+        const title       = getStringProperty(config, 'title', '');
+
+        if (!accessToken.trim()) {
+          return { success: false, error: 'accessToken is required' };
+        }
+
+        const headers: Record<string, string> = {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        };
+
+        const baseUrl = 'https://forms.googleapis.com/v1/forms';
+
+        if (operation === 'get_form') {
+          if (!formId.trim()) return { success: false, error: 'formId is required for get_form' };
+          const res = await fetch(`${baseUrl}/${formId}`, { method: 'GET', headers });
+          if (!res.ok) {
+            const errBody = await res.text();
+            return { success: false, error: `HTTP ${res.status}: ${errBody}` };
+          }
+          return { success: true, data: await res.json() };
+        }
+
+        if (operation === 'create_form') {
+          if (!title.trim()) return { success: false, error: 'title is required for create_form' };
+          const res = await fetch(baseUrl, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ info: { title } }),
+          });
+          if (!res.ok) {
+            const errBody = await res.text();
+            return { success: false, error: `HTTP ${res.status}: ${errBody}` };
+          }
+          return { success: true, data: await res.json() };
+        }
+
+        if (operation === 'get_responses') {
+          if (!formId.trim()) return { success: false, error: 'formId is required for get_responses' };
+          const res = await fetch(`${baseUrl}/${formId}/responses`, { method: 'GET', headers });
+          if (!res.ok) {
+            const errBody = await res.text();
+            return { success: false, error: `HTTP ${res.status}: ${errBody}` };
+          }
+          return { success: true, data: await res.json() };
+        }
+
+        return { success: false, error: `Unknown operation: ${operation}` };
+      } catch (error: any) {
+        return { success: false, error: error.message };
+      }
+    }
+    default: {
+      // For unknown node types, return input as output
+      console.warn(`Unknown node type: ${type}, returning input as output`);s');
+      const apiKey    = getStringProperty(config, 'apiKey', '');
+      const formId    = getStringProperty(config, 'formId', '');
+      const title     = getStringProperty(config, 'title', '');
+
+      if (!apiKey.trim()) {
+        return { success: false, error: 'apiKey is required' };
+      }
+
+      const headers: Record<string, string> = {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      };
+
+      let url: string;
+      let method = 'GET';
+      let body: string | undefined;
+
+      if (operation === 'get_responses') {
+        if (!formId.trim()) return { success: false, error: 'formId is required for this operation' };
+        url = `https://api.typeform.com/forms/${formId}/responses`;
+      } else if (operation === 'create_form') {
+        if (!title.trim()) return { success: false, error: 'title is required for create_form' };
+        url = 'https://api.typeform.com/forms';
+        method = 'POST';
+        body = JSON.stringify({ title });
+      } else if (operation === 'get_form') {
+        if (!formId.trim()) return { success: false, error: 'formId is required for this operation' };
+        url = `https://api.typeform.com/forms/${formId}`;
+      } else {
+        return { success: false, error: `Unknown operation: ${operation}` };
+      }
+
+      const response = await fetch(url, { method, headers, body });
+      if (!response.ok) {
+        const errBody = await response.text();
+        return { success: false, error: `HTTP ${response.status}: ${errBody}` };
+      }
+      return await response.json();
+    }
+
+    default: {},
               toRecipients: resolvedTo.split(',').map((email) => ({
                 emailAddress: { address: email.trim() },
               })),

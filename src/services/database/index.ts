@@ -13,3 +13,4 @@ export { runSnowflakeNode } from './snowflakeNode';
 export { runSQLiteNode } from './sqliteNode';
 export { runSupabaseNode } from './supabaseNode';
 export { runTimescaleDBNode } from './timescaleDBNode';
+export { runOracleNode } from './oracleNode';

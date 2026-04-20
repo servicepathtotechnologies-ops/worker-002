@@ -16,6 +16,7 @@ import {
   runSQLiteNode,
   runSupabaseNode,
   runTimescaleDBNode,
+  runOracleNode,
 } from './index';
 
 /**
@@ -55,6 +56,10 @@ export async function executeDatabaseNode(
     case 'timescaledb':
     case 'timescale':
       return await runTimescaleDBNode(context);
+
+    case 'oracle':
+    case 'oracle_database':
+      return await runOracleNode(context);
 
     default:
       return {
