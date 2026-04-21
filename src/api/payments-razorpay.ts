@@ -1,137 +1,226 @@
 import { Request, Response } from 'express';
-import crypto from 'crypto';
+import { paymentService } from '../services/payment-service';
+import { subscriptionService } from '../services/subscription-service';
+import { AuthenticatedRequest } from '../core/middleware/subscription-auth';
+import { getSupabaseClient } from '../core/database/supabase-compat';
 
-type PlanId = 'pro' | 'enterprise';
-type SupportedCurrency = 'USD' | 'INR';
-
-const PLAN_PRICING: Record<PlanId, Record<SupportedCurrency, { amount: number; label: string }>> = {
-  pro: {
-    USD: { amount: 2000, label: 'Pro Plan' },
-    INR: { amount: 166000, label: 'Pro Plan' },
-  },
-  enterprise: {
-    USD: { amount: 9900, label: 'Enterprise Plan' },
-    INR: { amount: 822000, label: 'Enterprise Plan' },
-  },
-};
-
-function getRazorpayAuthHeader(): string {
-  const keyId = process.env.RAZORPAY_KEY_ID;
-  const keySecret = process.env.RAZORPAY_KEY_SECRET;
-  if (!keyId || !keySecret) {
-    throw new Error('Razorpay keys are not configured');
-  }
-  return `Basic ${Buffer.from(`${keyId}:${keySecret}`).toString('base64')}`;
+/**
+ * Ensure user exists in public.users — auto-creates if missing
+ */
+async function ensureUserExists(userId: string, email: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  await supabase
+    .from('users')
+    .upsert({ id: userId, email, updated_at: new Date().toISOString() }, { onConflict: 'id' });
 }
 
-export async function createRazorpayOrder(req: Request, res: Response) {
+/**
+ * GET /api/subscriptions/plans
+ * Returns all active subscription plans (public endpoint)
+ */
+export async function getSubscriptionPlans(req: Request, res: Response) {
   try {
-    const planId = String(req.body?.planId || '').toLowerCase() as PlanId;
-    const requestedCurrency = String(req.body?.currency || 'USD').toUpperCase() as SupportedCurrency;
+    const plans = await subscriptionService.getAvailablePlans();
 
-    if (!PLAN_PRICING[planId]) {
-      return res.status(400).json({ success: false, error: 'Invalid plan selected' });
-    }
-    if (!['USD', 'INR'].includes(requestedCurrency)) {
-      return res.status(400).json({ success: false, error: 'Unsupported currency. Use USD or INR.' });
-    }
-
-    const plan = PLAN_PRICING[planId][requestedCurrency];
-    const receipt = `rcpt_${planId}_${Date.now()}`;
-    const orderPayload = {
-      amount: plan.amount,
-      currency: requestedCurrency,
-      receipt,
-      notes: {
-        planId,
-        planLabel: plan.label,
-        selectedCurrency: requestedCurrency,
-      },
-    };
-
-    const response = await fetch('https://api.razorpay.com/v1/orders', {
-      method: 'POST',
-      headers: {
-        Authorization: getRazorpayAuthHeader(),
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(orderPayload),
+    return res.json({
+      success: true,
+      plans: plans.map(plan => ({
+        id: plan.id,
+        name: plan.name,
+        workflowLimit: plan.workflowLimit,
+        price: plan.price / 100,           // paise → rupees
+        originalPrice: plan.originalPrice / 100,
+        currency: plan.currency,
+        features: plan.features,
+        isActive: plan.isActive,
+        developmentMode: plan.developmentMode,
+        displayPrice: plan.price === 0 ? 'Free' : `₹${plan.price / 100}`,
+        popular: plan.name === 'Pro'
+      }))
     });
+  } catch (error: any) {
+    console.error('[PaymentAPI] getSubscriptionPlans error:', error);
+    return res.status(500).json({
+      error: 'Plans Fetch Error',
+      message: error?.message || 'Failed to fetch subscription plans',
+      code: 'PLANS_FETCH_ERROR'
+    });
+  }
+}
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      return res.status(502).json({
-        success: false,
-        error: `Failed to create Razorpay order: ${errorText}`,
+/**
+ * POST /api/payments/razorpay/create-order
+ * Creates a Razorpay order for a subscription upgrade
+ */
+export async function createRazorpayOrder(req: AuthenticatedRequest, res: Response) {
+  try {
+    const { planName } = req.body;
+
+    if (!req.user) {
+      return res.status(401).json({ error: 'Unauthorized', code: 'AUTH_REQUIRED' });
+    }
+
+    if (!planName) {
+      return res.status(400).json({
+        error: 'Bad Request',
+        message: 'planName is required',
+        code: 'MISSING_PLAN_NAME'
       });
     }
 
-    const order = await response.json();
+    const plan = await subscriptionService.getPlanByName(planName);
+    if (!plan) {
+      return res.status(400).json({
+        error: 'Invalid Plan',
+        message: `Plan '${planName}' not found`,
+        code: 'INVALID_PLAN'
+      });
+    }
+
+    if (plan.name === 'Free') {
+      return res.status(400).json({
+        error: 'Invalid Plan',
+        message: 'Free plan does not require payment',
+        code: 'FREE_PLAN_NO_PAYMENT'
+      });
+    }
+
+    // Ensure user exists in public.users (auto-create if missing)
+    await ensureUserExists(req.user.id, req.user.email);
+
+    // Ensure user has a subscription record
+    await subscriptionService.ensureFreeSubscription(req.user.id);
+
+    // Check if already on this plan
+    let currentSubscription = null;
+    try {
+      currentSubscription = await subscriptionService.getUserSubscription(req.user.id);
+    } catch { /* ignore */ }
+
+    if (currentSubscription?.planName === planName) {
+      return res.status(400).json({
+        error: 'Already Subscribed',
+        message: `You already have the ${planName} plan`,
+        code: 'ALREADY_SUBSCRIBED'
+      });
+    }
+
+    const order = await paymentService.createPaymentOrder(
+      req.user.id,
+      planName,
+      req.user.email
+    );
+
     return res.json({
       success: true,
-      order,
-      keyId: process.env.RAZORPAY_KEY_ID,
-      plan: {
-        id: planId,
-        amount: plan.amount,
-        currency: requestedCurrency,
-        label: plan.label,
+      order: {
+        id: order.id,
+        amount: order.amount,
+        currency: order.currency,
+        planName: plan.name,
+        planWorkflowLimit: plan.workflowLimit,
+        developmentMode: plan.developmentMode
       },
-      checkoutCapabilities: {
-        cards: true,
-        upi: requestedCurrency === 'INR',
-        netbanking: requestedCurrency === 'INR',
-        wallets: requestedCurrency === 'INR',
-        emi: requestedCurrency === 'INR',
-        paylater: requestedCurrency === 'INR',
-      },
+      razorpayKeyId: process.env.RAZORPAY_KEY_ID,
+      user: {
+        name: req.user.email.split('@')[0],
+        email: req.user.email
+      }
     });
   } catch (error: any) {
-    console.error('[Razorpay] create-order failed:', error?.message || error);
+    console.error('[PaymentAPI] createRazorpayOrder error:', error);
     return res.status(500).json({
-      success: false,
-      error: error?.message || 'Failed to create order',
+      error: 'Payment Order Failed',
+      message: error?.message || 'Failed to create payment order',
+      code: 'ORDER_CREATION_ERROR'
     });
   }
 }
 
-export async function verifyRazorpayPayment(req: Request, res: Response) {
+/**
+ * POST /api/payments/razorpay/verify
+ * Verifies Razorpay payment signature and activates subscription
+ */
+export async function verifyRazorpayPayment(req: AuthenticatedRequest, res: Response) {
   try {
-    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, planId } = req.body || {};
-    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !planId) {
-      return res.status(400).json({ success: false, error: 'Missing required payment fields' });
+    const { orderId, paymentId, signature, planName } = req.body;
+
+    if (!req.user) {
+      return res.status(401).json({ error: 'Unauthorized', code: 'AUTH_REQUIRED' });
     }
 
-    const keySecret = process.env.RAZORPAY_KEY_SECRET;
-    if (!keySecret) {
-      return res.status(500).json({ success: false, error: 'Razorpay secret key missing' });
+    if (!orderId || !paymentId || !signature) {
+      return res.status(400).json({
+        error: 'Bad Request',
+        message: 'orderId, paymentId, and signature are required',
+        code: 'MISSING_PAYMENT_DATA'
+      });
     }
 
-    const generatedSignature = crypto
-      .createHmac('sha256', keySecret)
-      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
-      .digest('hex');
-
-    const isValid = generatedSignature === razorpay_signature;
+    // Verify signature
+    const isValid = paymentService.verifyPaymentSignature(orderId, paymentId, signature);
     if (!isValid) {
-      return res.status(400).json({ success: false, verified: false, error: 'Invalid payment signature' });
+      return res.status(400).json({
+        error: 'Payment Verification Failed',
+        message: 'Invalid payment signature',
+        code: 'INVALID_SIGNATURE'
+      });
     }
+
+    // Activate subscription — planName comes from the frontend (stored in order notes)
+    const targetPlan = planName || 'Pro';
+    const result = await subscriptionService.upgradeSubscription(req.user.id, targetPlan);
+
+    if (!result.success) {
+      return res.status(400).json({
+        error: 'Subscription Activation Failed',
+        message: result.error || 'Failed to activate subscription',
+        code: result.code || 'ACTIVATION_FAILED'
+      });
+    }
+
+    const subscription = await subscriptionService.getUserSubscription(req.user.id);
 
     return res.json({
       success: true,
-      verified: true,
-      message: 'Payment verified successfully',
-      subscription: {
-        planId,
-        status: 'active',
-      },
+      message: 'Payment verified and subscription activated',
+      subscription: subscription
+        ? {
+            id: subscription.id,
+            planName: subscription.planName,
+            workflowLimit: subscription.workflowLimit,
+            workflowsUsed: subscription.workflowsUsed,
+            status: subscription.status
+          }
+        : null
     });
   } catch (error: any) {
-    console.error('[Razorpay] verify failed:', error?.message || error);
+    console.error('[PaymentAPI] verifyRazorpayPayment error:', error);
     return res.status(500).json({
-      success: false,
-      verified: false,
-      error: error?.message || 'Failed to verify payment',
+      error: 'Payment Verification Error',
+      message: error?.message || 'Payment verification failed',
+      code: 'VERIFICATION_ERROR'
     });
+  }
+}
+
+/**
+ * POST /api/payments/webhook  (raw body — registered separately in index.ts if needed)
+ */
+export async function handleRazorpayWebhook(req: Request, res: Response) {
+  try {
+    const signature = req.get('X-Razorpay-Signature') || '';
+    const payload = (req.body as Buffer).toString();
+
+    const result = await paymentService.handleWebhook(payload, signature);
+
+    if (!result.success) {
+      return res.status(400).json({ error: result.message });
+    }
+
+    return res.json({ success: true, message: result.message });
+  } catch (error: any) {
+    console.error('[PaymentWebhook] error:', error);
+    return res.status(500).json({ error: 'Webhook processing failed' });
   }
 }

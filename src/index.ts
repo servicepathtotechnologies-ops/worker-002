@@ -177,7 +177,21 @@ import { authStatusHandler } from './api/auth-status';
 import saveSocialTokenRoute from './api/save-social-token';
 import { notionAuthorizeHandler, notionCallbackHandler } from './api/oauth-notion';
 import { twitterAuthorizeHandler, twitterCallbackHandler } from './api/oauth-twitter';
-import { createRazorpayOrder, verifyRazorpayPayment } from './api/payments-razorpay';
+import { createRazorpayOrder, verifyRazorpayPayment, getSubscriptionPlans } from './api/payments-razorpay';
+import { getCurrentSubscription, cancelSubscription, getSubscriptionHistory, adminGetUsers, adminUpgradeUser } from './api/subscriptions';
+import { securityHeaders, subscriptionRateLimit, validateSubscriptionInput, developmentModeHeaders, requestLogger } from './core/middleware/security';
+import { authenticateUser, requireAdmin, optionalAuth, requireRole, requireSubscriptionPlan } from './core/middleware/subscription-auth';
+import { subscriptionLogger, paymentLogger, adminLogger } from './core/middleware/subscription-logging';
+import { checkWorkflowLimitEndpoint } from './core/middleware/workflow-limits';
+import { 
+  refreshTokenEndpoint, 
+  getSessionInfo, 
+  invalidateCurrentSession, 
+  invalidateAllSessions, 
+  getAuditTrailEndpoint, 
+  getSecurityEventsEndpoint, 
+  validateToken 
+} from './api/auth-management';
 
 
 
@@ -210,6 +224,13 @@ console.log('[ServerStartup] 🔵 Registering middleware...');
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(corsMiddleware);
+
+// Security middleware for subscription system
+app.use(securityHeaders);
+app.use(developmentModeHeaders);
+app.use(requestLogger);
+app.use(validateSubscriptionInput);
+
 console.log('[ServerStartup] ✅ Middleware registered');
 
 // Health check (Gemini AI status)
@@ -493,12 +514,108 @@ app.get('/api/execution-status/:executionId', asyncHandler(getExecutionStatus));
 // Auth status endpoint
 app.get('/api/auth/status', asyncHandler(authStatusHandler));
 
+// Enhanced Authentication Management API endpoints
+app.post('/api/auth/refresh-token', 
+  subscriptionRateLimit(5, 300000), // 5 requests per 5 minutes
+  subscriptionLogger('refresh-token'),
+  asyncHandler(authenticateUser), 
+  asyncHandler(refreshTokenEndpoint)
+);
+app.get('/api/auth/session', 
+  subscriptionLogger('get-session'),
+  asyncHandler(authenticateUser), 
+  asyncHandler(getSessionInfo)
+);
+app.post('/api/auth/logout', 
+  subscriptionLogger('logout'),
+  asyncHandler(authenticateUser), 
+  asyncHandler(invalidateCurrentSession)
+);
+app.post('/api/auth/logout-all', 
+  subscriptionRateLimit(3, 300000), // 3 requests per 5 minutes
+  subscriptionLogger('logout-all'),
+  asyncHandler(authenticateUser), 
+  asyncHandler(invalidateAllSessions)
+);
+app.get('/api/auth/validate', 
+  subscriptionLogger('validate-token'),
+  asyncHandler(authenticateUser), 
+  asyncHandler(validateToken)
+);
+
+// Admin-only audit and security endpoints
+app.get('/api/admin/audit-trail', 
+  adminLogger('get-audit-trail'),
+  asyncHandler(authenticateUser), 
+  requireAdmin, 
+  asyncHandler(getAuditTrailEndpoint)
+);
+app.get('/api/admin/security-events', 
+  adminLogger('get-security-events'),
+  asyncHandler(authenticateUser), 
+  requireAdmin, 
+  asyncHandler(getSecurityEventsEndpoint)
+);
+
 // Social media token management endpoint
 app.post('/api/social-tokens', asyncHandler(saveSocialTokenRoute));
 
+// Workflow Limit Enforcement API
+app.get('/api/workflows/limit-check', 
+  subscriptionLogger('limit-check'),
+  asyncHandler(authenticateUser), 
+  asyncHandler(checkWorkflowLimitEndpoint)
+);
+
+// Subscription Management API endpoints
+app.get('/api/subscriptions/plans', 
+  subscriptionLogger('get-plans'),
+  asyncHandler(getSubscriptionPlans)
+);
+app.get('/api/subscriptions/current', 
+  subscriptionLogger('get-current'),
+  asyncHandler(authenticateUser), 
+  asyncHandler(getCurrentSubscription)
+);
+app.post('/api/subscriptions/cancel', 
+  subscriptionRateLimit(3, 300000), // 3 requests per 5 minutes
+  subscriptionLogger('cancel'),
+  asyncHandler(authenticateUser), 
+  asyncHandler(cancelSubscription)
+);
+app.get('/api/subscriptions/history', 
+  subscriptionLogger('get-history'),
+  asyncHandler(authenticateUser), 
+  asyncHandler(getSubscriptionHistory)
+);
+
 // Razorpay payment endpoints (test/live based on key pair)
-app.post('/api/payments/razorpay/create-order', asyncHandler(createRazorpayOrder));
-app.post('/api/payments/razorpay/verify', asyncHandler(verifyRazorpayPayment));
+app.post('/api/payments/razorpay/create-order', 
+  subscriptionRateLimit(5, 60000), // 5 requests per minute
+  paymentLogger('create-order'),
+  asyncHandler(authenticateUser), 
+  asyncHandler(createRazorpayOrder)
+);
+app.post('/api/payments/razorpay/verify', 
+  subscriptionRateLimit(10, 60000), // 10 requests per minute
+  paymentLogger('verify-payment'),
+  asyncHandler(authenticateUser), 
+  asyncHandler(verifyRazorpayPayment)
+);
+
+// Admin subscription management endpoints
+app.get('/api/admin/subscriptions/users',
+  adminLogger('get-subscription-users'),
+  asyncHandler(authenticateUser),
+  requireAdmin,
+  asyncHandler(adminGetUsers)
+);
+app.post('/api/admin/subscriptions/upgrade/:userId',
+  adminLogger('admin-upgrade-subscription'),
+  asyncHandler(authenticateUser),
+  requireAdmin,
+  asyncHandler(adminUpgradeUser)
+);
 
 // LinkedIn connection DX/debugging endpoints
 app.get('/api/connections/linkedin/status', asyncHandler(linkedinStatusHandler));
@@ -1101,6 +1218,24 @@ async function startServer() {
       console.log(`  POST /api/execute-node - Debug single node execution`);
       console.log(`  GET  /api/admin-templates`);
       console.log(`  POST /api/copy-template`);
+      console.log(`\n📦 Subscription Management API:`);
+      console.log(`  GET  /api/workflows/limit-check - Check workflow creation limits`);
+      console.log(`  GET  /api/subscriptions/plans - Get available subscription plans`);
+      console.log(`  GET  /api/subscriptions/current - Get current user subscription`);
+      console.log(`  POST /api/subscriptions/cancel - Cancel subscription`);
+      console.log(`  GET  /api/subscriptions/history - Get subscription history`);
+      console.log(`  POST /api/payments/razorpay/create-order - Create payment order`);
+      console.log(`  POST /api/payments/razorpay/verify - Verify payment`);
+      console.log(`  💰 Development pricing: ${config.developmentPricing ? '₹1 for all plans' : 'Production pricing'}`);
+      console.log(`\n🔐 Authentication Management API:`);
+      console.log(`  POST /api/auth/refresh-token - Refresh JWT token`);
+      console.log(`  GET  /api/auth/session - Get current session info`);
+      console.log(`  POST /api/auth/logout - Logout current session`);
+      console.log(`  POST /api/auth/logout-all - Logout all sessions`);
+      console.log(`  GET  /api/auth/validate - Validate current token`);
+      console.log(`\n🛡️  Admin Security API:`);
+      console.log(`  GET  /api/admin/audit-trail - Get audit trail (admin only)`);
+      console.log(`  GET  /api/admin/security-events - Get security events (admin only)`);
       console.log(`  POST /api/ai/generate - Text generation`);
       console.log(`  POST /api/ai/chat - Chat completion`);
       console.log(`  POST /api/ai/analyze-image - Image analysis`);
@@ -1146,6 +1281,15 @@ async function startServer() {
         }).catch(err => {
           console.error('[ServerStartup] ⚠️  Failed to load scheduler module:', err);
           console.error('[ServerStartup] ⚠️  Error details:', err?.stack || err);
+        });
+
+        // Start session cleanup service
+        import('./services/session-cleanup').then(({ sessionCleanupService }) => {
+          console.log('[ServerStartup] 🔵 Session cleanup service loaded, starting...');
+          sessionCleanupService.start();
+          console.log('[ServerStartup] ✅ Session cleanup service started');
+        }).catch(err => {
+          console.error('[ServerStartup] ⚠️  Failed to start session cleanup service:', err);
         });
       } else {
         console.log('[ServerStartup] ⏭️  Scheduler services disabled (ENABLE_SCHEDULER=false)');

@@ -38,6 +38,15 @@ export const config: any = {
   geminiApiKey: process.env.GEMINI_API_KEY,
   huggingfaceApiKey: process.env.HUGGINGFACE_API_KEY,
   
+  // Payment Gateway - Razorpay
+  razorpayKeyId: process.env.RAZORPAY_KEY_ID,
+  razorpayKeySecret: process.env.RAZORPAY_KEY_SECRET,
+  razorpayWebhookSecret: process.env.RAZORPAY_WEBHOOK_SECRET,
+  
+  // Subscription System Configuration
+  subscriptionMode: process.env.SUBSCRIPTION_MODE || (isProduction ? 'production' : 'development'),
+  developmentPricing: process.env.DEVELOPMENT_PRICING === 'true' || !isProduction, // ₹1 pricing for development
+  
   // Google OAuth
   googleOAuthClientId: process.env.GOOGLE_OAUTH_CLIENT_ID,
   googleOAuthClientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET,
@@ -48,6 +57,7 @@ export const config: any = {
   
   // Token Encryption
   encryptionKey: process.env.ENCRYPTION_KEY,
+  jwtSecret: process.env.JWT_SECRET || process.env.SUPABASE_JWT_SECRET,
   
   // Gemini-first node selection (Path B): use LLM + registry for node selection; when false or Path B fails, use keyword-based (Path A)
   useGeminiFirstNodeSelection: process.env.USE_GEMINI_FIRST_NODE_SELECTION !== 'false',
