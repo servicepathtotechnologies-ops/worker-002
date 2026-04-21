@@ -11094,20 +11094,6 @@ export class NodeLibrary {
       label: 'Vercel',
       category: 'devops',
       description: 'Deploy projects and manage deployments on Vercel',
-      capabilities: [
-        'deployment.deploy',
-        'deployment.list',
-        'vercel.deploy',
-        'vercel.list',
-        'devops.deploy',
-      ],
-      providers: ['vercel'],
-      keywords: [
-        'vercel', 'deploy', 'deployment', 'release', 'production',
-        'vercel deploy', 'vercel deployment', 'deploy to vercel',
-        'vercel release', 'vercel production', 'vercel project',
-        'deployment management', 'deployment list', 'list deployments',
-      ],
       configSchema: {
         required: ['operation', 'token'],
         optional: {
@@ -11134,6 +11120,77 @@ export class NodeLibrary {
           },
         },
       },
+      aiSelectionCriteria: {
+        whenToUse: [
+          'User wants to deploy a project to Vercel',
+          'User needs to check deployment status',
+          'User wants to list all deployments',
+          'User needs to manage Vercel deployments',
+          'User mentions release or production deployment',
+        ],
+        whenNotToUse: [
+          'User wants to deploy to other platforms (AWS, Azure, Heroku)',
+          'User needs local deployment only',
+          'User wants to manage non-Vercel infrastructure',
+        ],
+        keywords: [
+          'vercel', 'deploy', 'deployment', 'release', 'production',
+          'vercel deploy', 'vercel deployment', 'deploy to vercel',
+          'vercel release', 'vercel production', 'vercel project',
+          'deployment management', 'deployment list', 'list deployments',
+        ],
+        useCases: [
+          'CI/CD automation',
+          'Deployment management',
+          'Release automation',
+          'Production deployment',
+          'Deployment monitoring',
+        ],
+        intentDescription: 'Vercel deployment node that enables deploying projects to Vercel and managing deployments.',
+        intentCategories: ['deployment', 'devops', 'vercel', 'release_management', 'infrastructure'],
+      },
+      commonPatterns: [
+        {
+          name: 'deploy_project',
+          description: 'Deploy a project to Vercel',
+          config: {
+            operation: 'deploy',
+            projectName: 'my-app',
+            token: '{{$credentials.vercel.token}}',
+          },
+        },
+        {
+          name: 'list_all_deployments',
+          description: 'List all deployments from Vercel account',
+          config: {
+            operation: 'list_deployments',
+            token: '{{$credentials.vercel.token}}',
+          },
+        },
+      ],
+      validationRules: [
+        {
+          field: 'operation',
+          validator: (value) => value === 'deploy' || value === 'list_deployments',
+          errorMessage: 'Operation must be either "deploy" or "list_deployments"',
+        },
+        {
+          field: 'projectName',
+          validator: (value) => {
+            if (value && typeof value === 'string') {
+              return /^[a-zA-Z0-9_-]{1,128}$/.test(value);
+            }
+            return true;
+          },
+          errorMessage: 'ProjectName must contain only alphanumeric characters, hyphens, and underscores (max 128 characters)',
+        },
+        {
+          field: 'token',
+          validator: (value) => typeof value === 'string' && value.trim() !== '',
+          errorMessage: 'Token is required and must be a non-empty string',
+        },
+      ],
+      outputType: 'object',
       outputSchema: {
         success: { type: 'boolean', description: 'Whether the operation succeeded' },
         data: {
@@ -11143,6 +11200,32 @@ export class NodeLibrary {
         error: {
           type: 'object',
           description: 'Error details if operation failed. Contains code, message, retriable, and optional details',
+        },
+      },
+      schemaVersion: '1.0.0',
+      capabilities: [
+        'deployment.deploy',
+        'deployment.list',
+        'vercel.deploy',
+        'vercel.list',
+        'devops.deploy',
+      ],
+      providers: ['vercel'],
+      keywords: [
+        'vercel', 'deploy', 'deployment', 'release', 'production',
+        'vercel deploy', 'vercel deployment', 'deploy to vercel',
+        'vercel release', 'vercel production', 'vercel project',
+        'deployment management', 'deployment list', 'list deployments',
+      ],
+      nodeCapability: {
+        inputType: ['object'],
+        outputType: 'object',
+        acceptsArray: false,
+        producesArray: false,
+      },
+    };
+  }
+
   private createScheduleWiseNodeSchema(): NodeSchema {
     return {
       type: 'schedulewise',
@@ -11245,50 +11328,6 @@ export class NodeLibrary {
       },
       aiSelectionCriteria: {
         whenToUse: [
-          'User wants to deploy a project to Vercel',
-          'User needs to check deployment status',
-          'User wants to list all deployments',
-          'User needs to manage Vercel deployments',
-          'User mentions release or production deployment',
-        ],
-        whenNotToUse: [
-          'User wants to deploy to other platforms (AWS, Azure, Heroku)',
-          'User needs local deployment only',
-          'User wants to manage non-Vercel infrastructure',
-        ],
-        keywords: [
-          'vercel', 'deploy', 'deployment', 'release', 'production',
-          'vercel deploy', 'vercel deployment', 'deploy to vercel',
-          'vercel release', 'vercel production', 'vercel project',
-          'deployment management', 'deployment list', 'list deployments',
-        ],
-        useCases: [
-          'CI/CD automation',
-          'Deployment management',
-          'Release automation',
-          'Production deployment',
-          'Deployment monitoring',
-        ],
-        // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
-        intentDescription: 'Vercel deployment node that enables deploying projects to Vercel and managing deployments. Supports two operations: deploy (deploy a project to Vercel with specified project name) and list_deployments (retrieve all deployments from a Vercel account). Requires Vercel API token for authentication. Returns unified output structure with success status, deployment data, and error details.',
-        intentCategories: ['deployment', 'devops', 'vercel', 'release_management', 'infrastructure'],
-      },
-      commonPatterns: [
-        {
-          name: 'deploy_project',
-          description: 'Deploy a project to Vercel',
-          config: {
-            operation: 'deploy',
-            projectName: 'my-app',
-            token: '{{$credentials.vercel.token}}',
-          },
-        },
-        {
-          name: 'list_all_deployments',
-          description: 'List all deployments from Vercel account',
-          config: {
-            operation: 'list_deployments',
-            token: '{{$credentials.vercel.token}}',
           'User mentions ScheduleWise explicitly',
           'Appointment scheduling or booking workflows',
           'Retrieving or managing patient appointments',
@@ -11307,7 +11346,7 @@ export class NodeLibrary {
           'Update appointment status or time',
           'Cancel or delete an appointment',
         ],
-        intentDescription: 'ScheduleWise integration node that manages appointments via the ScheduleWise REST API. Supports getSchedules, createAppointment, updateAppointment, and deleteAppointment operations. Used for healthcare scheduling, patient appointment management, and booking automation.',
+        intentDescription: 'ScheduleWise integration node that manages appointments via the ScheduleWise REST API.',
         intentCategories: ['scheduling', 'healthcare', 'appointment_management', 'integration', 'booking'],
       },
       commonPatterns: [
@@ -11337,31 +11376,6 @@ export class NodeLibrary {
       validationRules: [
         {
           field: 'operation',
-          validator: (value) => value === 'deploy' || value === 'list_deployments',
-          errorMessage: 'Operation must be either "deploy" or "list_deployments"',
-        },
-        {
-          field: 'projectName',
-          validator: (value) => {
-            // projectName validation: alphanumeric, hyphens, underscores only, max 128 chars
-            // Note: This is a basic format check; conditional requirement (required for deploy) is handled by requiredIf
-            if (value && typeof value === 'string') {
-              // Validate format: alphanumeric, hyphens, underscores only, max 128 chars
-              if (!/^[a-zA-Z0-9_-]{1,128}$/.test(value)) {
-                return false;
-              }
-            }
-            return true;
-          },
-          errorMessage: 'ProjectName must contain only alphanumeric characters, hyphens, and underscores (max 128 characters)',
-        },
-        {
-          field: 'token',
-          validator: (value) => typeof value === 'string' && value.trim() !== '',
-          errorMessage: 'Token is required and must be a non-empty string',
-        },
-      ],
-
           validator: (value: any) =>
             typeof value === 'string' &&
             value.trim().length > 0 &&
@@ -11389,6 +11403,13 @@ export class NodeLibrary {
       capabilities: ['scheduling.read', 'scheduling.write', 'appointment.manage'],
       providers: ['schedulewise'],
       keywords: ['schedulewise', 'appointment', 'schedule', 'booking', 'patient', 'calendar'],
+      schemaVersion: '1.0.0',
+      nodeCapability: {
+        inputType: ['object'],
+        outputType: 'object',
+        acceptsArray: false,
+        producesArray: false,
+      },
     };
   }
 

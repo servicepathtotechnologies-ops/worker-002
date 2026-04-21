@@ -15119,17 +15119,38 @@ export async function executeNodeLegacy(
             'Authorization': `Bearer ${accessToken}`,
           },
           body: JSON.stringify({
-    case 'noop': {
-      // NoOp node - passthrough
-      return inputObj;
+            message: {
+              subject: resolvedSubject,
+              body: {
+                contentType: 'Text',
+                content: resolvedBody,
+              },
+              toRecipients: resolvedTo.split(',').map((email) => ({
+                emailAddress: { address: email.trim() },
+              })),
+            },
+            saveToSentItems: true,
+          }),
+        });
+
+        if (!resp.ok) {
+          const text = await resp.text().catch(() => '');
+          return { ...inputObj, _error: `Outlook sendMail failed (${resp.status})`, _errorDetails: text };
+        }
+
+        return { ...inputObj, success: true };
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        return { ...inputObj, _error: `Outlook error: ${msg}` };
+      }
     }
 
     // Typeform REST API node
     case 'typeform': {
       const operation = getStringProperty(config, 'operation', 'get_responses');
-      const apiKey    = getStringProperty(config, 'apiKey', '');
-      const formId    = getStringProperty(config, 'formId', '');
-      const title     = getStringProperty(config, 'title', '');
+      const apiKey = getStringProperty(config, 'apiKey', '');
+      const formId = getStringProperty(config, 'formId', '');
+      const title = getStringProperty(config, 'title', '');
 
       if (!apiKey.trim()) {
         return { success: false, error: 'apiKey is required' };
@@ -15170,9 +15191,9 @@ export async function executeNodeLegacy(
     // Calendly scheduling API node
     case 'calendly': {
       try {
-        const operation   = getStringProperty(config, 'operation', 'get_events');
+        const operation = getStringProperty(config, 'operation', 'get_events');
         const accessToken = getStringProperty(config, 'accessToken', '');
-        const userUri     = getStringProperty(config, 'userUri', '');
+        const userUri = getStringProperty(config, 'userUri', '');
 
         if (!accessToken.trim()) {
           return { success: false, error: 'accessToken is required' };
@@ -15216,13 +15237,13 @@ export async function executeNodeLegacy(
       }
     }
 
-    default: {Forms API node
+    // Google Forms API node
     case 'google_forms': {
       try {
-        const operation   = getStringProperty(config, 'operation', 'get_responses');
+        const operation = getStringProperty(config, 'operation', 'get_responses');
         const accessToken = getStringProperty(config, 'accessToken', '');
-        const formId      = getStringProperty(config, 'formId', '');
-        const title       = getStringProperty(config, 'title', '');
+        const formId = getStringProperty(config, 'formId', '');
+        const title = getStringProperty(config, 'title', '');
 
         if (!accessToken.trim()) {
           return { success: false, error: 'accessToken is required' };
@@ -15272,69 +15293,6 @@ export async function executeNodeLegacy(
         return { success: false, error: `Unknown operation: ${operation}` };
       } catch (error: any) {
         return { success: false, error: error.message };
-      }
-    }
-    default: {
-      // For unknown node types, return input as output
-      console.warn(`Unknown node type: ${type}, returning input as output`);s');
-      const apiKey    = getStringProperty(config, 'apiKey', '');
-      const formId    = getStringProperty(config, 'formId', '');
-      const title     = getStringProperty(config, 'title', '');
-
-      if (!apiKey.trim()) {
-        return { success: false, error: 'apiKey is required' };
-      }
-
-      const headers: Record<string, string> = {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      };
-
-      let url: string;
-      let method = 'GET';
-      let body: string | undefined;
-
-      if (operation === 'get_responses') {
-        if (!formId.trim()) return { success: false, error: 'formId is required for this operation' };
-        url = `https://api.typeform.com/forms/${formId}/responses`;
-      } else if (operation === 'create_form') {
-        if (!title.trim()) return { success: false, error: 'title is required for create_form' };
-        url = 'https://api.typeform.com/forms';
-        method = 'POST';
-        body = JSON.stringify({ title });
-      } else if (operation === 'get_form') {
-        if (!formId.trim()) return { success: false, error: 'formId is required for this operation' };
-        url = `https://api.typeform.com/forms/${formId}`;
-      } else {
-        return { success: false, error: `Unknown operation: ${operation}` };
-      }
-
-      const response = await fetch(url, { method, headers, body });
-      if (!response.ok) {
-        const errBody = await response.text();
-        return { success: false, error: `HTTP ${response.status}: ${errBody}` };
-      }
-      return await response.json();
-    }
-
-    default: {},
-              toRecipients: resolvedTo.split(',').map((email) => ({
-                emailAddress: { address: email.trim() },
-              })),
-            },
-            saveToSentItems: true,
-          }),
-        });
-
-        if (!resp.ok) {
-          const text = await resp.text().catch(() => '');
-          return { ...inputObj, _error: `Outlook sendMail failed (${resp.status})`, _errorDetails: text };
-        }
-
-        return { ...inputObj, success: true };
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        return { ...inputObj, _error: `Outlook error: ${msg}` };
       }
     }
 
@@ -16059,7 +16017,8 @@ export async function executeNodeLegacy(
           },
         };
       }
-=======
+    }
+
     case 'schedulewise': {
       const startTime = Date.now();
       const params = config as unknown as ScheduleWiseNodeParams;

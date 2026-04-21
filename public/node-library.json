@@ -3107,11 +3107,8 @@
     ]
   },
   {
-
     "type": "vercel",
     "category": "devops",
-    "type": "schedulewise",
-    "category": "integration",
     "inputs": [
       "input",
       "inputData"
@@ -3129,6 +3126,21 @@
       "operation",
       "projectName",
       "token"
+    ]
+  },
+  {
+    "type": "schedulewise",
+    "category": "integration",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
       "operation"
     ],
     "optionalConfig": [
