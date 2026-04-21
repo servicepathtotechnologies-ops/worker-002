@@ -1147,8 +1147,10 @@ export class NodeLibrary {
     // ❌ REMOVED: createGmailSchema() - duplicate, use google_gmail instead
     this.addSchema(this.createOutlookSchema()); // ✅ Added: outlook node
     this.addSchema(this.createSalesforceSchema());
+    this.addSchema(this.createMicrosoftDynamicsSchema());
+    this.addSchema(this.createSapSchema()); // ✅ Added: SAP ERP/CRM node
     this.addSchema(this.createClickUpSchema());
-    schemaCount += 12;
+    schemaCount += 14;
 
     // Transformation Nodes
     this.addSchema(this.createSetNodeSchema());
@@ -1209,9 +1211,12 @@ export class NodeLibrary {
     this.addSchema(this.createNotionSchema());
     this.addSchema(this.createZohoCrmSchema());
     this.addSchema(this.createPipedriveSchema());
+    this.addSchema(this.createIntuitSmesSchema());
+    this.addSchema(this.createTallySchema());
     
     // Missing Communication Nodes
     this.addSchema(this.createDiscordSchema());
+    this.addSchema(this.createZoomVideoSchema());
     
     // Missing Data Nodes
     this.addSchema(this.createJsonParserSchema());
@@ -1270,6 +1275,9 @@ export class NodeLibrary {
     this.addSchema(this.createMicrosoftTeamsSchema());
     this.addSchema(this.createWhatsappCloudSchema());
     this.addSchema(this.createTwilioSchema());
+    this.addSchema(this.createMailgunSchema());
+    this.addSchema(this.createSendgridSchema());
+    this.addSchema(this.createAmazonSesSchema());
     
     // Missing Social Media Nodes
     this.addSchema(this.createFacebookSchema());
@@ -1282,7 +1290,10 @@ export class NodeLibrary {
     // Missing Database Nodes
     this.addSchema(this.createMysqlSchema());
     this.addSchema(this.createMongodbSchema());
+    this.addSchema(this.createFirebaseSchema());
+    this.addSchema(this.createGoogleCloudStorageSchema());
     this.addSchema(this.createRedisSchema());
+    this.addSchema(this.createOdooSchema());
     
     // Missing CRM Nodes
     this.addSchema(this.createFreshdeskSchema());
@@ -1311,6 +1322,10 @@ export class NodeLibrary {
     this.addSchema(this.createWooCommerceSchema());
     this.addSchema(this.createStripeSchema());
     this.addSchema(this.createPaypalSchema());
+
+    
+    // DevOps/Deployment Nodes
+    this.addSchema(this.createVercelNodeSchema());
 
     // Integration Nodes
     this.addSchema(this.createScheduleWiseNodeSchema());
@@ -4721,6 +4736,163 @@ export class NodeLibrary {
     };
   }
 
+  private createMicrosoftDynamicsSchema(): NodeSchema {
+    return {
+      type: 'microsoft_dynamics',
+      label: 'Microsoft Dynamics',
+      category: 'crm',
+      description: 'Manage CRM data in Microsoft Dynamics 365 (contacts, leads, accounts, opportunities, and more) via the Web API',
+      configSchema: {
+        required: ['resource', 'operation'],
+        optional: {
+          instanceUrl: {
+            type: 'string',
+            description: 'Microsoft Dynamics 365 instance URL (e.g. https://yourorg.crm.dynamics.com)',
+            examples: ['https://yourorg.crm.dynamics.com'],
+          },
+          accessToken: {
+            type: 'string',
+            description: 'Azure AD OAuth2 access token (stored as credential)',
+          },
+          resource: {
+            type: 'string',
+            description: 'Dynamics 365 entity logical name (e.g. contacts, leads, accounts)',
+            examples: ['contacts', 'leads', 'accounts', 'opportunities', 'incidents'],
+            default: 'contacts',
+          },
+          customEntity: {
+            type: 'string',
+            description: 'Custom entity logical name when resource is "custom" (e.g. new_customentity)',
+            examples: ['new_customentity', 'cr123_invoice'],
+          },
+          operation: {
+            type: 'string',
+            description: 'Operation to perform: getRecords, getRecord, createRecord, updateRecord, deleteRecord, fetchXml, associate, disassociate',
+            examples: ['getRecords', 'getRecord', 'createRecord', 'updateRecord', 'deleteRecord', 'fetchXml'],
+            default: 'getRecords',
+          },
+          id: {
+            type: 'string',
+            description: 'Record GUID (required for getRecord, updateRecord, deleteRecord)',
+            examples: ['00000000-0000-0000-0000-000000000000'],
+          },
+          fields: {
+            type: 'object',
+            description: 'Field map for createRecord/updateRecord operations (use Dynamics 365 logical field names)',
+            examples: [{ firstname: 'John', lastname: 'Doe', emailaddress1: 'john@example.com' }],
+          },
+          fetchXml: {
+            type: 'string',
+            description: 'FetchXML query string (required for fetchXml operation)',
+            examples: ['<fetch><entity name="contact"><attribute name="fullname"/></entity></fetch>'],
+          },
+          select: {
+            type: 'string',
+            description: 'OData $select — comma-separated field names to return',
+            examples: ['fullname,emailaddress1,telephone1'],
+          },
+          filter: {
+            type: 'string',
+            description: "OData $filter expression to filter records",
+            examples: ["emailaddress1 eq 'john@example.com'"],
+          },
+          top: {
+            type: 'number',
+            description: 'OData $top — maximum number of records to return (max 5000)',
+            default: 50,
+          },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: [
+          'User mentions Microsoft Dynamics explicitly',
+          'User mentions Dynamics 365 or Dynamics CRM',
+          'CRM workflows involving Microsoft ecosystem',
+          'Syncing data with Microsoft Dynamics 365',
+          'Managing contacts, leads, or accounts in Dynamics',
+        ],
+        whenNotToUse: [
+          'Non-Microsoft CRMs (use Salesforce/HubSpot/Zoho)',
+          'Simple spreadsheets (use Google Sheets)',
+          'Microsoft Teams messaging (use microsoft_teams)',
+        ],
+        keywords: [
+          'microsoft dynamics', 'dynamics 365', 'dynamics crm', 'ms dynamics',
+          'microsoft crm', 'dynamics', 'dynamics365', 'msdynamics',
+          'dynamics contact', 'dynamics lead', 'dynamics account',
+          'dynamics opportunity', 'dynamics record', 'dynamics api'
+        ],
+        useCases: [
+          'Create/update Dynamics 365 contacts or leads from form submissions',
+          'Query Dynamics 365 data and use it downstream',
+          'Sync deals or opportunities from other systems into Dynamics',
+          'Automate CRM workflows with Microsoft Dynamics 365',
+        ],
+        intentDescription: 'Microsoft Dynamics 365 CRM integration node that manages CRM entities (contacts, leads, accounts, opportunities, cases) via the Dynamics 365 Web API (OData v4). Performs CRM operations including listing, retrieving, creating, updating, and deleting records, as well as advanced FetchXML queries. Used for CRM automation, syncing data with Dynamics 365, and managing Microsoft CRM records.',
+        intentCategories: ['crm', 'microsoft', 'customer_relationship_management', 'data_sync', 'business_automation'],
+      },
+      commonPatterns: [
+        {
+          name: 'get_contacts',
+          description: 'Get contacts from Dynamics 365',
+          config: {
+            resource: 'contacts',
+            operation: 'getRecords',
+            select: 'fullname,emailaddress1,telephone1',
+            top: 50,
+          },
+        },
+        {
+          name: 'create_lead',
+          description: 'Create a new lead in Dynamics 365',
+          config: {
+            resource: 'leads',
+            operation: 'createRecord',
+            fields: {
+              firstname: '{{$json.firstName}}',
+              lastname: '{{$json.lastName}}',
+              emailaddress1: '{{$json.email}}',
+              subject: '{{$json.subject}}',
+            },
+          },
+        },
+      ],
+      validationRules: [
+        {
+          field: 'operation',
+          validator: (value: any) =>
+            ['getRecords', 'getRecord', 'createRecord', 'updateRecord', 'deleteRecord', 'fetchXml', 'associate', 'disassociate'].includes(value),
+          errorMessage: 'Microsoft Dynamics operation must be one of: getRecords, getRecord, createRecord, updateRecord, deleteRecord, fetchXml, associate, disassociate',
+        },
+        {
+          field: 'resource',
+          validator: (value: any) => typeof value === 'string' && value.length > 0,
+          errorMessage: 'Microsoft Dynamics resource (entity name) is required',
+        },
+      ],
+      capabilities: ['crm.read', 'crm.write', 'dynamics.crm'],
+      providers: ['microsoft'],
+      keywords: [
+        'microsoft dynamics', 'dynamics 365', 'dynamics crm', 'ms dynamics',
+        'microsoft crm', 'dynamics365', 'msdynamics',
+        'dynamics contact', 'dynamics lead', 'dynamics account',
+        'dynamics opportunity', 'dynamics api', 'dynamics record'
+      ],
+      outputType: 'object',
+      outputSchema: {
+        success: { type: 'boolean' },
+        data: { type: 'object' },
+        error: { type: 'object' },
+      },
+      nodeCapability: {
+        inputType: ['object'],
+        outputType: 'object',
+        acceptsArray: false,
+        producesArray: false,
+      },
+    };
+  }
+
   // ============================================
   // AI NODES
   // ============================================
@@ -5011,6 +5183,176 @@ export class NodeLibrary {
           errorMessage: 'maxTokens must be a number between 1 and 100000',
         },
       ],
+    };
+  }
+
+  private createSapSchema(): NodeSchema {
+    return {
+      type: 'sap',
+      label: 'SAP',
+      category: 'crm',
+      description: 'Interact with SAP systems via OData/REST APIs — read and write business objects such as sales orders, purchase orders, materials, customers, and more.',
+      capabilities: ['erp.read', 'erp.write', 'sap.odata', 'sap.rest'],
+      providers: ['sap'],
+      keywords: [
+        'sap', 'sap erp', 'sap s4hana', 's/4hana', 's4hana', 'sap hana',
+        'sap odata', 'sap api', 'sap business one', 'sap b1',
+        'sap sales order', 'sap purchase order', 'sap material',
+        'sap customer', 'sap vendor', 'sap bapi', 'sap rfc',
+        'sap integration', 'sap connect', 'sap data',
+      ],
+      configSchema: {
+        required: ['operation', 'endpoint'],
+        optional: {
+          baseUrl: {
+            type: 'string',
+            description: 'SAP system base URL (e.g. https://your-sap-host:44300)',
+            examples: ['https://sap.example.com:44300', 'https://my-sap.s4hana.ondemand.com'],
+          },
+          operation: {
+            type: 'string',
+            description: 'HTTP method for the SAP OData/REST call',
+            default: 'get',
+            options: [
+              { label: 'GET (Read)', value: 'get' },
+              { label: 'POST (Create)', value: 'post' },
+              { label: 'PUT (Replace)', value: 'put' },
+              { label: 'PATCH (Update)', value: 'patch' },
+              { label: 'DELETE (Remove)', value: 'delete' },
+            ],
+          },
+          endpoint: {
+            type: 'string',
+            description: 'OData or REST endpoint path (relative to base URL)',
+            examples: [
+              '/sap/opu/odata/sap/API_SALES_ORDER_SRV/A_SalesOrder',
+              '/sap/opu/odata/sap/API_BUSINESS_PARTNER/A_BusinessPartner',
+              '/sap/opu/odata/sap/API_MATERIAL_DOCUMENT_SRV/A_MaterialDocumentHeader',
+            ],
+          },
+          payload: {
+            type: 'object',
+            description: 'Request body for POST/PUT/PATCH operations',
+            examples: [{ SalesOrderType: 'OR', SoldToParty: '{{$json.customerId}}' }],
+          },
+          queryParams: {
+            type: 'string',
+            description: 'OData query string parameters (e.g. $top=10&$filter=...)',
+            examples: ['$top=10&$select=SalesOrder,SoldToParty', "$filter=SalesOrderType eq 'OR'"],
+          },
+          accessToken: {
+            type: 'string',
+            description: 'OAuth2 / SAML bearer token for SAP authentication (stored as credential)',
+          },
+          username: {
+            type: 'string',
+            description: 'SAP Basic Auth username (used when no OAuth token is provided)',
+          },
+          password: {
+            type: 'string',
+            description: 'SAP Basic Auth password (used when no OAuth token is provided)',
+          },
+          csrfToken: {
+            type: 'string',
+            description: 'X-CSRF-Token value (required for POST/PUT/PATCH/DELETE on OData v2 services)',
+          },
+          format: {
+            type: 'string',
+            description: 'Response format preference',
+            default: 'json',
+            options: [
+              { label: 'JSON', value: 'json' },
+              { label: 'XML', value: 'xml' },
+            ],
+          },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: [
+          'User mentions SAP explicitly',
+          'ERP workflows involving SAP systems',
+          'Reading or writing SAP business objects (sales orders, materials, customers, vendors)',
+          'Integrating SAP S/4HANA or SAP Business One with other systems',
+          'OData API calls to SAP',
+        ],
+        whenNotToUse: [
+          'Non-SAP ERP systems (use Microsoft Dynamics or Salesforce)',
+          'Simple database queries (use PostgreSQL/Supabase)',
+          'Generic HTTP calls not targeting SAP (use HTTP Request node)',
+        ],
+        keywords: [
+          'sap', 'sap erp', 's4hana', 'sap hana', 'sap odata', 'sap api',
+          'sap sales order', 'sap purchase order', 'sap material', 'sap customer',
+          'sap vendor', 'sap bapi', 'sap integration', 'sap business one',
+        ],
+        useCases: [
+          'Fetch SAP sales orders and process them downstream',
+          'Create purchase orders in SAP from workflow data',
+          'Sync SAP customer/vendor master data with CRM',
+          'Read SAP material stock levels for inventory workflows',
+          'Update SAP records from form submissions or external triggers',
+        ],
+        intentDescription: 'SAP ERP integration node that interacts with SAP systems via OData and REST APIs. Supports reading and writing SAP business objects including sales orders, purchase orders, materials, customers, and vendors. Used for SAP S/4HANA, SAP Business One, and SAP ECC integrations.',
+        intentCategories: ['erp', 'sap', 'enterprise_resource_planning', 'data_sync', 'business_automation'],
+      },
+      commonPatterns: [
+        {
+          name: 'get_sales_orders',
+          description: 'Fetch SAP sales orders',
+          config: {
+            operation: 'get',
+            endpoint: '/sap/opu/odata/sap/API_SALES_ORDER_SRV/A_SalesOrder',
+            queryParams: '$top=10&$format=json',
+          },
+        },
+        {
+          name: 'create_sales_order',
+          description: 'Create a new SAP sales order',
+          config: {
+            operation: 'post',
+            endpoint: '/sap/opu/odata/sap/API_SALES_ORDER_SRV/A_SalesOrder',
+            payload: {
+              SalesOrderType: 'OR',
+              SoldToParty: '{{$json.customerId}}',
+            },
+          },
+        },
+        {
+          name: 'get_business_partner',
+          description: 'Fetch SAP business partner (customer/vendor)',
+          config: {
+            operation: 'get',
+            endpoint: '/sap/opu/odata/sap/API_BUSINESS_PARTNER/A_BusinessPartner',
+            queryParams: "$top=10&$filter=BusinessPartnerCategory eq '1'&$format=json",
+          },
+        },
+      ],
+      validationRules: [
+        {
+          field: 'operation',
+          validator: (value: any) => ['get', 'post', 'put', 'patch', 'delete'].includes(value),
+          errorMessage: 'SAP operation must be one of: get, post, put, patch, delete',
+        },
+        {
+          field: 'endpoint',
+          validator: (value: any) => typeof value === 'string' && value.length > 0,
+          errorMessage: 'SAP endpoint path is required',
+        },
+      ],
+      outputType: 'object',
+      outputSchema: {
+        success: { type: 'boolean' },
+        data: { type: 'object', description: 'SAP API response data (d.results for OData v2)' },
+        count: { type: 'number', description: 'Number of records returned (for GET list operations)' },
+        statusCode: { type: 'number', description: 'HTTP status code from SAP' },
+      },
+      schemaVersion: '1.0.0',
+      nodeCapability: {
+        inputType: 'object',
+        outputType: 'object',
+        acceptsArray: false,
+        producesArray: false,
+      },
     };
   }
 
@@ -5914,6 +6256,218 @@ export class NodeLibrary {
         'create pipedrive', 'pipedrive deal', 'pipedrive contact',
         'pipedrive record', 'crm pipedrive', 'pipedrive create', 'pipedrive update'
       ],
+    };
+  }
+
+  private createIntuitSmesSchema(): NodeSchema {
+    return {
+      type: 'intuit_smes',
+      label: "Intuit - SME'S",
+      category: 'crm',
+      description: "Intuit SME integration for managing customer data and financial operations via Intuit APIs",
+      configSchema: {
+        required: ['operation'],
+        optional: {
+          apiKey: {
+            type: 'string',
+            description: 'Intuit API Key or Access Token (required for authentication)',
+            examples: ['your-intuit-api-key'],
+          },
+          accessToken: {
+            type: 'string',
+            description: 'Intuit OAuth2 Access Token (alternative to API key)',
+            examples: ['your-oauth-access-token'],
+          },
+          credentialId: {
+            type: 'string',
+            description: 'Credential ID reference to stored Intuit credentials',
+            examples: ['cred_123'],
+          },
+          operation: {
+            type: 'string',
+            description: 'Intuit SME operation to perform',
+            examples: ['getCustomers', 'createInvoice', 'getInvoices', 'createCustomer', 'updateCustomer'],
+            default: 'getCustomers',
+          },
+          customerId: {
+            type: 'string',
+            description: 'Customer ID (required for customer-specific operations)',
+            examples: ['CUST-123'],
+          },
+          name: {
+            type: 'string',
+            description: 'Customer name (for createCustomer operation)',
+            examples: ['Acme Corp'],
+          },
+          email: {
+            type: 'string',
+            description: 'Customer email (for createCustomer operation)',
+            examples: ['contact@acme.com'],
+          },
+          amount: {
+            type: 'number',
+            description: 'Invoice amount (for createInvoice operation)',
+            examples: [1000, 2500],
+          },
+          data: {
+            type: 'object',
+            description: 'Additional data for create/update operations',
+            examples: [{ name: 'Acme Corp', email: 'contact@acme.com' }],
+          },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: [
+          'User mentions Intuit or QuickBooks',
+          'SME financial or customer data management',
+          'Creating or managing invoices via Intuit',
+          'Fetching customer data from Intuit',
+        ],
+        whenNotToUse: [
+          'Other CRMs (use HubSpot/Salesforce/Pipedrive)',
+          'Non-Intuit financial systems',
+        ],
+        keywords: [
+          'intuit', 'intuit smes', 'intuit_smes', 'quickbooks', 'intuit quickbooks',
+          'intuit crm', 'intuit customer', 'intuit invoice', 'intuit api',
+          'intuit integration', 'sme customer', 'sme invoice', 'sme financial',
+        ],
+        useCases: [
+          'Fetch SME customer list',
+          'Create invoices for customers',
+          'Manage SME customer data',
+          'Financial operations via Intuit',
+        ],
+        intentDescription: "Intuit SME integration node that manages customer data and financial operations via Intuit APIs. Supports fetching customers, creating invoices, managing customer records, and other SME financial operations. Used for Intuit QuickBooks integrations and SME business workflows.",
+        intentCategories: ['crm', 'intuit', 'finance', 'sme', 'customer_management', 'invoice_management'],
+      },
+      commonPatterns: [],
+      validationRules: [],
+      capabilities: ['crm.read', 'crm.write', 'intuit.customer', 'intuit.invoice'],
+      providers: ['intuit'],
+      keywords: [
+        'intuit', 'intuit smes', 'intuit_smes', 'quickbooks', 'intuit quickbooks',
+        'intuit crm', 'intuit customer', 'intuit invoice', 'intuit api',
+        'intuit integration', 'sme customer', 'sme invoice',
+      ],
+    };
+  }
+
+  private createTallySchema(): NodeSchema {
+    return {
+      type: 'tally',
+      label: 'Tally Solutions',
+      category: 'crm',
+      description: 'Interact with Tally ERP / TallyPrime via XML API to fetch or push accounting data',
+      configSchema: {
+        required: ['operation', 'endpoint'],
+        optional: {
+          endpoint: {
+            type: 'string',
+            description: 'Tally XML API server URL',
+            default: 'http://localhost:9000',
+            examples: ['http://localhost:9000', 'http://192.168.1.10:9000'],
+          },
+          operation: {
+            type: 'string',
+            description: 'Tally operation to perform',
+            default: 'get_ledger',
+            options: [
+              { label: 'Get Ledger', value: 'get_ledger' },
+              { label: 'Get Voucher', value: 'get_voucher' },
+              { label: 'Create Voucher', value: 'create_voucher' },
+              { label: 'Get Stock Items', value: 'get_stock_items' },
+              { label: 'Get Company Info', value: 'get_company_info' },
+            ],
+            examples: ['get_ledger', 'get_voucher', 'create_voucher', 'get_stock_items', 'get_company_info'],
+          },
+          payload: {
+            type: 'string',
+            description: 'Custom XML request body (overrides the default template for the selected operation)',
+          },
+          companyName: {
+            type: 'string',
+            description: 'Tally company name to scope requests',
+            examples: ['My Company Ltd'],
+          },
+          ledgerName: {
+            type: 'string',
+            description: 'Ledger name (required for get_ledger operation)',
+            examples: ['Cash', 'Bank Account'],
+          },
+          voucherId: {
+            type: 'string',
+            description: 'Voucher ID or number (required for get_voucher operation)',
+            examples: ['VCH-001'],
+          },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: [
+          'User mentions Tally or TallyPrime',
+          'User needs Tally ERP integration',
+          'Fetching ledger or voucher data from Tally',
+          'Pushing accounting entries to Tally',
+          'Indian accounting or ERP automation',
+        ],
+        whenNotToUse: [
+          'Other ERP systems (use SAP or Odoo)',
+          'Non-Tally accounting software',
+        ],
+        keywords: [
+          'tally', 'tally erp', 'tallyprime', 'tally solutions', 'tally prime',
+          'tally accounting', 'tally ledger', 'tally voucher', 'tally xml',
+          'tally integration', 'tally api', 'tally stock', 'tally company',
+        ],
+        useCases: [
+          'Fetch ledger details from Tally',
+          'Retrieve voucher data',
+          'Create accounting vouchers in Tally',
+          'Fetch stock item list',
+          'Get company information from Tally',
+        ],
+        intentDescription: 'Tally Solutions integration node that connects to Tally ERP / TallyPrime via its XML API. Supports fetching ledgers, vouchers, stock items, and company info, as well as creating vouchers. Ideal for Indian accounting and ERP automation workflows.',
+        intentCategories: ['crm', 'accounting', 'erp', 'finance', 'tally'],
+      },
+      commonPatterns: [
+        {
+          name: 'get_ledger',
+          description: 'Fetch ledger details from Tally',
+          config: { operation: 'get_ledger', endpoint: 'http://localhost:9000' },
+        },
+        {
+          name: 'get_stock_items',
+          description: 'Fetch stock item list from Tally',
+          config: { operation: 'get_stock_items', endpoint: 'http://localhost:9000' },
+        },
+      ],
+      validationRules: [
+        {
+          field: 'operation',
+          validator: (v: any) =>
+            ['get_ledger', 'get_voucher', 'create_voucher', 'get_stock_items', 'get_company_info'].includes(v),
+          errorMessage: 'Invalid operation. Must be one of: get_ledger, get_voucher, create_voucher, get_stock_items, get_company_info',
+        },
+      ],
+      outputType: 'object',
+      outputSchema: {
+        success: { type: 'boolean' },
+        data: { type: 'string', description: 'XML response from Tally' },
+        error: { type: 'object' },
+      },
+      schemaVersion: '1.0.0',
+      capabilities: ['api.call', 'tally.read', 'tally.write'],
+      providers: ['tally'],
+      keywords: [
+        'tally', 'tally erp', 'tallyprime', 'tally solutions', 'tally prime',
+        'tally accounting', 'tally ledger', 'tally voucher', 'tally xml',
+      ],
+      nodeCapability: {
+        inputType: ['object'],
+        outputType: 'object',
+        acceptsArray: false,
+        producesArray: false,
+      },
     };
   }
 
@@ -7875,9 +8429,451 @@ export class NodeLibrary {
     };
   }
 
-  // Missing Social Media Nodes
-  private createFacebookSchema(): NodeSchema {
+  private createMailgunSchema(): NodeSchema {
     return {
+      type: 'mailgun',
+      label: 'Mailgun',
+      category: 'output',
+      description: 'Send transactional emails using the Mailgun API.',
+      configSchema: {
+        required: ['domain', 'apiKey', 'from', 'to'],
+        optional: {
+          operation: {
+            type: 'string',
+            description: 'Mailgun operation to perform',
+            default: 'send_email',
+            options: [{ label: 'Send Email', value: 'send_email' }],
+          },
+          domain: {
+            type: 'string',
+            description: 'Mailgun sending domain',
+            examples: ['mg.yourdomain.com', 'sandbox.mailgun.org'],
+          },
+          apiKey: {
+            type: 'string',
+            description: 'Mailgun Private API Key',
+            examples: ['key-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'],
+          },
+          from: {
+            type: 'string',
+            description: 'Sender email address (must be from your verified Mailgun domain)',
+            examples: ['noreply@mg.yourdomain.com'],
+          },
+          to: {
+            type: 'string',
+            description: 'Recipient email address(es), comma-separated',
+            examples: ['user@example.com', '{{$json.email}}'],
+          },
+          subject: {
+            type: 'string',
+            description: 'Email subject line',
+            examples: ['Hello!', '{{$json.subject}}'],
+          },
+          text: {
+            type: 'string',
+            description: 'Plain text body of the email',
+            examples: ['Your message here', '{{$json.message}}'],
+          },
+          html: {
+            type: 'string',
+            description: 'HTML body of the email (overrides plain text for HTML clients)',
+            examples: ['<p>Your message</p>', '{{$json.htmlBody}}'],
+          },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: [
+          'User wants to send email via Mailgun',
+          'Transactional email sending required',
+          'User mentions Mailgun',
+        ],
+        whenNotToUse: [
+          'User wants Gmail or Google email',
+          'SMS or messaging platforms needed',
+        ],
+        keywords: [
+          'mailgun', 'mailgun email', 'mailgun send', 'mailgun api',
+          'mailgun transactional', 'mailgun message', 'send via mailgun',
+        ],
+        useCases: ['Transactional emails', 'Notification emails', 'Welcome emails'],
+        intentDescription: 'Send transactional emails via the Mailgun REST API. Supports plain text and HTML bodies.',
+        intentCategories: ['mailgun', 'email', 'transactional_email', 'communication'],
+      },
+      commonPatterns: [
+        {
+          name: 'send_plain_text',
+          description: 'Send a plain text email',
+          config: {
+            operation: 'send_email',
+            domain: 'mg.yourdomain.com',
+            from: 'noreply@mg.yourdomain.com',
+            to: 'recipient@example.com',
+            subject: 'Hello!',
+            text: 'Your message here.',
+          },
+        },
+      ],
+      validationRules: [
+        {
+          field: 'domain',
+          validator: (value: unknown) => typeof value === 'string' && value.length > 0,
+          errorMessage: 'Mailgun domain is required',
+        },
+        {
+          field: 'apiKey',
+          validator: (value: unknown) => typeof value === 'string' && value.length > 0,
+          errorMessage: 'Mailgun API key is required',
+        },
+        {
+          field: 'to',
+          validator: (value: unknown) => typeof value === 'string' && value.length > 0,
+          errorMessage: 'Recipient email is required',
+        },
+        {
+          field: 'from',
+          validator: (value: unknown) => typeof value === 'string' && value.length > 0,
+          errorMessage: 'Sender email is required',
+        },
+      ],
+      outputType: 'object',
+      outputSchema: {
+        success: { type: 'boolean' },
+        messageId: { type: 'string' },
+        message: { type: 'string' },
+        error: { type: 'object' },
+      },
+      capabilities: ['email.send', 'mailgun.send', 'transactional_email', 'terminal'],
+      providers: ['mailgun'],
+      keywords: [
+        'mailgun', 'mailgun email', 'mailgun send', 'mailgun api',
+        'mailgun transactional', 'send via mailgun',
+      ],
+      schemaVersion: '1.0.0',
+    };
+  }
+
+  private createSendgridSchema(): NodeSchema {
+    return {
+      type: 'sendgrid',
+      label: 'SendGrid',
+      category: 'output',
+      description: 'Send transactional emails using the SendGrid API.',
+      configSchema: {
+        required: ['apiKey', 'from', 'to'],
+        optional: {
+          operation: {
+            type: 'string',
+            description: 'SendGrid operation to perform',
+            default: 'send_email',
+            options: [{ label: 'Send Email', value: 'send_email' }],
+          },
+          apiKey: {
+            type: 'string',
+            description: 'SendGrid API Key (must have Mail Send permission)',
+            examples: ['SG.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'],
+          },
+          from: {
+            type: 'string',
+            description: 'Sender email address (must be a verified sender in SendGrid)',
+            examples: ['noreply@yourdomain.com'],
+          },
+          to: {
+            type: 'string',
+            description: 'Recipient email address(es), comma-separated',
+            examples: ['user@example.com', '{{$json.email}}'],
+          },
+          subject: {
+            type: 'string',
+            description: 'Email subject line',
+            examples: ['Hello!', '{{$json.subject}}'],
+          },
+          text: {
+            type: 'string',
+            description: 'Plain text body of the email',
+            examples: ['Your message here', '{{$json.message}}'],
+          },
+          html: {
+            type: 'string',
+            description: 'HTML body of the email (overrides plain text for HTML clients)',
+            examples: ['<p>Your message</p>', '{{$json.htmlBody}}'],
+          },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: [
+          'User wants to send email via SendGrid',
+          'Transactional email sending required',
+          'User mentions SendGrid',
+        ],
+        whenNotToUse: [
+          'User wants Gmail or Google email',
+          'SMS or messaging platforms needed',
+          'User explicitly mentions Mailgun',
+        ],
+        keywords: [
+          'sendgrid', 'sendgrid email', 'sendgrid send', 'sendgrid api',
+          'sendgrid transactional', 'sendgrid message', 'send via sendgrid',
+        ],
+        useCases: ['Transactional emails', 'Notification emails', 'Welcome emails', 'Marketing emails'],
+        intentDescription: 'Send transactional emails via the SendGrid REST API. Supports plain text and HTML bodies with comma-separated recipients.',
+        intentCategories: ['sendgrid', 'email', 'transactional_email', 'communication'],
+      },
+      commonPatterns: [
+        {
+          name: 'send_plain_text',
+          description: 'Send a plain text email via SendGrid',
+          config: {
+            operation: 'send_email',
+            from: 'noreply@yourdomain.com',
+            to: 'recipient@example.com',
+            subject: 'Hello!',
+            text: 'Your message here.',
+          },
+        },
+      ],
+      validationRules: [
+        {
+          field: 'apiKey',
+          validator: (value: unknown) => typeof value === 'string' && value.length > 0,
+          errorMessage: 'SendGrid API key is required',
+        },
+        {
+          field: 'to',
+          validator: (value: unknown) => typeof value === 'string' && value.length > 0,
+          errorMessage: 'Recipient email is required',
+        },
+        {
+          field: 'from',
+          validator: (value: unknown) => typeof value === 'string' && value.length > 0,
+          errorMessage: 'Sender email is required',
+        },
+      ],
+      outputType: 'object',
+      outputSchema: {
+        success: { type: 'boolean' },
+        messageId: { type: 'string' },
+        status: { type: 'number' },
+        error: { type: 'object' },
+      },
+      capabilities: ['email.send', 'sendgrid.send', 'transactional_email', 'terminal'],
+      providers: ['sendgrid'],
+      keywords: [
+        'sendgrid', 'sendgrid email', 'sendgrid send', 'sendgrid api',
+        'sendgrid transactional', 'send via sendgrid',
+      ],
+      schemaVersion: '1.0.0',
+    };
+  }
+
+  private createAmazonSesSchema(): NodeSchema {
+    return {
+      type: 'amazon_ses',
+      label: 'Amazon SES',
+      category: 'output',
+      description: 'Send emails through Amazon Simple Email Service (SES)',
+      configSchema: {
+        required: ['recipients', 'subject', 'body'],
+        optional: {
+          // Email content
+          recipients: {
+            type: 'object',
+            description: 'Email recipients (To, Cc, Bcc)',
+            examples: [
+              { to: ['user@example.com'] },
+              { to: ['{{$json.email}}'], cc: ['manager@example.com'] },
+            ],
+          },
+          subject: {
+            type: 'string',
+            description: 'Email subject line',
+            examples: ['Order Confirmation', '{{$json.subject}}'],
+          },
+          body: {
+            type: 'string',
+            description: 'Email body content (HTML or plain text)',
+            examples: ['Hello {{$json.name}}, your order is confirmed.'],
+          },
+
+          // Template support
+          useTemplate: {
+            type: 'boolean',
+            description: 'Use AWS SES template instead of raw email',
+            default: false,
+          },
+          templateName: {
+            type: 'string',
+            description: 'AWS SES template name (required if useTemplate is true)',
+            examples: ['OrderConfirmation', 'WelcomeEmail'],
+            requiredIf: { field: 'useTemplate', equals: true },
+          },
+          templateData: {
+            type: 'object',
+            description: 'Template variables as JSON object',
+            examples: [{ name: 'John', orderId: '12345' }],
+          },
+
+          // Sender configuration
+          fromAddress: {
+            type: 'string',
+            description: 'Sender email address (must be verified in SES)',
+            examples: ['noreply@example.com', '{{$json.senderEmail}}'],
+          },
+          replyToAddresses: {
+            type: 'array',
+            description: 'Reply-to email addresses',
+            examples: [['support@example.com']],
+          },
+
+          // Attachments
+          attachments: {
+            type: 'array',
+            description: 'Email attachments',
+            examples: [
+              [
+                {
+                  filename: 'report.pdf',
+                  content: '{{$json.pdfContent}}',
+                  contentType: 'application/pdf',
+                },
+              ],
+            ],
+          },
+
+          // AWS Configuration
+          awsRegion: {
+            type: 'string',
+            description: 'AWS region for SES service',
+            default: 'us-east-1',
+            examples: ['us-east-1', 'eu-west-1', 'ap-southeast-1'],
+          },
+
+          // Advanced options
+          configurationSetName: {
+            type: 'string',
+            description: 'SES configuration set for tracking',
+            examples: ['my-config-set'],
+          },
+          tags: {
+            type: 'object',
+            description: 'Email tags for tracking and filtering',
+            examples: [{ campaign: 'newsletter', type: 'promotional' }],
+          },
+          returnPath: {
+            type: 'string',
+            description: 'Bounce handling email address',
+            examples: ['bounces@example.com'],
+          },
+        },
+      },
+      outputType: 'object',
+      outputSchema: {
+        success: { type: 'boolean' },
+        messageId: { type: 'string' },
+        recipientCount: { type: 'number' },
+        failedRecipients: { type: 'array' },
+        error: { type: 'string' },
+        timestamp: { type: 'string' },
+      },
+      aiSelectionCriteria: {
+        whenToUse: [
+          'User wants to send emails from workflow',
+          'Transactional email notifications needed',
+          'Marketing email campaigns',
+          'Email alerts and notifications',
+        ],
+        whenNotToUse: [
+          'SMS messaging required',
+          'Slack notifications needed',
+          'No AWS SES account available',
+        ],
+        keywords: [
+          'email', 'ses', 'send', 'notification', 'aws', 'mail',
+          'amazon ses', 'amazon email', 'aws email', 'ses send',
+          'transactional email', 'email notification',
+        ],
+        useCases: [
+          'Order confirmations',
+          'User notifications',
+          'Alert emails',
+          'Marketing campaigns',
+          'Transactional emails',
+        ],
+        intentDescription: 'Amazon SES node for sending emails through AWS Simple Email Service. Supports both raw email and AWS SES templates, with comprehensive validation and error handling. Used for transactional emails, notifications, and marketing campaigns.',
+        intentCategories: ['email', 'communication', 'aws', 'notification', 'transactional_email'],
+      },
+      commonPatterns: [
+        {
+          name: 'send_basic_email',
+          description: 'Send a basic email to recipients',
+          config: {
+            recipients: { to: ['user@example.com'] },
+            subject: 'Hello',
+            body: 'This is a test email',
+            fromAddress: 'noreply@example.com',
+          },
+        },
+        {
+          name: 'send_templated_email',
+          description: 'Send email using AWS SES template',
+          config: {
+            recipients: { to: ['{{$json.email}}'] },
+            useTemplate: true,
+            templateName: 'OrderConfirmation',
+            templateData: { orderId: '{{$json.orderId}}', name: '{{$json.name}}' },
+            fromAddress: 'noreply@example.com',
+          },
+        },
+        {
+          name: 'send_with_attachment',
+          description: 'Send email with file attachment',
+          config: {
+            recipients: { to: ['user@example.com'] },
+            subject: 'Your Report',
+            body: 'Please find your report attached',
+            attachments: [{ filename: 'report.pdf', content: '{{$json.pdfContent}}' }],
+            fromAddress: 'noreply@example.com',
+          },
+        },
+      ],
+      validationRules: [
+        {
+          field: 'recipients',
+          validator: (value) => {
+            if (!value) return false;
+            const { to, cc, bcc } = value;
+            return (to && to.length > 0) || (cc && cc.length > 0) || (bcc && bcc.length > 0);
+          },
+          errorMessage: 'At least one recipient (To, Cc, or Bcc) is required',
+        },
+        {
+          field: 'subject',
+          validator: (value) => typeof value === 'string' && value.trim().length > 0,
+          errorMessage: 'Subject must be a non-empty string',
+        },
+        {
+          field: 'body',
+          validator: (value) => typeof value === 'string' && value.trim().length > 0,
+          errorMessage: 'Body must be a non-empty string',
+        },
+        {
+          field: 'fromAddress',
+          validator: (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value),
+          errorMessage: 'From address must be a valid email address',
+        },
+      ],
+      capabilities: ['email.send', 'ses.send', 'aws.email', 'transactional_email', 'terminal'],
+      providers: ['aws'],
+      keywords: [
+        'email', 'ses', 'send', 'notification', 'aws', 'mail',
+        'amazon ses', 'amazon email', 'aws email', 'ses send',
+        'transactional email', 'email notification',
+      ],
+      schemaVersion: '1.0.0',
+    };
+  }
+
+  // Missing Social Media Nodes
+  private createFacebookSchema(): NodeSchema {    return {
       type: 'facebook',
       label: 'Facebook',
       category: 'social',
@@ -8058,6 +9054,373 @@ export class NodeLibrary {
         'mongodb query', 'mongo query', 'mongodb insert',
         'mongodb update', 'mongodb delete', 'mongodb find'
       ],
+    };
+  }
+
+  private createFirebaseSchema(): NodeSchema {
+    return {
+      type: 'firebase',
+      label: 'Firebase',
+      category: 'database',
+      description: 'Interact with Firebase Firestore and Realtime Database',
+      providers: ['firebase'],
+      configSchema: {
+        required: ['projectId', 'clientEmail', 'privateKey', 'operation'],
+        optional: {
+          collection: {
+            type: 'string',
+            description: 'Firestore collection name',
+          },
+          documentId: {
+            type: 'string',
+            description: 'Document ID for get/update/delete',
+          },
+          data: {
+            type: 'object',
+            description: 'Data for add/update/realtime_set',
+          },
+          filter: {
+            type: 'object',
+            description: 'Query filter conditions',
+          },
+          limit: {
+            type: 'number',
+            description: 'Max documents to return for query',
+          },
+          databaseUrl: {
+            type: 'string',
+            description: 'Realtime Database URL',
+          },
+        },
+      },
+      aiSelectionCriteria: {
+        keywords: ['firebase', 'firestore', 'realtime database', 'google firebase', 'nosql', 'document database'],
+        whenToUse: [
+          'Storing structured data in Firestore',
+          'Reading documents by ID from Firestore',
+          'Querying Firestore collections',
+          'Real-time database read/write operations',
+          'Google Firebase integration',
+        ],
+        whenNotToUse: ['SQL databases', 'PostgreSQL', 'MySQL'],
+        useCases: ['Document storage', 'Real-time sync', 'NoSQL queries'],
+        intentDescription: 'Firebase integration node for Firestore and Realtime Database operations.',
+        intentCategories: ['database', 'firebase', 'nosql', 'document_database', 'realtime'],
+      },
+      commonPatterns: [
+        {
+          name: 'get_document',
+          description: 'Get a document by ID from Firestore',
+          config: { operation: 'get', collection: 'users', documentId: '{{$json.id}}' },
+        },
+        {
+          name: 'add_document',
+          description: 'Add a new document to a Firestore collection',
+          config: { operation: 'add', collection: 'users', data: { name: '{{$json.name}}' } },
+        },
+        {
+          name: 'query_collection',
+          description: 'Query documents from a Firestore collection',
+          config: { operation: 'query', collection: 'users', filter: { status: 'active' }, limit: 100 },
+        },
+      ],
+      validationRules: [
+        {
+          field: 'projectId',
+          validator: (value: any) => typeof value === 'string' && value.length > 0,
+          errorMessage: 'projectId is required',
+        },
+        {
+          field: 'clientEmail',
+          validator: (value: any) => typeof value === 'string' && value.length > 0,
+          errorMessage: 'clientEmail is required',
+        },
+        {
+          field: 'privateKey',
+          validator: (value: any) => typeof value === 'string' && value.length > 0,
+          errorMessage: 'privateKey is required',
+        },
+        {
+          field: 'operation',
+          validator: (value: any) => ['get', 'add', 'update', 'delete', 'query', 'realtime_get', 'realtime_set'].includes(value),
+          errorMessage: 'operation must be one of: get, add, update, delete, query, realtime_get, realtime_set',
+        },
+      ],
+      outputSchema: {
+        success: { type: 'boolean' },
+        data: { type: 'object_or_array' },
+        documentId: { type: 'string' },
+        count: { type: 'number' },
+      },
+    };
+  }
+
+  private createGoogleCloudStorageSchema(): NodeSchema {
+    return {
+      type: 'google_cloud_storage',
+      label: 'Google Cloud Storage',
+      category: 'database',
+      description: 'Interact with Google Cloud Storage buckets (upload, download, delete, list)',
+      providers: ['google_cloud_storage'],
+      configSchema: {
+        required: ['projectId', 'clientEmail', 'privateKey', 'operation', 'bucket'],
+        optional: {
+          fileName: {
+            type: 'string',
+            description: 'File name/path in bucket',
+          },
+          fileContent: {
+            type: 'string',
+            description: 'File content for upload',
+          },
+          filter: {
+            type: 'string',
+            description: 'Prefix filter for list operations',
+          },
+        },
+      },
+      aiSelectionCriteria: {
+        keywords: ['google cloud storage', 'gcs', 'cloud storage', 'object storage', 'file storage', 'google storage'],
+        whenToUse: [
+          'Uploading files to cloud storage',
+          'Downloading files from cloud storage',
+          'Deleting files from cloud storage',
+          'Listing files in a bucket',
+        ],
+        whenNotToUse: ['Local file operations', 'SQL databases', 'Document databases'],
+        useCases: ['File storage', 'Data archival', 'Backup operations', 'File sharing'],
+        intentDescription: 'Google Cloud Storage integration node for object storage operations.',
+        intentCategories: ['database', 'google_cloud_storage', 'object_storage', 'file_storage', 'cloud_storage'],
+      },
+      commonPatterns: [
+        {
+          name: 'upload_file',
+          description: 'Upload a file to a GCS bucket',
+          config: { operation: 'upload', bucket: 'my-bucket', fileName: '{{$json.fileName}}', fileContent: '{{$json.content}}' },
+        },
+        {
+          name: 'download_file',
+          description: 'Download a file from a GCS bucket',
+          config: { operation: 'download', bucket: 'my-bucket', fileName: '{{$json.fileName}}' },
+        },
+        {
+          name: 'delete_file',
+          description: 'Delete a file from a GCS bucket',
+          config: { operation: 'delete', bucket: 'my-bucket', fileName: '{{$json.fileName}}' },
+        },
+        {
+          name: 'list_files',
+          description: 'List files in a GCS bucket',
+          config: { operation: 'list', bucket: 'my-bucket', filter: '{{$json.prefix}}' },
+        },
+      ],
+      validationRules: [
+        {
+          field: 'projectId',
+          validator: (value: any) => typeof value === 'string' && value.length > 0,
+          errorMessage: 'projectId is required',
+        },
+        {
+          field: 'clientEmail',
+          validator: (value: any) => typeof value === 'string' && value.length > 0,
+          errorMessage: 'clientEmail is required',
+        },
+        {
+          field: 'privateKey',
+          validator: (value: any) => typeof value === 'string' && value.length > 0,
+          errorMessage: 'privateKey is required',
+        },
+        {
+          field: 'bucket',
+          validator: (value: any) => typeof value === 'string' && value.length > 0,
+          errorMessage: 'bucket is required',
+        },
+        {
+          field: 'operation',
+          validator: (value: any) => ['upload', 'download', 'delete', 'list'].includes(value),
+          errorMessage: 'operation must be one of: upload, download, delete, list',
+        },
+      ],
+      outputSchema: {
+        success: { type: 'boolean' },
+        data: { type: 'object_or_array' },
+        fileName: { type: 'string' },
+        fileSize: { type: 'number' },
+        count: { type: 'number' },
+      },
+    };
+  }
+
+  private createOdooSchema(): NodeSchema {
+    return {
+      type: 'odoo',
+      label: 'Odoo',
+      category: 'crm',
+      description: 'Interact with Odoo ERP system (customers, invoices, products, and more)',
+
+      configSchema: {
+        required: ['operation', 'model'],
+        optional: {
+          operation: {
+            type: 'string',
+            default: 'getRecords',
+            options: [
+              { label: 'Get Records', value: 'getRecords' },
+              { label: 'Create Record', value: 'createRecord' },
+              { label: 'Update Record', value: 'updateRecord' },
+              { label: 'Delete Record', value: 'deleteRecord' },
+              { label: 'Execute Method', value: 'executeMethod' },
+            ],
+            description: 'Odoo operation to perform',
+          },
+          model: {
+            type: 'string',
+            description: 'Odoo model name',
+            examples: ['res.partner', 'sale.order', 'account.invoice', 'product.product'],
+          },
+          domain: {
+            type: 'array',
+            description: 'Odoo domain filter (for getRecords)',
+            examples: [[['active', '=', true]]],
+          },
+          fields: {
+            type: 'array',
+            description: 'Fields to return (empty = all fields)',
+            examples: [['id', 'name', 'email']],
+          },
+          limit: {
+            type: 'number',
+            description: 'Maximum number of records to return',
+            examples: [100],
+          },
+          offset: {
+            type: 'number',
+            description: 'Pagination offset',
+            examples: [0],
+          },
+          values: {
+            type: 'object',
+            description: 'Field values for create/update operations',
+            examples: [{ name: 'Acme Corp', email: 'info@acme.com' }],
+          },
+          recordId: {
+            type: 'number',
+            description: 'Record ID for update/delete operations',
+            examples: [42],
+          },
+          method: {
+            type: 'string',
+            description: 'Custom method name for executeMethod operation',
+            examples: ['action_confirm', 'action_invoice_open'],
+          },
+          methodArgs: {
+            type: 'array',
+            description: 'Positional arguments for executeMethod',
+            examples: [[]],
+          },
+          methodKwargs: {
+            type: 'object',
+            description: 'Keyword arguments for executeMethod',
+            examples: [{}],
+          },
+        },
+      },
+
+      aiSelectionCriteria: {
+        whenToUse: [
+          'User wants to interact with Odoo ERP',
+          'User needs to manage customers, invoices, or products in Odoo',
+          'User mentions Odoo, ERP, or open-source CRM',
+        ],
+        whenNotToUse: [
+          'User needs a simple REST API call',
+          'User is using a different CRM like HubSpot or Salesforce',
+        ],
+        keywords: [
+          'odoo', 'odoo erp', 'odoo crm', 'open erp', 'openerp',
+          'odoo partner', 'odoo invoice', 'odoo sale', 'odoo product',
+          'odoo record', 'odoo model', 'odoo integration',
+        ],
+        useCases: [
+          'Fetch customers from Odoo',
+          'Create a new sale order in Odoo',
+          'Update an invoice in Odoo',
+          'Delete a contact from Odoo',
+          'Call a custom Odoo method',
+        ],
+        intentDescription:
+          'Odoo ERP integration node that interacts with Odoo models via JSON-RPC. Supports reading, creating, updating, and deleting records as well as calling custom model methods. Used for Odoo ERP automation, CRM management, and business process integration.',
+        intentCategories: ['crm', 'erp', 'odoo', 'business_process', 'data_management'],
+      },
+
+      commonPatterns: [
+        {
+          name: 'fetch_customers',
+          description: 'Get active customers from Odoo',
+          config: {
+            operation: 'getRecords',
+            model: 'res.partner',
+            domain: [['customer_rank', '>', 0]],
+            fields: ['id', 'name', 'email', 'phone'],
+            limit: 100,
+          },
+        },
+        {
+          name: 'create_contact',
+          description: 'Create a new contact in Odoo',
+          config: {
+            operation: 'createRecord',
+            model: 'res.partner',
+            values: { name: '{{$json.name}}', email: '{{$json.email}}' },
+          },
+        },
+        {
+          name: 'get_sale_orders',
+          description: 'Fetch sale orders from Odoo',
+          config: {
+            operation: 'getRecords',
+            model: 'sale.order',
+            domain: [['state', '=', 'sale']],
+            fields: ['id', 'name', 'partner_id', 'amount_total'],
+            limit: 50,
+          },
+        },
+      ],
+
+      validationRules: [
+        {
+          field: 'operation',
+          validator: (value: string) =>
+            ['getRecords', 'createRecord', 'updateRecord', 'deleteRecord', 'executeMethod'].includes(value),
+          errorMessage: 'operation must be one of: getRecords, createRecord, updateRecord, deleteRecord, executeMethod',
+        },
+      ],
+
+      outputType: 'object',
+
+      outputSchema: {
+        success: { type: 'boolean' },
+        operation: { type: 'string' },
+        model: { type: 'string' },
+        data: { type: 'any' },
+        error: { type: 'object' },
+      },
+
+      schemaVersion: '1.0.0',
+      capabilities: ['crm.read', 'crm.write', 'erp.read', 'erp.write'],
+      providers: ['odoo'],
+      keywords: [
+        'odoo', 'odoo erp', 'odoo crm', 'open erp', 'openerp',
+        'odoo partner', 'odoo invoice', 'odoo sale', 'odoo product',
+        'odoo record', 'odoo model', 'odoo integration',
+      ],
+
+      nodeCapability: {
+        inputType: ['object'],
+        outputType: 'object',
+        acceptsArray: false,
+        producesArray: false,
+      },
     };
   }
 
@@ -9611,6 +10974,175 @@ export class NodeLibrary {
     };
   }
 
+
+  private createZoomVideoSchema(): NodeSchema {
+    return {
+      type: 'zoom_video',
+      label: 'Zoom Video',
+      category: 'communication',
+      description: 'Create and manage Zoom meetings via the Zoom API',
+      configSchema: {
+        required: ['operation', 'accessToken'],
+        optional: {
+          operation: {
+            type: 'string',
+            description: 'Zoom operation to perform',
+            default: 'createMeeting',
+            options: [
+              { label: 'Create Meeting', value: 'createMeeting' },
+              { label: 'List Meetings', value: 'listMeetings' },
+              { label: 'Get Meeting', value: 'getMeeting' },
+              { label: 'Delete Meeting', value: 'deleteMeeting' },
+              { label: 'Update Meeting', value: 'updateMeeting' },
+            ],
+          },
+          accessToken: {
+            type: 'string',
+            description: 'Zoom OAuth 2.0 access token',
+          },
+          topic: {
+            type: 'string',
+            description: 'Meeting topic/title',
+            examples: ['Team Sync', 'Weekly Standup'],
+            fillMode: { default: 'buildtime_ai_once', supportsRuntimeAI: true, supportsBuildtimeAI: true },
+          },
+          duration: {
+            type: 'number',
+            description: 'Meeting duration in minutes',
+            examples: [30, 60],
+            default: 60,
+          },
+          startTime: {
+            type: 'string',
+            description: 'Scheduled start time in ISO 8601 format (leave blank for instant meeting)',
+            examples: ['2026-05-01T10:00:00Z'],
+          },
+          meetingId: {
+            type: 'string',
+            description: 'Zoom meeting ID (required for get, delete, update operations)',
+            examples: ['123456789'],
+          },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: [
+          'User wants to create a Zoom meeting',
+          'User wants to schedule a video call via Zoom',
+          'User wants to list, get, update, or delete Zoom meetings',
+          'Workflow needs to automate Zoom meeting management',
+        ],
+        whenNotToUse: [
+          'User needs email notifications (use google_gmail)',
+          'User needs Slack messaging (use slack_message)',
+          'User needs database operations',
+        ],
+        keywords: [
+          'zoom', 'zoom meeting', 'zoom video', 'zoom call', 'video call',
+          'zoom api', 'zoom integration', 'create meeting', 'schedule meeting',
+          'zoom schedule', 'zoom create', 'zoom list', 'zoom get', 'zoom delete',
+          'zoom update', 'video conference', 'zoom conference', 'zoom webinar',
+        ],
+        useCases: [
+          'Create Zoom meetings automatically',
+          'Schedule video calls via Zoom',
+          'List all Zoom meetings',
+          'Get Zoom meeting details',
+          'Delete or update Zoom meetings',
+        ],
+        intentDescription: 'Zoom Video integration node that creates and manages Zoom meetings via the Zoom API. Supports creating, listing, getting, updating, and deleting meetings. Used for automating Zoom meeting management, scheduling video calls, and integrating Zoom into workflows.',
+        intentCategories: ['communication', 'video_conferencing', 'meeting_management', 'zoom', 'scheduling'],
+      },
+      commonPatterns: [
+        {
+          name: 'create_meeting',
+          description: 'Create a new Zoom meeting',
+          config: { operation: 'createMeeting', topic: '{{$json.topic}}', duration: 60 },
+        },
+        {
+          name: 'list_meetings',
+          description: 'List all Zoom meetings',
+          config: { operation: 'listMeetings' },
+        },
+      ],
+      validationRules: [],
+      outputType: 'object',
+      outputSchema: {
+        success: { type: 'boolean' },
+        data: { type: 'object' },
+        error: { type: 'object' },
+      },
+      schemaVersion: '1.0.0',
+      capabilities: ['meeting.create', 'meeting.list', 'meeting.get', 'zoom.api'],
+      providers: ['zoom'],
+      keywords: [
+        'zoom', 'zoom meeting', 'zoom video', 'zoom call', 'video call',
+        'zoom api', 'zoom integration', 'create meeting', 'schedule meeting',
+        'video conference', 'zoom conference',
+      ],
+      nodeCapability: {
+        inputType: ['object'],
+        outputType: 'object',
+        acceptsArray: false,
+        producesArray: false,
+      },
+    };
+  }
+
+  private createVercelNodeSchema(): NodeSchema {
+    return {
+      type: 'vercel',
+      label: 'Vercel',
+      category: 'devops',
+      description: 'Deploy projects and manage deployments on Vercel',
+      capabilities: [
+        'deployment.deploy',
+        'deployment.list',
+        'vercel.deploy',
+        'vercel.list',
+        'devops.deploy',
+      ],
+      providers: ['vercel'],
+      keywords: [
+        'vercel', 'deploy', 'deployment', 'release', 'production',
+        'vercel deploy', 'vercel deployment', 'deploy to vercel',
+        'vercel release', 'vercel production', 'vercel project',
+        'deployment management', 'deployment list', 'list deployments',
+      ],
+      configSchema: {
+        required: ['operation', 'token'],
+        optional: {
+          operation: {
+            type: 'string',
+            description: 'Operation to perform: deploy a project or list all deployments',
+            default: 'deploy',
+            examples: ['deploy', 'list_deployments'],
+            options: [
+              { label: 'Deploy Project', value: 'deploy' },
+              { label: 'List Deployments', value: 'list_deployments' },
+            ],
+          },
+          projectName: {
+            type: 'string',
+            description: 'Vercel project name (required for deploy operation). Can use template syntax like {{$json.projectName}}',
+            examples: ['my-app', 'my-project', '{{$json.projectName}}'],
+            requiredIf: { field: 'operation', equals: 'deploy' },
+          },
+          token: {
+            type: 'string',
+            description: 'Vercel API token (Bearer token). Use credential selection or template syntax like {{$credentials.vercel.token}}',
+            examples: ['vercel_***', '{{$credentials.vercel.token}}'],
+          },
+        },
+      },
+      outputSchema: {
+        success: { type: 'boolean', description: 'Whether the operation succeeded' },
+        data: {
+          type: 'object',
+          description: 'Operation result data. For deploy: deploymentId, projectName, url, status, createdAt. For list: deployments array and total count',
+        },
+        error: {
+          type: 'object',
+          description: 'Error details if operation failed. Contains code, message, retriable, and optional details',
   private createScheduleWiseNodeSchema(): NodeSchema {
     return {
       type: 'schedulewise',
@@ -9713,6 +11245,50 @@ export class NodeLibrary {
       },
       aiSelectionCriteria: {
         whenToUse: [
+          'User wants to deploy a project to Vercel',
+          'User needs to check deployment status',
+          'User wants to list all deployments',
+          'User needs to manage Vercel deployments',
+          'User mentions release or production deployment',
+        ],
+        whenNotToUse: [
+          'User wants to deploy to other platforms (AWS, Azure, Heroku)',
+          'User needs local deployment only',
+          'User wants to manage non-Vercel infrastructure',
+        ],
+        keywords: [
+          'vercel', 'deploy', 'deployment', 'release', 'production',
+          'vercel deploy', 'vercel deployment', 'deploy to vercel',
+          'vercel release', 'vercel production', 'vercel project',
+          'deployment management', 'deployment list', 'list deployments',
+        ],
+        useCases: [
+          'CI/CD automation',
+          'Deployment management',
+          'Release automation',
+          'Production deployment',
+          'Deployment monitoring',
+        ],
+        // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
+        intentDescription: 'Vercel deployment node that enables deploying projects to Vercel and managing deployments. Supports two operations: deploy (deploy a project to Vercel with specified project name) and list_deployments (retrieve all deployments from a Vercel account). Requires Vercel API token for authentication. Returns unified output structure with success status, deployment data, and error details.',
+        intentCategories: ['deployment', 'devops', 'vercel', 'release_management', 'infrastructure'],
+      },
+      commonPatterns: [
+        {
+          name: 'deploy_project',
+          description: 'Deploy a project to Vercel',
+          config: {
+            operation: 'deploy',
+            projectName: 'my-app',
+            token: '{{$credentials.vercel.token}}',
+          },
+        },
+        {
+          name: 'list_all_deployments',
+          description: 'List all deployments from Vercel account',
+          config: {
+            operation: 'list_deployments',
+            token: '{{$credentials.vercel.token}}',
           'User mentions ScheduleWise explicitly',
           'Appointment scheduling or booking workflows',
           'Retrieving or managing patient appointments',
@@ -9761,6 +11337,31 @@ export class NodeLibrary {
       validationRules: [
         {
           field: 'operation',
+          validator: (value) => value === 'deploy' || value === 'list_deployments',
+          errorMessage: 'Operation must be either "deploy" or "list_deployments"',
+        },
+        {
+          field: 'projectName',
+          validator: (value) => {
+            // projectName validation: alphanumeric, hyphens, underscores only, max 128 chars
+            // Note: This is a basic format check; conditional requirement (required for deploy) is handled by requiredIf
+            if (value && typeof value === 'string') {
+              // Validate format: alphanumeric, hyphens, underscores only, max 128 chars
+              if (!/^[a-zA-Z0-9_-]{1,128}$/.test(value)) {
+                return false;
+              }
+            }
+            return true;
+          },
+          errorMessage: 'ProjectName must contain only alphanumeric characters, hyphens, and underscores (max 128 characters)',
+        },
+        {
+          field: 'token',
+          validator: (value) => typeof value === 'string' && value.trim() !== '',
+          errorMessage: 'Token is required and must be a non-empty string',
+        },
+      ],
+
           validator: (value: any) =>
             typeof value === 'string' &&
             value.trim().length > 0 &&

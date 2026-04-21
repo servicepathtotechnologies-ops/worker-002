@@ -16,6 +16,8 @@ import { logOutputNodeDefinition } from './log-output-node';
 import { httpRequestNodeDefinition } from './http-request-node';
 import { airtableNodeDefinition } from './airtable-node';
 import { pipedriveNodeDefinition } from './pipedrive-node';
+import { intuitSmesNodeDefinition } from './intuit-smes-node';
+import { tallyNodeDefinition } from './tally-node';
 import { notionNodeDefinition } from './notion-node';
 import { twitterNodeDefinition } from './twitter-node';
 import { facebookNodeDefinition } from './facebook-node';
@@ -33,7 +35,10 @@ import { snowflakeNodeDefinition } from './snowflake-node';
 import { sqliteNodeDefinition } from './sqlite-node';
 import { supabaseNodeDefinition } from './supabase-node';
 import { timescaleDBNodeDefinition } from './timescaledb-node';
+import { firebaseNodeDefinition } from './firebase-node';
+import { gcsNodeDefinition } from './gcs-node';
 import { registerNodeDefinitionsFromNodeLibrary } from './from-node-library';
+import { sendgridNodeDefinition } from './sendgrid-node';
 
 // Register all node definitions
 export function registerAllNodeDefinitions() {
@@ -65,15 +70,22 @@ export function registerAllNodeDefinitions() {
   nodeDefinitionRegistry.register(sqliteNodeDefinition);
   nodeDefinitionRegistry.register(supabaseNodeDefinition);
   nodeDefinitionRegistry.register(timescaleDBNodeDefinition);
+  nodeDefinitionRegistry.register(firebaseNodeDefinition);
+  nodeDefinitionRegistry.register(gcsNodeDefinition);
 
   // CRM nodes
   nodeDefinitionRegistry.register(pipedriveNodeDefinition);
+  nodeDefinitionRegistry.register(intuitSmesNodeDefinition);
+  nodeDefinitionRegistry.register(tallyNodeDefinition);
 
   // Social nodes
   nodeDefinitionRegistry.register(twitterNodeDefinition);
   nodeDefinitionRegistry.register(facebookNodeDefinition);
   nodeDefinitionRegistry.register(instagramNodeDefinition);
   nodeDefinitionRegistry.register(whatsappNodeDefinition);
+
+  // Communication nodes
+  nodeDefinitionRegistry.register(sendgridNodeDefinition);
 
   // Productivity nodes
   nodeDefinitionRegistry.register(googleCalendarNodeDefinition);

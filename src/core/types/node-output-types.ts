@@ -473,6 +473,21 @@ export const NODE_OUTPUT_SCHEMAS: Record<string, NodeOutputSchema> = {
     convertible: ['object'],
     defaultValue: ''
   },
+  amazon_ses: {
+    type: 'object',
+    structure: {
+      fields: {
+        success: 'boolean',
+        messageId: 'string',
+        recipientCount: 'number',
+        failedRecipients: 'array',
+        error: 'string',
+        timestamp: 'string'
+      }
+    },
+    convertible: ['string'],
+    defaultValue: { success: false, messageId: '', recipientCount: 0, failedRecipients: [], error: '', timestamp: '' }
+  },
 };
 
 /**

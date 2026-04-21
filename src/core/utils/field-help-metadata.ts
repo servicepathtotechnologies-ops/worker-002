@@ -89,6 +89,9 @@ function docsForNodeField(nodeType: string, category: FieldHelpCategory): string
     if (t.includes('slack')) return 'https://api.slack.com/apps';
     if (t.includes('google')) return 'https://console.cloud.google.com/apis/credentials';
   }
+  if (category === 'generic_token') {
+    if (t.includes('vercel')) return 'https://vercel.com/account/tokens';
+  }
   if (category === 'spreadsheet_id') return 'https://docs.google.com/spreadsheets';
   if (category === 'document_id' && t.includes('google_doc')) return 'https://docs.google.com/document';
   if (t.includes('shopify') && category === 'shop_domain') return 'https://admin.shopify.com';
