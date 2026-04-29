@@ -187,6 +187,68 @@ export interface Workflow {
   metadata?: any;
 }
 
+export interface WorkflowSummaryGraphOverview {
+  triggerNodeIds: string[];
+  terminalNodeIds: string[];
+  totalNodes: number;
+  totalEdges: number;
+  hasBranching: boolean;
+}
+
+export interface WorkflowSummaryBackboneStep {
+  order: number;
+  nodeId: string;
+  nodeType: string;
+  label: string;
+  responsibility: string;
+}
+
+export interface WorkflowSummaryBranchCase {
+  caseKey: string;
+  targetNodeId: string;
+  targetNodeType: string;
+  pathNodeIds: string[];
+  terminalBehavior: string;
+}
+
+export interface WorkflowSummaryBranch {
+  branchNodeId: string;
+  branchNodeType: string;
+  cases: WorkflowSummaryBranchCase[];
+}
+
+export interface WorkflowSummaryNodeRole {
+  nodeId: string;
+  nodeType: string;
+  label: string;
+  purpose: string;
+  inputEffect: string;
+  outputEffect: string;
+}
+
+export interface WorkflowSummaryPathOutcome {
+  pathId: string;
+  condition: string;
+  nodePath: string[];
+  terminalNodeId: string;
+  outcome: string;
+}
+
+export interface WorkflowSummaryValidationFinding {
+  code: string;
+  severity: 'error' | 'warning';
+  message: string;
+}
+
+export interface WorkflowSummaryV2 {
+  graphOverview: WorkflowSummaryGraphOverview;
+  executionBackbone: WorkflowSummaryBackboneStep[];
+  branches: WorkflowSummaryBranch[];
+  nodes: WorkflowSummaryNodeRole[];
+  pathOutcomes: WorkflowSummaryPathOutcome[];
+  validationFindings: WorkflowSummaryValidationFinding[];
+}
+
 // =========================
 // Gemini Planning Contracts
 // =========================

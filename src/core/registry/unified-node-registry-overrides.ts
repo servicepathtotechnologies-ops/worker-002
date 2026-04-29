@@ -42,6 +42,9 @@ import { overrideNotion } from './overrides/notion';
 import { overrideHubspot } from './overrides/hubspot';
 import { overrideSalesforce } from './overrides/salesforce';
 import { overridePipedrive } from './overrides/pipedrive';
+import { overrideActivecampaign } from './overrides/activecampaign';
+import { overrideMailchimp } from './overrides/mailchimp';
+import { overrideIntercom } from './overrides/intercom';
 import { overrideEmail } from './overrides/email';
 import { overrideTelegram } from './overrides/telegram';
 import { overrideDiscord } from './overrides/discord';
@@ -55,6 +58,10 @@ import { overrideTwilio } from './overrides/twilio';
 import { overrideMailgun } from './overrides/mailgun';
 import { overrideSendgrid } from './overrides/sendgrid';
 import { overrideGoogleDoc } from './overrides/google-doc';
+import { overrideGoogleDrive } from './overrides/google-drive';
+import { overrideGoogleContacts } from './overrides/google-contacts';
+import { overrideGoogleTasks } from './overrides/google-tasks';
+import { overrideGoogleBigQuery } from './overrides/google-bigquery';
 import { overrideZoho } from './overrides/zoho';
 import { overrideFilter } from './overrides/filter';
 import { overrideLoop } from './overrides/loop';
@@ -67,6 +74,8 @@ import { overrideAiService } from './overrides/ai-service';
 import { overrideAwsS3 } from './overrides/aws-s3';
 import { overrideDropbox } from './overrides/dropbox';
 import { overrideOnedrive } from './overrides/onedrive';
+import { overrideFtp } from './overrides/ftp';
+import { overrideSftp } from './overrides/sftp';
 import { overrideQueuePush } from './overrides/queue-push';
 import { overrideQueueConsume } from './overrides/queue-consume';
 import { overrideCacheGet } from './overrides/cache-get';
@@ -85,6 +94,8 @@ import { overrideTwitter } from './overrides/twitter';
 import { overrideInstagram } from './overrides/instagram';
 import { overrideDateTime } from './overrides/date-time';
 import { overrideTextFormatter } from './overrides/text-formatter';
+import { overrideHtml } from './overrides/html';
+import { overrideXml } from './overrides/xml';
 import { overrideMerge } from './overrides/merge';
 import { overrideYoutube } from './overrides/youtube';
 import { overrideFacebook } from './overrides/facebook';
@@ -111,6 +122,7 @@ import { overrideZoomVideo } from './overrides/zoom-video';
 import { overrideMicrosoftDynamics } from './overrides/microsoft-dynamics';
 import { overrideSap } from './overrides/sap';
 import { overrideVercel } from './overrides/vercel';
+import { overrideJenkins } from './overrides/jenkins';
 import { overrideScheduleWise } from './overrides/schedulewise';
 
 type OverrideFn = (def: UnifiedNodeDefinition, schema: NodeSchema) => UnifiedNodeDefinition;
@@ -160,6 +172,9 @@ const overridesByType: Record<string, OverrideFn> = {
   hubspot: overrideHubspot,
   salesforce: overrideSalesforce,
   pipedrive: overridePipedrive,
+  activecampaign: overrideActivecampaign,
+  mailchimp: overrideMailchimp,
+  intercom: overrideIntercom,
   microsoft_dynamics: overrideMicrosoftDynamics,
   sap: overrideSap,
   intuit_smes: overrideIntuitSmes,
@@ -178,6 +193,10 @@ const overridesByType: Record<string, OverrideFn> = {
   mailgun: overrideMailgun,
   sendgrid: overrideSendgrid,
   google_doc: overrideGoogleDoc,
+  google_drive: overrideGoogleDrive,
+  google_contacts: overrideGoogleContacts,
+  google_tasks: overrideGoogleTasks,
+  google_bigquery: overrideGoogleBigQuery,
   zoho: overrideZoho,
   // ✅ BATCH 4: Data Transformation & HTTP
   filter: overrideFilter,
@@ -193,6 +212,8 @@ const overridesByType: Record<string, OverrideFn> = {
   aws_s3: overrideAwsS3,
   dropbox: overrideDropbox,
   onedrive: overrideOnedrive,
+  ftp: overrideFtp,
+  sftp: overrideSftp,
   // ✅ BATCH 7: Queue & Cache
   queue_push: overrideQueuePush,
   queue_consume: overrideQueueConsume,
@@ -237,6 +258,8 @@ const overridesByType: Record<string, OverrideFn> = {
   // ✅ BATCH 14: Utilities
   date_time: overrideDateTime,
   text_formatter: overrideTextFormatter,
+  html: overrideHtml,
+  xml: overrideXml,
   merge: overrideMerge,
   // ✅ BATCH 15: AI Infrastructure
   memory: overrideMemory,
@@ -245,6 +268,7 @@ const overridesByType: Record<string, OverrideFn> = {
   zoom_video: overrideZoomVideo,
   // ✅ BATCH 17: DevOps & Deployment
   vercel: overrideVercel,
+  jenkins: overrideJenkins,
   // ✅ ScheduleWise healthcare scheduling integration
   schedulewise: overrideScheduleWise,
 };
@@ -267,4 +291,3 @@ export function getNodeTypesWithExecuteOverrides(): string[] {
 export function hasRegistryExecuteOverride(nodeType: string): boolean {
   return Object.prototype.hasOwnProperty.call(overridesByType, nodeType);
 }
-

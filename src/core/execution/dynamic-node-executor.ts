@@ -21,7 +21,7 @@ import type { UnifiedNodeDefinition } from '../types/unified-node-contract';
 import { NodeExecutionContext, NodeExecutionResult, FieldFillMode, NodeInputField } from '../types/unified-node-contract';
 import { WorkflowNode, Workflow } from '../../core/types/ai-types';
 import { LRUNodeOutputsCache } from '../cache/lru-node-outputs-cache';
-import { SupabaseClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 // ✅ PRODUCTION-GRADE: Removed normalizeNodeType - node types must be canonical before reaching executor
 import { IntentDrivenJsonRouter, shouldActivateRouter } from '../intent-driven-json-router';
 import { universalNodeAIContext } from '../../services/ai/universal-node-ai-context';
@@ -41,11 +41,14 @@ import { fillMissingTitleLikeRuntimeAiFields } from './runtime-ai-title-backfill
 import { applyInputAliasesFromSchema } from './apply-input-aliases';
 import { isCredentialOwnership } from '../utils/field-ownership';
 import { applyDeterministicFieldContracts } from './field-contract-engine';
+import { config as runtimeConfig } from '../config';
+import { verifyAndRepairNodeOutput } from '../../services/ai/ai-output-verifier';
 
 /** Stable nodeOutputs cache keys — see `worker/docs/OBSERVABILITY_CONTRACT.md`. */
 export const EXECUTION_OBSERVABILITY_KEYS = {
   resolvedInputs: (nodeId: string) => `__resolved_inputs__:${nodeId}`,
   runtimeResolutionAudit: (nodeId: string) => `__runtime_resolution_audit__:${nodeId}`,
+  selfValidation: (nodeId: string) => `__self_validation__:${nodeId}`,
 } as const;
 
 type UniversalInputContractFlags = {
@@ -342,9 +345,8 @@ export async function executeNodeDynamically(
   if (!validation.valid) {
     console.error(`[DynamicExecutor] ❌ Config validation failed for ${nodeType}:`, validation.errors);
     
-    // ✅ DEFAULT: Strict mode enabled (production-grade)
-    // Can be overridden with VALIDATION_STRICT=false if needed
-    const isStrictMode = process.env.VALIDATION_STRICT !== 'false';
+    // Single-path strict mode (no env override path).
+    const isStrictMode = runtimeConfig.reliability.strictValidation;
     
     if (isStrictMode) {
       return {
@@ -651,17 +653,55 @@ export async function executeNodeDynamically(
       };
     }
     
-    // Step 9: Validate output against output schema
-    const outputValidation = validateOutputAgainstSchema(result.output, definition.outputSchema);
+    // Step 9: Validate output against output schema + bounded self-repair
+    let candidateOutput: unknown = result.output;
+    const outputValidation = validateOutputAgainstSchema(candidateOutput, definition.outputSchema);
     if (!outputValidation.valid) {
-      console.warn(`[DynamicExecutor] ⚠️  Output validation warnings:`, outputValidation.warnings);
+      const selfCheckEnabled = runtimeConfig.reliability.aiSelfCheckEnabled;
+      const maxAttempts = runtimeConfig.reliability.aiSelfCheckMaxAttempts;
+      const strictValidation = runtimeConfig.reliability.strictValidation;
+
+      console.warn(`[DynamicExecutor] ⚠️  Output validation warnings before repair:`, outputValidation.warnings);
+
+      if (selfCheckEnabled) {
+        const selfCheck = await verifyAndRepairNodeOutput({
+          output: candidateOutput,
+          outputSchema: definition.outputSchema,
+          maxAttempts,
+        });
+        nodeOutputs.set(EXECUTION_OBSERVABILITY_KEYS.selfValidation(node.id), {
+          nodeId: node.id,
+          nodeType,
+          finalValid: selfCheck.finalValid,
+          attempts: selfCheck.attempts,
+          expectedType: selfCheck.expectedType,
+          timestamp: new Date().toISOString(),
+        });
+        candidateOutput = selfCheck.repairedOutput;
+
+        if (!selfCheck.finalValid && strictValidation) {
+          return {
+            _error: 'Output validation failed after self-repair attempts',
+            _errorCode: 'OUTPUT_VALIDATION_FAILED',
+            _nodeType: nodeType,
+            _selfValidation: selfCheck,
+          };
+        }
+      } else if (strictValidation) {
+        return {
+          _error: 'Output validation failed and self-check is disabled',
+          _errorCode: 'OUTPUT_VALIDATION_FAILED',
+          _nodeType: nodeType,
+          _validationWarnings: outputValidation.warnings,
+        };
+      }
     }
     
     // ✅ CLEAN OUTPUT FROM CONFIG VALUES (CORE ARCHITECTURE FIX)
     // Remove config values from output to ensure only actual output data is returned
     // This prevents placeholder values and config fields from appearing in output JSON
     const { cleanOutputFromConfig } = await import('../utils/placeholder-filter');
-    const cleanedOutput = cleanOutputFromConfig(result.output, migratedConfig);
+    const cleanedOutput = cleanOutputFromConfig(candidateOutput, migratedConfig);
     
     return cleanedOutput;
     
@@ -1271,9 +1311,9 @@ function validateOutputAgainstSchema(
     return { valid: true }; // No type in schema
   }
   
-  const actualType = Array.isArray(output) ? 'array' : typeof output;
+  const actualType = output === null ? 'null' : (Array.isArray(output) ? 'array' : typeof output);
   
-  if (expectedType === 'object' && actualType !== 'object') {
+  if (expectedType === 'object' && (actualType !== 'object' || output === null || Array.isArray(output))) {
     warnings.push(`Expected object output, got ${actualType}`);
   } else if (expectedType === 'array' && !Array.isArray(output)) {
     warnings.push(`Expected array output, got ${actualType}`);

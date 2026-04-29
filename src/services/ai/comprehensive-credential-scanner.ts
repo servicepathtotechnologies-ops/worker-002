@@ -111,7 +111,7 @@ export class ComprehensiveCredentialScanner {
               fieldName.toLowerCase().includes('host') || 
               fieldName.toLowerCase().includes('username') || 
               fieldName.toLowerCase().includes('password'))) {
-            console.log(`  🔑 [CredentialScanner] Skipping SMTP field "${fieldName}" for google_gmail (uses OAuth via navbar button)`);
+            console.log(`  🔑 [CredentialScanner] Skipping SMTP field "${fieldName}" for google_gmail (uses OAuth via Connections)`);
             continue; // Gmail uses OAuth, not SMTP
           }
           
@@ -315,7 +315,7 @@ export class ComprehensiveCredentialScanner {
             field.name.toLowerCase().includes('host') || 
             (field.name.toLowerCase().includes('username') && !field.name.toLowerCase().includes('gmail')) || 
             field.name.toLowerCase().includes('password'))) {
-          console.log(`  🔑 [CredentialScanner] Skipping SMTP field "${field.name}" for google_gmail (uses OAuth via navbar button)`);
+          console.log(`  🔑 [CredentialScanner] Skipping SMTP field "${field.name}" for google_gmail (uses OAuth via Connections)`);
           continue; // Gmail uses OAuth, not SMTP
         }
         

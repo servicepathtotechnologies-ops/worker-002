@@ -91,7 +91,10 @@ export function decryptToken(encrypted: string): string {
     // Parse format: iv:authTag:encrypted
     const parts = encrypted.split(':');
     if (parts.length !== 3) {
-      throw new Error('Invalid encrypted token format. Expected format: iv:authTag:encrypted');
+      // Older local/dev rows were written before token encryption was enforced.
+      // Treat non-encrypted values as plaintext so existing connections keep working.
+      console.warn('[Token Decryption] Token is not encrypted; using plaintext compatibility path.');
+      return encrypted;
     }
     
     const [ivHex, authTagHex, encryptedHex] = parts;
@@ -108,11 +111,6 @@ export function decryptToken(encrypted: string): string {
     return decrypted;
   } catch (error) {
     console.error('[Token Decryption] Failed to decrypt token:', error);
-    
-    // Check if it's a format error vs decryption error
-    if (error instanceof Error && error.message.includes('Invalid encrypted token format')) {
-      throw error;
-    }
     
     // If decryption fails, it might be an old unencrypted token
     // Try to return as-is (for migration purposes)

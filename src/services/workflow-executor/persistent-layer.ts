@@ -11,7 +11,7 @@
  * - Write-through pattern (write to DB immediately)
  */
 
-import { SupabaseClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 
 export interface ExecutionStateSnapshot {
   executionId: string;
@@ -147,7 +147,6 @@ export class PersistentLayer {
         .from('execution_steps')
         .select('*')
         .eq('execution_id', executionId)
-        .eq('status', 'success')
         .order('sequence', { ascending: true });
 
       if (stepsError) {
@@ -156,14 +155,18 @@ export class PersistentLayer {
 
       // Reconstruct state from checkpoints
       const nodeOutputs: Record<string, unknown> = {};
-      steps?.forEach(step => {
+      const completedSteps = (steps || []).filter((step: any) =>
+        step.status === 'success' || step.status === 'completed'
+      );
+
+      completedSteps.forEach((step: any) => {
         if (step.output_json) {
           nodeOutputs[step.node_id] = step.output_json;
         }
       });
 
       // Determine current node from last completed step
-      const lastStep = steps && steps.length > 0 ? steps[steps.length - 1] : null;
+      const lastStep = completedSteps.length > 0 ? completedSteps[completedSteps.length - 1] : null;
       const currentNode = lastStep?.node_id || null;
 
       const snapshot: ExecutionStateSnapshot = {
@@ -200,14 +203,18 @@ export class PersistentLayer {
         .select('output_json')
         .eq('execution_id', executionId)
         .eq('node_id', nodeId)
-        .eq('status', 'success')
-        .single();
+        .order('sequence', { ascending: false })
+        .limit(1);
 
-      if (error || !data) {
+      const row = Array.isArray(data) ? data.find((step: any) =>
+        step.status === 'success' || step.status === 'completed' || step.output_json !== undefined
+      ) : data;
+
+      if (error || !row) {
         return null;
       }
 
-      return data.output_json;
+      return row.output_json;
     } catch (error) {
       console.error(`[PersistentLayer] Error getting node output:`, error);
       return null;
@@ -223,9 +230,8 @@ export class PersistentLayer {
     try {
       const { data, error } = await this.supabase
         .from('execution_steps')
-        .select('node_id, output_json')
+        .select('node_id, output_json, status')
         .eq('execution_id', executionId)
-        .eq('status', 'success')
         .order('sequence', { ascending: true });
 
       if (error || !data) {
@@ -233,11 +239,13 @@ export class PersistentLayer {
       }
 
       const outputs: Record<string, unknown> = {};
-      data.forEach(step => {
+      data
+        .filter((step: any) => step.status === 'success' || step.status === 'completed')
+        .forEach((step: any) => {
         if (step.output_json) {
           outputs[step.node_id] = step.output_json;
         }
-      });
+        });
 
       return outputs;
     } catch (error) {

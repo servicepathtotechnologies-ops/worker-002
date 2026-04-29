@@ -1511,8 +1511,12 @@
       "data",
       "result"
     ],
-    "requiredConfig": [],
-    "optionalConfig": []
+    "requiredConfig": [
+      "source_workflow_id"
+    ],
+    "optionalConfig": [
+      "source_workflow_id"
+    ]
   },
   {
     "type": "filter",

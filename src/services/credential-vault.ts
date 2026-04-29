@@ -244,14 +244,19 @@ export class CredentialVault {
       updated_at: new Date().toISOString(),
     };
 
-    // Check if credential already exists
-    const existing = await this.supabase
+    // Check if credential already exists. SQL NULL does not match with "=", so
+    // user-level credentials need an explicit IS NULL filter.
+    let existingQuery = this.supabase
       .from(this.tableName)
       .select('id')
       .eq('user_id', context.userId)
-      .eq('key', key)
-      .eq('workflow_id', context.workflowId || null)
-      .single();
+      .eq('key', key);
+
+    existingQuery = context.workflowId
+      ? existingQuery.eq('workflow_id', context.workflowId)
+      : existingQuery.is('workflow_id', null);
+
+    const existing = await existingQuery.single();
 
     let credentialId: string;
 
@@ -455,12 +460,17 @@ export class CredentialVault {
     // Validate access
     await this.validateAccess(context);
 
-    const { error } = await this.supabase
+    let deleteQuery = this.supabase
       .from(this.tableName)
       .delete()
       .eq('user_id', context.userId)
-      .eq('key', key)
-      .eq('workflow_id', context.workflowId || null);
+      .eq('key', key);
+
+    deleteQuery = context.workflowId
+      ? deleteQuery.eq('workflow_id', context.workflowId)
+      : deleteQuery.is('workflow_id', null);
+
+    const { error } = await deleteQuery;
 
     if (error) {
       console.error('[CredentialVault] Failed to delete credential:', sanitizeForLogging({ key, error: error.message }));

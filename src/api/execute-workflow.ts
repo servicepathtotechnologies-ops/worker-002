@@ -3,7 +3,7 @@
 
 import { Request, Response } from 'express';
 import { getSupabaseClient } from '../core/database/supabase-compat';
-import { SupabaseClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { config } from '../core/config';
 import { LLMAdapter } from '../shared/llm-adapter';
 import { HuggingFaceRouterClient } from '../shared/huggingface-client';
@@ -49,9 +49,112 @@ import { getInstagramAccessToken, getInstagramBusinessAccountId } from '../share
 import { getWhatsAppAccessToken, getWhatsAppBusinessAccountId } from '../shared/whatsapp-token-manager';
 import { executeDatabaseNode } from '../services/database/database-node-handler';
 import { EXECUTION_OBSERVABILITY_KEYS } from '../core/execution/dynamic-node-executor';
+import { circuitBreakerManager } from '../services/workflow-executor/distributed/reliability/circuit-breaker';
+import { getProviderCircuitKeyFromNodeType } from '../core/reliability/provider-circuit-key';
+import { decryptToken } from '../core/utils/token-encryption';
+import { retrieveCredential } from '../core/utils/credential-retriever';
 
 const EXECUTION_RUNTIME_MARKER = 'runtime-marker-2026-03-20-v1';
-const EXECUTION_SYSTEM_ALLOWED_TYPES = new Set<string>(['manual_trigger', 'log_output']);
+
+// Registry-driven check: which node types bypass the intent-authority execution guard.
+// A node bypasses the guard when it is:
+//   1. A trigger node (always present, not part of the semantic plan)
+//   2. A system utility/output node (log_output, debug, etc.)
+//   3. A branching/control-flow node (switch, if_else) — structural, not semantic
+// This replaces the old hardcoded Set(['manual_trigger', 'log_output']).
+async function isIntentAuthorityBypassType(nodeType: string): Promise<boolean> {
+  try {
+    const { unifiedNodeRegistry } = await import('../core/registry/unified-node-registry');
+    const def = unifiedNodeRegistry.get(nodeType);
+    if (!def) return false;
+    const category = String(def.category || '').toLowerCase();
+    const tags: string[] = Array.isArray((def as any).tags) ? (def as any).tags : [];
+    return (
+      category === 'triggers' || category === 'trigger' ||
+      category === 'utility' || category === 'output' ||
+      (def as any).isBranching === true ||
+      tags.includes('trigger') || tags.includes('system') || tags.includes('output')
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function retrieveDashboardCredential(
+  params: {
+    userId?: string;
+    currentUserId?: string;
+    workflowId?: string;
+    nodeId?: string;
+    nodeType?: string;
+    key: string;
+  }
+): Promise<string | null> {
+  const userIdsToTry: string[] = [];
+  if (params.userId) userIdsToTry.push(params.userId);
+  if (params.currentUserId && params.currentUserId !== params.userId) userIdsToTry.push(params.currentUserId);
+
+  for (const uid of userIdsToTry) {
+    const found = await retrieveCredential(
+      {
+        userId: uid,
+        workflowId: params.workflowId,
+        nodeId: params.nodeId,
+        nodeType: params.nodeType,
+      },
+      params.key
+    );
+    if (found) return found;
+  }
+
+  return null;
+}
+
+function parseCredentialValue(value: string | null): Record<string, any> {
+  if (!value) return {};
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return { value: trimmed };
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return { value: trimmed };
+  }
+}
+
+async function retrieveRuntimeCredentialObject(params: {
+  userId?: string;
+  currentUserId?: string;
+  workflowId?: string;
+  nodeId?: string;
+  nodeType?: string;
+  keys: string[];
+}): Promise<Record<string, any> | null> {
+  const keys = Array.from(new Set(params.keys.map((key) => String(key || '').trim()).filter(Boolean)));
+  for (const key of keys) {
+    const stored = await retrieveDashboardCredential({
+      userId: params.userId,
+      currentUserId: params.currentUserId,
+      workflowId: params.workflowId,
+      nodeId: params.nodeId,
+      nodeType: params.nodeType,
+      key,
+    });
+    if (!stored) continue;
+    const parsed = parseCredentialValue(stored);
+    return Object.keys(parsed).length > 0 ? parsed : { value: stored };
+  }
+  return null;
+}
+
+function pickCredentialValue(credential: Record<string, any> | null, keys: string[]): string | null {
+  if (!credential) return null;
+  for (const key of keys) {
+    const value = credential[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  const fallback = credential.value;
+  return typeof fallback === 'string' && fallback.trim() ? fallback.trim() : null;
+}
 
 function getIntentAuthorityExecutionMode(): 'shadow' | 'warn' | 'strict' {
   const raw = String(process.env.INTENT_AUTHORITY_ENFORCEMENT_MODE || 'strict').toLowerCase();
@@ -384,8 +487,8 @@ function resolveTemplate(template: string, context: Record<string, unknown>, nod
       // Log helpful error message
       console.warn(`[Template Validation] ${nodeId ? `Node ${nodeId}: ` : ''}${errorMessage}`);
       
-      // In strict mode, throw error
-      if (process.env.VALIDATION_STRICT === 'true') {
+      // Single-path strict mode: throw error on unresolved template validation failures.
+      if (config.reliability.strictValidation) {
         throw new Error(errorMessage);
       }
     }
@@ -425,39 +528,22 @@ interface AWSCredentials {
 async function getAWSCredentials(
   supabase: SupabaseClient,
   workflowId: string,
-  nodeId: string
+  nodeId: string,
+  userId?: string,
+  currentUserId?: string
 ): Promise<AWSCredentials> {
   try {
-    // Try to retrieve credentials from credential vault
-    // First, try node-specific credentials
-    const { data: nodeCredentials, error: nodeError } = await supabase
-      .from('credentials')
-      .select('*')
-      .eq('workflow_id', workflowId)
-      .eq('node_id', nodeId)
-      .eq('provider', 'aws')
-      .single();
+    const vaultCredential = await retrieveRuntimeCredentialObject({
+      userId,
+      currentUserId,
+      workflowId,
+      nodeId,
+      nodeType: 'amazon_ses',
+      keys: ['aws', 'amazon_ses'],
+    });
 
-    if (!nodeError && nodeCredentials) {
-      // Validate and return node-specific credentials
-      const credentials = validateAWSCredentialsStructure(nodeCredentials);
-      if (credentials) {
-        return credentials;
-      }
-    }
-
-    // Fallback: Try workflow-level AWS credentials
-    const { data: workflowCredentials, error: workflowError } = await supabase
-      .from('credentials')
-      .select('*')
-      .eq('workflow_id', workflowId)
-      .eq('provider', 'aws')
-      .is('node_id', null)
-      .single();
-
-    if (!workflowError && workflowCredentials) {
-      // Validate and return workflow-level credentials
-      const credentials = validateAWSCredentialsStructure(workflowCredentials);
+    if (vaultCredential) {
+      const credentials = validateAWSCredentialsStructure(vaultCredential);
       if (credentials) {
         return credentials;
       }
@@ -503,6 +589,23 @@ function validateAWSCredentialsStructure(credentials: any): AWSCredentials | nul
     secretAccessKey,
     region,
   };
+}
+
+async function getRedisRuntimeCredential(params: {
+  workflowId: string;
+  nodeId: string;
+  nodeType: string;
+  userId?: string;
+  currentUserId?: string;
+}): Promise<Record<string, any> | null> {
+  return retrieveRuntimeCredentialObject({
+    userId: params.userId,
+    currentUserId: params.currentUserId,
+    workflowId: params.workflowId,
+    nodeId: params.nodeId,
+    nodeType: params.nodeType,
+    keys: ['redis'],
+  });
 }
 
 /**
@@ -2262,8 +2365,8 @@ export async function executeNodeLegacy(
     const errorMessage = configValidation.error.message;
     console.warn(`[Validation] ${errorMessage}`);
     
-      // In strict mode, return error immediately
-      if (process.env.VALIDATION_STRICT === 'true') {
+      // Single-path strict mode: return error immediately on invalid node config.
+      if (require('../core/config').config.reliability.strictValidation) {
         const errorResult = {
           ...inputObj,
           _error: `Configuration validation failed: ${errorMessage}`,
@@ -3084,26 +3187,13 @@ export async function executeNodeLegacy(
         const message = config.message !== undefined ? config.message : inputObj;
         const options = config.options || {};
 
-        // Get Redis credentials from Supabase
-        const { data: credential } = await supabase
-          .from('credentials')
-          .select('*')
-          .eq('workflow_id', workflowId)
-          .eq('node_id', node.id)
-          .eq('provider', 'redis')
-          .single();
-
-        // Also try to get by workflow_id only (fallback)
-        let redisCredential = credential;
-        if (!redisCredential) {
-          const { data: workflowCredential } = await supabase
-            .from('credentials')
-            .select('*')
-            .eq('workflow_id', workflowId)
-            .eq('provider', 'redis')
-            .single();
-          redisCredential = workflowCredential;
-        }
+        const redisCredential = await getRedisRuntimeCredential({
+          workflowId,
+          nodeId: node.id,
+          nodeType: type,
+          userId,
+          currentUserId,
+        });
 
         if (!redisCredential) {
           return {
@@ -3164,26 +3254,13 @@ export async function executeNodeLegacy(
         const timeout = getNumberProperty(config, 'timeout', 30000);
         const autoAck = config.autoAck !== false;
 
-        // Get Redis credentials from Supabase
-        const { data: credential } = await supabase
-          .from('credentials')
-          .select('*')
-          .eq('workflow_id', workflowId)
-          .eq('node_id', node.id)
-          .eq('provider', 'redis')
-          .single();
-
-        // Also try to get by workflow_id only (fallback)
-        let redisCredential = credential;
-        if (!redisCredential) {
-          const { data: workflowCredential } = await supabase
-            .from('credentials')
-            .select('*')
-            .eq('workflow_id', workflowId)
-            .eq('provider', 'redis')
-            .single();
-          redisCredential = workflowCredential;
-        }
+        const redisCredential = await getRedisRuntimeCredential({
+          workflowId,
+          nodeId: node.id,
+          nodeType: type,
+          userId,
+          currentUserId,
+        });
 
         if (!redisCredential) {
           return {
@@ -3285,26 +3362,13 @@ export async function executeNodeLegacy(
 
         const defaultValue = config.defaultValue;
 
-        // Get Redis credentials from Supabase
-        const { data: credential } = await supabase
-          .from('credentials')
-          .select('*')
-          .eq('workflow_id', workflowId)
-          .eq('node_id', node.id)
-          .eq('provider', 'redis')
-          .single();
-
-        // Also try to get by workflow_id only (fallback)
-        let redisCredential = credential;
-        if (!redisCredential) {
-          const { data: workflowCredential } = await supabase
-            .from('credentials')
-            .select('*')
-            .eq('workflow_id', workflowId)
-            .eq('provider', 'redis')
-            .single();
-          redisCredential = workflowCredential;
-        }
+        const redisCredential = await getRedisRuntimeCredential({
+          workflowId,
+          nodeId: node.id,
+          nodeType: type,
+          userId,
+          currentUserId,
+        });
 
         if (!redisCredential) {
           return {
@@ -3382,26 +3446,13 @@ export async function executeNodeLegacy(
         let value = config.value;
         const ttl = getNumberProperty(config, 'ttl', 0);
 
-        // Get Redis credentials from Supabase
-        const { data: credential } = await supabase
-          .from('credentials')
-          .select('*')
-          .eq('workflow_id', workflowId)
-          .eq('node_id', node.id)
-          .eq('provider', 'redis')
-          .single();
-
-        // Also try to get by workflow_id only (fallback)
-        let redisCredential = credential;
-        if (!redisCredential) {
-          const { data: workflowCredential } = await supabase
-            .from('credentials')
-            .select('*')
-            .eq('workflow_id', workflowId)
-            .eq('provider', 'redis')
-            .single();
-          redisCredential = workflowCredential;
-        }
+        const redisCredential = await getRedisRuntimeCredential({
+          workflowId,
+          nodeId: node.id,
+          nodeType: type,
+          userId,
+          currentUserId,
+        });
 
         if (!redisCredential) {
           return {
@@ -3492,14 +3543,33 @@ export async function executeNodeLegacy(
             .eq('user_id', effectiveUserId)
             .single();
           tokenData = googleToken;
+        } else if (provider === 'salesforce') {
+          const { data: salesforceToken } = await supabase
+            .from('salesforce_oauth_tokens')
+            .select('access_token, refresh_token, expires_at, token_type, scope, instance_url')
+            .eq('user_id', effectiveUserId)
+            .single();
+          tokenData = salesforceToken;
         } else if (provider === 'github' || provider === 'facebook' || provider === 'twitter' || provider === 'linkedin') {
           // Check unified social_tokens table
-          const { data: socialToken } = await supabase
+          let { data: socialToken } = await supabase
             .from('social_tokens')
             .select('access_token, refresh_token, expires_at, token_type, scope')
             .eq('user_id', effectiveUserId)
             .eq('provider', provider)
             .single();
+          const fallbackOAuthTable: Record<string, string> = {
+            twitter: 'twitter_oauth_tokens',
+            linkedin: 'linkedin_oauth_tokens',
+          };
+          if (!socialToken && fallbackOAuthTable[provider]) {
+            const { data: providerToken } = await supabase
+              .from(fallbackOAuthTable[provider])
+              .select('access_token, refresh_token, expires_at, token_type, scope')
+              .eq('user_id', effectiveUserId)
+              .single();
+            socialToken = providerToken;
+          }
           tokenData = socialToken;
         } else if (provider === 'zoho') {
           const { data: zohoToken } = await supabase
@@ -3509,22 +3579,22 @@ export async function executeNodeLegacy(
             .single();
           tokenData = zohoToken;
         } else {
-          // For custom providers, check credentials table
-          const { data: credential } = await supabase
-            .from('credentials')
-            .select('*')
-            .eq('workflow_id', workflowId)
-            .eq('node_id', node.id)
-            .eq('provider', 'oauth2')
-            .single();
-          
-          if (credential && credential.data) {
+          const credential = await retrieveRuntimeCredentialObject({
+            userId,
+            currentUserId,
+            workflowId,
+            nodeId: node.id,
+            nodeType: type,
+            keys: [provider, 'oauth2'],
+          });
+
+          if (credential) {
             tokenData = {
-              access_token: credential.data.access_token,
-              refresh_token: credential.data.refresh_token,
-              expires_at: credential.data.expires_at,
-              token_type: credential.data.token_type || 'Bearer',
-              scope: credential.data.scope,
+              access_token: credential.access_token || credential.accessToken || credential.value,
+              refresh_token: credential.refresh_token || credential.refreshToken,
+              expires_at: credential.expires_at || credential.expiresAt,
+              token_type: credential.token_type || credential.tokenType || 'Bearer',
+              scope: credential.scope,
             };
           }
         }
@@ -3538,7 +3608,8 @@ export async function executeNodeLegacy(
 
         if (action === 'getToken') {
           // Check if token is expired or about to expire (within 5 minutes)
-          let accessToken = tokenData.access_token;
+          let accessToken = decryptToken(tokenData.access_token);
+          const refreshToken = tokenData.refresh_token ? decryptToken(tokenData.refresh_token) : undefined;
           let needsRefresh = false;
 
           if (tokenData.expires_at) {
@@ -3561,7 +3632,7 @@ export async function executeNodeLegacy(
           return {
             success: true,
             accessToken,
-            refreshToken: tokenData.refresh_token || undefined,
+            refreshToken,
             expiresIn: tokenData.expires_at 
               ? Math.max(0, Math.floor((new Date(tokenData.expires_at).getTime() - Date.now()) / 1000))
               : undefined,
@@ -3615,48 +3686,29 @@ export async function executeNodeLegacy(
         let apiKey: string | null = null;
 
         if (effectiveUserId) {
-          // Check credential_vault table (user-level credentials)
-          const { data: vaultCredential } = await supabase
-            .from('credential_vault')
-            .select('encrypted_value, metadata')
-            .eq('user_id', effectiveUserId)
-            .eq('key', apiKeyName)
-            .eq('type', 'api_key')
-            .is('workflow_id', null) // User-level credential
-            .single();
-
-          if (vaultCredential && vaultCredential.encrypted_value) {
-            // Note: In production, encrypted_value should be decrypted
-            // For now, we'll assume it's stored as plain text or use a decryption function
-            // This is a placeholder - actual implementation should decrypt
-            apiKey = vaultCredential.encrypted_value;
-          }
+          const stored = await retrieveDashboardCredential({
+            userId,
+            currentUserId,
+            workflowId,
+            nodeId: node.id,
+            nodeType: type,
+            key: apiKeyName,
+          });
+          const parsed = parseCredentialValue(stored);
+          apiKey = parsed.apiKey || parsed.apiToken || parsed.key || parsed.token || parsed.value || stored;
         }
 
-        // If not found in vault, try credentials table (workflow-level)
+        // If not found by the specific key, try the generic API-key vault entry.
         if (!apiKey) {
-          const { data: credential } = await supabase
-            .from('credentials')
-            .select('*')
-            .eq('workflow_id', workflowId)
-            .eq('node_id', node.id)
-            .eq('provider', 'apikey')
-            .single();
-
-          if (credential) {
-            // Check if credential has the apiKeyName in data or name field
-            if (credential.data && typeof credential.data === 'object') {
-              const credData = credential.data as any;
-              // Try multiple possible field names
-              apiKey = credData.api_key || 
-                      credData.apiKey || 
-                      credData.key || 
-                      credData[apiKeyName] ||
-                      (credData.name === apiKeyName ? credData.value : null);
-            } else if (credential.name === apiKeyName) {
-              apiKey = (credential as any).api_key || (credential as any).value;
-            }
-          }
+          const credential = await retrieveRuntimeCredentialObject({
+            userId,
+            currentUserId,
+            workflowId,
+            nodeId: node.id,
+            nodeType: type,
+            keys: ['apikey', 'api_key'],
+          });
+          apiKey = pickCredentialValue(credential, ['api_key', 'apiKey', 'key', apiKeyName, 'token']);
         }
 
         // If still not found, try workflow-level credential_vault
@@ -3686,26 +3738,6 @@ export async function executeNodeLegacy(
               // If vault retrieval fails, try using the encrypted value directly (might be plain text in dev)
               console.warn('[API Key Auth] Failed to retrieve from vault, trying encrypted value as-is');
               apiKey = workflowVaultCredential.encrypted_value;
-            }
-          }
-        }
-
-        // If still not found, try credentials table with name matching
-        if (!apiKey) {
-          const { data: credentialByName } = await supabase
-            .from('credentials')
-            .select('*')
-            .eq('workflow_id', workflowId)
-            .eq('provider', 'apikey')
-            .or(`name.eq.${apiKeyName},data->>name.eq.${apiKeyName}`)
-            .single();
-
-          if (credentialByName) {
-            if (credentialByName.data && typeof credentialByName.data === 'object') {
-              const credData = credentialByName.data as any;
-              apiKey = credData.api_key || credData.apiKey || credData.key || credData.value;
-            } else {
-              apiKey = (credentialByName as any).api_key || (credentialByName as any).value;
             }
           }
         }
@@ -4276,7 +4308,7 @@ export async function executeNodeLegacy(
       const message = typeof resolveWithSchema(msgRaw, execContext, 'string') === 'string'
         ? (resolveWithSchema(msgRaw, execContext, 'string') as string)
         : String(resolveTypedValue(msgRaw, execContext));
-      const from = fromRaw
+      let from = fromRaw
         ? (typeof resolveWithSchema(fromRaw, execContext, 'string') === 'string'
             ? (resolveWithSchema(fromRaw, execContext, 'string') as string)
             : String(resolveTypedValue(fromRaw, execContext)))
@@ -4301,10 +4333,7 @@ export async function executeNodeLegacy(
                 const parsed = JSON.parse(trimmed) as any;
                 accountSid = accountSid || String(parsed.accountSid || parsed.sid || '').trim();
                 authToken = authToken || String(parsed.authToken || parsed.token || '').trim();
-                if (!from && parsed.from) {
-                  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-                  const _ = parsed.from;
-                }
+                if (!from && parsed.from) from = String(parsed.from).trim();
               } catch {
                 // fall back below
               }
@@ -4356,13 +4385,28 @@ export async function executeNodeLegacy(
 
     case 'mailgun': {
       // ✅ Mailgun node — send transactional emails via Mailgun REST API
-      const domain = (getStringProperty(config, 'domain', '') || '').trim();
-      const apiKey = (getStringProperty(config, 'apiKey', '') || '').trim();
-      const from = (getStringProperty(config, 'from', '') || '').trim();
+      let domain = (getStringProperty(config, 'domain', '') || '').trim();
+      let apiKey = (getStringProperty(config, 'apiKey', '') || '').trim();
+      let from = (getStringProperty(config, 'from', '') || '').trim();
       const to = (getStringProperty(config, 'to', '') || '').trim();
       const subject = (getStringProperty(config, 'subject', '') || '').trim();
       const text = (getStringProperty(config, 'text', '') || '').trim();
       const html = (getStringProperty(config, 'html', '') || '').trim();
+
+      if (!domain || !apiKey || !from) {
+        const stored = await retrieveDashboardCredential({
+          userId,
+          currentUserId,
+          workflowId,
+          nodeId: node.id,
+          nodeType: type,
+          key: 'mailgun',
+        });
+        const parsed = parseCredentialValue(stored);
+        domain = domain || parsed.domain || '';
+        apiKey = apiKey || parsed.apiKey || parsed.key || parsed.value || stored || '';
+        from = from || parsed.from || parsed.fromEmail || '';
+      }
 
       if (!domain) {
         return { ...inputObj, _error: 'Mailgun: domain is required' };
@@ -4411,12 +4455,26 @@ export async function executeNodeLegacy(
 
     case 'sendgrid': {
       // ✅ SendGrid node — send transactional emails via SendGrid REST API
-      const apiKey = (getStringProperty(config, 'apiKey', '') || '').trim();
-      const from = (getStringProperty(config, 'from', '') || '').trim();
+      let apiKey = (getStringProperty(config, 'apiKey', '') || '').trim();
+      let from = (getStringProperty(config, 'from', '') || '').trim();
       const to = (getStringProperty(config, 'to', '') || '').trim();
       const subject = (getStringProperty(config, 'subject', '') || '').trim();
       const text = (getStringProperty(config, 'text', '') || '').trim();
       const html = (getStringProperty(config, 'html', '') || '').trim();
+
+      if (!apiKey || !from) {
+        const stored = await retrieveDashboardCredential({
+          userId,
+          currentUserId,
+          workflowId,
+          nodeId: node.id,
+          nodeType: type,
+          key: 'sendgrid',
+        });
+        const parsed = parseCredentialValue(stored);
+        apiKey = apiKey || parsed.apiKey || parsed.key || parsed.value || stored || '';
+        from = from || parsed.from || parsed.fromEmail || '';
+      }
 
       if (!apiKey) {
         return { ...inputObj, _error: 'SendGrid: apiKey is required' };
@@ -5197,8 +5255,27 @@ export async function executeNodeLegacy(
     }
 
     case 'clickup': {
-      const clickupCredentials =
+      let clickupCredentials =
         (node as any).credentials?.clickup_api || (node as any).clickup_api || null;
+      if (!clickupCredentials?.apiKey && !clickupCredentials?.apiToken) {
+        const stored = await retrieveDashboardCredential({
+          userId,
+          currentUserId,
+          workflowId,
+          nodeId: node.id,
+          nodeType: type,
+          key: 'clickup',
+        });
+        const parsed = parseCredentialValue(stored);
+        const apiKey = parsed.apiKey || parsed.apiToken || parsed.token || parsed.value || stored || '';
+        if (apiKey) {
+          clickupCredentials = {
+            apiKey,
+            teamId: parsed.teamId || parsed.workspaceId,
+            baseUrl: parsed.baseUrl,
+          };
+        }
+      }
       result = await executeClickUpNode(node as any, inputObj, clickupCredentials);
       break;
     }
@@ -5240,9 +5317,26 @@ export async function executeNodeLegacy(
       // ✅ REFACTORED: AI nodes with typed resolution
       const prompt = getStringProperty(config, 'prompt', '');
       const model = getStringProperty(config, 'model', 'gpt-4o');
-      const apiKey = getStringProperty(config, 'apiKey', '');
+      let apiKey = getStringProperty(config, 'apiKey', '');
       const provider = type === 'openai_gpt' ? 'openai' : 
                       type === 'anthropic_claude' ? 'claude' : 'gemini';
+      
+      if (!apiKey) {
+        const credentialKey =
+          type === 'openai_gpt' ? 'openai' :
+          type === 'anthropic_claude' ? 'anthropic' :
+          'gemini';
+        const stored = await retrieveDashboardCredential({
+          userId,
+          currentUserId,
+          workflowId,
+          nodeId: node.id,
+          nodeType: type,
+          key: credentialKey,
+        });
+        const parsed = parseCredentialValue(stored);
+        apiKey = parsed.apiKey || parsed.key || parsed.token || parsed.value || stored || '';
+      }
       
       // Use typed execution context
       const execContext = createTypedContext();
@@ -5460,7 +5554,7 @@ export async function executeNodeLegacy(
       // Google Veo video generation node
       // Handles asynchronous video generation: start job → poll → return video URL
       
-      const apiKey = getStringProperty(config, 'apiKey', '');
+      let apiKey = getStringProperty(config, 'apiKey', '');
       const prompt = getStringProperty(config, 'prompt', '');
       const duration = getNumberProperty(config, 'duration', 60);
       const style = getStringProperty(config, 'style', 'realistic');
@@ -7409,11 +7503,24 @@ export async function executeNodeLegacy(
     case 'airtable': {
       // ✅ Airtable node with comprehensive operation support
       // Supports: list, get, create, update, upsert, delete operations
-      const apiKey = getStringProperty(config, 'apiKey', '');
+      let apiKey = getStringProperty(config, 'apiKey', '');
       const baseId = getStringProperty(config, 'baseId', '');
       const tableName = getStringProperty(config, 'table', '');
       const resource = getStringProperty(config, 'resource', 'Record');
       const operation = getStringProperty(config, 'operation', 'list');
+
+      if (!apiKey) {
+        const stored = await retrieveDashboardCredential({
+          userId,
+          currentUserId,
+          workflowId,
+          nodeId: node.id,
+          nodeType: type,
+          key: 'airtable',
+        });
+        const parsed = parseCredentialValue(stored);
+        apiKey = parsed.apiKey || parsed.accessToken || parsed.token || parsed.value || stored || '';
+      }
 
       if (!apiKey) {
         return {
@@ -7966,9 +8073,22 @@ export async function executeNodeLegacy(
     case 'pipedrive': {
       // ✅ Pipedrive node with comprehensive resource and operation support
       // Supports: deal, person, organization, activity, note, pipeline, stage, product, lead, file, webhook
-      const apiToken = getStringProperty(config, 'apiToken', '');
+      let apiToken = getStringProperty(config, 'apiToken', '');
       const resource = getStringProperty(config, 'resource', 'deal');
       const operation = getStringProperty(config, 'operation', 'list');
+
+      if (!apiToken) {
+        const stored = await retrieveDashboardCredential({
+          userId,
+          currentUserId,
+          workflowId,
+          nodeId: node.id,
+          nodeType: type,
+          key: 'pipedrive',
+        });
+        const parsed = parseCredentialValue(stored);
+        apiToken = parsed.apiToken || parsed.apiKey || parsed.token || parsed.value || stored || '';
+      }
 
       if (!apiToken) {
         return {
@@ -12971,12 +13091,25 @@ export async function executeNodeLegacy(
 
     case 'slack_message': {
       // Slack Message node - supports rich formatting and blocks
-      const webhookUrl = getStringProperty(config, 'webhookUrl', '');
+      let webhookUrl = getStringProperty(config, 'webhookUrl', '');
       const channel = getStringProperty(config, 'channel', '');
       const username = getStringProperty(config, 'username', 'CtrlChecks Bot');
       const iconEmoji = getStringProperty(config, 'iconEmoji', ':zap:');
       const message = getStringProperty(config, 'message', '');
       const blocksJson = getStringProperty(config, 'blocks', '[]');
+
+      if (!webhookUrl) {
+        const stored = await retrieveDashboardCredential({
+          userId,
+          currentUserId,
+          workflowId,
+          nodeId: node.id,
+          nodeType: type,
+          key: 'slack',
+        });
+        const parsed = parseCredentialValue(stored);
+        webhookUrl = parsed.webhookUrl || parsed.url || parsed.value || stored || '';
+      }
 
       if (!webhookUrl) {
         return {
@@ -13090,8 +13223,21 @@ export async function executeNodeLegacy(
 
     case 'slack_webhook': {
       // Slack Webhook node - simplified webhook for basic messages
-      const webhookUrl = getStringProperty(config, 'webhookUrl', '');
+      let webhookUrl = getStringProperty(config, 'webhookUrl', '');
       const text = getStringProperty(config, 'text', '');
+
+      if (!webhookUrl) {
+        const stored = await retrieveDashboardCredential({
+          userId,
+          currentUserId,
+          workflowId,
+          nodeId: node.id,
+          nodeType: type,
+          key: 'slack',
+        });
+        const parsed = parseCredentialValue(stored);
+        webhookUrl = parsed.webhookUrl || parsed.url || parsed.value || stored || '';
+      }
 
       if (!webhookUrl) {
         return {
@@ -13313,8 +13459,22 @@ export async function executeNodeLegacy(
     }
 
     case 'discord_webhook': {
-      const webhookUrl = getStringProperty(config, 'webhookUrl', '');
+      let webhookUrl = getStringProperty(config, 'webhookUrl', '');
       const message = getStringProperty(config, 'message', '');
+
+      if (!webhookUrl) {
+        const stored = await retrieveDashboardCredential({
+          userId,
+          currentUserId,
+          workflowId,
+          nodeId: node.id,
+          nodeType: type,
+          key: 'discord',
+        });
+        const parsed = parseCredentialValue(stored);
+        webhookUrl = parsed.webhookUrl || parsed.url || parsed.value || stored || '';
+      }
+
       if (!webhookUrl || !message) {
         return { ...inputObj, _error: 'Discord Webhook: webhookUrl and message are required' };
       }
@@ -13352,11 +13512,28 @@ export async function executeNodeLegacy(
 
       // Credentials: allow either workflow-injected fields (host/username/password/port)
       // or UI-style fields (smtpHost/smtpUser/smtpPassword/smtpPort)
-      const host = getStringProperty(config, 'host', '') || getStringProperty(config, 'smtpHost', '');
-      const portRaw = getStringProperty(config, 'port', '') || getStringProperty(config, 'smtpPort', '587');
-      const user = getStringProperty(config, 'username', '') || getStringProperty(config, 'smtpUser', '');
-      const pass = getStringProperty(config, 'password', '') || getStringProperty(config, 'smtpPassword', '');
-      const from = getStringProperty(config, 'from', '') || user;
+      let host = getStringProperty(config, 'host', '') || getStringProperty(config, 'smtpHost', '');
+      let portRaw = getStringProperty(config, 'port', '') || getStringProperty(config, 'smtpPort', '');
+      let user = getStringProperty(config, 'username', '') || getStringProperty(config, 'smtpUser', '');
+      let pass = getStringProperty(config, 'password', '') || getStringProperty(config, 'smtpPassword', '');
+      let from = getStringProperty(config, 'from', '') || user;
+
+      if (!host || !user || !pass) {
+        const stored = await retrieveDashboardCredential({
+          userId,
+          currentUserId,
+          workflowId,
+          nodeId: node.id,
+          nodeType: type,
+          key: 'smtp',
+        });
+        const parsed = parseCredentialValue(stored);
+        host = host || parsed.host || parsed.smtpHost || '';
+        portRaw = portRaw || parsed.port || parsed.smtpPort || '587';
+        user = user || parsed.username || parsed.smtpUser || parsed.user || '';
+        pass = pass || parsed.password || parsed.smtpPassword || parsed.pass || '';
+        from = from || parsed.from || user;
+      }
 
       if (!to || !subject || (!text && !html)) {
         return { ...inputObj, _error: 'Email (SMTP): to, subject, and text/html are required' };
@@ -13417,8 +13594,22 @@ export async function executeNodeLegacy(
 
     case 'microsoft_teams': {
       // Microsoft Teams - send message via incoming webhook URL (recommended)
-      const webhookUrl = getStringProperty(config, 'webhookUrl', '') || getStringProperty(config, 'webhook_url', '');
+      let webhookUrl = getStringProperty(config, 'webhookUrl', '') || getStringProperty(config, 'webhook_url', '');
       const message = getStringProperty(config, 'message', '');
+
+      if (!webhookUrl) {
+        const stored = await retrieveDashboardCredential({
+          userId,
+          currentUserId,
+          workflowId,
+          nodeId: node.id,
+          nodeType: type,
+          key: 'microsoft_teams',
+        });
+        const parsed = parseCredentialValue(stored);
+        webhookUrl = parsed.webhookUrl || parsed.url || parsed.value || stored || '';
+      }
+
       if (!webhookUrl || !message) {
         return { ...inputObj, _error: 'Teams: webhookUrl and message are required' };
       }
@@ -14656,12 +14847,27 @@ export async function executeNodeLegacy(
     case 'hubspot': {
       
       // ✅ FIX 1: Get credentials - prefer accessToken (Private App token) over apiKey (deprecated)
-      const accessToken = getStringProperty(config, 'accessToken', '').trim();
-      const apiKey = getStringProperty(config, 'apiKey', '').trim();
-      const token = accessToken || apiKey;
+      let accessToken = getStringProperty(config, 'accessToken', '').trim();
+      let apiKey = getStringProperty(config, 'apiKey', '').trim();
+      let token = accessToken || apiKey;
       const operation = getStringProperty(config, 'operation', 'create').trim();
       const resource = getStringProperty(config, 'resource', 'contact').trim();
       let result: any = null;
+
+      if (!token) {
+        const stored = await retrieveDashboardCredential({
+          userId,
+          currentUserId,
+          workflowId,
+          nodeId: node.id,
+          nodeType: type,
+          key: 'hubspot',
+        });
+        const parsed = parseCredentialValue(stored);
+        accessToken = parsed.accessToken || parsed.apiKey || parsed.token || parsed.value || stored || '';
+        apiKey = parsed.apiKey || '';
+        token = accessToken || apiKey;
+      }
       
       if (!token) {
         throw new Error('HubSpot node requires either accessToken (Private App token) or apiKey in config');
@@ -15148,9 +15354,22 @@ export async function executeNodeLegacy(
     // Typeform REST API node
     case 'typeform': {
       const operation = getStringProperty(config, 'operation', 'get_responses');
-      const apiKey = getStringProperty(config, 'apiKey', '');
+      let apiKey = getStringProperty(config, 'apiKey', '');
       const formId = getStringProperty(config, 'formId', '');
       const title = getStringProperty(config, 'title', '');
+
+      if (!apiKey) {
+        const stored = await retrieveDashboardCredential({
+          userId,
+          currentUserId,
+          workflowId,
+          nodeId: node.id,
+          nodeType: type,
+          key: 'typeform',
+        });
+        const parsed = parseCredentialValue(stored);
+        apiKey = parsed.apiKey || parsed.accessToken || parsed.token || parsed.value || stored || '';
+      }
 
       if (!apiKey.trim()) {
         return { success: false, error: 'apiKey is required' };
@@ -15361,7 +15580,7 @@ export async function executeNodeLegacy(
       // Uses new Task 4, 5, 6 functions for recipient processing, attachment handling, and email sending
       try {
         // Phase 1: Get AWS credentials
-        const credentials = await getAWSCredentials(supabase, workflowId, node.id);
+        const credentials = await getAWSCredentials(supabase, workflowId, node.id, userId, currentUserId);
         if (!credentials) {
           return {
             ...inputObj,
@@ -15617,20 +15836,18 @@ export async function executeNodeLegacy(
           try {
             console.log('[Vercel] 🔐 Attempting to resolve credentials from credential store');
             
-            // Query credential store for 'vercel' credentials
-            const { data: credentials, error: credError } = await supabase
-              .from('credentials')
-              .select('*')
-              .eq('workflow_id', workflowId)
-              .eq('provider', 'vercel')
-              .limit(1);
-            
-            if (!credError && credentials && credentials.length > 0) {
-              const credential = credentials[0];
-              token = credential.token || credential.access_token || '';
+            const credential = await retrieveRuntimeCredentialObject({
+              userId,
+              currentUserId,
+              workflowId,
+              nodeId: node.id,
+              nodeType: type,
+              keys: ['vercel'],
+            });
+
+            if (credential) {
+              token = pickCredentialValue(credential, ['token', 'access_token', 'accessToken']) || '';
               console.log('[Vercel] ✅ Credentials resolved from credential store');
-            } else if (credError) {
-              console.warn(`[Vercel] ⚠️  Could not query credential store: ${credError.message}`);
             } else {
               console.warn('[Vercel] ⚠️  No Vercel credentials found in credential store');
             }
@@ -16040,13 +16257,14 @@ export async function executeNodeLegacy(
       }
 
       // 3. Credential lookup
-      const { data: credential } = await supabase
-        .from('credentials')
-        .select('*')
-        .eq('workflow_id', workflowId)
-        .eq('node_id', node.id)
-        .eq('provider', 'schedulewise')
-        .single();
+      const credential = await retrieveRuntimeCredentialObject({
+        userId,
+        currentUserId,
+        workflowId,
+        nodeId: node.id,
+        nodeType: type,
+        keys: ['schedulewise'],
+      });
 
       if (!credential) {
         return {
@@ -16321,9 +16539,12 @@ export default async function executeWorkflowHandler(req: Request, res: Response
       : [];
     if (authoritativeNodeTypes.length > 0) {
       const authoritativeSet = new Set(authoritativeNodeTypes.map((t) => resolveNodeType(t)));
-      const unexpected = linearizedGraph.nodes
-        .map((n: any) => resolveNodeType(unifiedNormalizeNodeType(n) || n.data?.type || n.type || ''))
-        .filter((t) => !authoritativeSet.has(t) && !EXECUTION_SYSTEM_ALLOWED_TYPES.has(t));
+      const resolvedTypes = linearizedGraph.nodes
+        .map((n: any) => resolveNodeType(unifiedNormalizeNodeType(n) || n.data?.type || n.type || ''));
+      // Registry-driven bypass: triggers, utility, output, and branching nodes are
+      // structural/system nodes that are not part of the user-facing intent plan.
+      const bypassResults = await Promise.all(resolvedTypes.map((t) => isIntentAuthorityBypassType(t)));
+      const unexpected = resolvedTypes.filter((t, i) => !authoritativeSet.has(t) && !bypassResults[i]);
       if (unexpected.length > 0) {
         const message = `Execution blocked by intent-authority guard: unexpected semantic node(s): ${[...new Set(unexpected)].join(', ')}`;
         console.warn(`[ExecuteWorkflow] ${message}`);
@@ -17818,14 +18039,25 @@ export default async function executeWorkflowHandler(req: Request, res: Response
 
             try {
               // Execute node
-              output = await executeNode(
-                node,
-                nodeInput,
-                nodeOutputs, // Keep for backward compatibility, but also use centralState
-                supabase,
-                workflowId,
-                workflow.user_id,
-                currentUserId
+              const providerKey = getProviderCircuitKeyFromNodeType(nodeType);
+              output = await circuitBreakerManager.execute(
+                providerKey,
+                async () =>
+                  await executeNode(
+                    node,
+                    nodeInput,
+                    nodeOutputs, // Keep for backward compatibility, but also use centralState
+                    supabase,
+                    workflowId,
+                    workflow.user_id,
+                    currentUserId
+                  ),
+                {
+                  failureThreshold: config.reliability.circuitBreaker.failureThreshold,
+                  successThreshold: config.reliability.circuitBreaker.successThreshold,
+                  timeout: config.reliability.circuitBreaker.timeoutMs,
+                  resetTimeout: config.reliability.circuitBreaker.resetTimeoutMs,
+                }
               );
               } finally {
                 clearInterval(heartbeatTimer);
@@ -18140,6 +18372,36 @@ export default async function executeWorkflowHandler(req: Request, res: Response
           log.status = 'success';
           log.finishedAt = new Date().toISOString();
 
+          // Persist self-validation evidence when available.
+          try {
+            const selfValidationAudit = nodeOutputs.get(
+              EXECUTION_OBSERVABILITY_KEYS.selfValidation(node.id)
+            );
+            if (selfValidationAudit) {
+              await logExecutionEvent(
+                supabase,
+                executionId,
+                workflowId,
+                'NODE_SELF_VALIDATION',
+                {
+                  nodeId: node.id,
+                  nodeName: node.data.label,
+                  nodeType,
+                  sequence: i + 1,
+                  ...selfValidationAudit,
+                },
+                node.id,
+                node.data.label,
+                i + 1
+              );
+            }
+          } catch (selfValidationLogError: any) {
+            console.warn(
+              '[ExecuteWorkflow] ⚠️ NODE_SELF_VALIDATION event failed (non-fatal):',
+              selfValidationLogError?.message
+            );
+          }
+
           // ✅ CRITICAL: Log node finished event
           await logExecutionEvent(supabase, executionId, workflowId, 'NODE_FINISHED', {
             nodeId: node.id,
@@ -18344,6 +18606,41 @@ export default async function executeWorkflowHandler(req: Request, res: Response
         durationMs,
         nodesExecuted: logs.length,
       });
+
+      if (config.reliability?.dlqMandatoryRouting) {
+        try {
+          const { getDeadLetterQueue } = await import('../services/workflow-executor/distributed/reliability/dead-letter-queue');
+          const dlq = getDeadLetterQueue();
+          if (!dlq.isAvailable()) {
+            await dlq.initialize(config.redisUrl);
+          }
+          await dlq.addJob(
+            {
+              id: `${executionId}-workflow-terminal`,
+              workflowId,
+              executionId,
+              nodeId: 'workflow_terminal',
+              nodeType: 'workflow',
+              input,
+              priority: 0,
+              maxRetries: 0,
+              retryCount: 0,
+              retryDelay: 0,
+              createdAt: Date.now(),
+              status: 'failed',
+              error: errorMessage,
+              metadata: {
+                source: 'execute-workflow',
+                logsCount: logs.length,
+              },
+            },
+            errorMessage || 'Workflow failed',
+            'unknown'
+          );
+        } catch (dlqError) {
+          console.error('[ExecuteWorkflow] ❌ Failed to route terminal failure to DLQ:', dlqError);
+        }
+      }
     } else {
       await logExecutionEvent(supabase, executionId, workflowId, 'RUN_FINISHED', {
         durationMs,

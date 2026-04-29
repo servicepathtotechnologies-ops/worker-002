@@ -6,7 +6,7 @@
  * Implements resume logic for crashed workers.
  */
 
-import { SupabaseClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { QueueClient, NodeJob } from './queue-client';
 import { DistributedOrchestrator } from './distributed-orchestrator';
 

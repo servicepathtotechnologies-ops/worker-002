@@ -181,7 +181,11 @@ export function normalizeWorkflowGraph(
           const working = outs.map(getWorkingEdge);
           const switchCasePorts = extractSwitchCasePortNames((srcNode?.data?.config || {}) as Record<string, any>);
           for (const e of working) {
-            if (e?.sourceHandle) continue;
+            // Treat 'output'/'default' as the generic fallback — not a real case handle.
+            // If edge.type carries a meaningful case label, promote it to sourceHandle.
+            const existingHandle = String(e?.sourceHandle || '');
+            const isGenericHandle = !existingHandle || existingHandle === 'output' || existingHandle === 'default';
+            if (!isGenericHandle) continue;
             const t = typeof e?.type === 'string' ? String(e.type) : '';
             const positionalMatch = /^case_(\d+)$/i.exec(t);
             if (positionalMatch) {
@@ -189,7 +193,7 @@ export function normalizeWorkflowGraph(
               e.sourceHandle = switchCasePorts[caseIndex] || t;
               continue;
             }
-            if (t && t.toLowerCase() !== 'main' && t.toLowerCase() !== 'default') {
+            if (t && t.toLowerCase() !== 'main' && t.toLowerCase() !== 'default' && t.toLowerCase() !== 'output') {
               e.sourceHandle = t;
             }
           }
@@ -227,14 +231,14 @@ export function normalizeWorkflowGraph(
       }
 
       return {
-        id: edge.id || `edge_${index}_${Date.now()}`,
+        ...edge,
+        id: edge.id || `edge_${index}`,
         source: edge.source || '',
         target: edge.target || '',
         sourceHandle,
         targetHandle,
         // Preserve explicit branching type when present; otherwise default.
         type: edge.type || 'default',
-        ...edge,
       };
     });
 

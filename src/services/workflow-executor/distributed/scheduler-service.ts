@@ -5,7 +5,7 @@
  * Runs recovery operations to ensure no executions are left hanging.
  */
 
-import { SupabaseClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { QueueClient } from './queue-client';
 import { DistributedOrchestrator } from './distributed-orchestrator';
 import { RecoveryManager } from './recovery-manager';

@@ -23,6 +23,8 @@ import { generateComprehensiveNodeQuestions } from '../../services/ai/comprehens
 import type { Workflow, WorkflowNode } from '../../core/types/ai-types';
 import type { SwitchContext } from '../../core/orchestration/unified-graph-orchestrator';
 import type { CaseNodeMapping } from '../../core/types/unified-node-contract';
+import { compileSummaryV2FromWorkflow } from '../../services/ai/summary-v2-compiler';
+import { validateSummaryV2 } from '../../core/validation/summary-v2-validator';
 
 /**
  * Build a SwitchContext from populated workflow nodes.
@@ -286,9 +288,32 @@ export default async function confirmCapabilityWorkflow(req: Request, res: Respo
       correlationId,
     });
 
+    const confirmValidation = unifiedGraphOrchestrator.validateWorkflow(finalWorkflow);
+    if (!confirmValidation.valid) {
+      res.status(422).json({
+        ok: false,
+        code: 'ORCHESTRATOR_VALIDATION_FAILED',
+        message: 'Workflow validation failed before summary compilation',
+        violations: confirmValidation.errors,
+      });
+      return;
+    }
+    const summaryV2 = compileSummaryV2FromWorkflow(finalWorkflow, userPrompt);
+    const summaryValidation = validateSummaryV2(summaryV2);
+    if (!summaryValidation.valid) {
+      res.status(422).json({
+        ok: false,
+        code: 'SUMMARY_V2_CONTRACT_FAILED',
+        message: 'summaryV2 contract validation failed',
+        violations: summaryValidation.errors,
+      });
+      return;
+    }
+
     res.status(200).json({
       ok: true,
       workflow: finalWorkflow,
+      summaryV2,
       requiredCredentials: requiredCredentials.map((c) => c.vaultKey || c.displayName || c.provider),
       missingCredentials: missingCredentials.map((c) => c.vaultKey || c.displayName || c.provider),
       discoveredCredentials: missingCredentials,

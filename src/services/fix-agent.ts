@@ -6,7 +6,7 @@ import { LRUNodeOutputsCache } from '../core/cache/lru-node-outputs-cache';
 import { getSupabaseClient } from '../core/database/supabase-compat';
 import { executeNodeDynamically } from '../core/execution/dynamic-node-executor';
 import { resolveConfigTemplates } from '../core/utils/universal-template-resolver';
-import { SupabaseClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { normalizeIfElseConfig } from '../core/utils/if-else-conditions';
 
 export type FixAgentStatus = 'skipped' | 'processing' | 'completed' | 'failed';

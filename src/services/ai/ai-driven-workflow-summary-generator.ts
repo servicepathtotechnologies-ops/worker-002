@@ -6,6 +6,8 @@
 
 import { aiAdapter } from './ai-adapter';
 import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
+import type { Workflow, WorkflowSummaryV2 } from '../../core/types/ai-types';
+import { compileSummaryV2FromWorkflow } from './summary-v2-compiler';
 
 export interface AIWorkflowSummaryInput {
   /** Original user prompt describing the workflow */
@@ -36,6 +38,10 @@ export interface AIWorkflowSummaryOutput {
  * AI-Driven Workflow Summary Generator - PURE AI IMPLEMENTATION
  */
 export class AIDrivenWorkflowSummaryGenerator {
+  generateSummaryV2FromWorkflow(workflow: Workflow, userPrompt: string): WorkflowSummaryV2 {
+    return compileSummaryV2FromWorkflow(workflow, userPrompt);
+  }
+
   /**
    * Generate 100% AI-driven workflow summary
    */

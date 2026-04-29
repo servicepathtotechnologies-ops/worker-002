@@ -172,12 +172,31 @@ export function resolveWinningSwitchEdgeId(options: {
     }
   }
 
-  // 3) No string/number match (including null matchedCase): default edge
+  // 3) Positional fallback: matchedCase is at position N in the ordered case values →
+  // use the N-th outgoing edge. Handles edges where sourceHandle is missing/generic
+  // (e.g. all "main") but the edge ORDER matches the case declaration order.
+  if (switchOutStr.length > 0 && caseValues.length > 0) {
+    const caseIdx = caseValues.findIndex((cv) => stringsMatchCase(cv, switchOutStr));
+    if (caseIdx !== -1 && caseIdx < outEdges.length) {
+      console.warn(
+        '[SwitchRouter] Positional fallback: no semantic/case_N match for matchedCase=%s — using outEdges[%d] (edge %s)',
+        switchOutStr, caseIdx, outEdges[caseIdx].id,
+      );
+      return outEdges[caseIdx].id;
+    }
+  }
+
+  // 4) No string/number match (including null matchedCase): default edge
   for (const e of outEdges) {
     if (isDefaultEdge(e)) return e.id;
   }
 
-  // 4) Last edge (never drop execution when at least one edge exists)
+  // 5) Last edge (never drop execution when at least one edge exists)
+  console.warn(
+    '[SwitchRouter] Last-edge fallback for switch %s — matchedCase=%s did not match any branch. Routing to last edge: %s. Edge sourceHandles: [%s]',
+    switchNode.id, switchOutStr, outEdges[outEdges.length - 1].id,
+    outEdges.map((e) => handle(e) || '(empty)').join(', '),
+  );
   return outEdges[outEdges.length - 1].id;
 }
 

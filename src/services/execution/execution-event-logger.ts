@@ -4,7 +4,7 @@
  * Logs execution events to workflow_execution_events table for timeline/audit/debugging
  */
 
-import { SupabaseClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 
 export type ExecutionEventType =
   | 'RUN_STARTED'
@@ -16,6 +16,8 @@ export type ExecutionEventType =
   | 'NODE_FAILED'
   | 'NODE_RETRY'
   | 'NODE_SKIPPED'
+  | 'NODE_SELF_VALIDATION'
+  | 'AUTONOMOUS_REMEDIATION'
   | 'CONFIG_ATTACHED'
   | 'HEARTBEAT'
   | 'LOCK_ACQUIRED'
@@ -26,6 +28,55 @@ export type ExecutionEventType =
 
 export interface ExecutionEventData {
   [key: string]: any;
+}
+
+const CHECK_CONSTRAINT_VIOLATION = '23514';
+
+function isMissingRelationError(error: any): boolean {
+  return (
+    error?.message?.includes('does not exist') ||
+    error?.message?.includes('relation') ||
+    error?.code === '42P01'
+  );
+}
+
+function fallbackEventTypeForConstraint(eventType: ExecutionEventType): ExecutionEventType | null {
+  switch (eventType) {
+    case 'NODE_SELF_VALIDATION':
+      return 'NODE_FINISHED';
+    case 'AUTONOMOUS_REMEDIATION':
+      return 'NODE_RETRY';
+    case 'WARNING':
+      return 'RUN_STARTED';
+    default:
+      return null;
+  }
+}
+
+async function insertExecutionEvent(
+  supabase: SupabaseClient,
+  executionId: string,
+  workflowId: string,
+  eventType: ExecutionEventType,
+  eventData: ExecutionEventData,
+  nodeId: string | undefined,
+  nodeName: string | undefined,
+  sequence: number
+) {
+  return supabase
+    .from('workflow_execution_events')
+    .insert({
+      execution_id: executionId,
+      workflow_id: workflowId,
+      event_type: eventType,
+      event_data: eventData,
+      node_id: nodeId,
+      node_name: nodeName,
+      sequence,
+      created_at: new Date().toISOString(),
+    })
+    .select()
+    .single();
 }
 
 /**
@@ -47,20 +98,38 @@ export async function logExecutionEvent(
   sequence: number = 0
 ): Promise<void> {
   try {
-    const { data, error } = await supabase
-      .from('workflow_execution_events')
-      .insert({
-        execution_id: executionId,
-        workflow_id: workflowId,
-        event_type: eventType,
-        event_data: eventData,
-        node_id: nodeId,
-        node_name: nodeName,
-        sequence,
-        created_at: new Date().toISOString(),
-      })
-      .select()
-      .single();
+    let { data, error } = await insertExecutionEvent(
+      supabase,
+      executionId,
+      workflowId,
+      eventType,
+      eventData,
+      nodeId,
+      nodeName,
+      sequence
+    );
+
+    if (error?.code === CHECK_CONSTRAINT_VIOLATION) {
+      const fallbackEventType = fallbackEventTypeForConstraint(eventType);
+      if (fallbackEventType) {
+        const fallback = await insertExecutionEvent(
+          supabase,
+          executionId,
+          workflowId,
+          fallbackEventType,
+          {
+            ...eventData,
+            originalEventType: eventType,
+            downgradedForConstraint: true,
+          },
+          nodeId,
+          nodeName,
+          sequence
+        );
+        data = fallback.data;
+        error = fallback.error;
+      }
+    }
 
     if (error) {
       // ✅ CRITICAL: Log error details for debugging, but DO NOT throw.
@@ -73,11 +142,8 @@ export async function logExecutionEvent(
         errorCode: error.code,
         errorDetails: error.details,
         errorHint: error.hint,
-        // Check if table doesn't exist
-        tableMissing:
-          error.message?.includes('does not exist') ||
-          error.message?.includes('relation') ||
-          error.code === '42P01',
+        tableMissing: isMissingRelationError(error),
+        constraintMismatch: error.code === CHECK_CONSTRAINT_VIOLATION,
       });
 
       return;

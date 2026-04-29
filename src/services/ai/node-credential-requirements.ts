@@ -121,7 +121,7 @@ export const NODE_CREDENTIAL_REQUIREMENTS: Map<string, NodeCredentialRequirement
   }],
 
   // ============================================
-  // GOOGLE SERVICES (OAuth handled via navbar)
+  // GOOGLE SERVICES (OAuth handled through the backend connection catalog)
   // ============================================
   ['google_sheets', {
     nodeType: 'google_sheets',

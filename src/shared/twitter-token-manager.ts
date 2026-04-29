@@ -4,7 +4,7 @@
  * Helper functions to retrieve and manage Twitter OAuth tokens from Supabase.
  */
 
-import { SupabaseClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 
 export interface TwitterTokenData {
   access_token: string;

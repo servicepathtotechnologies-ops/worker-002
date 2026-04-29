@@ -185,7 +185,7 @@ export class EnhancedNodeReference {
   }
 
   /**
-   * Check if credential is handled via navbar
+   * Check if credential is handled through the connection catalog
    */
   private isGoogleCredential(credType: string): boolean {
     return credType?.toLowerCase().includes('google') || 
@@ -200,8 +200,8 @@ export class EnhancedNodeReference {
       'slackApi': 'Slack Bot Token or Webhook URL',
       'slackBotToken': 'Slack Bot Token',
       'slackWebhookUrl': 'Slack Webhook URL',
-      'googleSheetsOAuth2Api': 'Google OAuth2 (handled via navbar)',
-      'googleOAuth2': 'Google OAuth2 (handled via navbar)',
+      'googleSheetsOAuth2Api': 'Google OAuth2 (connected from Connections)',
+      'googleOAuth2': 'Google OAuth2 (connected from Connections)',
       'smtp': 'SMTP server credentials',
       'openAiApi': 'OpenAI API Key (or use Ollama - no key needed)',
       'httpBasicAuth': 'HTTP Basic Authentication',
@@ -226,19 +226,19 @@ export class EnhancedNodeReference {
         type: 'GOOGLE_OAUTH2',
         required: true,
         handledViaNavbar: true,
-        description: 'Google OAuth2 (handled via navbar)'
+        description: 'Google OAuth2 (connected from Connections)'
       },
       'google_doc': {
         type: 'GOOGLE_OAUTH2',
         required: true,
         handledViaNavbar: true,
-        description: 'Google OAuth2 (handled via navbar)'
+        description: 'Google OAuth2 (connected from Connections)'
       },
       'google_gmail': {
         type: 'GOOGLE_OAUTH2',
         required: true,
         handledViaNavbar: true,
-        description: 'Google OAuth2 (handled via navbar)'
+        description: 'Google OAuth2 (connected from Connections)'
       },
       'email': {
         type: 'SMTP_CREDENTIALS',
@@ -364,7 +364,7 @@ export class EnhancedNodeReference {
       section += `**Credentials Required:**\n`;
       node.credentials.forEach(cred => {
         const status = cred.required ? '🔑 REQUIRED' : '⚪ Optional';
-        const navbar = cred.handledViaNavbar ? ' (handled via navbar)' : '';
+        const navbar = cred.handledViaNavbar ? ' (connected from Connections)' : '';
         section += `- ${status}: **${cred.type}**${navbar} - ${cred.description}\n`;
       });
       section += '\n';

@@ -14,6 +14,7 @@ import { unifiedNormalizeNodeType } from '../../core/utils/unified-node-type-nor
 import { CredentialResolver } from './credential-resolver';
 import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 import { isCredentialSatisfiedByNodeConfig } from './credential-config-satisfaction';
+import { geminiOrchestrator } from './gemini-orchestrator';
 
 export interface CredentialRequirement {
   provider: string;
@@ -25,6 +26,12 @@ export interface CredentialRequirement {
   satisfied?: boolean; // ✅ CRITICAL: Whether credential is already in vault
   nodeTypes: string[]; // Which node types require this credential
   nodeIds: string[]; // Which specific nodes require this credential
+  /** AI-generated: plain-English explanation of why this credential is needed */
+  simpleDescription?: string;
+  /** AI-generated: technical explanation of how the credential is used (auth flow, header, etc.) */
+  technicalDescription?: string;
+  /** AI-generated: step-by-step instructions for obtaining this credential */
+  howToObtain?: string;
 }
 
 export interface CredentialDiscoveryResult {
@@ -180,14 +187,71 @@ export class CredentialDiscoveryPhase {
       return `${c.displayName} (${c.satisfied ? '✅' : '❌'}) - nodes: [${nodeIds.join(', ')}] (${nodeTypes.join(', ')})`;
     }).join(', '));
 
+    // Enrich credentials with AI-generated guidance (non-blocking)
+    const enrichedCredentials = await this.enrichWithAIGuidance(allCredentials).catch(() => allCredentials);
+
+    const enrichedSatisfied = enrichedCredentials.filter(c => c.satisfied === true);
+    const enrichedMissing = enrichedCredentials.filter(c => !c.satisfied && c.required);
+
     return {
-      requiredCredentials: allCredentials, // All credentials (both satisfied and missing)
-      satisfiedCredentials, // Already in vault
-      missingCredentials, // Need to be provided
+      requiredCredentials: enrichedCredentials,
+      satisfiedCredentials: enrichedSatisfied,
+      missingCredentials: enrichedMissing,
       allDiscovered,
       errors,
       warnings,
     };
+  }
+
+  /**
+   * Enrich discovered credentials with AI-generated guidance (simpleDescription,
+   * technicalDescription, howToObtain). A single Gemini call covers all credentials.
+   * Returns the original array unchanged on any error so the pipeline never blocks.
+   */
+  private async enrichWithAIGuidance(
+    credentials: CredentialRequirement[],
+  ): Promise<CredentialRequirement[]> {
+    if (credentials.length === 0) return credentials;
+
+    const credList = credentials
+      .map((c, i) => `${i + 1}. displayName="${c.displayName}", type="${c.type}", nodeTypes=[${c.nodeTypes.join(', ')}]`)
+      .join('\n');
+
+    const systemPrompt =
+      'You are a workflow automation credential expert. ' +
+      'For each credential listed, generate three fields:\n' +
+      '- simpleDescription: 1-sentence plain-English reason why the user needs this credential.\n' +
+      '- technicalDescription: 1-2 sentences on how it is used technically (auth header, OAuth flow, etc.).\n' +
+      '- howToObtain: 2-4 concise numbered steps the user must follow to get this credential from the service.\n' +
+      'Return a JSON array in the same order as the input list. Each element: ' +
+      '{ "simpleDescription": "...", "technicalDescription": "...", "howToObtain": "..." }. ' +
+      'Return ONLY valid JSON — no markdown, no explanation.';
+
+    const userMessage = `Credentials:\n${credList}`;
+
+    const raw = await geminiOrchestrator.processRequest(
+      'credential-guidance',
+      { system: systemPrompt, message: userMessage },
+      { model: 'gemini-2.5-flash', temperature: 0.2, cache: false },
+    );
+
+    const text = typeof raw === 'string' ? raw : JSON.stringify(raw);
+    const jsonMatch = text.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) return credentials;
+
+    let parsed: Array<{ simpleDescription?: string; technicalDescription?: string; howToObtain?: string }>;
+    try {
+      parsed = JSON.parse(jsonMatch[0]);
+    } catch {
+      return credentials;
+    }
+
+    return credentials.map((c, i) => ({
+      ...c,
+      simpleDescription: parsed[i]?.simpleDescription || c.simpleDescription,
+      technicalDescription: parsed[i]?.technicalDescription || c.technicalDescription,
+      howToObtain: parsed[i]?.howToObtain || c.howToObtain,
+    }));
   }
 
   /**

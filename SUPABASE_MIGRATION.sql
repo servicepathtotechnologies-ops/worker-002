@@ -114,17 +114,27 @@ BEGIN
     DROP CONSTRAINT workflow_execution_events_event_type_check;
   END IF;
 
-  -- Re-create constraint including WARNING as a valid value
+  -- Re-create constraint with the full runtime event taxonomy
   ALTER TABLE public.workflow_execution_events
   ADD CONSTRAINT workflow_execution_events_event_type_check
   CHECK (
     event_type IN (
-      'LOCK_ACQUIRED',
       'RUN_STARTED',
-      'NODE_STARTED',
-      'NODE_COMPLETED',
-      'RUN_COMPLETED',
+      'RUN_FINISHED',
       'RUN_FAILED',
+      'RUN_CANCELLED',
+      'NODE_STARTED',
+      'NODE_FINISHED',
+      'NODE_FAILED',
+      'NODE_RETRY',
+      'NODE_SKIPPED',
+      'NODE_SELF_VALIDATION',
+      'AUTONOMOUS_REMEDIATION',
+      'CONFIG_ATTACHED',
+      'HEARTBEAT',
+      'LOCK_ACQUIRED',
+      'LOCK_RELEASED',
+      'RESUME_STARTED',
       'WARNING'
     )
   );

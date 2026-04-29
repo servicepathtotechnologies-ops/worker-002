@@ -6,7 +6,7 @@
  * Can crash/restart anytime - system will recover.
  */
 
-import { SupabaseClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { StorageManager } from './storage-manager';
 import { DistributedOrchestrator } from './distributed-orchestrator';
 import { NodeJob } from './queue-client';

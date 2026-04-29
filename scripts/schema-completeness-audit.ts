@@ -68,8 +68,17 @@ export async function auditSchemaCompleteness(): Promise<{
       const outputPorts = Object.keys(nodeDef.outputSchema);
       if (outputPorts.length > 0) {
         const mainPort = nodeDef.outputSchema[outputPorts[0]];
-        // outputSchema structure: { [portName]: { type: string, description: string } }
-        if (mainPort && typeof mainPort === 'object' && 'type' in mainPort) {
+        // Unified outputSchema structure:
+        // { [portName]: { name, description, schema: { type, properties } } }
+        if (
+          mainPort &&
+          typeof mainPort === 'object' &&
+          'schema' in mainPort &&
+          (mainPort as any).schema &&
+          typeof (mainPort as any).schema.type === 'string'
+        ) {
+          result.runtimeType = (mainPort as any).schema.type as string;
+        } else if (mainPort && typeof mainPort === 'object' && 'type' in mainPort) {
           result.runtimeType = mainPort.type as string;
         } else if (typeof mainPort === 'string') {
           // Fallback: if port is just a string type

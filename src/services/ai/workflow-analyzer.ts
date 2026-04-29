@@ -335,7 +335,7 @@ Return questions in JSON format as specified in the analysis prompt below.`;
   }
 
   /**
-   * Filter out Google OAuth questions (handled via navbar credentials button)
+   * Filter out Google OAuth questions (handled through the backend connection catalog)
    */
   private filterGoogleOAuthQuestions(questions: Question[]): Question[] {
     const googleOAuthPatterns = [
@@ -354,7 +354,7 @@ Return questions in JSON format as specified in the analysis prompt below.`;
       const isGoogleOAuth = googleOAuthPatterns.some(pattern => pattern.test(questionText));
       
       if (isGoogleOAuth) {
-        console.log(`❌ Filtered out Google OAuth question (handled via navbar): "${q.text}"`);
+        console.log(`❌ Filtered out Google OAuth question (handled via Connections): "${q.text}"`);
         return false;
       }
       
@@ -480,7 +480,7 @@ Before asking questions, identify what the user ALREADY mentioned:
 - If prompt mentions "send", "notify", "alert", "message" → User wants to send notifications
 - If prompt mentions "separate", "split", "categorize", "filter" → User wants data processing/transformation
 - If prompt mentions "document", "Google Docs", "Word", "PDF" → User wants document output
-- If prompt mentions "Google", "Google Sheets", "Google Drive", "Gmail" → DO NOT ask about Google OAuth (already handled via navbar credentials button integrated with Supabase)
+- If prompt mentions "Google", "Google Sheets", "Google Drive", "Gmail" → DO NOT ask about Google OAuth (handled through the backend connection catalog)
 
 STEP 2: ASK ONLY RELEVANT QUESTIONS
 Based on what's ALREADY mentioned, ask ONLY about MISSING information:
@@ -491,8 +491,8 @@ Based on what's ALREADY mentioned, ask ONLY about MISSING information:
 - Storage location if user is NOT storing data (only sending/notifying)
 - Schedule/timing if already mentioned in prompt
 - Platform if already specified (e.g., "Google Sheets", "Slack", "Gmail")
-- Google OAuth credentials (already handled via navbar credentials button integrated with Supabase)
-- "Which Google account should be used?" (Google OAuth is integrated via navbar)
+- Google OAuth credentials (handled through the backend connection catalog)
+- "Which Google account should be used?" (Google OAuth is connected from Connections)
 
 ✅ ONLY ask about:
 - Missing trigger details (e.g., if "form" mentioned but not clear what fields)
@@ -538,7 +538,7 @@ User prompt: "read data from the google sheets and send readed data to the slack
 - "How should this workflow be triggered?" (NOT SPECIFIED but can infer: manual or schedule - ask only if critical)
 - "Where to store data?" (NOT RELEVANT: user is sending, not storing)
 - "How to send notifications?" (ALREADY MENTIONED: Slack)
-- "What are your Google OAuth credentials?" (Google credentials handled via navbar button)
+- "What are your Google OAuth credentials?" (Google credentials are connected from Connections)
 
 User prompt: "When a user submits a form, save the lead details to Google Sheets, notify my sales team in Slack with full lead info, and automatically send a personalized follow-up email"
 ✅ CORRECT questions:
@@ -559,7 +559,7 @@ User prompt: "When a user submits a form, save the lead details to Google Sheets
 - "What document format should be used for saving data in Google Sheets?" (NOT RELEVANT: Google Sheets has its own format)
 - "How should male and female data be separated?" (NOT RELEVANT: not mentioned)
 - "How to send notifications?" (ALREADY MENTIONED: Slack)
-- "What are your Google OAuth credentials?" (Google credentials handled via navbar button)
+- "What are your Google OAuth credentials?" (Google credentials are connected from Connections)
 
 User prompt: "post to social media daily morning"
 ✅ CORRECT questions:
@@ -583,7 +583,7 @@ FINAL RULES:
 <<<<<<< HEAD
 CREDENTIAL HANDLING RULES:
 1. **Google Services (Sheets, Docs, Gmail):** 
-   - DO NOT ask for Google OAuth credentials (handled via navbar button)
+   - DO NOT ask for Google OAuth credentials (connected from Connections)
    - DO ask for: Google Sheets URL + Sheet Name (for Sheets), Google Docs URL (for Docs)
 2. **Other Services (Slack, Email, Database, etc.):**
    - Ask for credentials ONLY if not stored in environment variables
@@ -736,7 +736,7 @@ Return ONLY valid JSON in this exact format (no markdown, no code blocks):
       // Remove duplicates before checking count
       result.questions = this.deduplicateQuestions(this.normalizeQuestions(result.questions));
 
-      // CRITICAL: Filter out Google OAuth questions (handled via navbar credentials button)
+      // CRITICAL: Filter out Google OAuth questions (handled through the backend connection catalog)
       result.questions = this.filterGoogleOAuthQuestions(result.questions);
 
       // CRITICAL: Filter out irrelevant questions for chatbot workflows

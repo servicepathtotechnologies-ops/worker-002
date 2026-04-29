@@ -53,7 +53,7 @@ function hydrateNode(nodeType: string): WorkflowNode {
  *
  * This prompt serves two purposes:
  * 1. Show the user a clear explanation of what will be built
- * 2. Guide the backend to correctly wire edges, branches, and operations
+ * 2. Guide the backend to correctly wire edges, branches, operations, and summaryV2 branch/path artifacts
  *
  * Format: WORKFLOW / TRIGGER / FLOW (with branch cases) / CONNECTIONS
  */

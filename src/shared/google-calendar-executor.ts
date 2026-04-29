@@ -6,7 +6,7 @@
  */
 
 import { google, calendar_v3 } from 'googleapis';
-import { SupabaseClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { getGoogleAccessToken } from './google-sheets';
 
 export interface GoogleCalendarOperationParams {

@@ -5,7 +5,8 @@
  * WhatsApp uses Facebook OAuth tokens with WhatsApp Business API permissions.
  */
 
-import { SupabaseClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
+import { decryptToken, encryptToken } from '../core/utils/token-encryption';
 
 export interface WhatsAppTokenData {
   access_token: string;
@@ -65,7 +66,18 @@ export async function getWhatsAppAccessToken(
         if (!facebookError && facebookTokenData) {
           tokenData = facebookTokenData;
         } else {
-          // Try user_credentials table as last resort
+          // Try unified social_tokens table for the connected Facebook account
+          const { data: socialTokenData, error: socialTokenError } = await supabase
+            .from('social_tokens')
+            .select('access_token, expires_at, refresh_token')
+            .eq('user_id', uid)
+            .eq('provider', 'facebook')
+            .single();
+
+          if (!socialTokenError && socialTokenData) {
+            tokenData = socialTokenData;
+          } else {
+            // Try user_credentials table as last resort
           const { data: credentialsData, error: credentialsError } = await supabase
             .from('user_credentials')
             .select('credentials')
@@ -81,6 +93,7 @@ export async function getWhatsAppAccessToken(
               refresh_token: creds.refreshToken || creds.refresh_token,
             };
           }
+          }
         }
       }
 
@@ -90,6 +103,8 @@ export async function getWhatsAppAccessToken(
       }
 
       // Check if token is expired (with 5 minute buffer)
+      const accessToken = decryptToken(tokenData.access_token);
+      const refreshToken = tokenData.refresh_token ? decryptToken(tokenData.refresh_token) : null;
       const expiresAt = tokenData.expires_at ? new Date(tokenData.expires_at) : null;
       const now = new Date();
       const fiveMinutesFromNow = new Date(now.getTime() + 5 * 60 * 1000);
@@ -98,8 +113,8 @@ export async function getWhatsAppAccessToken(
         console.warn(`[WhatsAppTokenManager] Token for user ${uid} is expired or expiring soon`);
         
         // Try to refresh token if refresh_token is available
-        if (tokenData.refresh_token) {
-          const refreshed = await refreshWhatsAppToken(supabase, uid, tokenData.refresh_token);
+        if (refreshToken) {
+          const refreshed = await refreshWhatsAppToken(supabase, uid, refreshToken);
           if (refreshed) {
             return refreshed;
           }
@@ -111,7 +126,7 @@ export async function getWhatsAppAccessToken(
 
       if (tokenData.access_token) {
         console.log(`[WhatsAppTokenManager] ✅ Found valid WhatsApp/Facebook token for user ${uid}`);
-        return tokenData.access_token;
+        return accessToken;
       }
     } catch (error) {
       console.error(`[WhatsAppTokenManager] Error fetching token for user ${uid}:`, error);
@@ -171,7 +186,7 @@ async function refreshWhatsAppToken(
 
     // Update token in database (try whatsapp_oauth_tokens first, then facebook_oauth_tokens)
     const updateData = {
-      access_token: tokenData.access_token,
+      access_token: encryptToken(tokenData.access_token),
       expires_at: expiresAt,
       updated_at: new Date().toISOString(),
     };

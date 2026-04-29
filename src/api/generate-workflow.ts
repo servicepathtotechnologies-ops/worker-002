@@ -26,8 +26,27 @@ import {
   resolvePreferredTerminalNodeType,
 } from '../core/utils/workflow-build-manifest-utils';
 import { unifiedNodeRegistry } from '../core/registry/unified-node-registry';
+import { unifiedGraphOrchestrator } from '../core/orchestration/unified-graph-orchestrator';
+import type { WorkflowNode } from '../core/types/ai-types';
+import { compileSummaryV2FromWorkflow } from '../services/ai/summary-v2-compiler';
+import { validateSummaryV2 } from '../core/validation/summary-v2-validator';
 
 const pipeline = new WorkflowGenerationPipeline();
+
+function hydratePreviewNode(nodeType: string, index: number): WorkflowNode {
+  const normalizedType = unifiedNodeRegistry.resolveAlias(nodeType) || nodeType;
+  const def = unifiedNodeRegistry.get(normalizedType);
+  return {
+    id: `preview_${index}_${normalizedType}`,
+    type: normalizedType,
+    data: {
+      label: def?.label || normalizedType,
+      type: normalizedType,
+      category: def?.category || 'utility',
+      config: { ...(unifiedNodeRegistry.getDefaultConfig(normalizedType) || {}) },
+    },
+  };
+}
 
 function parseStructuredIntentSnapshot(value: unknown): StructuredIntent | undefined {
   if (!value || typeof value !== 'object') return undefined;
@@ -227,10 +246,38 @@ export default async function generateWorkflow(req: Request, res: Response): Pro
         proposedNodeChain = [trig, ...actions, terminalFallback];
       }
 
+      const previewNodes = proposedNodeChain.map((type, index) => hydratePreviewNode(type, index));
+      const initialized = unifiedGraphOrchestrator.initializeWorkflow(previewNodes);
+      const reconciled = unifiedGraphOrchestrator.reconcileWorkflow(initialized.workflow);
+      const validation = unifiedGraphOrchestrator.validateWorkflow(reconciled.workflow, reconciled.executionOrder);
+      if (!validation.valid) {
+        res.status(422).json({
+          success: false,
+          error: 'ORCHESTRATOR_VALIDATION_FAILED',
+          message: 'Failed to compile a valid preview graph for structural summary',
+          violations: validation.errors,
+          correlationId,
+        });
+        return;
+      }
+      const summaryV2 = compileSummaryV2FromWorkflow(reconciled.workflow, userPrompt);
+      const summaryValidation = validateSummaryV2(summaryV2);
+      if (!summaryValidation.valid) {
+        res.status(422).json({
+          success: false,
+          error: 'SUMMARY_V2_CONTRACT_FAILED',
+          message: 'summaryV2 contract validation failed',
+          violations: summaryValidation.errors,
+          correlationId,
+        });
+        return;
+      }
+
       res.json({
         phase: 'summarize',
         workflowIntentPlan: {
           structuredSummary,
+          summaryV2,
           proposedNodeChain,
           mandatoryNodeTypes: [intentForAnalyze.triggerType || 'manual_trigger'],
           nodeInclusionReasons: intentForAnalyze.actions.reduce((acc: Record<string, string>, a: string) => {

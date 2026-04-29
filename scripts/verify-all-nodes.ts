@@ -30,6 +30,11 @@ interface VerificationResult {
  */
 function verifyNode(nodeType: string): VerificationResult {
   const issues: string[] = [];
+  const intentionallyConfiglessNodes = new Set([
+    'error_trigger',
+    'noop',
+    'try_catch',
+  ]);
   
   // Check registry
   const nodeDef = unifiedNodeRegistry.get(nodeType);
@@ -44,14 +49,16 @@ function verifyNode(nodeType: string): VerificationResult {
   const hasContext = !!schema && 
     !!schema.description &&
     !!schema.aiSelectionCriteria &&
-    (schema.keywords?.length > 0 || schema.aiSelectionCriteria.keywords?.length > 0);
+    ((schema.keywords?.length ?? 0) > 0 || (schema.aiSelectionCriteria.keywords?.length ?? 0) > 0);
   
   if (!hasContext) {
     issues.push('Missing context (description, keywords, or aiSelectionCriteria)');
   }
   
   // Check schemas
-  const hasInputSchema = !!nodeDef?.inputSchema && Object.keys(nodeDef.inputSchema).length > 0;
+  const hasInputSchema =
+    !!nodeDef?.inputSchema &&
+    (Object.keys(nodeDef.inputSchema).length > 0 || intentionallyConfiglessNodes.has(nodeType));
   const hasOutputSchema = !!nodeDef?.outputSchema;
   
   if (!hasInputSchema) {

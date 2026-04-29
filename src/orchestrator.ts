@@ -7,6 +7,7 @@ import { getMissingCredentialQuestions, storeCredential } from './credentials/cr
 import { buildQuestionPlan, FieldQuestion } from './questions/questionEngine';
 import { validateAndAutoRepair } from './validation/autoRepair';
 import { WorkflowSpec } from './planner/types';
+import { getPlannerSession, upsertPlannerSession } from './services/ai/planner-session-repository';
 
 export interface SessionState {
   id: string;
@@ -19,9 +20,11 @@ export interface SessionState {
   fieldQuestions: FieldQuestion[];
   repairs: string[];
   status: 'pending' | 'needs_clarification' | 'awaiting_answers' | 'ready';
+  stage: 'analyze' | 'generate' | 'confirm';
+  version: number;
+  createdAt: string;
+  updatedAt: string;
 }
-
-const sessions = new Map<string, SessionState>();
 
 export function createSessionId(): string {
   return `session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -30,6 +33,7 @@ export function createSessionId(): string {
 export async function startWorkflowGeneration(prompt: string): Promise<SessionState> {
   const id = createSessionId();
   const cleanPrompt = preprocessPrompt(prompt);
+  const nowIso = new Date().toISOString();
 
   const { spec } = await callPlannerAgent(cleanPrompt);
   const validated = validateWorkflowSpec(spec);
@@ -45,11 +49,23 @@ export async function startWorkflowGeneration(prompt: string): Promise<SessionSt
     fieldQuestions: [],
     repairs: [],
     status: validated.clarifications && validated.clarifications.length > 0 ? 'needs_clarification' : 'pending',
+    stage: 'analyze',
+    version: 1,
+    createdAt: nowIso,
+    updatedAt: nowIso,
   };
 
   // If clarifications are needed, stop here and wait for user answers
   if (base.status === 'needs_clarification') {
-    sessions.set(id, base);
+    await upsertPlannerSession({
+      id: base.id,
+      stage: base.stage,
+      status: base.status,
+      version: base.version,
+      createdAt: base.createdAt,
+      updatedAt: base.updatedAt,
+      artifacts: base,
+    });
     return base;
   }
 
@@ -69,14 +85,26 @@ export async function startWorkflowGeneration(prompt: string): Promise<SessionSt
     credentialQuestions,
     fieldQuestions: questions,
     status: credentialQuestions.length || questions.length ? 'awaiting_answers' : 'ready',
+    stage: 'generate',
+    version: base.version + 1,
+    updatedAt: new Date().toISOString(),
   };
 
-  sessions.set(id, final);
+  await upsertPlannerSession({
+    id: final.id,
+    stage: final.stage,
+    status: final.status,
+    version: final.version,
+    createdAt: final.createdAt,
+    updatedAt: final.updatedAt,
+    artifacts: final,
+  });
   return final;
 }
 
-export function getSession(sessionId: string): SessionState | undefined {
-  return sessions.get(sessionId);
+export async function getSession(sessionId: string): Promise<SessionState | undefined> {
+  const record = await getPlannerSession<SessionState>(sessionId);
+  return record?.artifacts;
 }
 
 export function answerCredential(provider: string, data: Record<string, any>): void {

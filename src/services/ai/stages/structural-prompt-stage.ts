@@ -105,6 +105,8 @@ CONNECTIONS: [Describe the exact data flow — what data passes from each node t
 5. For branching: state EXACTLY which field value routes to which branch (e.g. "when status = success → Gmail sends confirmation")
 6. The CONNECTIONS section must describe the data field that drives routing decisions
 7. Be specific about what data flows between nodes — not generic "data is passed"
+8. Include explicit branch path mapping for every branch node (if_else/switch) and list each case outcome
+9. Ensure each step states node responsibility and expected output effect so backend can compile summaryV2 fields
 
 ## EXAMPLE OUTPUT (for a payment status workflow):
 

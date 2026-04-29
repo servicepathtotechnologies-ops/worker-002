@@ -6,7 +6,7 @@
  * - Large data (> 100KB) → Object Storage (S3/MinIO)
  */
 
-import { SupabaseClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { ObjectStorageService } from '../object-storage-service';
 
 const MAX_DB_SIZE = 100 * 1024; // 100KB threshold

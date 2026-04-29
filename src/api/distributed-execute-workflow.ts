@@ -465,10 +465,10 @@ export async function getExecutionStatus(
       steps: steps || [],
       progress: {
         total: steps?.length || 0,
-        completed: steps?.filter(s => s.status === 'completed').length || 0,
-        failed: steps?.filter(s => s.status === 'failed').length || 0,
-        running: steps?.filter(s => s.status === 'running').length || 0,
-        pending: steps?.filter(s => s.status === 'pending').length || 0,
+        completed: steps?.filter((s: any) => s.status === 'completed' || s.status === 'success').length || 0,
+        failed: steps?.filter((s: any) => s.status === 'failed').length || 0,
+        running: steps?.filter((s: any) => s.status === 'running').length || 0,
+        pending: steps?.filter((s: any) => s.status === 'pending').length || 0,
       },
     });
   } catch (error: any) {

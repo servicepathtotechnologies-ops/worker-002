@@ -49,6 +49,31 @@ export class SubscriptionService {
   private cacheExpiry: number = 0;
   private readonly CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
+  private firstSubscriptionRow(data: any): any | null {
+    if (Array.isArray(data)) {
+      return data.find((row) => row && typeof row === 'object' && row.subscription_id) || null;
+    }
+    if (data && typeof data === 'object' && data.subscription_id) {
+      return data;
+    }
+    return null;
+  }
+
+  private async buildFreeSubscriptionFallback(userId: string): Promise<UserSubscription> {
+    const freePlan = await this.getPlanByName('Free').catch(() => null);
+    return {
+      id: `free:${userId}`,
+      userId,
+      planId: freePlan?.id || 'free',
+      planName: 'Free',
+      status: 'active',
+      workflowLimit: freePlan?.workflowLimit ?? 2,
+      workflowsUsed: 0,
+      startedAt: new Date(),
+      autoRenew: false,
+    };
+  }
+
   /**
    * Get all available subscription plans with caching
    */
@@ -76,7 +101,7 @@ export class SubscriptionService {
       }
 
       // Transform and cache plans
-      const transformedPlans = plans.map(plan => ({
+      const transformedPlans = plans.map((plan: any) => ({
         id: plan.id,
         name: plan.name as 'Free' | 'Pro' | 'Enterprise',
         workflowLimit: plan.workflow_limit,
@@ -92,7 +117,7 @@ export class SubscriptionService {
 
       // Update cache
       this.planCache.clear();
-      transformedPlans.forEach(plan => {
+      transformedPlans.forEach((plan: any) => {
         this.planCache.set(plan.id, plan);
       });
       this.cacheExpiry = Date.now() + this.CACHE_TTL;
@@ -146,7 +171,9 @@ export class SubscriptionService {
         throw new Error(`Failed to get user subscription: ${error.message}`);
       }
 
-      if (!data || data.length === 0) {
+      let row = this.firstSubscriptionRow(data);
+
+      if (!row) {
         // No subscription found, ensure Free subscription exists
         await this.ensureFreeSubscription(userId);
         
@@ -154,14 +181,23 @@ export class SubscriptionService {
         const { data: retryData, error: retryError } = await supabase
           .rpc('get_user_subscription_details', { p_uid: userId });
 
-        if (retryError || !retryData || retryData.length === 0) {
-          return null;
+        if (retryError) {
+          console.warn('[SubscriptionService] Retry subscription lookup failed, using Free fallback:', retryError);
+          return this.buildFreeSubscriptionFallback(userId);
         }
 
-        return this.transformSubscriptionData(retryData[0]);
+        row = this.firstSubscriptionRow(retryData);
+        if (!row) {
+          console.warn('[SubscriptionService] Subscription RPC returned no usable row, using Free fallback:', {
+            userId,
+            resultType: Array.isArray(retryData) ? 'array' : typeof retryData,
+            rowCount: Array.isArray(retryData) ? retryData.length : undefined,
+          });
+          return this.buildFreeSubscriptionFallback(userId);
+        }
       }
 
-      return this.transformSubscriptionData(data[0]);
+      return this.transformSubscriptionData(row);
     } catch (error: any) {
       console.error('[SubscriptionService] getUserSubscription error:', error);
       throw error;
@@ -426,6 +462,9 @@ export class SubscriptionService {
    * Transform database subscription data to UserSubscription interface
    */
   private transformSubscriptionData(data: any): UserSubscription {
+    if (!data || typeof data !== 'object') {
+      throw new Error('Invalid subscription data returned from database');
+    }
     return {
       id: data.subscription_id,
       userId: data.user_id || '',

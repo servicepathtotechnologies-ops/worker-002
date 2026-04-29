@@ -13,6 +13,17 @@ export function overrideInstagramTrigger(
   def: UnifiedNodeDefinition,
   _schema: NodeSchema,
 ): UnifiedNodeDefinition {
+  const structuralBuildtime = {
+    default: 'buildtime_ai_once' as const,
+    supportsRuntimeAI: false,
+    supportsBuildtimeAI: true,
+  };
+  const manualStatic = {
+    default: 'manual_static' as const,
+    supportsRuntimeAI: false,
+    supportsBuildtimeAI: false,
+  };
+
   return {
     ...def,
     type: 'instagram_trigger',
@@ -31,11 +42,17 @@ export function overrideInstagramTrigger(
         required: true,
         default: 'message.received',
         examples: ['message.received', 'comment.created', 'mention.created', 'postback'],
+        ownership: 'structural',
+        role: 'config',
+        fillMode: structuralBuildtime,
       },
       instagramBusinessAccountId: {
         type: 'string',
         description: 'Instagram Business Account ID to listen on (optional)',
         required: false,
+        ownership: 'value',
+        role: 'id',
+        fillMode: manualStatic,
       },
     },
     outputSchema: {

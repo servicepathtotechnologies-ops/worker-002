@@ -19,6 +19,9 @@ const STRICT_CREDENTIAL_CATEGORIES = new Set<FieldHelpCategory>([
   'private_key',
   'consumer_key',
   'consumer_secret',
+  'connection_string',
+  'username',
+  'password',
   'generic_credential',
 ]);
 

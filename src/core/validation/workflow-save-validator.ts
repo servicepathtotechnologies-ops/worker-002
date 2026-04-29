@@ -565,7 +565,13 @@ export function normalizeWorkflowForSave(
         );
         const normalizedOut = outEdges.map((e) => findInPatched(e.id, e)!);
         for (const e of normalizedOut) {
-          const current = String(e.sourceHandle || (e as any).type || '').trim();
+          // When sourceHandle is the generic fallback ('output'/'default'), prefer edge.type
+          // which may carry the real semantic case label (e.g. 'failed', 'pending', 'success').
+          const rawHandle = String(e.sourceHandle || '');
+          const isGenericHandle = !rawHandle || rawHandle === 'output' || rawHandle === 'default';
+          const current = String(
+            (isGenericHandle ? '' : rawHandle) || (e as any).type || rawHandle
+          ).trim();
           if (!current) continue;
           const positionalMatch = /^case_(\d+)$/i.exec(current);
           if (!positionalMatch) {

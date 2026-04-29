@@ -30,6 +30,11 @@ export function overrideAiAgent(def: UnifiedNodeDefinition, schema: NodeSchema):
     ...chatModelDef,
     required: false,
     default: (chatModelDef as any).default || { provider: 'gemini', model: 'gemini-2.5-flash' },
+    fillMode: {
+      default: 'buildtime_ai_once' as const,
+      supportsRuntimeAI: false,
+      supportsBuildtimeAI: true,
+    },
   };
   nextInputSchema.memory = { ...memoryDef, required: false };
   nextInputSchema.tool = { ...toolDef, required: false };
@@ -77,4 +82,3 @@ export function overrideAiAgent(def: UnifiedNodeDefinition, schema: NodeSchema):
     },
   };
 }
-

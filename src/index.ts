@@ -136,6 +136,7 @@ import executeWorkflowRoute from './api/execute-workflow';
 import webhookTriggerRoute from './api/webhook-trigger';
 import chatApiRoute from './api/chat-api';
 import adminTemplatesRoute from './api/admin-templates';
+import templatesRoute from './api/templates';
 import adminUsersRoute from './api/admin-users';
 import deleteAccountRoute from './api/delete-account';
 import copyTemplateRoute from './api/copy-template';
@@ -172,17 +173,36 @@ import nodeDefinitionsHandler from './api/node-definitions';
 import workflowFieldOwnershipCatalogHandler from './api/workflow-field-ownership-catalog';
 import { linkedinStatusHandler, linkedinTestHandler, linkedinRefreshNowHandler, linkedinDisconnectHandler } from './api/connections-linkedin';
 import { githubStatusHandler, githubDisconnectHandler } from './api/connections-github';
+import { makeSocialDisconnectHandler } from './api/connections-social';
 import { zohoStatusHandler, zohoConnectHandler, zohoTestHandler, zohoDisconnectHandler } from './api/connections-zoho';
+import {
+  connectionsCatalogHandler,
+  connectionsStatusHandler,
+  singleConnectionStatusHandler,
+  logConnectionConfigReadiness,
+} from './api/connections-catalog';
 import { authStatusHandler } from './api/auth-status';
 import saveSocialTokenRoute from './api/save-social-token';
 import { notionAuthorizeHandler, notionCallbackHandler } from './api/oauth-notion';
 import { twitterAuthorizeHandler, twitterCallbackHandler } from './api/oauth-twitter';
+import { facebookOAuthStart, facebookOAuthCallback } from './api/oauth-facebook';
+import { googleOAuthStart, googleOAuthCallback } from './api/oauth-google';
+import { linkedInOAuthStart, linkedInOAuthCallback } from './api/oauth-linkedin';
+import {
+  instagramAuthorizeHandler,
+  instagramCallbackHandler,
+  whatsappAuthorizeHandler,
+  whatsappCallbackHandler,
+} from './api/oauth-meta';
+import { salesforceAuthorizeHandler, salesforceCallbackHandler } from './api/oauth-salesforce';
 import { createRazorpayOrder, verifyRazorpayPayment, getSubscriptionPlans } from './api/payments-razorpay';
 import { getCurrentSubscription, cancelSubscription, getSubscriptionHistory, adminGetUsers, adminUpgradeUser } from './api/subscriptions';
 import { securityHeaders, subscriptionRateLimit, validateSubscriptionInput, developmentModeHeaders, requestLogger } from './core/middleware/security';
 import { authenticateUser, requireAdmin, optionalAuth, requireRole, requireSubscriptionPlan } from './core/middleware/subscription-auth';
 import { subscriptionLogger, paymentLogger, adminLogger } from './core/middleware/subscription-logging';
 import { checkWorkflowLimitEndpoint } from './core/middleware/workflow-limits';
+import { distributedRateLimit } from './core/middleware/distributed-rate-limit';
+import { tracingMiddleware } from './core/observability/distributed-tracing';
 import { 
   refreshTokenEndpoint, 
   getSessionInfo, 
@@ -197,6 +217,7 @@ import {
 
 console.log('[ServerStartup] 🔵 Creating Express app...');
 const app: Express = express();
+logConnectionConfigReadiness();
 console.log('[ServerStartup] ✅ Express app created');
 
 // === ENHANCED LOGGING MIDDLEWARE ===
@@ -229,6 +250,7 @@ app.use(corsMiddleware);
 app.use(securityHeaders);
 app.use(developmentModeHeaders);
 app.use(requestLogger);
+app.use(tracingMiddleware);
 app.use(validateSubscriptionInput);
 
 console.log('[ServerStartup] ✅ Middleware registered');
@@ -239,6 +261,29 @@ app.get('/health', asyncHandler(async (req: Request, res: Response) => {
   try {
     const stats = metricsTracker.getStats();
     const geminiConfigured = !!(config.geminiApiKey && config.geminiApiKey.trim().length > 0);
+    const { circuitBreakerManager } = await import('./services/workflow-executor/distributed/reliability/circuit-breaker');
+    const { aiSreOrchestrator } = await import('./services/ai-sre-orchestrator');
+    const circuitBreakerStats = circuitBreakerManager.getAllStats();
+    const openCircuits = circuitBreakerStats.filter((entry) => entry.state === 'open').length;
+    const reliabilityDiagnostics = {
+      strictValidation: config.reliability?.strictValidation ?? false,
+      validateNodeOutput: config.reliability?.validateNodeOutput ?? false,
+      aiSelfCheckEnabled: config.reliability?.aiSelfCheckEnabled ?? false,
+      distributedRateLimitEnabled: config.reliability?.distributedRateLimitEnabled ?? false,
+      redisSessionEnabled: config.reliability?.redisSessionEnabled ?? false,
+      tracingEnabled: config.reliability?.tracingEnabled ?? false,
+      dlqMandatoryRouting: config.reliability?.dlqMandatoryRouting ?? false,
+      autonomousOpsEnabled: config.reliability?.autonomousOpsEnabled ?? false,
+      autonomousOpsStatus: aiSreOrchestrator.getStatus(),
+      circuitBreakers: {
+        total: circuitBreakerStats.length,
+        open: openCircuits,
+      },
+    };
+    const { getPoolStats } = await import('./core/database/db-pool');
+    const dbPool = getPoolStats();
+    const dbStatus = dbPool.waitingCount > 0 ? 'degraded' : dbPool.utilization > 80 ? 'warning' : 'healthy';
+
     res.json({
       status: geminiConfigured ? 'healthy' : 'degraded',
       backend: 'running',
@@ -249,9 +294,11 @@ app.get('/health', asyncHandler(async (req: Request, res: Response) => {
         successRate: `${stats.successRate.toFixed(1)}%`,
         averageResponseTime: `${stats.averageResponseTime.toFixed(0)}ms`,
       },
+      database: { ...dbPool, status: dbStatus },
       timestamp: new Date().toISOString(),
       environment: process.env.NODE_ENV || 'development',
       port: config.port,
+      reliability: reliabilityDiagnostics,
       endpoints: [
         '/api/execute-workflow',
         '/api/webhook-trigger',
@@ -354,7 +401,16 @@ app.get('/api/chat/health', asyncHandler(async (req: Request, res: Response) => 
 
 // API Routes
 console.log('[ServerStartup] 🔵 Registering /api/execute-workflow endpoint...');
-app.post('/api/execute-workflow', asyncHandler(executeWorkflowRoute));
+app.post(
+  '/api/execute-workflow',
+  distributedRateLimit({
+    endpointKey: 'execute-workflow',
+    perUserLimit: 40,
+    globalLimit: 1200,
+    windowMs: 60_000,
+  }),
+  asyncHandler(executeWorkflowRoute)
+);
 
 // 🆕 Execution Queue API
 app.get('/api/execution-queue/stats', asyncHandler(async (req: Request, res: Response) => {
@@ -416,11 +472,12 @@ app.get('/api/workflow-logs/correlation/:correlationId', asyncHandler(async (req
 }));
 
 // 🆕 Credential Vault API
-app.post('/api/credentials/store', asyncHandler(async (req: Request, res: Response) => {
-  const { userId, workflowId, key, value, type, metadata } = req.body;
+app.post('/api/credentials/store', asyncHandler(authenticateUser), asyncHandler(async (req: Request, res: Response) => {
+  const userId = (req as any).user?.id;
+  const { workflowId, key, value, type, metadata } = req.body;
   
   if (!userId || !key || !value || !type) {
-    return res.status(400).json({ error: 'userId, key, value, and type are required' });
+    return res.status(400).json({ error: 'key, value, and type are required' });
   }
   
   const { getCredentialVault } = await import('./services/credential-vault');
@@ -433,16 +490,37 @@ app.post('/api/credentials/store', asyncHandler(async (req: Request, res: Respon
     type,
     metadata
   );
+
+  const { queryAsService } = await import('./core/database/db-pool');
+  await queryAsService(
+    `INSERT INTO user_credentials (user_id, service, credentials, updated_at)
+     VALUES ($1, $2, $3::jsonb, NOW())
+     ON CONFLICT (user_id, service)
+     DO UPDATE SET credentials = EXCLUDED.credentials, updated_at = NOW()`,
+    [
+      userId,
+      String(key).toLowerCase(),
+      JSON.stringify({
+        connected: true,
+        type,
+        fields: metadata?.fields || null,
+        savedAt: new Date().toISOString(),
+      }),
+    ]
+  ).catch((err) => {
+    console.warn('[CredentialVault] user_credentials mirror failed:', err.message);
+  });
   
   res.json({ success: true, credential: { ...credential, encryptedValue: '[REDACTED]' } });
 }));
 
-app.get('/api/credentials/retrieve/:key', asyncHandler(async (req: Request, res: Response) => {
+app.get('/api/credentials/retrieve/:key', asyncHandler(authenticateUser), asyncHandler(async (req: Request, res: Response) => {
   const { key } = req.params;
-  const { userId, workflowId } = req.query;
+  const userId = (req as any).user?.id;
+  const { workflowId } = req.query;
   
-  if (!userId || typeof userId !== 'string') {
-    return res.status(400).json({ error: 'userId is required and must be a string' });
+  if (!userId) {
+    return res.status(401).json({ error: 'Unauthorized' });
   }
   
   const { getCredentialVault } = await import('./services/credential-vault');
@@ -463,11 +541,12 @@ app.get('/api/credentials/retrieve/:key', asyncHandler(async (req: Request, res:
   res.json({ success: true, value: '[REDACTED]' }); // Never return actual value in API
 }));
 
-app.get('/api/credentials/list', asyncHandler(async (req: Request, res: Response) => {
-  const { userId, workflowId } = req.query;
+app.get('/api/credentials/list', asyncHandler(authenticateUser), asyncHandler(async (req: Request, res: Response) => {
+  const userId = (req as any).user?.id;
+  const { workflowId } = req.query;
   
-  if (!userId || typeof userId !== 'string') {
-    return res.status(400).json({ error: 'userId is required and must be a string' });
+  if (!userId) {
+    return res.status(401).json({ error: 'Unauthorized' });
   }
   
   const { getCredentialVault } = await import('./services/credential-vault');
@@ -481,12 +560,13 @@ app.get('/api/credentials/list', asyncHandler(async (req: Request, res: Response
   res.json({ success: true, credentials });
 }));
 
-app.delete('/api/credentials/:key', asyncHandler(async (req: Request, res: Response) => {
+app.delete('/api/credentials/:key', asyncHandler(authenticateUser), asyncHandler(async (req: Request, res: Response) => {
   const { key } = req.params;
-  const { userId, workflowId } = req.query;
+  const userId = (req as any).user?.id;
+  const { workflowId } = req.query;
   
-  if (!userId || typeof userId !== 'string') {
-    return res.status(400).json({ error: 'userId is required and must be a string' });
+  if (!userId) {
+    return res.status(401).json({ error: 'Unauthorized' });
   }
   
   const { getCredentialVault } = await import('./services/credential-vault');
@@ -499,6 +579,12 @@ app.delete('/api/credentials/:key', asyncHandler(async (req: Request, res: Respo
     },
     key
   );
+
+  const { queryAsService } = await import('./core/database/db-pool');
+  await queryAsService(
+    `DELETE FROM user_credentials WHERE user_id = $1 AND service = $2`,
+    [userId, String(key).toLowerCase()]
+  ).catch(() => []);
   
   res.json({ success: true, message: 'Credential deleted' });
 }));
@@ -508,11 +594,20 @@ import './nodes/definitions'; // Register all node definitions
 app.get('/api/node-definitions', asyncHandler(nodeDefinitionsHandler));
 
 // Distributed Workflow Engine Routes
-app.post('/api/distributed-execute-workflow', asyncHandler(distributedExecuteWorkflow));
+app.post(
+  '/api/distributed-execute-workflow',
+  distributedRateLimit({
+    endpointKey: 'distributed-execute-workflow',
+    perUserLimit: 30,
+    globalLimit: 900,
+    windowMs: 60_000,
+  }),
+  asyncHandler(distributedExecuteWorkflow)
+);
 app.get('/api/execution-status/:executionId', asyncHandler(getExecutionStatus));
 
 // Auth status endpoint
-app.get('/api/auth/status', asyncHandler(authStatusHandler));
+app.get('/api/auth/status', authenticateUser, asyncHandler(authStatusHandler));
 
 // Enhanced Authentication Management API endpoints
 app.post('/api/auth/refresh-token', 
@@ -557,8 +652,112 @@ app.get('/api/admin/security-events',
   asyncHandler(getSecurityEventsEndpoint)
 );
 
+// DLQ Admin API
+app.get(
+  '/api/admin/dlq/stats',
+  adminLogger('dlq-stats'),
+  asyncHandler(authenticateUser),
+  requireAdmin,
+  asyncHandler(async (_req: Request, res: Response) => {
+    const { getDeadLetterQueue } = await import('./services/workflow-executor/distributed/reliability/dead-letter-queue');
+    const dlq = getDeadLetterQueue();
+    if (!dlq.isAvailable()) {
+      await dlq.initialize(config.redisUrl);
+    }
+    const stats = await dlq.getStats();
+    res.json({ success: true, stats });
+  })
+);
+
+app.get(
+  '/api/admin/autonomous-ops/status',
+  adminLogger('autonomous-ops-status'),
+  asyncHandler(authenticateUser),
+  requireAdmin,
+  asyncHandler(async (_req: Request, res: Response) => {
+    const { aiSreOrchestrator } = await import('./services/ai-sre-orchestrator');
+    res.json({ success: true, status: aiSreOrchestrator.getStatus() });
+  })
+);
+
+app.get(
+  '/api/admin/dlq/jobs',
+  adminLogger('dlq-jobs'),
+  asyncHandler(authenticateUser),
+  requireAdmin,
+  asyncHandler(async (req: Request, res: Response) => {
+    const { limit = '100', reason } = req.query;
+    const { getDeadLetterQueue } = await import('./services/workflow-executor/distributed/reliability/dead-letter-queue');
+    const dlq = getDeadLetterQueue();
+    if (!dlq.isAvailable()) {
+      await dlq.initialize(config.redisUrl);
+    }
+    const parsedLimit = Math.max(1, Math.min(500, parseInt(limit as string, 10) || 100));
+    const jobs = typeof reason === 'string'
+      ? await dlq.getJobsByReason(reason as any, parsedLimit)
+      : await dlq.getAllJobs(parsedLimit);
+    res.json({ success: true, count: jobs.length, jobs });
+  })
+);
+
+app.post(
+  '/api/admin/dlq/replay/:jobId',
+  adminLogger('dlq-replay'),
+  asyncHandler(authenticateUser),
+  requireAdmin,
+  asyncHandler(async (req: Request, res: Response) => {
+    const { jobId } = req.params;
+    const { getDeadLetterQueue } = await import('./services/workflow-executor/distributed/reliability/dead-letter-queue');
+    const { createQueueClient } = await import('./services/workflow-executor/distributed/queue-client');
+    const dlq = getDeadLetterQueue();
+    if (!dlq.isAvailable()) {
+      await dlq.initialize(config.redisUrl);
+    }
+    const job = await dlq.getJob(jobId);
+    if (!job) {
+      return res.status(404).json({ success: false, error: 'DLQ job not found' });
+    }
+
+    const queueClient = createQueueClient();
+    await queueClient.connect();
+    await queueClient.publishJob({
+      execution_id: job.originalJob.executionId,
+      node_id: job.originalJob.nodeId,
+      node_type: job.originalJob.nodeType,
+      retry_attempt: 0,
+      job_id: `${job.originalJob.id}-replay-${Date.now()}`,
+      priority: job.originalJob.priority,
+    });
+    await queueClient.close();
+    await dlq.removeJob(jobId);
+
+    return res.json({
+      success: true,
+      message: 'DLQ job replayed and removed',
+      replayedJobId: jobId,
+    });
+  })
+);
+
+app.delete(
+  '/api/admin/dlq/jobs/:jobId',
+  adminLogger('dlq-delete'),
+  asyncHandler(authenticateUser),
+  requireAdmin,
+  asyncHandler(async (req: Request, res: Response) => {
+    const { jobId } = req.params;
+    const { getDeadLetterQueue } = await import('./services/workflow-executor/distributed/reliability/dead-letter-queue');
+    const dlq = getDeadLetterQueue();
+    if (!dlq.isAvailable()) {
+      await dlq.initialize(config.redisUrl);
+    }
+    await dlq.removeJob(jobId);
+    res.json({ success: true, message: 'DLQ job removed' });
+  })
+);
+
 // Social media token management endpoint
-app.post('/api/social-tokens', asyncHandler(saveSocialTokenRoute));
+app.post('/api/social-tokens', asyncHandler(authenticateUser), asyncHandler(saveSocialTokenRoute));
 
 // Workflow Limit Enforcement API
 app.get('/api/workflows/limit-check', 
@@ -618,18 +817,43 @@ app.post('/api/admin/subscriptions/upgrade/:userId',
 );
 
 // LinkedIn connection DX/debugging endpoints
-app.get('/api/connections/linkedin/status', asyncHandler(linkedinStatusHandler));
-app.post('/api/connections/linkedin/test', asyncHandler(linkedinTestHandler));
+app.get('/api/connections/catalog', asyncHandler(connectionsCatalogHandler));
+app.get('/api/connections/status', asyncHandler(authenticateUser), asyncHandler(connectionsStatusHandler));
+app.get('/api/connections/linkedin/status', asyncHandler(authenticateUser), asyncHandler(linkedinStatusHandler));
+app.post('/api/connections/linkedin/test', asyncHandler(authenticateUser), asyncHandler(linkedinTestHandler));
 
 // GitHub connection endpoints
-app.get('/api/connections/github/status', asyncHandler(githubStatusHandler));
-app.post('/api/connections/github/disconnect', asyncHandler(githubDisconnectHandler));
+app.get('/api/connections/github/status', asyncHandler(authenticateUser), asyncHandler(githubStatusHandler));
+app.post('/api/connections/github/disconnect', asyncHandler(authenticateUser), asyncHandler(githubDisconnectHandler));
+app.post('/api/connections/facebook/disconnect', asyncHandler(authenticateUser), asyncHandler(makeSocialDisconnectHandler('facebook')));
+app.delete('/api/connections/instagram', asyncHandler(authenticateUser), asyncHandler(makeSocialDisconnectHandler('instagram')));
+app.delete('/api/connections/whatsapp', asyncHandler(authenticateUser), asyncHandler(makeSocialDisconnectHandler('whatsapp')));
+
+// GitHub OAuth flow (no auth middleware on callback or start-login — GitHub redirects here directly)
+import { githubOAuthStart, githubOAuthCallback, githubLoginStart, githubExchangeSession } from './api/oauth-github';
+app.get('/api/oauth/github/start-login', githubLoginStart);               // primary sign-in (no auth)
+app.get('/api/oauth/github/start',       githubOAuthStart); // connect to existing account
+app.get('/api/oauth/github/callback',    asyncHandler(githubOAuthCallback));
+app.post('/api/oauth/github/exchange-session', githubExchangeSession); // frontend token exchange
+app.get('/api/oauth/facebook/start',     facebookOAuthStart);
+app.get('/api/oauth/facebook/callback',  asyncHandler(facebookOAuthCallback));
+app.get('/api/oauth/google/start',       googleOAuthStart);
+app.get('/api/oauth/google/callback',    asyncHandler(googleOAuthCallback));
+app.get('/api/oauth/linkedin/start',     linkedInOAuthStart);
+app.get('/api/oauth/linkedin/callback',  asyncHandler(linkedInOAuthCallback));
+app.get('/api/oauth/instagram/authorize', instagramAuthorizeHandler);
+app.post('/api/oauth/instagram/callback', asyncHandler(authenticateUser), asyncHandler(instagramCallbackHandler));
+app.get('/api/oauth/whatsapp/authorize', whatsappAuthorizeHandler);
+app.post('/api/oauth/whatsapp/callback', asyncHandler(authenticateUser), asyncHandler(whatsappCallbackHandler));
+app.get('/api/oauth/salesforce/authorize', salesforceAuthorizeHandler);
+app.post('/api/oauth/salesforce/callback', asyncHandler(authenticateUser), asyncHandler(salesforceCallbackHandler));
 
 // Zoho connection endpoints
-app.get('/api/connections/zoho/status', asyncHandler(zohoStatusHandler));
-app.post('/api/connections/zoho/connect', asyncHandler(zohoConnectHandler));
-app.post('/api/connections/zoho/test', asyncHandler(zohoTestHandler));
-app.delete('/api/connections/zoho', asyncHandler(zohoDisconnectHandler));
+app.get('/api/connections/zoho/status', asyncHandler(authenticateUser), asyncHandler(zohoStatusHandler));
+app.post('/api/connections/zoho/connect', asyncHandler(authenticateUser), asyncHandler(zohoConnectHandler));
+app.post('/api/connections/zoho/test', asyncHandler(authenticateUser), asyncHandler(zohoTestHandler));
+app.delete('/api/connections/zoho', asyncHandler(authenticateUser), asyncHandler(zohoDisconnectHandler));
+app.get('/api/connections/:provider/status', asyncHandler(authenticateUser), asyncHandler(singleConnectionStatusHandler));
 
 // Notion OAuth endpoints
 app.get('/api/oauth/notion/authorize', asyncHandler(notionAuthorizeHandler));
@@ -638,12 +862,16 @@ app.post('/api/oauth/notion/callback', asyncHandler(notionCallbackHandler));
 // Twitter OAuth endpoints
 app.get('/api/oauth/twitter/authorize', asyncHandler(twitterAuthorizeHandler));
 app.post('/api/oauth/twitter/callback', asyncHandler(twitterCallbackHandler));
-app.post('/api/connections/linkedin/refresh-now', asyncHandler(linkedinRefreshNowHandler));
-app.delete('/api/connections/linkedin', asyncHandler(linkedinDisconnectHandler));
+app.post('/api/connections/linkedin/refresh-now', asyncHandler(authenticateUser), asyncHandler(linkedinRefreshNowHandler));
+app.delete('/api/connections/linkedin', asyncHandler(authenticateUser), asyncHandler(linkedinDisconnectHandler));
 
 app.post('/api/webhook-trigger/:workflowId', asyncHandler(webhookTriggerRoute));
 app.get('/api/webhook-trigger/:workflowId', asyncHandler(webhookTriggerRoute));
 app.post('/api/chat-api', asyncHandler(chatApiRoute));
+
+// Public active templates routes
+app.get('/api/templates', asyncHandler(templatesRoute));
+app.get('/api/templates/:id', asyncHandler(templatesRoute));
 
 // Admin templates routes (with /api prefix)
 app.get('/api/admin-templates', asyncHandler(adminTemplatesRoute));
@@ -688,7 +916,16 @@ app.get('/api/chat-trigger/:workflowId/:nodeId', asyncHandler(chatTriggerRoute))
 app.post('/api/chat-trigger/:workflowId/:nodeId/message', asyncHandler(chatTriggerRoute));
 
 // Workflow Generation
-app.post('/api/generate-workflow', asyncHandler(generateWorkflowRoute));
+app.post(
+  '/api/generate-workflow',
+  distributedRateLimit({
+    endpointKey: 'generate-workflow',
+    perUserLimit: 20,
+    globalLimit: 300,
+    windowMs: 60_000,
+  }),
+  asyncHandler(generateWorkflowRoute)
+);
 
 // Capability-Based Node Selection Flow (3-phase pipeline)
 app.post('/api/capability-selection/analyze', asyncHandler(analyzeCapabilitySelection));
@@ -697,7 +934,16 @@ app.post('/api/capability-selection/confirm', asyncHandler(confirmCapabilityWork
 console.log('🎯 Capability Selection API available at /api/capability-selection/{analyze,generate,confirm}');
 
 // Smart Planner–Driven Workflow Orchestration (planner decides WHAT, system decides HOW)
-app.post('/api/generate', asyncHandler(smartPlannerGenerate));
+app.post(
+  '/api/generate',
+  distributedRateLimit({
+    endpointKey: 'smart-generate',
+    perUserLimit: 20,
+    globalLimit: 300,
+    windowMs: 60_000,
+  }),
+  asyncHandler(smartPlannerGenerate)
+);
 app.post('/api/answer', asyncHandler(smartPlannerAnswer));
 app.get('/api/workflow/:sessionId', asyncHandler(smartPlannerGetWorkflow));
 
@@ -830,6 +1076,40 @@ console.log('⚙️  Configure Workflow API available at /api/workflows/:workflo
 // Save Workflow (with validation and normalization)
 app.post('/api/save-workflow', asyncHandler(saveWorkflowRoute));
 console.log('💾 Save Workflow API available at /api/save-workflow');
+
+// Delete Workflow
+app.delete('/api/workflows/:id', authenticateUser, asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const userId = (req as any).user?.id;
+  const { queryAsService } = await import('./core/database/db-pool');
+  const rows = await queryAsService<{ id: string; user_id: string }>(
+    `SELECT id, user_id FROM workflows WHERE id = $1 LIMIT 1`,
+    [id]
+  );
+  if (!rows[0]) return res.status(404).json({ error: 'Workflow not found' });
+  if (rows[0].user_id !== userId && (req as any).user?.role !== 'admin') {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  await queryAsService(`DELETE FROM workflows WHERE id = $1`, [id]);
+  res.json({ success: true });
+}));
+console.log('🗑️  Delete Workflow API available at DELETE /api/workflows/:id');
+
+// Cancel Execution
+import { cancelExecutionRoute } from './api/cancel-execution';
+app.post('/api/executions/:executionId/cancel', authenticateUser, asyncHandler(cancelExecutionRoute));
+console.log('🛑 Cancel Execution API available at POST /api/executions/:executionId/cancel');
+
+// Secure DB Proxy (frontend CRUD on whitelisted tables — user-scoped)
+import { dbProxyGet, dbProxyPost, dbProxyUpsert, dbProxyPut, dbProxyDelete } from './api/db-proxy';
+app.get('/api/db/:table',           authenticateUser, asyncHandler(dbProxyGet));
+app.post('/api/db/:table/upsert',   authenticateUser, asyncHandler(dbProxyUpsert));
+app.post('/api/db/:table',          authenticateUser, asyncHandler(dbProxyPost));
+app.put('/api/db/:table',           authenticateUser, asyncHandler(dbProxyPut));
+app.put('/api/db/:table/:id',       authenticateUser, asyncHandler(dbProxyPut));
+app.delete('/api/db/:table',        authenticateUser, asyncHandler(dbProxyDelete));
+app.delete('/api/db/:table/:id',    authenticateUser, asyncHandler(dbProxyDelete));
+console.log('🔒 DB Proxy API available at /api/db/:table');
 
 // Field Mode Toggle API (spec task 8)
 import { patchWorkflowFieldMode } from './api/workflow-field-mode';
@@ -998,7 +1278,16 @@ app.post('/api/chatbot/:workflowId/message', asyncHandler(handleChatbotMessage))
 console.log('💬 Chatbot page routes available at /workflows/:workflowId/page, /workflows/:workflowId/embed, /workflows/:workflowId/chat and /api/chatbot/:workflowId/message');
 
 // AI Gateway - Unified AI Services
-app.use('/api/ai', aiGateway);
+app.use(
+  '/api/ai',
+  distributedRateLimit({
+    endpointKey: 'ai-gateway',
+    perUserLimit: 120,
+    globalLimit: 3000,
+    windowMs: 60_000,
+  }),
+  aiGateway
+);
 console.log('🤖 AI Gateway available at /api/ai');
 
 // Training Statistics API
@@ -1012,7 +1301,12 @@ app.post('/api/training/reload', asyncHandler(trainingStats.reloadTrainingDatase
 console.log('📚 Training API available at /api/training/*');
 
 // AI Endpoints (Gemini - GEMINI_API_KEY)
-app.post('/api/ai/generate', asyncHandler(async (req: Request, res: Response) => {
+app.post('/api/ai/generate', distributedRateLimit({
+  endpointKey: 'ai-generate',
+  perUserLimit: 25,
+  globalLimit: 500,
+  windowMs: 60_000,
+}), asyncHandler(async (req: Request, res: Response) => {
   const { prompt, model, system, temperature, max_tokens } = req.body;
   if (!prompt) return res.status(400).json({ success: false, error: 'Prompt is required' });
   if (!config.geminiApiKey) return res.status(503).json({ success: false, error: 'GEMINI_API_KEY not configured' });
@@ -1025,7 +1319,12 @@ app.post('/api/ai/generate', asyncHandler(async (req: Request, res: Response) =>
   res.json({ success: true, result: typeof result === 'string' ? { content: result } : result });
 }));
 
-app.post('/api/ai/chat', asyncHandler(async (req: Request, res: Response) => {
+app.post('/api/ai/chat', distributedRateLimit({
+  endpointKey: 'ai-chat',
+  perUserLimit: 40,
+  globalLimit: 800,
+  windowMs: 60_000,
+}), asyncHandler(async (req: Request, res: Response) => {
   const { messages, model, temperature } = req.body;
   if (!messages || !Array.isArray(messages)) return res.status(400).json({ success: false, error: 'Messages array is required' });
   if (!config.geminiApiKey) return res.status(503).json({ success: false, error: 'GEMINI_API_KEY not configured' });
@@ -1263,33 +1562,63 @@ async function startServer() {
       // Start scheduler service
       if (process.env.ENABLE_SCHEDULER !== 'false') {
         console.log('[ServerStartup] 🔵 Starting scheduler services...');
-        // ✅ CRITICAL: Start timeout watchdog for stuck runs
-        import('./services/execution/timeout-watchdog').then(({ startTimeoutWatchdog }) => {
-          console.log('[ServerStartup] 🔵 Timeout watchdog module loaded, starting...');
-          startTimeoutWatchdog(5 * 60 * 1000); // Check every 5 minutes
-          console.log('[ServerStartup] ✅ Timeout watchdog started (checks every 5 minutes)');
-        }).catch(err => {
-          console.error('[ServerStartup] ⚠️  Failed to start timeout watchdog:', err);
-          console.error('[ServerStartup] ⚠️  Error details:', err?.stack || err);
-        });
+        const hasRedis = !!process.env.REDIS_URL;
+        (async () => {
+          let dbReachable = false;
+          try {
+            const { isDatabaseReachable } = await import('./core/database/db-pool');
+            dbReachable = await isDatabaseReachable();
+          } catch (err) {
+            console.warn('[ServerStartup] ⚠️  DB preflight check failed:', err);
+          }
 
-        import('./services/scheduler').then(({ schedulerService }) => {
-          console.log('[ServerStartup] 🔵 Scheduler module loaded, starting...');
-          schedulerService.start().catch((err: any) => {
-            console.error('[ServerStartup] ⚠️  Scheduler start failed:', err);
+          if (!dbReachable) {
+            console.warn('[ServerStartup] ⏭️  Skipping scheduler + watchdog startup because DATABASE_URL is unreachable');
+            return;
+          }
+
+          // ✅ CRITICAL: Start timeout watchdog for stuck runs
+          import('./services/execution/timeout-watchdog').then(({ startTimeoutWatchdog }) => {
+            console.log('[ServerStartup] 🔵 Timeout watchdog module loaded, starting...');
+            startTimeoutWatchdog(5 * 60 * 1000); // Check every 5 minutes
+            console.log('[ServerStartup] ✅ Timeout watchdog started (checks every 5 minutes)');
+          }).catch(err => {
+            console.error('[ServerStartup] ⚠️  Failed to start timeout watchdog:', err);
+            console.error('[ServerStartup] ⚠️  Error details:', err?.stack || err);
           });
-        }).catch(err => {
-          console.error('[ServerStartup] ⚠️  Failed to load scheduler module:', err);
-          console.error('[ServerStartup] ⚠️  Error details:', err?.stack || err);
-        });
 
-        // Start session cleanup service
-        import('./services/session-cleanup').then(({ sessionCleanupService }) => {
-          console.log('[ServerStartup] 🔵 Session cleanup service loaded, starting...');
-          sessionCleanupService.start();
-          console.log('[ServerStartup] ✅ Session cleanup service started');
-        }).catch(err => {
-          console.error('[ServerStartup] ⚠️  Failed to start session cleanup service:', err);
+          import('./services/scheduler').then(({ schedulerService }) => {
+            console.log('[ServerStartup] 🔵 Scheduler module loaded, starting...');
+            schedulerService.start().catch((err: any) => {
+              console.error('[ServerStartup] ⚠️  Scheduler start failed:', err);
+            });
+          }).catch(err => {
+            console.error('[ServerStartup] ⚠️  Failed to load scheduler module:', err);
+            console.error('[ServerStartup] ⚠️  Error details:', err?.stack || err);
+          });
+
+          // Start session cleanup service (requires Redis session repository)
+          if (hasRedis) {
+            import('./services/session-cleanup').then(({ sessionCleanupService }) => {
+              console.log('[ServerStartup] 🔵 Session cleanup service loaded, starting...');
+              sessionCleanupService.start();
+              console.log('[ServerStartup] ✅ Session cleanup service started');
+            }).catch(err => {
+              console.error('[ServerStartup] ⚠️  Failed to start session cleanup service:', err);
+            });
+          } else {
+            console.log('[ServerStartup] ⏭️  Session cleanup disabled (REDIS_URL not set)');
+          }
+
+          import('./services/ai-sre-orchestrator').then(({ aiSreOrchestrator }) => {
+            console.log('[ServerStartup] 🔵 Autonomous SRE orchestrator module loaded, starting...');
+            aiSreOrchestrator.start();
+            console.log('[ServerStartup] ✅ Autonomous SRE orchestrator started');
+          }).catch(err => {
+            console.error('[ServerStartup] ⚠️  Failed to start autonomous SRE orchestrator:', err);
+          });
+        })().catch((err) => {
+          console.error('[ServerStartup] ⚠️  Scheduler bootstrap preflight failed:', err);
         });
       } else {
         console.log('[ServerStartup] ⏭️  Scheduler services disabled (ENABLE_SCHEDULER=false)');

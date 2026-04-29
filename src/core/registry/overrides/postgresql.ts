@@ -14,6 +14,17 @@ export function overridePostgresql(
 ): UnifiedNodeDefinition {
   return {
     ...def,
+    credentialSchema: {
+      requirements: [
+        {
+          provider: 'postgresql',
+          category: 'connection_string',
+          required: false,
+          description: 'PostgreSQL connection string. Falls back to DATABASE_URL when omitted.',
+        },
+      ],
+      credentialFields: ['connectionString'],
+    },
     execute: async (context) => {
       return await executeViaLegacyExecutor({ context, schema });
     },

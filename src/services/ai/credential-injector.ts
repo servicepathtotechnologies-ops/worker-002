@@ -15,6 +15,7 @@ import { WorkflowNode, Workflow } from '../../core/types/ai-types';
 import { RequiredCredential } from './credential-detector';
 import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 import { unifiedNormalizeNodeType } from '../../core/utils/unified-node-type-normalizer';
+import { connectorRegistry } from '../connectors/connector-registry';
 
 export interface CredentialInjectionResult {
   success: boolean;
@@ -38,10 +39,10 @@ export class CredentialInjector {
     const warnings: string[] = [];
     const updatedNodes: WorkflowNode[] = [];
 
-    // Create a map of provider to credential data
+    // Create a map of provider/vaultKey to credential data.
     const credentialMap = new Map<string, Record<string, any>>();
     Object.entries(credentials).forEach(([provider, data]) => {
-      credentialMap.set(provider, data);
+      credentialMap.set(provider.toLowerCase(), data);
     });
 
     // Inject credentials into each node
@@ -50,7 +51,11 @@ export class CredentialInjector {
       const requiredCredential = requiredCredentials.find(rc => rc.node_id === node.id || rc.node_type === nodeType);
 
       if (requiredCredential) {
-        const credentialData = credentialMap.get(requiredCredential.provider);
+        const vaultKey = this.getVaultKey(requiredCredential, nodeType);
+        const credentialData =
+          credentialMap.get((requiredCredential.vaultKey || '').toLowerCase()) ||
+          credentialMap.get(vaultKey.toLowerCase()) ||
+          credentialMap.get(requiredCredential.provider.toLowerCase());
         
         if (!credentialData) {
           errors.push(`Missing credentials for ${requiredCredential.provider} (node: ${node.id})`);
@@ -72,7 +77,7 @@ export class CredentialInjector {
         }
 
         // Inject credential ID into node config
-        const updatedNode = this.injectCredentialIntoNode(node, requiredCredential.provider, credentialData);
+        const updatedNode = this.injectCredentialIntoNode(node, requiredCredential.provider, credentialData, vaultKey);
         updatedNodes.push(updatedNode);
         
         console.log(`[CredentialInjector] ✅ Injected credentials for ${requiredCredential.provider} into node ${node.id}`);
@@ -84,7 +89,10 @@ export class CredentialInjector {
 
     // Validate all required credentials are injected
     const missingCredentials = requiredCredentials.filter(rc => {
-      const credentialData = credentialMap.get(rc.provider);
+      const credentialData =
+        credentialMap.get((rc.vaultKey || '').toLowerCase()) ||
+        credentialMap.get(this.getVaultKey(rc, rc.node_type || '').toLowerCase()) ||
+        credentialMap.get(rc.provider.toLowerCase());
       return !credentialData || !this.validateCredentialFields(rc, credentialData);
     });
 
@@ -119,7 +127,8 @@ export class CredentialInjector {
   private injectCredentialIntoNode(
     node: WorkflowNode,
     provider: string,
-    credentialData: Record<string, any>
+    credentialData: Record<string, any>,
+    vaultKey: string
   ): WorkflowNode {
     // Get node type to determine credential field name
     const nodeType = unifiedNormalizeNodeType(node);
@@ -131,7 +140,7 @@ export class CredentialInjector {
     const updatedConfig = {
       ...(node.data?.config || {}),
       [credentialField]: credentialData, // Store credential data in config
-      credentialId: provider, // Also store provider name for reference
+      credentialId: vaultKey, // Stable dashboard/catalog/vault reference
     };
 
     return {
@@ -151,6 +160,12 @@ export class CredentialInjector {
     const credFields = nodeDef?.credentialSchema?.credentialFields;
     if (credFields && credFields.length > 0) return credFields[0];
     return 'credentialId';
+  }
+
+  private getVaultKey(credential: RequiredCredential, nodeType: string): string {
+    if (credential.vaultKey) return credential.vaultKey;
+    const connector = nodeType ? connectorRegistry.getConnectorByNodeType(nodeType) : null;
+    return connector?.credentialContract.vaultKey || credential.provider;
   }
 
   /**

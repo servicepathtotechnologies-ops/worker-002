@@ -13,7 +13,7 @@
  */
 
 import { Workflow } from '../../core/types/ai-types';
-import { createClient } from '@supabase/supabase-js';
+import { getSupabaseClient } from '../../core/database/supabase-compat';
 import { config } from '../../core/config';
 // Dynamic import to avoid TypeScript rootDir restriction
 // import { OllamaModelTrainer } from '../../../scripts/train-ollama-model';
@@ -59,7 +59,7 @@ export class ContinuousLearningService {
   private trainingTimer: NodeJS.Timeout | null = null;
 
   constructor() {
-    this.supabase = createClient(config.supabaseUrl, config.supabaseKey);
+    this.supabase = getSupabaseClient();
   }
 
   /**

@@ -605,6 +605,29 @@ export class UnifiedNodeRegistry implements INodeRegistry {
       if (Array.isArray(opts) && opts.length > 0) {
         out.options = opts as NonNullable<NodeInputField['ui']>['options'];
       }
+      const isSelectLikeField = ['operation', 'resource', 'event', 'serviceType'].includes(fieldName);
+      if (!out.options && isSelectLikeField) {
+        const optionValues = new Set<string>();
+        if (typeof fd.default === 'string' && fd.default.trim()) {
+          optionValues.add(fd.default.trim());
+        }
+        if (Array.isArray(fd.examples)) {
+          for (const example of fd.examples) {
+            if (typeof example === 'string' && example.trim() && !example.includes('{{')) {
+              optionValues.add(example.trim());
+            }
+          }
+        }
+        if (optionValues.size > 0) {
+          out.options = Array.from(optionValues).map((value) => ({
+            value,
+            label: value
+              .replace(/_/g, ' ')
+              .replace(/([a-z])([A-Z])/g, '$1 $2')
+              .replace(/^./, (c) => c.toUpperCase()),
+          }));
+        }
+      }
       const reqIf = fd.requiredIf;
       if (reqIf && typeof reqIf === 'object' && reqIf !== null && 'field' in (reqIf as object)) {
         out.requiredIf = reqIf as NonNullable<NodeInputField['ui']>['requiredIf'];
@@ -1160,7 +1183,10 @@ export class UnifiedNodeRegistry implements INodeRegistry {
   private extractCredentialSchema(schema: any, inputSchema: NodeInputSchema): NodeCredentialSchema | undefined {
     const requirements: NodeCredentialRequirement[] = [];
     const credentialFieldsSet = new Set<string>();
-    const provider = this.inferProviderFromNodeType(schema.type);
+    const provider =
+      Array.isArray(schema.providers) && typeof schema.providers[0] === 'string'
+        ? schema.providers[0]
+        : this.inferProviderFromNodeType(schema.type);
 
     // Credential schema is ownership-driven only.
     for (const [fieldName, fd] of Object.entries(inputSchema)) {
@@ -1200,6 +1226,33 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     if (typeLower.includes('notion')) return 'notion';
     if (typeLower.includes('airtable')) return 'airtable';
     if (typeLower.includes('vercel')) return 'vercel';
+    if (typeLower.includes('salesforce')) return 'salesforce';
+    if (typeLower.includes('hubspot')) return 'hubspot';
+    if (typeLower.includes('pipedrive')) return 'pipedrive';
+    if (typeLower.includes('zoho')) return 'zoho';
+    if (typeLower.includes('odoo')) return 'odoo';
+    if (typeLower.includes('mailchimp')) return 'mailchimp';
+    if (typeLower.includes('activecampaign')) return 'activecampaign';
+    if (typeLower.includes('intercom')) return 'intercom';
+    if (typeLower.includes('freshdesk')) return 'freshdesk';
+    if (typeLower.includes('postgres') || typeLower === 'database_read' || typeLower === 'database_write') return 'postgresql';
+    if (typeLower.includes('mysql')) return 'mysql';
+    if (typeLower.includes('mongo')) return 'mongodb';
+    if (typeLower.includes('redis')) return 'redis';
+    if (typeLower.includes('github')) return 'github';
+    if (typeLower.includes('gitlab')) return 'gitlab';
+    if (typeLower.includes('bitbucket')) return 'bitbucket';
+    if (typeLower.includes('jira')) return 'jira';
+    if (typeLower.includes('jenkins')) return 'jenkins';
+    if (typeLower.includes('clickup')) return 'clickup';
+    if (typeLower.includes('twitter')) return 'twitter';
+    if (typeLower.includes('webhook')) return 'webhook';
+    if (typeLower.includes('ftp')) return 'ftp';
+    if (typeLower.includes('sftp')) return 'sftp';
+    if (typeLower.includes('stripe')) return 'stripe';
+    if (typeLower.includes('paypal')) return 'paypal';
+    if (typeLower.includes('shopify')) return 'shopify';
+    if (typeLower.includes('woocommerce')) return 'woocommerce';
     return undefined;
   }
   

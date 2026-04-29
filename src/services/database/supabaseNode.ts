@@ -1,17 +1,15 @@
 /**
  * Supabase Node Executor
- * 
- * Supports operations:
- * - select: Query records with filters, limit, order
- * - insert: Insert records
- * - update: Update records
- * - delete: Delete records
- * - rpc: Call a Postgres function
- * 
- * Uses @supabase/supabase-js client.
+ *
+ * This node lets workflow users connect to THEIR OWN Supabase projects.
+ * It is NOT used for CtrlChecks' own infrastructure (which runs on AWS RDS).
+ *
+ * The @supabase/supabase-js SDK is loaded dynamically so the worker can
+ * compile and run without the package installed.
+ *
+ * Supported operations: select, insert, update, delete, rpc
  */
 
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { NodeExecutionContext } from '../../core/types/node-definition';
 
 interface SupabaseCredentials {
@@ -33,231 +31,109 @@ interface SupabaseOperation {
   params?: Record<string, any>;
 }
 
-/**
- * Validate Supabase credentials
- */
 function validateCredentials(credentials: SupabaseCredentials): { valid: boolean; error?: string } {
-  if (!credentials.url || typeof credentials.url !== 'string' || credentials.url.trim() === '') {
-    return { valid: false, error: 'url is required' };
-  }
-  if (!credentials.anonKey && !credentials.serviceRoleKey) {
+  if (!credentials.url?.trim()) return { valid: false, error: 'url is required' };
+  if (!credentials.anonKey && !credentials.serviceRoleKey)
     return { valid: false, error: 'Either anonKey or serviceRoleKey is required' };
-  }
-
   return { valid: true };
 }
 
-/**
- * Execute Supabase operation
- */
-async function executeOperation(
-  client: SupabaseClient,
-  operation: SupabaseOperation,
-  schema: string
-): Promise<any> {
+async function loadSupabaseClient(url: string, key: string): Promise<any> {
+  try {
+    const mod = await import('@supabase/supabase-js');
+    return mod.createClient(url, key);
+  } catch {
+    throw new Error(
+      'The @supabase/supabase-js package is not installed. ' +
+      'Run: cd worker && npm install @supabase/supabase-js'
+    );
+  }
+}
+
+async function executeOperation(client: any, operation: SupabaseOperation, schema: string): Promise<any> {
   switch (operation.name) {
     case 'select': {
-      if (!operation.table) {
-        throw new Error('table is required for select operation');
-      }
+      if (!operation.table) throw new Error('table is required for select operation');
 
-      let query = client
-        .schema(schema)
-        .from(operation.table)
-        .select(operation.columns || '*');
+      let query = client.schema(schema).from(operation.table).select(operation.columns || '*');
 
-      // Apply filters
       if (operation.filter) {
         for (const [key, value] of Object.entries(operation.filter)) {
           if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-            // Handle operators like { gt: 10 }, { eq: 'value' }, etc.
             for (const [op, opValue] of Object.entries(value)) {
               switch (op) {
-                case 'eq':
-                  query = query.eq(key, opValue);
-                  break;
-                case 'neq':
-                  query = query.neq(key, opValue);
-                  break;
-                case 'gt':
-                  query = query.gt(key, opValue);
-                  break;
-                case 'gte':
-                  query = query.gte(key, opValue);
-                  break;
-                case 'lt':
-                  query = query.lt(key, opValue);
-                  break;
-                case 'lte':
-                  query = query.lte(key, opValue);
-                  break;
-                case 'like':
-                  query = query.like(key, String(opValue));
-                  break;
-                case 'ilike':
-                  query = query.ilike(key, String(opValue));
-                  break;
-                case 'in':
-                  query = query.in(key, Array.isArray(opValue) ? opValue : [opValue]);
-                  break;
-                case 'is':
-                  query = query.is(key, opValue);
-                  break;
-                default:
-                  // Default to equality
-                  query = query.eq(key, opValue);
+                case 'eq':   query = query.eq(key, opValue); break;
+                case 'neq':  query = query.neq(key, opValue); break;
+                case 'gt':   query = query.gt(key, opValue); break;
+                case 'gte':  query = query.gte(key, opValue); break;
+                case 'lt':   query = query.lt(key, opValue); break;
+                case 'lte':  query = query.lte(key, opValue); break;
+                case 'like': query = query.like(key, String(opValue)); break;
+                case 'ilike':query = query.ilike(key, String(opValue)); break;
+                case 'in':   query = query.in(key, Array.isArray(opValue) ? opValue : [opValue]); break;
+                case 'is':   query = query.is(key, opValue); break;
+                default:     query = query.eq(key, opValue);
               }
             }
           } else {
-            // Simple equality
             query = query.eq(key, value);
           }
         }
       }
 
-      // Apply ordering
-      if (operation.order) {
-        query = query.order(operation.order.column, {
-          ascending: operation.order.ascending !== false,
-        });
-      }
-
-      // Apply limit
-      if (operation.limit) {
-        query = query.limit(operation.limit);
-      }
+      if (operation.order) query = query.order(operation.order.column, { ascending: operation.order.ascending !== false });
+      if (operation.limit) query = query.limit(operation.limit);
 
       const { data, error } = await query;
-
-      if (error) {
-        throw error;
-      }
-
-      return {
-        rows: data || [],
-        count: data?.length || 0,
-      };
+      if (error) throw error;
+      return { rows: data || [], count: data?.length || 0 };
     }
 
     case 'insert': {
-      if (!operation.table) {
-        throw new Error('table is required for insert operation');
-      }
-      if (!operation.data) {
-        throw new Error('data is required for insert operation');
-      }
-
+      if (!operation.table) throw new Error('table is required for insert operation');
+      if (!operation.data)  throw new Error('data is required for insert operation');
       const dataArray = Array.isArray(operation.data) ? operation.data : [operation.data];
-
-      const { data, error } = await client
-        .schema(schema)
-        .from(operation.table)
-        .insert(dataArray)
-        .select();
-
-      if (error) {
-        throw error;
-      }
-
-      return {
-        inserted: data || [],
-        count: data?.length || 0,
-      };
+      const { data, error } = await client.schema(schema).from(operation.table).insert(dataArray).select();
+      if (error) throw error;
+      return { inserted: data || [], count: data?.length || 0 };
     }
 
     case 'update': {
-      if (!operation.table) {
-        throw new Error('table is required for update operation');
-      }
-      if (!operation.data) {
-        throw new Error('data is required for update operation');
-      }
-      if (!operation.filter) {
-        throw new Error('filter is required for update operation');
-      }
-
-      let query = client
-        .schema(schema)
-        .from(operation.table)
-        .update(operation.data);
-
-      // Apply filters
-      for (const [key, value] of Object.entries(operation.filter)) {
-        query = query.eq(key, value);
-      }
-
+      if (!operation.table)  throw new Error('table is required for update operation');
+      if (!operation.data)   throw new Error('data is required for update operation');
+      if (!operation.filter) throw new Error('filter is required for update operation');
+      let query = client.schema(schema).from(operation.table).update(operation.data);
+      for (const [key, value] of Object.entries(operation.filter)) query = query.eq(key, value);
       const { data, error } = await query.select();
-
-      if (error) {
-        throw error;
-      }
-
-      return {
-        rows: data || [],
-        count: data?.length || 0,
-      };
+      if (error) throw error;
+      return { rows: data || [], count: data?.length || 0 };
     }
 
     case 'delete': {
-      if (!operation.table) {
-        throw new Error('table is required for delete operation');
-      }
-      if (!operation.filter) {
-        throw new Error('filter is required for delete operation');
-      }
-
-      let query = client
-        .schema(schema)
-        .from(operation.table)
-        .delete();
-
-      // Apply filters
-      for (const [key, value] of Object.entries(operation.filter)) {
-        query = query.eq(key, value);
-      }
-
+      if (!operation.table)  throw new Error('table is required for delete operation');
+      if (!operation.filter) throw new Error('filter is required for delete operation');
+      let query = client.schema(schema).from(operation.table).delete();
+      for (const [key, value] of Object.entries(operation.filter)) query = query.eq(key, value);
       const { data, error } = await query.select();
-
-      if (error) {
-        throw error;
-      }
-
-      return {
-        rows: data || [],
-        count: data?.length || 0,
-      };
+      if (error) throw error;
+      return { rows: data || [], count: data?.length || 0 };
     }
 
     case 'rpc': {
-      if (!operation.functionName) {
-        throw new Error('functionName is required for rpc operation');
-      }
-
-      const { data, error } = await client
-        .schema(schema)
-        .rpc(operation.functionName, operation.params || {});
-
-      if (error) {
-        throw error;
-      }
-
-      return {
-        result: data,
-      };
+      if (!operation.functionName) throw new Error('functionName is required for rpc operation');
+      const { data, error } = await client.schema(schema).rpc(operation.functionName, operation.params || {});
+      if (error) throw error;
+      return { result: data };
     }
 
     default:
-      throw new Error(`Unsupported operation: ${operation.name}`);
+      throw new Error(`Unsupported operation: ${(operation as any).name}`);
   }
 }
 
-/**
- * Run Supabase node
- */
 export async function runSupabaseNode(context: NodeExecutionContext): Promise<any> {
   const { inputs } = context;
 
-  // Extract credentials
   const credentials: SupabaseCredentials = {
     url: inputs.url,
     anonKey: inputs.anonKey,
@@ -265,7 +141,6 @@ export async function runSupabaseNode(context: NodeExecutionContext): Promise<an
     schema: inputs.schema || 'public',
   };
 
-  // Extract operation
   const operation: SupabaseOperation = {
     name: inputs.operation,
     table: inputs.table,
@@ -278,48 +153,21 @@ export async function runSupabaseNode(context: NodeExecutionContext): Promise<an
     params: inputs.params,
   };
 
-  // Validate credentials
   const validation = validateCredentials(credentials);
-  if (!validation.valid) {
-    return {
-      success: false,
-      error: validation.error,
-    };
-  }
+  if (!validation.valid) return { success: false, error: validation.error };
 
-  // Validate operation
-  if (!operation.name) {
-    return {
-      success: false,
-      error: 'operation is required',
-    };
-  }
+  if (!operation.name) return { success: false, error: 'operation is required' };
 
   const validOperations = ['select', 'insert', 'update', 'delete', 'rpc'];
-  if (!validOperations.includes(operation.name)) {
-    return {
-      success: false,
-      error: `operation must be one of: ${validOperations.join(', ')}`,
-    };
-  }
+  if (!validOperations.includes(operation.name))
+    return { success: false, error: `operation must be one of: ${validOperations.join(', ')}` };
 
   try {
-    // Create Supabase client
-    // Use serviceRoleKey if provided (bypasses RLS), otherwise use anonKey
     const key = credentials.serviceRoleKey || credentials.anonKey!;
-    const client = createClient(credentials.url, key);
-
-    // Execute operation
+    const client = await loadSupabaseClient(credentials.url, key);
     const result = await executeOperation(client, operation, credentials.schema || 'public');
-
-    return {
-      success: true,
-      data: result,
-    };
+    return { success: true, data: result };
   } catch (error: any) {
-    return {
-      success: false,
-      error: error.message || 'Supabase operation failed',
-    };
+    return { success: false, error: error.message || 'Supabase operation failed' };
   }
 }

@@ -3143,8 +3143,11 @@ export class NodeLibrary {
         },
       ],
       validationRules: [],
-      outputType: 'any',
-      outputSchema: {},
+      outputType: 'object',
+      outputSchema: {
+        value: { type: 'any' },
+        input: { type: 'object' },
+      },
       schemaVersion: '1.0.0',
       keywords: [
         'return', 'return node', 'return exit', 'return stop',
@@ -3626,7 +3629,7 @@ export class NodeLibrary {
           errorMessage: 'Key must be non-empty string',
         },
       ],
-      outputType: 'any',
+      outputType: 'object',
       outputSchema: {
         success: { type: 'boolean' },
         found: { type: 'boolean' },
@@ -6662,7 +6665,16 @@ export class NodeLibrary {
       label: 'Workflow Trigger',
       category: 'triggers',
       description: 'Trigger workflow from another workflow',
-      configSchema: { required: [], optional: {} },
+      configSchema: {
+        required: ['source_workflow_id'],
+        optional: {
+          source_workflow_id: {
+            type: 'string',
+            description: 'ID of the workflow that is allowed to trigger this workflow',
+            examples: ['workflow_123'],
+          },
+        },
+      },
       aiSelectionCriteria: {
         whenToUse: ['Workflow-to-workflow triggers', 'Chaining workflows'],
         whenNotToUse: ['External triggers'],
@@ -6676,7 +6688,13 @@ export class NodeLibrary {
         intentDescription: 'Workflow trigger node that triggers workflows from other workflows. Enables workflow-to-workflow triggering, workflow chaining, and nested workflow execution. Used for workflow chaining, workflow composition, and triggering workflows from other workflows.',
         intentCategories: ['workflow_trigger', 'workflow_chaining', 'workflow_composition', 'nested_workflow'],
       },
-      commonPatterns: [],
+      commonPatterns: [
+        {
+          name: 'workflow_chaining',
+          description: 'Allow another workflow to trigger this workflow',
+          config: { source_workflow_id: 'workflow_123' },
+        },
+      ],
       validationRules: [],
     };
   }
@@ -7510,7 +7528,7 @@ export class NodeLibrary {
       validationRules: [],
       nodeCapability: {
         inputType: ['text', 'array'], // Can accept both text and array
-        outputType: 'text', // Produces text summary
+        outputType: 'object', // Produces an object with response text for downstream mapping
         acceptsArray: true,
         producesArray: false,
       },

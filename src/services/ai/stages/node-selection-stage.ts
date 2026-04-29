@@ -8,7 +8,6 @@
  * Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 8.1, 8.2, 8.3
  */
 
-import { randomUUID } from 'crypto';
 import { geminiOrchestrator } from '../gemini-orchestrator';
 import { systemPromptBuilder, SelectedNode, NODE_SELECTION_OUTPUT_SCHEMA } from '../system-prompt-builder';
 import { unifiedNodeRegistry } from '../../../core/registry/unified-node-registry';
@@ -242,11 +241,12 @@ export function enforceRegistrySelectionContract(
       });
       continue;
     }
+    const typeCount = kept.filter((n) => n.type === canonical).length + 1;
     kept.push({
       type: canonical,
       role: deriveNodeRole(canonical),
       reason: node.reason,
-      nodeId: randomUUID(),
+      nodeId: `node_${canonical}_${typeCount}`,
     });
   }
 
@@ -261,7 +261,7 @@ export function enforceRegistrySelectionContract(
         type: fallbackTrigger,
         role: 'trigger',
         reason: 'Required trigger selected from registry',
-        nodeId: randomUUID(),
+        nodeId: `node_${fallbackTrigger}_1`,
       });
     }
   }
@@ -273,11 +273,12 @@ export function enforceRegistrySelectionContract(
     // multiple instances of the same branching type are required for nested workflows.
     const isBranching = def.isBranching === true;
     if (!isBranching && seen.has(reqType)) continue;
+    const reqTypeCount = withoutExtraTriggers.filter((n) => n.type === reqType).length + 1;
     withoutExtraTriggers.push({
       type: reqType,
       role: deriveNodeRole(reqType),
       reason: 'Required by user-confirmed capability selection',
-      nodeId: randomUUID(),
+      nodeId: `node_${reqType}_${reqTypeCount}`,
     });
     seen.add(reqType);
   }

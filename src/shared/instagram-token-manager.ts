@@ -5,7 +5,8 @@
  * Instagram uses Facebook OAuth tokens with Instagram permissions.
  */
 
-import { SupabaseClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
+import { decryptToken, encryptToken } from '../core/utils/token-encryption';
 
 export interface InstagramTokenData {
   access_token: string;
@@ -64,7 +65,18 @@ export async function getInstagramAccessToken(
         if (!facebookError && facebookTokenData) {
           tokenData = facebookTokenData;
         } else {
-          // Try user_credentials table as last resort
+          // Try unified social_tokens table for the connected Facebook account
+          const { data: socialTokenData, error: socialTokenError } = await supabase
+            .from('social_tokens')
+            .select('access_token, expires_at, refresh_token')
+            .eq('user_id', uid)
+            .eq('provider', 'facebook')
+            .single();
+
+          if (!socialTokenError && socialTokenData) {
+            tokenData = socialTokenData;
+          } else {
+            // Try user_credentials table as last resort
           const { data: credentialsData, error: credentialsError } = await supabase
             .from('user_credentials')
             .select('credentials')
@@ -80,6 +92,7 @@ export async function getInstagramAccessToken(
               refresh_token: creds.refreshToken || creds.refresh_token,
             };
           }
+          }
         }
       }
 
@@ -89,6 +102,8 @@ export async function getInstagramAccessToken(
       }
 
       // Check if token is expired (with 5 minute buffer)
+      const accessToken = decryptToken(tokenData.access_token);
+      const refreshToken = tokenData.refresh_token ? decryptToken(tokenData.refresh_token) : null;
       const expiresAt = tokenData.expires_at ? new Date(tokenData.expires_at) : null;
       const now = new Date();
       const fiveMinutesFromNow = new Date(now.getTime() + 5 * 60 * 1000);
@@ -97,8 +112,8 @@ export async function getInstagramAccessToken(
         console.warn(`[InstagramTokenManager] Token for user ${uid} is expired or expiring soon`);
         
         // Try to refresh token if refresh_token is available
-        if (tokenData.refresh_token) {
-          const refreshed = await refreshInstagramToken(supabase, uid, tokenData.refresh_token);
+        if (refreshToken) {
+          const refreshed = await refreshInstagramToken(supabase, uid, refreshToken);
           if (refreshed) {
             return refreshed;
           }
@@ -110,7 +125,7 @@ export async function getInstagramAccessToken(
 
       if (tokenData.access_token) {
         console.log(`[InstagramTokenManager] ✅ Found valid Instagram/Facebook token for user ${uid}`);
-        return tokenData.access_token;
+        return accessToken;
       }
     } catch (error) {
       console.error(`[InstagramTokenManager] Error fetching token for user ${uid}:`, error);
@@ -170,7 +185,7 @@ async function refreshInstagramToken(
 
     // Update token in database (try instagram_oauth_tokens first, then facebook_oauth_tokens)
     const updateData = {
-      access_token: tokenData.access_token,
+      access_token: encryptToken(tokenData.access_token),
       expires_at: expiresAt,
       updated_at: new Date().toISOString(),
     };

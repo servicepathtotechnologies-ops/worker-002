@@ -1,3 +1,5 @@
+import { config } from '../config';
+
 /**
  * Phase 3: Validation Middleware
  * 
@@ -43,9 +45,9 @@ export interface ValidationOptions {
 const DEFAULT_OPTIONS: ValidationOptions = {
   validateConfig: true,
   validateInput: false,
-  validateOutput: false,
+  validateOutput: true,
   validateTemplates: true,
-  strict: false,
+  strict: process.env.NODE_ENV === 'production',
   environment: process.env.NODE_ENV === 'development' ? 'development' : 'production',
 };
 
@@ -268,10 +270,10 @@ export class ValidationMiddleware {
  * Can be configured via environment variables or constructor
  */
 export const validationMiddleware = new ValidationMiddleware({
-  validateConfig: process.env.VALIDATE_NODE_CONFIG !== 'false',
-  validateInput: process.env.VALIDATE_NODE_INPUT === 'true',
-  validateOutput: process.env.VALIDATE_NODE_OUTPUT === 'true',
-  validateTemplates: process.env.VALIDATE_TEMPLATES !== 'false',
-  strict: process.env.VALIDATION_STRICT === 'true',
+  validateConfig: true,
+  validateInput: false,
+  validateOutput: config.reliability.validateNodeOutput,
+  validateTemplates: true,
+  strict: config.reliability.strictValidation,
   environment: process.env.NODE_ENV === 'development' ? 'development' : 'production',
 });

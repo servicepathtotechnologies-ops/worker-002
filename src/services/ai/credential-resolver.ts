@@ -357,6 +357,59 @@ export class CredentialResolver {
         }
       }
 
+      // Dashboard OAuth connections stored in unified social_tokens.
+      // This keeps login providers separate from workflow connection providers.
+      const socialProviders = new Set(['github', 'facebook']);
+      if (credentialType === 'oauth' && socialProviders.has(vaultKey.toLowerCase())) {
+        const { data: tokenData, error: tokenError } = await this.supabase
+          .from('social_tokens')
+          .select('access_token, refresh_token, expires_at')
+          .eq('user_id', effectiveUserId)
+          .eq('provider', vaultKey.toLowerCase())
+          .single();
+
+        if (!tokenError && tokenData) {
+          const expiresAt = tokenData.expires_at ? new Date(tokenData.expires_at) : null;
+          const now = new Date();
+          const fiveMinutesFromNow = new Date(now.getTime() + 5 * 60 * 1000);
+
+          if (tokenData.access_token && (!expiresAt || expiresAt > fiveMinutesFromNow || tokenData.refresh_token)) {
+            console.log(`[CredentialResolution] ✅ ${vaultKey} OAuth found in social_tokens table`);
+            return true;
+          }
+        }
+      }
+
+      const oauthTableByVaultKey: Record<string, string> = {
+        google: 'google_oauth_tokens',
+        linkedin: 'linkedin_oauth_tokens',
+        notion: 'notion_oauth_tokens',
+        twitter: 'twitter_oauth_tokens',
+        instagram: 'instagram_oauth_tokens',
+        whatsapp: 'whatsapp_oauth_tokens',
+        salesforce: 'salesforce_oauth_tokens',
+        zoho: 'zoho_oauth_tokens',
+      };
+      const oauthTable = oauthTableByVaultKey[vaultKey.toLowerCase()];
+      if (credentialType === 'oauth' && oauthTable) {
+        const { data: tokenData, error: tokenError } = await this.supabase
+          .from(oauthTable)
+          .select('access_token, refresh_token, expires_at')
+          .eq('user_id', effectiveUserId)
+          .single();
+
+        if (!tokenError && tokenData) {
+          const expiresAt = tokenData.expires_at ? new Date(tokenData.expires_at) : null;
+          const now = new Date();
+          const fiveMinutesFromNow = new Date(now.getTime() + 5 * 60 * 1000);
+
+          if (tokenData.access_token && (!expiresAt || expiresAt > fiveMinutesFromNow || tokenData.refresh_token)) {
+            console.log(`[CredentialResolution] ✅ ${vaultKey} OAuth found in ${oauthTable} table`);
+            return true;
+          }
+        }
+      }
+
       // 🆕 CREDENTIAL VAULT: Check unified credential vault
       try {
         const vault = getCredentialVault();

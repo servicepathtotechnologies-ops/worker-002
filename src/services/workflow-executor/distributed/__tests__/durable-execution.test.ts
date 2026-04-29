@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { SupabaseClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { getSupabaseClient } from '../../../../core/database/supabase-compat';
 import { QueueClient, createQueueClient, NodeJob } from '../queue-client';
 import { DistributedOrchestrator } from '../distributed-orchestrator';

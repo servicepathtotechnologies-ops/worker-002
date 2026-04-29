@@ -26,9 +26,12 @@ function canonicalEdgeKey(edge: any, index: number): string {
   const tgt = String(edge.target ?? '');
   const sh = String(edge.sourceHandle ?? '');
   const th = String(edge.targetHandle ?? '');
-  const typ = String(edge.type ?? '');
+  // edge.type is a React Flow visual renderer hint ('default', 'step', 'smoothstep', etc.)
+  // and is NOT a topology-defining property — normalizers may change it from branch labels
+  // ('failed', 'success') to 'output' without changing the actual wiring. Exclude it so
+  // cosmetic type changes don't trigger the topology mutation guard.
   const id = edge.id != null ? String(edge.id) : `idx:${index}`;
-  return `${src}|${tgt}|${sh}|${th}|${typ}|${id}`;
+  return `${src}|${tgt}|${sh}|${th}|${id}`;
 }
 
 function stableStringify(value: unknown): string {

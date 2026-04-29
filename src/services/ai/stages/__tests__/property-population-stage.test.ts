@@ -25,6 +25,7 @@ jest.mock('../../gemini-orchestrator', () => ({
 jest.mock('../../../../core/registry/unified-node-registry', () => ({
   unifiedNodeRegistry: {
     get: jest.fn(),
+    getBuildValueContext: jest.fn(() => ({ upstreamFields: [], targetFields: [] })),
   },
 }));
 

@@ -7,6 +7,11 @@
 
 import * as amqp from 'amqplib';
 import { createClient, RedisClientType } from 'redis';
+import {
+  createTraceContext,
+  getCurrentTraceContext,
+  runWithTraceContext,
+} from '../../../core/observability/distributed-tracing';
 
 export interface NodeJob {
   execution_id: string;
@@ -18,6 +23,9 @@ export interface NodeJob {
   published_at?: string;
   job_id?: string; // Unique job ID for idempotency
   delay_ms?: number; // Delay before processing (for exponential backoff)
+  trace_id?: string;
+  span_id?: string;
+  traceparent?: string;
 }
 
 export interface QueueConfig {
@@ -214,6 +222,18 @@ export class QueueClient {
    * Publish node job to queue
    */
   async publishJob(job: NodeJob): Promise<void> {
+    const currentTrace = getCurrentTraceContext();
+    if (currentTrace) {
+      job.trace_id = currentTrace.traceId;
+      job.span_id = currentTrace.spanId;
+      job.traceparent = currentTrace.traceparent;
+    } else if (!job.trace_id) {
+      const generated = createTraceContext();
+      job.trace_id = generated.traceId;
+      job.span_id = generated.spanId;
+      job.traceparent = generated.traceparent;
+    }
+
     if (this.config.type === 'rabbitmq') {
       await this.publishRabbitMQ(job);
     } else if (this.config.type === 'redis') {
@@ -314,7 +334,10 @@ export class QueueClient {
 
         try {
           const job: NodeJob = JSON.parse(msg.content.toString());
-          await onJob(job);
+          const traceContext = createTraceContext(job.traceparent, job.trace_id);
+          await runWithTraceContext(traceContext, async () => {
+            await onJob(job);
+          });
           this.rabbitmqChannel!.ack(msg);
         } catch (error) {
           console.error('[QueueClient] ❌ Error processing job:', error);
@@ -366,7 +389,10 @@ export class QueueClient {
 
         if (result) {
           const job: NodeJob = JSON.parse(result.element);
-          await onJob(job);
+          const traceContext = createTraceContext(job.traceparent, job.trace_id);
+          await runWithTraceContext(traceContext, async () => {
+            await onJob(job);
+          });
         }
       } catch (error) {
         console.error('[QueueClient] ❌ Error consuming from Redis:', error);

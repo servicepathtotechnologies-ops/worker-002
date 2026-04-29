@@ -260,7 +260,7 @@ Rules:
 - Never hallucinate - if something is unclear, mark it in missingIntent
 - CRITICAL EMAIL PROVIDER DETECTION:
   * If user mentions "gmail", "google mail", "google email", "gmail them", "send via gmail", "email them using gmail", use nodeType "google_gmail" (NOT "email")
-  * Gmail uses OAuth authentication (handled via navbar button) - NO SMTP credentials needed
+  * Gmail uses OAuth authentication (connected from Connections) - NO SMTP credentials needed
   * Only use "email" nodeType for generic SMTP email (when Gmail is NOT mentioned)
   * When Gmail is detected, service should be "Gmail" and nodeType should be "google_gmail"
 - RESPOND WITH JSON ONLY - NO EXPLANATIONS, NO PROSE, NO MARKDOWN`;

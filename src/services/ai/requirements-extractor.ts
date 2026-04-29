@@ -627,8 +627,8 @@ Return JSON in this exact format:
     }
     if (lowerPrompt.includes('google') || lowerPrompt.includes('gmail') || lowerPrompt.includes('sheets')) {
       apis.push('Google API');
-      // Google OAuth is handled via navbar credentials button - already integrated with Supabase
-      // Do NOT add Google OAuth credentials - they are already configured
+      // Google OAuth is handled through the backend connection catalog.
+      // Do NOT add Google OAuth credentials here; connection status is checked later.
       platforms.push('Google');
     }
     if (lowerPrompt.includes('database') || lowerPrompt.includes('postgres') || lowerPrompt.includes('supabase')) {

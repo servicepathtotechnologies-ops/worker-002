@@ -4,6 +4,7 @@
 
 import { getSupabaseClient } from '../core/database/supabase-compat';
 import { config } from '../core/config';
+import { decryptToken, encryptToken } from '../core/utils/token-encryption';
 
 interface GoogleSheetsConfig {
   spreadsheetId: string;
@@ -53,6 +54,8 @@ export async function getGoogleAccessToken(
         continue;
       }
 
+      const accessToken = decryptToken(tokenData.access_token);
+      const refreshToken = tokenData.refresh_token ? decryptToken(tokenData.refresh_token) : null;
       const expiresAt = tokenData.expires_at ? new Date(tokenData.expires_at) : null;
       const now = new Date();
       const fiveMinutesFromNow = new Date(now.getTime() + 5 * 60 * 1000);
@@ -60,11 +63,11 @@ export async function getGoogleAccessToken(
       // Check if token is expired or about to expire
       if (expiresAt && expiresAt < fiveMinutesFromNow) {
         // Try to refresh if we have a refresh token
-        if (tokenData.refresh_token) {
+        if (refreshToken) {
           const refreshedToken = await refreshGoogleToken(
             supabase,
             uid,
-            tokenData.refresh_token
+            refreshToken
           );
           if (refreshedToken) {
             return refreshedToken;
@@ -72,15 +75,15 @@ export async function getGoogleAccessToken(
           // Refresh failed - credentials might not be configured, but try using expired token anyway
           // The API call will fail with a proper error if token is truly invalid
           console.log('[Google OAuth] Token refresh failed (credentials may not be configured). Using existing token - it may be expired.');
-          return tokenData.access_token;
+          return accessToken;
         }
         // Token expired and no refresh token - try using it anyway, API will return proper error
         console.log('[Google OAuth] Token expired but no refresh token available. Using expired token - API call may fail.');
-        return tokenData.access_token;
+        return accessToken;
       }
 
       // Found valid token
-      return tokenData.access_token;
+      return accessToken;
     }
 
     // No valid token found for any user ID
@@ -135,13 +138,13 @@ async function refreshGoogleToken(
     const expiresAt = new Date(Date.now() + (tokenData.expires_in * 1000));
 
     const updateData: Record<string, unknown> = {
-      access_token: tokenData.access_token,
+      access_token: encryptToken(tokenData.access_token),
       expires_at: expiresAt.toISOString(),
       updated_at: new Date().toISOString(),
     };
 
     if (tokenData.refresh_token) {
-      updateData.refresh_token = tokenData.refresh_token;
+      updateData.refresh_token = encryptToken(tokenData.refresh_token);
     }
 
     const { error: updateError } = await supabase

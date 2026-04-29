@@ -28,6 +28,12 @@ type NormalizerContext = {
 };
 
 const startupUnknownTypeCounts = new Map<string, number>();
+
+// React Flow uses "custom" as a universal shell type for all rendered nodes.
+// The actual node type lives in node.data.type and is extracted before this point.
+// When "custom" reaches the string normalizer it means data.type was absent — this
+// is architecturally expected and should not emit a warning.
+const KNOWN_PASSTHROUGH_TYPES = new Set(['custom']);
 let startupUnknownFlushTimer: NodeJS.Timeout | null = null;
 
 function scheduleStartupUnknownFlush(): void {
@@ -158,6 +164,9 @@ export function unifiedNormalizeNodeTypeString(nodeType: string, context?: Norma
   const phase = context?.phase || 'runtime';
   const suppressUnknownWarning = context?.suppressUnknownWarning === true;
   if (serviceResult.method === 'unrecognized_type') {
+    if (KNOWN_PASSTHROUGH_TYPES.has(nodeType)) {
+      return nodeType;
+    }
     if (phase === 'startup' || phase === 'equivalence') {
       startupUnknownTypeCounts.set(nodeType, (startupUnknownTypeCounts.get(nodeType) || 0) + 1);
       incrementPipelineCounter('normalizer_startup_unknown_aggregated');

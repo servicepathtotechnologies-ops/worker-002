@@ -4,7 +4,7 @@
  * Helper functions to retrieve and manage Notion OAuth tokens from Supabase.
  */
 
-import { SupabaseClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 
 export interface NotionTokenData {
   access_token: string;

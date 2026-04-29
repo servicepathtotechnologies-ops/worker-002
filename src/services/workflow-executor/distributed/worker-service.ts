@@ -5,7 +5,7 @@
  * Consumes jobs from queue and processes them with appropriate workers.
  */
 
-import { SupabaseClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { QueueClient, NodeJob, createQueueClient } from './queue-client';
 import { StorageManager } from './storage-manager';
 import { DistributedOrchestrator } from './distributed-orchestrator';
@@ -15,6 +15,9 @@ import { PassThroughWorker } from './workers/pass-through-worker';
 import { LightricksWorker } from './workers/lightricks-worker';
 import { getSupabaseClient } from '../../../core/database/supabase-compat';
 import { createObjectStorageService } from '../object-storage-service';
+import { circuitBreakerManager } from './reliability/circuit-breaker';
+import { getProviderCircuitKeyFromNodeType } from '../../../core/reliability/provider-circuit-key';
+import { config } from '../../../core/config';
 
 export interface WorkerServiceConfig {
   nodeTypes?: string[]; // Specific node types to process (if empty, processes all)
@@ -173,8 +176,29 @@ export class WorkerService {
       throw new Error(`No worker found for node type: ${node_type}`);
     }
 
-    // Process job
-    await worker.processJob(job);
+    // Process job behind provider circuit breaker to prevent cascading connector failures.
+    const providerKey = getProviderCircuitKeyFromNodeType(node_type);
+    try {
+      await circuitBreakerManager.execute(
+        providerKey,
+        async () => await worker.processJob(job),
+        {
+          failureThreshold: config.reliability.circuitBreaker.failureThreshold,
+          successThreshold: config.reliability.circuitBreaker.successThreshold,
+          timeout: config.reliability.circuitBreaker.timeoutMs,
+          resetTimeout: config.reliability.circuitBreaker.resetTimeoutMs,
+        }
+      );
+    } catch (error: any) {
+      if (config.reliability.dlqMandatoryRouting) {
+        try {
+          await this.queue.publishToDeadLetter(job, error?.message || String(error));
+        } catch (dlqError) {
+          console.error('[WorkerService] ❌ Failed to route terminal failure to DLQ:', dlqError);
+        }
+      }
+      throw error;
+    }
   }
 
   /**

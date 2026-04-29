@@ -62,7 +62,7 @@ interface NotionUserResponse {
  */
 export async function notionAuthorizeHandler(req: Request, res: Response) {
   try {
-    const redirectUri = req.query.redirect_uri as string;
+    const redirectUri = (req.query.redirect_uri as string) || process.env.NOTION_OAUTH_REDIRECT_URI;
     
     if (!redirectUri) {
       return res.status(400).json({
@@ -132,7 +132,8 @@ export async function notionCallbackHandler(req: Request, res: Response) {
       });
     }
 
-    const { code, state, redirect_uri } = req.body;
+    const { code, state } = req.body;
+    const redirect_uri = req.body.redirect_uri || process.env.NOTION_OAUTH_REDIRECT_URI;
 
     if (!code) {
       return res.status(400).json({

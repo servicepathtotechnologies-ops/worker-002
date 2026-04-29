@@ -33,7 +33,10 @@ import { buildRegistryStructuralFillContractSection } from './registry-structura
 import { buildWorkflowIntentModel, formatWorkflowIntentModelDigest } from './workflow-intent-model';
 import { buildNodeDescriptionBlocks } from './node-description-builder';
 import type { StructuredIntent } from './intent-structurer';
-import type { Workflow } from '../../core/types/ai-types';
+import type { Workflow, WorkflowSummaryV2 } from '../../core/types/ai-types';
+import { unifiedGraphOrchestrator } from '../../core/orchestration/unified-graph-orchestrator';
+import { compileSummaryV2FromWorkflow } from './summary-v2-compiler';
+import { validateSummaryV2 } from '../../core/validation/summary-v2-validator';
 import { PipelineReasoningCoordinator } from './pipeline-reasoning-coordinator';
 import type { StageProposal, ValidationResult, PipelineFullContext } from './pipeline-reasoning-coordinator';
 
@@ -125,6 +128,7 @@ export interface CaseNodeMapping {
  */
 export interface WorkflowIntentPlan {
   structuredSummary: string;
+  summaryV2?: WorkflowSummaryV2;
   proposedNodeChain: string[];
   nodeInclusionReasons?: Record<string, string>;
   rankedSelectionDiagnostics?: {
@@ -7369,6 +7373,10 @@ Rules:
     extractedNodeTypes: string[],
     _enrichedNodeMentions: Array<{ nodeType: string; operations: string[]; defaultOperation: string }>
   ): SummarizeLayerResult {
+    const summaryV2 = this.compilePlanSummaryV2(plan, userPrompt);
+    if (summaryV2) {
+      plan.summaryV2 = summaryV2;
+    }
     const matchedKeywordsSet = new Set<string>();
     for (const nodeType of plan.proposedNodeChain) {
       const nt = stripPlanTokenToType(nodeType);
@@ -7436,6 +7444,7 @@ Rules:
     );
     const plan: WorkflowIntentPlan = {
       structuredSummary: fallbackSummary,
+      summaryV2: this.compilePlanSummaryV2({ structuredSummary: fallbackSummary, proposedNodeChain: normalized, originalPrompt: userPrompt }, userPrompt),
       proposedNodeChain: normalized,
       rankedSelectionDiagnostics: this.rankNodesByIntent(userPrompt, normalized, {}),
       orderingDiagnostics: this.buildOrderingDiagnostics(
@@ -7456,6 +7465,38 @@ Rules:
       workflowIntentPlan: plan,
       clarifiedIntent: plan.structuredSummary,
     };
+  }
+
+  private compilePlanSummaryV2(
+    plan: Pick<WorkflowIntentPlan, 'proposedNodeChain' | 'structuredSummary' | 'originalPrompt'>,
+    userPrompt: string
+  ): WorkflowSummaryV2 | undefined {
+    try {
+      const nodes = plan.proposedNodeChain.map((rawType, index) => {
+        const nodeType = unifiedNodeRegistry.resolveAlias(stripPlanTokenToType(rawType)) || stripPlanTokenToType(rawType);
+        const def = unifiedNodeRegistry.get(nodeType);
+        return {
+          id: `plan_${index}_${nodeType}`,
+          type: nodeType,
+          data: {
+            label: def?.label || nodeType,
+            type: nodeType,
+            category: def?.category || 'utility',
+            config: { ...(unifiedNodeRegistry.getDefaultConfig(nodeType) || {}) },
+          },
+        };
+      });
+      const initialized = unifiedGraphOrchestrator.initializeWorkflow(nodes as any);
+      const reconciled = unifiedGraphOrchestrator.reconcileWorkflow(initialized.workflow);
+      const validation = unifiedGraphOrchestrator.validateWorkflow(reconciled.workflow, reconciled.executionOrder);
+      if (!validation.valid) return undefined;
+      const summaryV2 = compileSummaryV2FromWorkflow(reconciled.workflow, userPrompt);
+      const summaryValidation = validateSummaryV2(summaryV2);
+      if (!summaryValidation.valid) return undefined;
+      return summaryV2;
+    } catch {
+      return undefined;
+    }
   }
 }
 

@@ -46,7 +46,7 @@ export class NodeSchemaRegistry {
     // ✅ PRODUCTION-GRADE: Use canonical types directly - registry should NOT depend on runtime alias resolution
     // Critical nodes are verified using their canonical types only
     const criticalNodes = [
-      'ai_service',
+      'ai_chat_model', // ai_service is an alias/capability that resolves to this canonical node
       'google_gmail' // ✅ Canonical type only - 'gmail' is alias, not a node
     ];
     const foundCriticalNodes: string[] = [];
@@ -72,13 +72,13 @@ export class NodeSchemaRegistry {
     }
     
     // ✅ PRODUCTION-GRADE: Verify using canonical types directly (no alias resolution in registry)
-    const aiServiceSchema = this.get('ai_service');
+    const aiChatModelSchema = this.get('ai_chat_model');
     const gmailSchema = this.get('google_gmail'); // ✅ Direct canonical lookup - no alias resolution
     
-    if (!aiServiceSchema) {
-      console.error('[NodeSchemaRegistry] ❌ ai_service node not found in registry!');
+    if (!aiChatModelSchema) {
+      console.error('[NodeSchemaRegistry] ❌ ai_chat_model node not found in registry!');
     } else {
-      console.log(`[NodeSchemaRegistry] ✅ ai_service node registered: ${aiServiceSchema.nodeType}`);
+      console.log(`[NodeSchemaRegistry] ✅ ai_chat_model node registered: ${aiChatModelSchema.nodeType}`);
     }
     
     if (!gmailSchema) {

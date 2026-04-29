@@ -307,10 +307,22 @@ export class MemoryManager {
       this.cache.setExecution(executionId, execution);
 
       return executionId;
-    } catch (error) {
-      console.error('Failed to store execution:', error);
-      // Return executionId even if storage fails (for tracking)
-      return executionId;
+    } catch (error: any) {
+      const isMissingMemoryTable =
+        error?.code === 'P2021' ||
+        String(error?.message || '').includes('memory_executions') ||
+        String(error?.message || '').includes('memory_node_executions');
+
+      if (isMissingMemoryTable) {
+        console.warn(
+          '[Memory] Execution memory tables are not installed; skipping optional memory archive. ' +
+          'Run worker/prisma/migrations/SUPABASE_FIXED_SETUP.sql or disable memory persistence for this environment.'
+        );
+      } else {
+        console.error('Failed to store execution:', error);
+      }
+
+      throw error;
     }
   }
 

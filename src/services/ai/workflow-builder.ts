@@ -2724,7 +2724,7 @@ export class AgenticWorkflowBuilder {
       }
     });
     
-    if (finalNodeValidationErrors.length > 0 && process.env.SCHEMA_VALIDATION_STRICT === 'true') {
+    if (finalNodeValidationErrors.length > 0 && config.reliability.strictValidation) {
       throw new Error(`Workflow validation failed after auto-repair: ${finalNodeValidationErrors.join('; ')}`);
     }
     
@@ -2898,7 +2898,7 @@ export class AgenticWorkflowBuilder {
       if (source.includes('database') || source.includes('vector database')) {
         credentials.push('DATABASE_CONNECTION_STRING');
       }
-      // Google OAuth is handled via navbar credentials - no need to ask here
+      // Google OAuth is handled through the backend connection catalog - no need to ask here
       // else if (source.includes('google') || source.includes('sheets')) {
       //   credentials.push('GOOGLE_OAUTH_CLIENT_ID', 'GOOGLE_OAUTH_CLIENT_SECRET');
       // }
@@ -2969,7 +2969,7 @@ export class AgenticWorkflowBuilder {
       if (promptLower.includes('discord')) {
         if (!credentials.includes('DISCORD_WEBHOOK_URL')) credentials.push('DISCORD_WEBHOOK_URL');
       }
-      // Google OAuth is handled via navbar credentials - no need to ask here
+      // Google OAuth is handled through the backend connection catalog - no need to ask here
       // Google services (Sheets, Gmail, Drive) are pre-connected via OAuth
       // Do NOT ask for Google OAuth credentials - they are already configured
       // For Gmail, only ask for sender account selection (handled in UI, not as credential)
@@ -3000,7 +3000,7 @@ export class AgenticWorkflowBuilder {
         if (platformLower.includes('discord')) {
           if (!credentials.includes('DISCORD_WEBHOOK_URL')) credentials.push('DISCORD_WEBHOOK_URL');
         }
-        // Google OAuth is handled via navbar credentials - no need to ask here
+        // Google OAuth is handled through the backend connection catalog - no need to ask here
         // Google services (Sheets, Gmail, Drive) are pre-connected via OAuth
         // Do NOT ask for Google OAuth credentials - they are already configured
         // For Gmail, only ask for sender account selection (handled in UI, not as credential)
@@ -3260,7 +3260,7 @@ export class AgenticWorkflowBuilder {
           reference += `- **Credentials Required**:\n`;
           credentials.forEach(cred => {
             const status = cred.required ? '🔑 REQUIRED' : '⚪ Optional';
-            const navbar = cred.handledViaNavbar ? ' (handled via navbar)' : '';
+            const navbar = cred.handledViaNavbar ? ' (connected from Connections)' : '';
             reference += `  - ${status}: **${cred.type}**${navbar}\n`;
           });
         } else {

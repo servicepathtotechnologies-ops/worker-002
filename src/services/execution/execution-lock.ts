@@ -6,7 +6,7 @@
  * Automatically cleans up stale locks from crashed/stuck executions.
  */
 
-import { SupabaseClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 
 export interface ExecutionLockResult {
   acquired: boolean;

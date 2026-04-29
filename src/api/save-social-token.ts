@@ -13,24 +13,11 @@ import { ErrorCode, createError } from '../core/utils/error-codes';
 export default async function saveSocialTokenHandler(req: Request, res: Response) {
   try {
     const supabase = getSupabaseClient();
-    
-    // Get user from session (Supabase Auth)
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    const user = (req as any).user;
+    if (!user?.id) {
       return res.status(401).json({
         success: false,
         error: createError(ErrorCode.UNAUTHORIZED, 'Authentication required'),
-      });
-    }
-    
-    const token = authHeader.substring(7);
-    
-    // Verify token and get user
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-    if (authError || !user) {
-      return res.status(401).json({
-        success: false,
-        error: createError(ErrorCode.UNAUTHORIZED, 'Invalid or expired token'),
       });
     }
     

@@ -7,7 +7,7 @@
  * Jobs are distributed via queue system (RabbitMQ/Redis).
  */
 
-import { SupabaseClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import type { WorkflowEdge } from '../../../core/types/ai-types';
 import { resolveWinningSwitchEdgeId } from '../../../core/execution/switch-branch-router';
 import { QueueClient, NodeJob } from './queue-client';

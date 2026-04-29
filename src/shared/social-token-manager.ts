@@ -7,7 +7,7 @@
  * Supports providers: github, facebook, twitter, linkedin, google
  */
 
-import { SupabaseClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { encryptToken, decryptToken, encryptTokens, decryptTokens } from '../core/utils/token-encryption';
 
 export type SocialProvider = 'github' | 'facebook' | 'twitter' | 'linkedin' | 'google';
@@ -50,7 +50,7 @@ export async function getProviderToken(
     for (const uid of userIds) {
       if (!uid) continue;
       
-      const { data: tokenData, error } = await supabase
+      let { data: tokenData, error } = await supabase
         .from('social_tokens')
         .select('access_token, refresh_token, expires_at')
         .eq('user_id', uid)
@@ -58,7 +58,25 @@ export async function getProviderToken(
         .single();
       
       if (error || !tokenData) {
-        continue; // Try next user ID
+        const fallbackTableByProvider: Partial<Record<SocialProvider, string>> = {
+          twitter: 'twitter_oauth_tokens',
+          linkedin: 'linkedin_oauth_tokens',
+          google: 'google_oauth_tokens',
+        };
+        const fallbackTable = fallbackTableByProvider[provider];
+        if (fallbackTable) {
+          const fallback = await supabase
+            .from(fallbackTable)
+            .select('access_token, refresh_token, expires_at')
+            .eq('user_id', uid)
+            .single();
+          tokenData = fallback.data;
+          error = fallback.error;
+        }
+
+        if (error || !tokenData) {
+          continue; // Try next user ID
+        }
       }
       
       // Decrypt token
@@ -225,8 +243,8 @@ export async function refreshProviderToken(
  * Refresh Facebook token
  */
 async function refreshFacebookToken(refreshToken: string): Promise<SocialTokenData | null> {
-  const clientId = process.env.FACEBOOK_APP_ID;
-  const clientSecret = process.env.FACEBOOK_APP_SECRET;
+  const clientId = process.env.META_APP_ID || process.env.FACEBOOK_APP_ID;
+  const clientSecret = process.env.META_APP_SECRET || process.env.FACEBOOK_APP_SECRET;
   
   if (!clientId || !clientSecret) {
     console.warn('[Social Token] Facebook OAuth credentials not configured');

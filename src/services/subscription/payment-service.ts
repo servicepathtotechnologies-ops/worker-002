@@ -294,7 +294,7 @@ export class PaymentService {
       }
 
       // Find the plan based on payment amount (simple matching for now)
-      const plan = plans.find(p => {
+      const plan = plans.find((p: any) => {
         const planAmount = config.developmentPricing ? 100 : p.price_inr;
         return planAmount === payment.amount_inr && p.name !== 'Free';
       });
@@ -481,7 +481,7 @@ export class PaymentService {
         throw new Error(`Failed to fetch payment analytics: ${error.message}`);
       }
 
-      const totalRevenue = (payments || []).reduce((sum, payment) => sum + payment.amount_inr, 0);
+      const totalRevenue = (payments || []).reduce((sum: number, payment: any) => sum + payment.amount_inr, 0);
       const totalTransactions = payments?.length || 0;
       const averageTransactionValue = totalTransactions > 0 ? totalRevenue / totalTransactions : 0;
 

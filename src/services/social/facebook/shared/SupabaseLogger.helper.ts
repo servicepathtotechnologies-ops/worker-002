@@ -1,7 +1,7 @@
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { randomUUID } from 'crypto';
 import { config } from '../../../../core/config';
 import { FacebookOperationLog } from '../types/facebook.types';
+import { getSupabaseClient } from '../../../../core/database/supabase-compat';
 
 export interface SupabaseLoggerOptions {
   enabled: boolean;
@@ -10,17 +10,14 @@ export interface SupabaseLoggerOptions {
 
 export class SupabaseLogger {
   private readonly options: SupabaseLoggerOptions;
-  private readonly client: SupabaseClient | null;
+  private readonly client: any;
 
   constructor(options: Partial<SupabaseLoggerOptions>) {
     this.options = {
       enabled: Boolean(options.enabled),
       tableName: options.tableName || 'facebook_operation_logs',
     };
-    this.client =
-      this.options.enabled && config.supabaseUrl && config.supabaseKey
-        ? createClient(config.supabaseUrl, config.supabaseKey)
-        : null;
+    this.client = this.options.enabled ? getSupabaseClient() : null;
   }
 
   async log(entry: Omit<FacebookOperationLog, 'id' | 'created_at'>): Promise<void> {

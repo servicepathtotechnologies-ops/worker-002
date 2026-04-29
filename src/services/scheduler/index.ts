@@ -60,7 +60,7 @@ class SchedulerService {
     
     // Set up periodic check for new schedules (every minute)
     // Use exponential backoff if there are consecutive errors
-    cron.schedule('* * * * *', async () => {
+    cron.schedule('*/15 * * * *', async () => {
       // Skip if we've had too many consecutive errors (backoff)
       if (this.consecutiveErrors >= 5) {
         const backoffMinutes = Math.min(5, Math.pow(2, Math.floor(this.consecutiveErrors / 5)));

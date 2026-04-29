@@ -195,12 +195,12 @@ export default async function adminUsersHandler(req: Request, res: Response) {
         }
 
         const rolePriority: Record<AppRole, number> = { admin: 3, moderator: 2, user: 1 };
-        const primaryRole = (roleRows || []).reduce<AppRole>(
-          (acc, row) => {
+        const primaryRole = ((roleRows || []) as any[]).reduce(
+          (acc: AppRole, row: any) => {
             const nextRole = row.role as AppRole;
             return rolePriority[nextRole] > rolePriority[acc] ? nextRole : acc;
           },
-          'user'
+          'user' as AppRole
         );
 
         const { data: workflowRows, error: workflowsError } = await supabase
@@ -212,7 +212,7 @@ export default async function adminUsersHandler(req: Request, res: Response) {
           throw workflowsError;
         }
 
-        const workflowIds = (workflowRows || []).map((workflow) => workflow.id);
+        const workflowIds = (workflowRows || []).map((workflow: any) => workflow.id);
         let executionCountsByWorkflow = new Map<string, number>();
 
         if (workflowIds.length > 0) {
@@ -231,7 +231,7 @@ export default async function adminUsersHandler(req: Request, res: Response) {
           }
         }
 
-        const workflowItems = (workflowRows || []).map((workflow) => {
+        const workflowItems = (workflowRows || []).map((workflow: any) => {
           const workflowRuns = executionCountsByWorkflow.get(workflow.id) || 0;
           return {
             id: workflow.id,
@@ -267,8 +267,8 @@ export default async function adminUsersHandler(req: Request, res: Response) {
         throw usersError;
       }
 
-      const users = usersData?.users ?? [];
-      const userIds = users.map((user) => user.id);
+      const users: any[] = usersData?.users ?? [];
+      const userIds = users.map((user: any) => user.id);
 
       const { data: profileRows, error: profilesError } = await supabase
         .from('profiles')
@@ -286,7 +286,7 @@ export default async function adminUsersHandler(req: Request, res: Response) {
         throw rolesError;
       }
 
-      const profileMap = new Map((profileRows || []).map((row) => [row.user_id, row]));
+      const profileMap = new Map((profileRows || []).map((row: any) => [row.user_id, row]));
       const rolePriority: Record<AppRole, number> = { admin: 3, moderator: 2, user: 1 };
       const roleMap = new Map<string, AppRole>();
 
@@ -297,8 +297,8 @@ export default async function adminUsersHandler(req: Request, res: Response) {
         }
       }
 
-      const formattedUsers = users.map((user) => {
-        const profile = profileMap.get(user.id);
+      const formattedUsers = users.map((user: any) => {
+        const profile: any = profileMap.get(user.id);
         const role = roleMap.get(user.id) ?? 'user';
 
         return {

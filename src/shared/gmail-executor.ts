@@ -11,7 +11,7 @@
  * - Support for send/list/get/search operations
  */
 
-import { SupabaseClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { getGoogleAccessToken } from './google-sheets';
 import { fetchWithRetry, parseGoogleApiError, validateEmail } from './google-api-utils';
 

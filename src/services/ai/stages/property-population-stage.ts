@@ -171,8 +171,17 @@ export async function runPropertyPopulationStage(
 
       // ── 2.3 LLM prompt construction ─────────────────────────────────────
       const systemPrompt =
-        'You are a workflow configuration assistant. Given a user\'s intent, a workflow blueprint, ' +
-        'and a node\'s input schema, return a JSON object with values for the specified fields. ' +
+        'You are a workflow configuration assistant specializing in automation workflows. ' +
+        'Given a user\'s intent, a workflow blueprint, and a node\'s input schema, return a JSON object with values for the specified fields.\n' +
+        'CRITICAL RULES FOR CONTROL FLOW NODES:\n' +
+        '- if_else nodes: "conditions" MUST be a non-empty array of objects: [{ "field": "$json.<key>", "operator": "<op>", "value": "<val>" }]\n' +
+        '  Valid operators: equals, not_equals, greater_than, less_than, greater_than_or_equal, less_than_or_equal, contains, not_contains, starts_with, ends_with\n' +
+        '  NEVER return conditions: [] — an empty array will break the workflow branch.\n' +
+        '- switch nodes: "expression" MUST be {{$json.<routingField>}} referencing the upstream field that drives branching.\n' +
+        '  "cases" MUST be a non-empty array of objects: [{ "value": "<case_value>", "label": "<Human Label>" }]\n' +
+        '  Include ALL distinct case values implied by the workflow. NEVER return cases: [].\n' +
+        '- loop nodes: "items" MUST be {{$json.<arrayField>}} referencing an upstream array.\n' +
+        '- Use {{$json.<fieldName>}} syntax for template references to upstream node output fields.\n' +
         'Return ONLY valid JSON. No markdown, no explanation, no extra text.';
 
       const fieldsText = eligibleFields
@@ -185,31 +194,60 @@ export async function runPropertyPopulationStage(
         })
         .join('\n');
 
-      // ── For if_else nodes: inject upstream form field keys so the LLM uses
-      // the exact internal field names instead of inventing them from natural language.
-      // e.g. form field id="experience" → condition must use $json.experience, NOT $json.experience_years
-      let upstreamFormFieldsHint = '';
-      if (nodeType === 'if_else') {
-        const upstreamFormKeys: string[] = [];
-        for (const n of workflow.nodes) {
-          const nt = n.type ?? n.data?.type ?? '';
-          if (nt === 'form' || nt === 'form_trigger') {
-            const formFields = (n.data?.config as any)?.fields;
-            if (Array.isArray(formFields)) {
-              for (const f of formFields) {
-                const key = f.name ?? f.key ?? f.id;
-                if (key && typeof key === 'string') upstreamFormKeys.push(key);
-              }
+      // ── Collect upstream form field keys (shared by if_else and switch) ────
+      const upstreamFormKeys: string[] = [];
+      for (const n of workflow.nodes) {
+        const nt = n.type ?? n.data?.type ?? '';
+        if (nt === 'form' || nt === 'form_trigger') {
+          const formFields = (n.data?.config as any)?.fields;
+          if (Array.isArray(formFields)) {
+            for (const f of formFields) {
+              const key = f.name ?? f.key ?? f.id;
+              if (key && typeof key === 'string') upstreamFormKeys.push(key);
             }
           }
         }
+      }
+
+      // ── For if_else nodes: inject upstream form field keys and conditions format ─
+      let upstreamFormFieldsHint = '';
+      if (nodeType === 'if_else') {
         if (upstreamFormKeys.length > 0) {
           upstreamFormFieldsHint =
             `\nUPSTREAM_FORM_FIELD_KEYS (MUST use these exact keys in $json.* condition fields):\n` +
-            upstreamFormKeys.map((k) => `  - ${k}`).join('\n') +
-            `\nCRITICAL: condition field values MUST be "$json.<key>" using ONLY the keys listed above. ` +
+            upstreamFormKeys.map((k) => `  - ${k} → use "$json.${k}" in condition "field" property`).join('\n') +
+            `\nCRITICAL: condition "field" values MUST be "$json.<key>" using ONLY the keys listed above. ` +
             `Do NOT invent field names. If the user says "years of experience" and the form field is "experience", use "$json.experience".\n`;
         }
+        upstreamFormFieldsHint +=
+          `\nREQUIRED FORMAT for "conditions" field (return this exact structure):\n` +
+          `  [{ "field": "$json.<fieldKey>", "operator": "<operator>", "value": "<compareValue>" }]\n` +
+          `  Valid operators: equals, not_equals, greater_than, less_than, greater_than_or_equal, less_than_or_equal, contains, not_contains, starts_with, ends_with\n` +
+          `  Example: [{ "field": "$json.status", "operator": "equals", "value": "approved" }]\n` +
+          `  CRITICAL: DO NOT return an empty array []. You MUST produce at least one condition derived from the user's intent.\n`;
+      }
+
+      // ── For switch nodes: inject routing field context and cases format ────
+      let switchHint = '';
+      if (nodeType === 'switch') {
+        const primaryKey = upstreamFormKeys.length > 0 ? upstreamFormKeys[0] : '';
+        const exampleExpr = primaryKey ? `{{$json.${primaryKey}}}` : '{{$json.status}}';
+        if (upstreamFormKeys.length > 0) {
+          switchHint =
+            `\nUPSTREAM_FORM_FIELD_KEYS (pick the routing field for the switch expression):\n` +
+            upstreamFormKeys.map((k) => `  - ${k} → expression: "{{$json.${k}}}"`).join('\n') +
+            `\n`;
+        }
+        switchHint +=
+          `\nREQUIRED FORMAT for "expression" field:\n` +
+          `  A template expression referencing the field that drives routing.\n` +
+          `  Example: "${exampleExpr}"\n` +
+          `  MUST use {{$json.<fieldKey>}} syntax. Select the upstream field whose value determines which branch executes.\n` +
+          `\nREQUIRED FORMAT for "cases" field (return this exact structure):\n` +
+          `  [{ "value": "<case_value>", "label": "<Human Readable Label>" }]\n` +
+          `  Derive case values from the workflow context and user's intent (e.g., status values, category names).\n` +
+          `  Example: [{ "value": "approved", "label": "Approved" }, { "value": "rejected", "label": "Rejected" }, { "value": "pending", "label": "Pending Review" }]\n` +
+          `  CRITICAL: Include ALL distinct routing paths described or implied by the user. An empty cases array breaks all branching.\n`;
       }
 
       // Build upstream fields hint
@@ -244,11 +282,13 @@ export async function runPropertyPopulationStage(
         `NODE_TYPE: ${nodeType}\n` +
         `NODE_ID: ${nodeId}\n` +
         upstreamFormFieldsHint +
+        switchHint +
         upstreamFieldsHint +
         fieldRolesHint +
         `\nFIELDS_TO_POPULATE:\n${fieldsText}\n\n` +
         `Return a JSON object with keys matching the field names above.\n` +
-        `For array/object fields, return valid JSON values (not strings).`;
+        `For array/object fields, return valid JSON values (not strings).\n` +
+        `REMINDER: Never return empty arrays for conditions, cases, or items fields.`;
 
       // ── 2.4 LLM call, JSON parsing, fillMode gate ────────────────────────
       let rawResponse: string;

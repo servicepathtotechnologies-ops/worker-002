@@ -5,7 +5,7 @@
  * Routes node operations to appropriate service handlers.
  */
 
-import { SupabaseClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { getProviderToken } from '../../shared/social-token-manager';
 import { postGitHubIssue, createGitHubRepository, getGitHubUser, commitGitHubFile } from './githubService';
 import { postToFacebook, getFacebookUser } from './facebookService';

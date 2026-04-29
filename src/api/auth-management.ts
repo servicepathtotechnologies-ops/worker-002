@@ -22,7 +22,7 @@ export async function getSessionInfo(req: AuthenticatedRequest, res: Response) {
       });
     }
 
-    const sessionData = req.user.sessionId ? getSession(req.user.sessionId) : null;
+    const sessionData = req.user.sessionId ? await getSession(req.user.sessionId) : null;
 
     return res.json({
       success: true,
@@ -66,7 +66,7 @@ export async function invalidateCurrentSession(req: AuthenticatedRequest, res: R
 
     let invalidated = false;
     if (req.user.sessionId) {
-      invalidated = invalidateSession(req.user.sessionId);
+      invalidated = await invalidateSession(req.user.sessionId);
     }
 
     return res.json({
@@ -95,7 +95,7 @@ export async function invalidateAllSessions(req: AuthenticatedRequest, res: Resp
       });
     }
 
-    const invalidatedCount = invalidateAllUserSessions(req.user.id);
+    const invalidatedCount = await invalidateAllUserSessions(req.user.id);
 
     return res.json({
       success: true,

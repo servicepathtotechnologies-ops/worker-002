@@ -8,7 +8,7 @@
  *   UserPrompt → Stage1Output → Stage2Output → Stage3Output → UI
  */
 
-import type { Workflow } from './ai-types';
+import type { Workflow, WorkflowSummaryV2 } from './ai-types';
 import type { FieldFillMode, FieldOwnershipClass } from './unified-node-contract';
 import type { WorkflowBuildManifestV1 } from './workflow-build-manifest';
 import type { CapabilityOptionStep } from '../../services/ai/stages/capability-selection-stage';
@@ -119,6 +119,8 @@ export interface Stage1Output {
   capabilityOptions: CapabilityOptionStep[];
   /** stepId → user-selected node types (empty when no UI interaction occurred). */
   appliedCapabilitySelectionsByStep: Record<string, string[]>;
+  /** Structural summary derived from reconciled graph preview. */
+  summaryV2?: WorkflowSummaryV2;
   stageTrace: StageTrace[];
 }
 

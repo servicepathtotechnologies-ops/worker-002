@@ -1,7 +1,88 @@
 import { Request, Response, NextFunction } from 'express';
-import { getSupabaseClient } from '../database/supabase-compat';
 import * as jwt from 'jsonwebtoken';
+import { CognitoJwtVerifier } from 'aws-jwt-verify';
 import { config } from '../config';
+import { queryAsService } from '../database/db-pool';
+import { ensureUserRows } from '../database/ensure-user';
+
+// Cognito JWT verifier — verifies access tokens issued by our User Pool
+// Accept tokens from any app client in this user pool (covers both the
+// server-side client and the SPA client created for browser-based OAuth).
+const cognitoVerifier = config.cognitoUserPoolId
+  ? CognitoJwtVerifier.create({
+      userPoolId: config.cognitoUserPoolId,
+      tokenUse: 'access',
+      clientId: null,
+    })
+  : null;
+
+async function verifyCognitoToken(token: string): Promise<{ id: string; email: string; role: string } | null> {
+  if (!cognitoVerifier) return null;
+  try {
+    const payload = await (cognitoVerifier as any).verify(token, { clientId: null });
+    return {
+      id: (payload.sub as string),
+      email: (payload.email as string) || '',
+      role: ((payload['cognito:groups'] as string[] || [])[0] === 'admin' ? 'admin' : 'user'),
+    };
+  } catch {
+    return null;
+  }
+}
+
+const _subscriptionCache = new Map<string, { value: any; expiry: number }>();
+const _roleDbCache = new Map<string, { value: string | null; expiry: number }>();
+const AUTH_CACHE_TTL_MS = 30_000;
+
+// DB calls here use the pool-level circuit breaker in db-pool.ts.
+// These wrappers only add caching and graceful fallback to default values.
+
+async function getUserSubscription(userId: string) {
+  const hit = _subscriptionCache.get(userId);
+  if (hit && Date.now() < hit.expiry) return hit.value;
+  try {
+    const rows = await queryAsService(
+      `SELECT u.id, u.email, u.workflow_count,
+              sp.name  AS plan_name,
+              sp.workflow_limit
+       FROM   users u
+       LEFT   JOIN subscriptions s  ON s.id = u.subscription_id AND s.status = 'active'
+       LEFT   JOIN subscription_plans sp ON sp.id = s.plan_id
+       WHERE  u.id = $1
+       LIMIT  1`,
+      [userId]
+    );
+    const value = rows[0] || null;
+    _subscriptionCache.set(userId, { value, expiry: Date.now() + AUTH_CACHE_TTL_MS });
+    return value;
+  } catch {
+    return null;
+  }
+}
+
+async function getUserRoleFromDb(userId: string): Promise<string | null> {
+  const hit = _roleDbCache.get(userId);
+  if (hit && Date.now() < hit.expiry) return hit.value;
+  try {
+    const rows = await queryAsService(
+      `SELECT role FROM user_roles WHERE user_id = $1 LIMIT 1`,
+      [userId]
+    );
+    const value = (rows[0]?.role as string) || null;
+    _roleDbCache.set(userId, { value, expiry: Date.now() + AUTH_CACHE_TTL_MS });
+    return value;
+  } catch {
+    return null;
+  }
+}
+import {
+  cleanupSessionRecords,
+  getSessionRecord,
+  invalidateAllSessionsForUser,
+  invalidateSessionRecord,
+  trimUserSessions,
+  upsertSession,
+} from './session-repository';
 
 export interface AuthenticatedRequest extends Request {
   user?: {
@@ -42,9 +123,7 @@ export interface SessionData {
   userAgent: string;
   isActive: boolean;
 }
-
-// In-memory session store (in production, use Redis or database)
-const sessionStore = new Map<string, SessionData>();
+const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 /**
  * Enhanced JWT authentication middleware with comprehensive error handling
@@ -71,71 +150,39 @@ export const authenticateUser = async (req: AuthenticatedRequest, res: Response,
       });
     }
 
-    // Enhanced token validation with multiple fallback methods
     let user: any = null;
     let tokenPayload: JWTPayload | null = null;
-    
-    // Method 1: Try JWT verification first (if we have a secret)
-    if (config.jwtSecret) {
+
+    // Method 1: Cognito JWT verification (primary)
+    const cognitoUser = await verifyCognitoToken(token);
+    if (cognitoUser) {
+      user = { id: cognitoUser.id, email: cognitoUser.email, user_metadata: { role: cognitoUser.role } };
+    }
+
+    // Method 2: Legacy custom JWT (for existing sessions during transition)
+    if (!user && config.jwtSecret) {
       try {
         tokenPayload = jwt.verify(token, config.jwtSecret) as JWTPayload;
-        user = {
-          id: tokenPayload.userId,
-          email: tokenPayload.email,
-          user_metadata: { role: tokenPayload.role }
-        };
-      } catch (jwtError: any) {
-        console.warn('[Auth] JWT verification failed, falling back to Supabase:', jwtError.message);
-      }
+        user = { id: tokenPayload.userId, email: tokenPayload.email, user_metadata: { role: tokenPayload.role } };
+      } catch { /* fall through */ }
     }
-    
-    // Method 2: Fallback to Supabase auth if JWT fails or not configured
+
     if (!user) {
-      const supabase = getSupabaseClient();
-      const { data: { user: supabaseUser }, error } = await supabase.auth.getUser(token);
-      
-      if (error || !supabaseUser) {
-        return res.status(401).json({ 
-          error: 'Unauthorized', 
-          message: 'Invalid or expired token',
-          code: 'INVALID_TOKEN',
-          details: error?.message
-        });
-      }
-      
-      user = supabaseUser;
-    }
-    
-    // Get user subscription data for enhanced authorization
-    const supabase = getSupabaseClient();
-    const { data: userData, error: userError } = await supabase
-      .from('users')
-      .select(`
-        id, 
-        email, 
-        workflow_count,
-        subscription_id,
-        subscriptions!fk_users_subscription (
-          id,
-          plan_id,
-          status,
-          subscription_plans (
-            name,
-            workflow_limit
-          )
-        )
-      `)
-      .eq('id', user.id)
-      .single();
-
-    if (userError) {
-      console.warn('[Auth] User data lookup failed:', userError);
+      return res.status(401).json({
+        error: 'Unauthorized',
+        message: 'Invalid or expired token',
+        code: 'INVALID_TOKEN',
+      });
     }
 
-    // Extract subscription information
-    const subscription = userData?.subscriptions as any;
-    const subscriptionPlan = subscription?.subscription_plans?.name || 'Free';
-    const workflowLimit = subscription?.subscription_plans?.workflow_limit || 2;
+    // Pool-level circuit breaker absorbs connection failures; fall through on error.
+    await ensureUserRows(user.id, user.email || '', user.user_metadata?.full_name || user.user_metadata?.name || null).catch(() => {});
+
+    // Get subscription data from RDS (gracefully falls back to defaults when DB is unreachable)
+    const userData = await getUserSubscription(user.id);
+    const roleFromDb = await getUserRoleFromDb(user.id);
+    const subscriptionPlan = userData?.plan_name || 'Free';
+    const workflowLimit = userData?.workflow_limit || 2;
     
     // Create session if using JWT
     let sessionId: string | undefined;
@@ -143,21 +190,38 @@ export const authenticateUser = async (req: AuthenticatedRequest, res: Response,
       sessionId = tokenPayload.sessionId;
       
       // Update session activity
-      const session = sessionStore.get(sessionId);
+      const session = await getSessionRecord(sessionId);
       if (session) {
-        session.lastActivity = new Date();
-        session.ipAddress = req.ip || 'unknown';
-        session.userAgent = req.get('User-Agent') || 'unknown';
-        sessionStore.set(sessionId, session);
-        
-        req.session = session;
+        const updatedSession: SessionData = {
+          id: session.id,
+          userId: session.userId,
+          createdAt: new Date(session.createdAt),
+          lastActivity: new Date(),
+          ipAddress: req.ip || 'unknown',
+          userAgent: req.get('User-Agent') || 'unknown',
+          isActive: session.isActive,
+        };
+        await upsertSession(
+          {
+            id: updatedSession.id,
+            userId: updatedSession.userId,
+            createdAt: updatedSession.createdAt.toISOString(),
+            lastActivity: updatedSession.lastActivity.toISOString(),
+            ipAddress: updatedSession.ipAddress,
+            userAgent: updatedSession.userAgent,
+            isActive: updatedSession.isActive,
+          },
+          SESSION_MAX_AGE_MS
+        );
+
+        req.session = updatedSession;
       }
     }
     
     req.user = {
       id: user.id,
       email: user.email || '',
-      role: user.user_metadata?.role || 'user',
+      role: roleFromDb || user.user_metadata?.role || 'user',
       subscriptionPlan,
       workflowLimit,
       sessionId,
@@ -309,11 +373,16 @@ export const optionalAuth = async (req: AuthenticatedRequest, res: Response, nex
       return next(); // Continue without user
     }
 
-    // Try JWT first, then Supabase
+    // Try Cognito first, then legacy JWT
     let user: any = null;
     let tokenPayload: JWTPayload | null = null;
-    
-    if (config.jwtSecret) {
+
+    const cognitoUser = await verifyCognitoToken(token);
+    if (cognitoUser) {
+      user = { id: cognitoUser.id, email: cognitoUser.email, user_metadata: { role: cognitoUser.role } };
+    }
+
+    if (!user && config.jwtSecret) {
       try {
         tokenPayload = jwt.verify(token, config.jwtSecret) as JWTPayload;
         user = {
@@ -321,47 +390,19 @@ export const optionalAuth = async (req: AuthenticatedRequest, res: Response, nex
           email: tokenPayload.email,
           user_metadata: { role: tokenPayload.role }
         };
-      } catch (jwtError) {
-        // Silent fallback to Supabase
-      }
+      } catch { /* ignore */ }
     }
-    
-    if (!user) {
-      const supabase = getSupabaseClient();
-      const { data: { user: supabaseUser }, error } = await supabase.auth.getUser(token);
-      
-      if (!error && supabaseUser) {
-        user = supabaseUser;
-      }
-    }
-    
-    if (user) {
-      // Get subscription data
-      const supabase = getSupabaseClient();
-      const { data: userData } = await supabase
-        .from('users')
-        .select(`
-          id, 
-          email, 
-          workflow_count,
-          subscriptions!fk_users_subscription (
-            subscription_plans (
-              name,
-              workflow_limit
-            )
-          )
-        `)
-        .eq('id', user.id)
-        .single();
 
-      const subscription = userData?.subscriptions as any;
-      const subscriptionPlan = subscription?.subscription_plans?.name || 'Free';
-      const workflowLimit = subscription?.subscription_plans?.workflow_limit || 2;
-      
+    if (user) {
+      const userData = await getUserSubscription(user.id);
+      const subscriptionPlan = userData?.plan_name || 'Free';
+      const workflowLimit = userData?.workflow_limit || 2;
+
+      const roleFromDb = await getUserRoleFromDb(user.id);
       req.user = {
         id: user.id,
         email: user.email || '',
-        role: user.user_metadata?.role || 'user',
+        role: roleFromDb || user.user_metadata?.role || 'user',
         subscriptionPlan,
         workflowLimit,
         sessionId: tokenPayload?.sessionId,
@@ -399,14 +440,13 @@ export const validateSubscriptionOwnership = async (req: AuthenticatedRequest, r
       });
     }
     
-    const supabase = getSupabaseClient();
-    const { data: subscription, error } = await supabase
-      .from('subscriptions')
-      .select('user_id')
-      .eq('id', subscriptionId)
-      .single();
-    
-    if (error || !subscription) {
+    const rows = await queryAsService(
+      `SELECT user_id FROM subscriptions WHERE id = $1 LIMIT 1`,
+      [subscriptionId]
+    );
+    const subscription = rows[0] || null;
+
+    if (!subscription) {
       return res.status(404).json({ 
         error: 'Not Found', 
         message: 'Subscription not found',
@@ -438,7 +478,7 @@ export const validateSubscriptionOwnership = async (req: AuthenticatedRequest, r
 /**
  * Session management functions
  */
-export const createSession = (userId: string, ipAddress: string, userAgent: string): string => {
+export const createSession = async (userId: string, ipAddress: string, userAgent: string): Promise<string> => {
   const sessionId = `sess_${userId}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   
   const session: SessionData = {
@@ -451,46 +491,43 @@ export const createSession = (userId: string, ipAddress: string, userAgent: stri
     isActive: true
   };
   
-  sessionStore.set(sessionId, session);
-  
-  // Clean up old sessions (keep last 5 per user)
-  const userSessions = Array.from(sessionStore.entries())
-    .filter(([_, s]) => s.userId === userId)
-    .sort((a, b) => b[1].createdAt.getTime() - a[1].createdAt.getTime());
-  
-  if (userSessions.length > 5) {
-    userSessions.slice(5).forEach(([id]) => {
-      sessionStore.delete(id);
-    });
-  }
+  await upsertSession(
+    {
+      id: session.id,
+      userId: session.userId,
+      createdAt: session.createdAt.toISOString(),
+      lastActivity: session.lastActivity.toISOString(),
+      ipAddress: session.ipAddress,
+      userAgent: session.userAgent,
+      isActive: session.isActive,
+    },
+    SESSION_MAX_AGE_MS
+  );
+  await trimUserSessions(userId, 5, SESSION_MAX_AGE_MS);
   
   return sessionId;
 };
 
-export const getSession = (sessionId: string): SessionData | null => {
-  return sessionStore.get(sessionId) || null;
+export const getSession = async (sessionId: string): Promise<SessionData | null> => {
+  const record = await getSessionRecord(sessionId);
+  if (!record) return null;
+  return {
+    id: record.id,
+    userId: record.userId,
+    createdAt: new Date(record.createdAt),
+    lastActivity: new Date(record.lastActivity),
+    ipAddress: record.ipAddress,
+    userAgent: record.userAgent,
+    isActive: record.isActive,
+  };
 };
 
-export const invalidateSession = (sessionId: string): boolean => {
-  const session = sessionStore.get(sessionId);
-  if (session) {
-    session.isActive = false;
-    sessionStore.set(sessionId, session);
-    return true;
-  }
-  return false;
+export const invalidateSession = async (sessionId: string): Promise<boolean> => {
+  return invalidateSessionRecord(sessionId, SESSION_MAX_AGE_MS);
 };
 
-export const invalidateAllUserSessions = (userId: string): number => {
-  let count = 0;
-  for (const [sessionId, session] of sessionStore.entries()) {
-    if (session.userId === userId) {
-      session.isActive = false;
-      sessionStore.set(sessionId, session);
-      count++;
-    }
-  }
-  return count;
+export const invalidateAllUserSessions = async (userId: string): Promise<number> => {
+  return invalidateAllSessionsForUser(userId, SESSION_MAX_AGE_MS);
 };
 
 /**
@@ -562,18 +599,6 @@ export const refreshToken = async (req: AuthenticatedRequest, res: Response, nex
 /**
  * Session cleanup middleware (run periodically)
  */
-export const cleanupExpiredSessions = (): number => {
-  const now = new Date();
-  const maxAge = 24 * 60 * 60 * 1000; // 24 hours
-  let cleaned = 0;
-  
-  for (const [sessionId, session] of sessionStore.entries()) {
-    const age = now.getTime() - session.lastActivity.getTime();
-    if (age > maxAge || !session.isActive) {
-      sessionStore.delete(sessionId);
-      cleaned++;
-    }
-  }
-  
-  return cleaned;
+export const cleanupExpiredSessions = async (): Promise<number> => {
+  return cleanupSessionRecords(SESSION_MAX_AGE_MS);
 };

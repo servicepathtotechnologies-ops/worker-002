@@ -77,6 +77,33 @@ export class SubscriptionService {
     return getRedisClient();
   }
 
+  private firstSubscriptionRow(data: any): any | null {
+    if (Array.isArray(data)) {
+      return data.find((row) => row && typeof row === 'object' && row.subscription_id) || null;
+    }
+    if (data && typeof data === 'object' && data.subscription_id) {
+      return data;
+    }
+    return null;
+  }
+
+  private async buildFreeSubscriptionFallback(userId: string): Promise<UserSubscription> {
+    const plans = await this.getAvailablePlans().catch(() => []);
+    const freePlan = plans.find((plan) => plan.name === 'Free');
+    return {
+      id: `free:${userId}`,
+      userId,
+      planId: freePlan?.id || 'free',
+      planName: 'Free',
+      status: 'active',
+      workflowLimit: freePlan?.workflowLimit ?? 2,
+      workflowsUsed: 0,
+      features: freePlan?.features || [],
+      startedAt: new Date(),
+      autoRenew: false,
+    };
+  }
+
   /**
    * Get all available subscription plans with caching
    */
@@ -103,7 +130,7 @@ export class SubscriptionService {
       }
 
       // Transform to service format
-      const transformedPlans: SubscriptionPlan[] = (plans || []).map(plan => ({
+      const transformedPlans: SubscriptionPlan[] = (plans || []).map((plan: any) => ({
         id: plan.id,
         name: plan.name as 'Free' | 'Pro' | 'Enterprise',
         workflowLimit: plan.workflow_limit,
@@ -159,7 +186,9 @@ export class SubscriptionService {
         throw new Error(`Failed to get user subscription: ${error.message}`);
       }
 
-      if (!data || data.length === 0) {
+      let subscriptionData = this.firstSubscriptionRow(data);
+
+      if (!subscriptionData) {
         // Ensure user has a free subscription
         await this.supabase.rpc('ensure_free_subscription', { target_user_id: userId });
         
@@ -167,11 +196,21 @@ export class SubscriptionService {
         const { data: retryData, error: retryError } = await this.supabase
           .rpc('get_user_subscription_details', { target_user_id: userId });
 
-        if (retryError || !retryData || retryData.length === 0) {
-          return null;
+        if (retryError) {
+          console.warn('[SubscriptionService] Retry subscription lookup failed, using Free fallback:', retryError);
+          return this.buildFreeSubscriptionFallback(userId);
         }
 
-        const subscriptionData = retryData[0];
+        subscriptionData = this.firstSubscriptionRow(retryData);
+        if (!subscriptionData) {
+          console.warn('[SubscriptionService] Subscription RPC returned no usable row, using Free fallback:', {
+            userId,
+            resultType: Array.isArray(retryData) ? 'array' : typeof retryData,
+            rowCount: Array.isArray(retryData) ? retryData.length : undefined,
+          });
+          return this.buildFreeSubscriptionFallback(userId);
+        }
+
         const subscription = this.transformSubscriptionData(subscriptionData, userId);
         
         // Cache the result
@@ -182,7 +221,6 @@ export class SubscriptionService {
         return subscription;
       }
 
-      const subscriptionData = data[0];
       const subscription = this.transformSubscriptionData(subscriptionData, userId);
 
       // Cache the result
@@ -547,6 +585,9 @@ export class SubscriptionService {
    * Transform database subscription data to service format
    */
   private transformSubscriptionData(data: any, userId: string): UserSubscription {
+    if (!data || typeof data !== 'object') {
+      throw new Error('Invalid subscription data returned from database');
+    }
     return {
       id: data.subscription_id,
       userId,

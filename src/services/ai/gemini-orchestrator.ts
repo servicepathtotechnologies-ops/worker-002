@@ -26,7 +26,8 @@ export type AIRequestType =
   | 'error-analysis'
   | 'reasoning'
   | 'text-completion'
-  | 'property-population';
+  | 'property-population'
+  | 'credential-guidance';
 
 interface CacheEntry {
   result: any;

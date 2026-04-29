@@ -10,7 +10,7 @@
  * Implements multi-tier storage strategy for enterprise-grade reliability.
  */
 
-import { SupabaseClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { PersistentLayer, ExecutionStateSnapshot } from './persistent-layer';
 import { WindowSystem } from './window-system';
 import { ObjectStorageService } from './object-storage-service';

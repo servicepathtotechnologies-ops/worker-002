@@ -437,7 +437,7 @@ export class PaymentService {
         throw new Error(`Failed to get payment history: ${error.message}`);
       }
 
-      return (payments || []).map(payment => ({
+      return (payments || []).map((payment: any) => ({
         id: payment.id,
         orderId: payment.razorpay_order_id,
         paymentId: payment.razorpay_payment_id,

@@ -54,7 +54,7 @@ export async function answerHandler(req: Request, res: Response) {
     return res.status(400).json({ error: 'sessionId is required' });
   }
 
-  const session = getSession(sessionId);
+  const session = await getSession(sessionId);
   if (!session) {
     return res.status(404).json({ error: 'Session not found' });
   }
@@ -69,7 +69,7 @@ export async function answerHandler(req: Request, res: Response) {
     }
 
     // Return latest view of the session
-    const updated = getSession(sessionId) || session;
+    const updated = (await getSession(sessionId)) || session;
     return res.json({
       sessionId: updated.id,
       status: updated.status,
@@ -99,7 +99,7 @@ export async function getWorkflowHandler(req: Request, res: Response) {
     return res.status(400).json({ error: 'sessionId is required' });
   }
 
-  const session = getSession(sessionId);
+  const session = await getSession(sessionId);
   if (!session) {
     return res.status(404).json({ error: 'Session not found' });
   }

@@ -16,6 +16,7 @@ import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 export interface RequiredCredential {
   provider: string;
   fields: string[];
+  vaultKey?: string;
   node_id?: string;
   node_type?: string;
 }
@@ -101,6 +102,7 @@ export class CredentialDetector {
 
     return {
       provider: req.provider,
+      vaultKey: (req as any).vaultKey || req.provider,
       fields,
       node_id: node.id,
       node_type: nodeType,
@@ -115,6 +117,7 @@ export class CredentialDetector {
     if (trigger === 'webhook' && triggerConfig?.requires_auth) {
       return {
         provider: 'webhook',
+        vaultKey: 'webhook',
         fields: ['api_key'],
       };
     }

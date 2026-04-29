@@ -63,15 +63,6 @@ private getWorkflowGenerationSystemPrompt(): string {
       const nodeReference = this.generateNodeReference();
       return prompt + '\n' + nodeReference;
     }
-    
-    // Fallback to original
-    const promptPath = path.join(__dirname, 'WORKFLOW_GENERATION_SYSTEM_PROMPT.md');
-    if (fs.existsSync(promptPath)) {
-      const prompt = fs.readFileSync(promptPath, 'utf-8');
-      const nodeReference = this.generateNodeReference();
-      return prompt + '\n' + nodeReference;
-    }
-    
     return this.getEssentialSystemPrompt();
   } catch (error) {
     console.warn('⚠️  Could not load system prompt, using fallback');

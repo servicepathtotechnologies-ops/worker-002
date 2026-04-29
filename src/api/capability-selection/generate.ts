@@ -13,6 +13,10 @@
 import { Request, Response } from 'express';
 import { buildNodeCatalogText } from '../../services/ai/node-catalog-builder';
 import { runCapabilityStructuralPromptStage } from '../../services/ai/stages/capability-structural-prompt-stage';
+import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
+import type { WorkflowNode, WorkflowEdge } from '../../core/types/ai-types';
+import { compileSummaryV2FromWorkflow } from '../../services/ai/summary-v2-compiler';
+import { validateSummaryV2 } from '../../core/validation/summary-v2-validator';
 import type {
   NodeSelectionMap,
   CapabilityContainer,
@@ -85,10 +89,50 @@ export default async function generateCapabilityWorkflow(req: Request, res: Resp
     }
 
     const durationMs = Date.now() - startedAt;
+    const previewNodes: WorkflowNode[] = result.selectedNodeTypes.map((nodeType, index) => {
+      const canonicalType = unifiedNodeRegistry.resolveAlias(nodeType) || nodeType;
+      const def = unifiedNodeRegistry.get(canonicalType);
+      return {
+        id: `cap_preview_${index}_${canonicalType}`,
+        type: canonicalType,
+        data: {
+          label: def?.label || canonicalType,
+          type: canonicalType,
+          category: def?.category || 'utility',
+          config: { ...(unifiedNodeRegistry.getDefaultConfig(canonicalType) || {}) },
+        },
+      };
+    });
+
+    // Build a linear preview graph without reconciliation. Branch case values are not
+    // yet known at this stage (they come from property population in /confirm), so
+    // calling reconcileWorkflow here causes EdgeReconciliationEngine to remove all
+    // branching downstream nodes as "orphaned". The real graph is built in confirm.ts.
+    const previewEdges: WorkflowEdge[] = previewNodes.slice(0, -1).map((node, index) => ({
+      id: `cap_edge_${index}`,
+      source: node.id,
+      target: previewNodes[index + 1].id,
+      sourceHandle: 'output',
+      targetHandle: 'input',
+    }));
+    const previewWorkflow = { nodes: previewNodes, edges: previewEdges };
+
+    const summaryV2 = compileSummaryV2FromWorkflow(previewWorkflow, userPrompt);
+    const summaryValidation = validateSummaryV2(summaryV2);
+    if (!summaryValidation.valid) {
+      res.status(422).json({
+        ok: false,
+        code: 'SUMMARY_V2_CONTRACT_FAILED',
+        message: 'summaryV2 contract validation failed',
+        violations: summaryValidation.errors,
+      });
+      return;
+    }
 
     res.status(200).json({
       structuralPrompt: result.structuralPrompt,
       workflow: result.workflow,
+      summaryV2,
       selectedNodeTypes: result.selectedNodeTypes,
       nodeCount: result.nodeCount,
       edgeCount: result.edgeCount,

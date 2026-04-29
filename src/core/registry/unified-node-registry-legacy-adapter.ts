@@ -18,6 +18,83 @@ export type LegacyAdapterHooks = {
   beforeExecute?: (prepared: LegacyAdapterPrepared) => Promise<Partial<LegacyAdapterPrepared> | void> | Partial<LegacyAdapterPrepared> | void;
 };
 
+function isEmptyCredentialValue(value: any): boolean {
+  return value === undefined || value === null || (typeof value === 'string' && value.trim() === '');
+}
+
+function parseStoredCredential(value: string): Record<string, any> | null {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function pickScalarCredentialField(contractType: string): string {
+  if (contractType === 'webhook') return 'webhookUrl';
+  if (contractType === 'oauth') return 'accessToken';
+  if (contractType === 'token') return 'token';
+  return 'apiKey';
+}
+
+async function injectDashboardCredential(context: NodeExecutionContext, config: Record<string, any>): Promise<Record<string, any>> {
+  const userIdsToTry: string[] = [];
+  if (context.userId) userIdsToTry.push(context.userId);
+  if (context.currentUserId && context.currentUserId !== context.userId) userIdsToTry.push(context.currentUserId);
+  if (userIdsToTry.length === 0) return config;
+
+  const { connectorRegistry } = await import('../../services/connectors/connector-registry');
+  const connector = connectorRegistry.getConnectorByNodeType(context.nodeType);
+  if (!connector?.credentialContract?.vaultKey) return config;
+
+  const { retrieveCredential } = await import('../utils/credential-retriever');
+  let stored: string | null = null;
+  for (const uid of userIdsToTry) {
+    stored = await retrieveCredential(
+      {
+        userId: uid,
+        workflowId: context.workflowId,
+        nodeId: context.nodeId,
+        nodeType: context.nodeType,
+      },
+      connector.credentialContract.vaultKey,
+    );
+    if (stored) break;
+  }
+  if (!stored) return config;
+
+  const nextConfig = { ...config };
+  const parsed = parseStoredCredential(stored);
+  if (parsed) {
+    for (const [key, value] of Object.entries(parsed)) {
+      if (!isEmptyCredentialValue(value) && isEmptyCredentialValue(nextConfig[key])) {
+        nextConfig[key] = value;
+      }
+    }
+  }
+
+  const fieldName = connector.credentialContract.credentialFieldName || pickScalarCredentialField(connector.credentialContract.type);
+  if (isEmptyCredentialValue(nextConfig[fieldName])) {
+    const candidate = parsed
+      ? parsed[fieldName] ||
+        parsed.apiKey ||
+        parsed.apiToken ||
+        parsed.accessToken ||
+        parsed.webhookUrl ||
+        parsed.token ||
+        parsed.value
+      : stored;
+    if (!isEmptyCredentialValue(candidate)) {
+      nextConfig[fieldName] = candidate;
+    }
+  }
+
+  return nextConfig;
+}
+
 /**
  * Execute a node via the legacy executor, but with the unified runtime guarantees:
  * - Universal template resolution
@@ -102,6 +179,11 @@ export async function executeViaLegacyExecutor(args: {
       }
     }
 
+    prepared = {
+      ...prepared,
+      mergedConfig: await injectDashboardCredential(context, prepared.mergedConfig),
+    };
+
     // Convert context to legacy node shape
     const node = {
       id: context.nodeId,
@@ -138,4 +220,3 @@ export async function executeViaLegacyExecutor(args: {
     };
   }
 }
-

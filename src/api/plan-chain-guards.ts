@@ -60,15 +60,20 @@ function isTriggerNodeType(nodeType: string): boolean {
 }
 
 function isOutputNodeType(nodeType: string): boolean {
-  if (nodeType === 'log_output') return false;
   const def = unifiedNodeRegistry.get(nodeType);
-  return !!def && (nodeCapabilityRegistryDSL.isOutput(nodeType) || (def.tags || []).includes('output'));
+  if (!def) return false;
+  // log_output is a side-effect/terminal utility, not a functional output in plan-chain terms.
+  // Use registry category + capability to decide rather than hardcoding node names.
+  const category = String(def.category || '').toLowerCase();
+  if (category === 'utility' || category === 'debug') return false;
+  return nodeCapabilityRegistryDSL.isOutput(nodeType) || ((def as any).tags || []).includes('output');
 }
 
 function isBranchingNodeType(nodeType: string): boolean {
   const def: any = unifiedNodeRegistry.get(nodeType);
-  if (!def) return nodeType === 'if_else' || nodeType === 'switch';
-  return !!def.isBranching || nodeType === 'if_else' || nodeType === 'switch';
+  // Registry is authoritative; no hardcoded fallback needed.
+  if (!def) return false;
+  return !!def.isBranching;
 }
 
 function hasExplicitCue(promptLower: string, nodeType: string): boolean {

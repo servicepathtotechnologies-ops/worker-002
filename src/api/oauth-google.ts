@@ -1,0 +1,219 @@
+import { Request, Response } from 'express';
+import crypto from 'crypto';
+import { queryAsService } from '../core/database/db-pool';
+import { config } from '../core/config';
+import { encryptToken } from '../core/utils/token-encryption';
+import { ensureUserRows } from '../core/database/ensure-user';
+
+function googleClientId() {
+  return process.env.GOOGLE_OAUTH_CLIENT_ID || config.googleOAuthClientId || '';
+}
+
+function googleClientSecret() {
+  return process.env.GOOGLE_OAUTH_CLIENT_SECRET || config.googleOAuthClientSecret || '';
+}
+
+function frontendUrl() {
+  return process.env.FRONTEND_URL || 'http://localhost:8080';
+}
+
+function configuredGoogleRedirectUri(): string | null {
+  const value = process.env.GOOGLE_OAUTH_REDIRECT_URI?.trim();
+  return value || null;
+}
+
+const GOOGLE_SCOPES = [
+  'openid',
+  'email',
+  'profile',
+  'https://www.googleapis.com/auth/spreadsheets',
+  'https://www.googleapis.com/auth/documents',
+  'https://www.googleapis.com/auth/drive',
+  'https://www.googleapis.com/auth/calendar',
+  'https://www.googleapis.com/auth/gmail.send',
+  'https://www.googleapis.com/auth/gmail.readonly',
+  'https://www.googleapis.com/auth/bigquery',
+  'https://www.googleapis.com/auth/tasks',
+  'https://www.googleapis.com/auth/contacts',
+].join(' ');
+
+function requestBaseUrl(req: Request): string | null {
+  const host = req.get('host');
+  return host ? `${req.protocol || 'http'}://${host}` : null;
+}
+
+function callbackUrl(req?: Request) {
+  const googleRedirectUri = configuredGoogleRedirectUri();
+  if (googleRedirectUri) return googleRedirectUri;
+
+  const configuredBaseUrl = process.env.PUBLIC_BASE_URL || config.publicBaseUrl || 'http://localhost:3001';
+  const devRequestBaseUrl = req && process.env.NODE_ENV !== 'production' ? requestBaseUrl(req) : null;
+  return `${devRequestBaseUrl || configuredBaseUrl}/api/oauth/google/callback`;
+}
+
+function safeReturnTo(value: unknown): string {
+  const path = typeof value === 'string' ? value : '/workflows';
+  return path.startsWith('/') && !path.startsWith('//') ? path : '/workflows';
+}
+
+function signState(payload: object): string {
+  const data = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const sig = crypto.createHmac('sha256', config.encryptionKey).update(data).digest('hex').slice(0, 16);
+  return `${data}.${sig}`;
+}
+
+function verifyState(state: string): any | null {
+  const [data, sig] = state.split('.');
+  if (!data || !sig) return null;
+  const expected = crypto.createHmac('sha256', config.encryptionKey).update(data).digest('hex').slice(0, 16);
+  if (sig !== expected) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(data, 'base64url').toString());
+    if (Date.now() - Number(parsed.ts || 0) > 10 * 60_000) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function googleOAuthStart(req: Request, res: Response) {
+  const userId = req.query.user_id as string;
+  const redirectTo = safeReturnTo(req.query.redirect_to);
+  const clientId = googleClientId();
+
+  if (!userId) return res.status(400).json({ error: 'user_id required' });
+  if (!clientId) return res.status(500).json({ error: 'GOOGLE_OAUTH_CLIENT_ID not configured' });
+
+  const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+  authUrl.searchParams.set('client_id', clientId);
+  authUrl.searchParams.set('redirect_uri', callbackUrl(req));
+  authUrl.searchParams.set('response_type', 'code');
+  authUrl.searchParams.set('scope', GOOGLE_SCOPES);
+  authUrl.searchParams.set('access_type', 'offline');
+  authUrl.searchParams.set('prompt', 'consent');
+  authUrl.searchParams.set('include_granted_scopes', 'true');
+  authUrl.searchParams.set('state', signState({ userId, redirectTo, ts: Date.now() }));
+
+  return res.redirect(authUrl.toString());
+}
+
+export async function googleOAuthCallback(req: Request, res: Response) {
+  const { code, state, error: oauthError } = req.query as Record<string, string>;
+
+  if (oauthError) {
+    return res.redirect(`${frontendUrl()}/auth/google/callback?error=${encodeURIComponent(oauthError)}`);
+  }
+
+  const stateData = verifyState(state || '');
+  if (!stateData) {
+    return res.redirect(`${frontendUrl()}/auth/google/callback?error=invalid_state`);
+  }
+
+  const { userId, redirectTo } = stateData;
+
+  try {
+    const clientId = googleClientId();
+    const clientSecret = googleClientSecret();
+    if (!clientId || !clientSecret) {
+      throw new Error('Google OAuth credentials are not configured');
+    }
+
+    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: clientId,
+        client_secret: clientSecret,
+        code,
+        grant_type: 'authorization_code',
+        redirect_uri: callbackUrl(req),
+      }),
+    });
+    const tokenData: any = await tokenRes.json();
+    if (!tokenRes.ok || !tokenData.access_token) {
+      throw new Error(tokenData.error_description || tokenData.error || 'No access token from Google');
+    }
+
+    const profileRes = await fetch('https://openidconnect.googleapis.com/v1/userinfo', {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` },
+    });
+    const profile: any = profileRes.ok ? await profileRes.json() : {};
+    await ensureUserRows(userId, profile.email || null, profile.name || null);
+
+    const expiresAt = tokenData.expires_in
+      ? new Date(Date.now() + Number(tokenData.expires_in) * 1000).toISOString()
+      : null;
+    const encryptedAccessToken = encryptToken(tokenData.access_token);
+    const encryptedRefreshToken = tokenData.refresh_token ? encryptToken(tokenData.refresh_token) : null;
+
+    await queryAsService(
+      `INSERT INTO google_oauth_tokens (user_id, access_token, refresh_token, token_type, expires_at, scope, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW())
+       ON CONFLICT (user_id)
+       DO UPDATE SET access_token = EXCLUDED.access_token,
+                     refresh_token = COALESCE(EXCLUDED.refresh_token, google_oauth_tokens.refresh_token),
+                     token_type = EXCLUDED.token_type,
+                     expires_at = EXCLUDED.expires_at,
+                     scope = EXCLUDED.scope,
+                     updated_at = NOW()`,
+      [
+        userId,
+        encryptedAccessToken,
+        encryptedRefreshToken,
+        tokenData.token_type || 'Bearer',
+        expiresAt,
+        tokenData.scope || GOOGLE_SCOPES,
+      ]
+    );
+
+    await queryAsService(
+      `INSERT INTO social_tokens (user_id, provider, access_token, refresh_token, provider_user_id, token_type, expires_at, scope, updated_at)
+       VALUES ($1, 'google', $2, $3, $4, $5, $6, $7, NOW())
+       ON CONFLICT (user_id, provider)
+       DO UPDATE SET access_token = EXCLUDED.access_token,
+                     refresh_token = COALESCE(EXCLUDED.refresh_token, social_tokens.refresh_token),
+                     provider_user_id = EXCLUDED.provider_user_id,
+                     token_type = EXCLUDED.token_type,
+                     expires_at = EXCLUDED.expires_at,
+                     scope = EXCLUDED.scope,
+                     updated_at = NOW()`,
+      [
+        userId,
+        encryptedAccessToken,
+        encryptedRefreshToken,
+        profile.sub || null,
+        tokenData.token_type || 'Bearer',
+        expiresAt,
+        tokenData.scope || GOOGLE_SCOPES,
+      ]
+    ).catch((err) => {
+      console.warn('[GoogleOAuth] social_tokens mirror failed:', err.message);
+    });
+
+    await queryAsService(
+      `INSERT INTO user_credentials (user_id, service, credentials, updated_at)
+       VALUES ($1, 'google', $2::jsonb, NOW())
+       ON CONFLICT (user_id, service)
+       DO UPDATE SET credentials = EXCLUDED.credentials, updated_at = NOW()`,
+      [
+        userId,
+        JSON.stringify({
+          connected: true,
+          email: profile.email || null,
+          expiresAt,
+          scope: tokenData.scope || GOOGLE_SCOPES,
+        }),
+      ]
+    ).catch((err) => {
+      console.warn('[GoogleOAuth] user_credentials mirror failed:', err.message);
+    });
+
+    const returnUrl = encodeURIComponent(safeReturnTo(redirectTo));
+    return res.redirect(
+      `${frontendUrl()}/auth/google/callback?success=true&email=${encodeURIComponent(profile.email || '')}&return_to=${returnUrl}`
+    );
+  } catch (err: any) {
+    console.error('[GoogleOAuth] Error:', err.message);
+    return res.redirect(`${frontendUrl()}/auth/google/callback?error=${encodeURIComponent(err.message || 'oauth_failed')}`);
+  }
+}

@@ -27,7 +27,102 @@ export interface NodeOutputSchema {
   defaultValue?: any;
 }
 
+const GENERIC_OBJECT_OUTPUT_SCHEMA: NodeOutputSchema = {
+  type: 'object',
+  structure: {
+    fields: {
+      success: 'boolean',
+      operation: 'string',
+      id: 'string',
+      message: 'string',
+      data: 'object',
+      result: 'object',
+      output: 'object',
+      error: 'object',
+    },
+  },
+  convertible: ['string', 'array'],
+  defaultValue: { success: true, data: {} },
+};
+
+const GENERIC_OBJECT_OUTPUT_NODE_TYPES = [
+  'postgresql',
+  'google_doc',
+  'outlook',
+  'salesforce',
+  'microsoft_dynamics',
+  'sap',
+  'clickup',
+  'delay',
+  'timeout',
+  'return',
+  'execute_workflow',
+  'try_catch',
+  'retry',
+  'parallel',
+  'queue_push',
+  'queue_consume',
+  'cache_get',
+  'cache_set',
+  'oauth2_auth',
+  'api_key_auth',
+  'hubspot',
+  'airtable',
+  'notion',
+  'zoho_crm',
+  'pipedrive',
+  'intuit_smes',
+  'tally',
+  'zoom_video',
+  'merge_data',
+  'edit_fields',
+  'set',
+  'rename_keys',
+  'http_post',
+  'graphql',
+  'google_contacts',
+  'google_bigquery',
+  'slack_webhook',
+  'discord_webhook',
+  'mailgun',
+  'sendgrid',
+  'whatsapp',
+  'whatsapp_trigger',
+  'instagram_trigger',
+  'mysql',
+  'mongodb',
+  'firebase',
+  'google_cloud_storage',
+  'redis',
+  'odoo',
+  'freshdesk',
+  'intercom',
+  'mailchimp',
+  'activecampaign',
+  'read_binary_file',
+  'write_binary_file',
+  'aws_s3',
+  'dropbox',
+  'onedrive',
+  'ftp',
+  'sftp',
+  'github',
+  'gitlab',
+  'bitbucket',
+  'jira',
+  'jenkins',
+  'shopify',
+  'woocommerce',
+  'stripe',
+  'paypal',
+  'vercel',
+  'schedulewise',
+] as const;
+
 export const NODE_OUTPUT_SCHEMAS: Record<string, NodeOutputSchema> = {
+  ...Object.fromEntries(
+    GENERIC_OBJECT_OUTPUT_NODE_TYPES.map((nodeType) => [nodeType, GENERIC_OBJECT_OUTPUT_SCHEMA])
+  ),
   // ============================================
   // TRIGGER NODES
   // ============================================
@@ -307,6 +402,20 @@ export const NODE_OUTPUT_SCHEMAS: Record<string, NodeOutputSchema> = {
     convertible: ['object', 'array'],
     defaultValue: ''
   },
+  ai_chat_model: {
+    type: 'object',
+    structure: {
+      fields: {
+        response: 'string',
+        text: 'string',
+        output: 'object',
+        provider: 'string',
+        model: 'string'
+      }
+    },
+    convertible: ['string'],
+    defaultValue: { response: '' }
+  },
   openai_gpt: {
     type: 'string',
     convertible: ['object'],
@@ -328,9 +437,16 @@ export const NODE_OUTPUT_SCHEMAS: Record<string, NodeOutputSchema> = {
     defaultValue: ''
   },
   text_summarizer: {
-    type: 'string',
-    convertible: ['object'],
-    defaultValue: ''
+    type: 'object',
+    structure: {
+      fields: {
+        response: 'string',
+        summary: 'string',
+        text: 'string'
+      }
+    },
+    convertible: ['string'],
+    defaultValue: { response: '' }
   },
   sentiment_analyzer: {
     type: 'object',
@@ -459,9 +575,17 @@ export const NODE_OUTPUT_SCHEMAS: Record<string, NodeOutputSchema> = {
     defaultValue: ''
   },
   instagram: {
-    type: 'string', // CRITICAL: Output nodes return strings, not JSON objects
-    convertible: ['object'],
-    defaultValue: ''
+    type: 'object',
+    structure: {
+      fields: {
+        success: 'boolean',
+        id: 'string',
+        mediaId: 'string',
+        data: 'object'
+      }
+    },
+    convertible: ['string'],
+    defaultValue: { success: false }
   },
   facebook: {
     type: 'string', // CRITICAL: Output nodes return strings, not JSON objects

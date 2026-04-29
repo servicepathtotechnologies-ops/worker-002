@@ -23,20 +23,18 @@ interface OdooCredentials {
 /**
  * Authenticate with Odoo and return the user ID (uid).
  */
-async function authenticate(credentials: OdooCredentials): Promise<number> {
+async function authenticate(credentials: OdooCredentials): Promise<{ uid: number; cookie: string }> {
   const { url, db, username, password } = credentials;
 
-  const response = await fetch(`${url}/web/dataset/call_kw`, {
+  const response = await fetch(`${url}/web/session/authenticate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       jsonrpc: '2.0',
-      method: 'call',
       params: {
-        model: 'res.users',
-        method: 'authenticate',
-        args: [db, username, password, {}],
-        kwargs: {},
+        db,
+        login: username,
+        password,
       },
     }),
   });
@@ -51,12 +49,13 @@ async function authenticate(credentials: OdooCredentials): Promise<number> {
     throw new Error(`Odoo authentication failed: ${json.error.data?.message ?? json.error.message}`);
   }
 
-  const uid = json.result;
+  const uid = json.result?.uid;
   if (!uid || typeof uid !== 'number') {
     throw new Error('Odoo authentication failed: invalid credentials or database');
   }
 
-  return uid;
+  const cookie = response.headers.get('set-cookie') || '';
+  return { uid, cookie };
 }
 
 /**
@@ -64,7 +63,7 @@ async function authenticate(credentials: OdooCredentials): Promise<number> {
  */
 async function callOdoo(
   credentials: OdooCredentials,
-  uid: number,
+  session: { uid: number; cookie: string },
   model: string,
   method: string,
   args: any[],
@@ -74,7 +73,10 @@ async function callOdoo(
 
   const response = await fetch(`${url}/web/dataset/call_kw`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(session.cookie ? { Cookie: session.cookie } : {}),
+    },
     body: JSON.stringify({
       jsonrpc: '2.0',
       method: 'call',
@@ -137,7 +139,7 @@ export async function runOdooNode(context: NodeExecutionContext): Promise<any> {
   }
 
   try {
-    const uid = await authenticate(credentials);
+    const session = await authenticate(credentials);
 
     let data: any;
 
@@ -148,7 +150,7 @@ export async function runOdooNode(context: NodeExecutionContext): Promise<any> {
         const limit: number = inputs.limit ?? 100;
         const offset: number = inputs.offset ?? 0;
 
-        data = await callOdoo(credentials, uid, model, 'search_read', [domain], {
+        data = await callOdoo(credentials, session, model, 'search_read', [domain], {
           fields,
           limit,
           offset,
@@ -158,7 +160,7 @@ export async function runOdooNode(context: NodeExecutionContext): Promise<any> {
 
       case 'createRecord': {
         const values: Record<string, any> = inputs.values ?? {};
-        data = await callOdoo(credentials, uid, model, 'create', [values]);
+        data = await callOdoo(credentials, session, model, 'create', [values]);
         break;
       }
 
@@ -170,7 +172,7 @@ export async function runOdooNode(context: NodeExecutionContext): Promise<any> {
           return { success: false, error: { message: 'recordId is required for updateRecord' } };
         }
 
-        data = await callOdoo(credentials, uid, model, 'write', [[recordId], values]);
+        data = await callOdoo(credentials, session, model, 'write', [[recordId], values]);
         break;
       }
 
@@ -181,7 +183,7 @@ export async function runOdooNode(context: NodeExecutionContext): Promise<any> {
           return { success: false, error: { message: 'recordId is required for deleteRecord' } };
         }
 
-        data = await callOdoo(credentials, uid, model, 'unlink', [[recordId]]);
+        data = await callOdoo(credentials, session, model, 'unlink', [[recordId]]);
         break;
       }
 
@@ -194,7 +196,7 @@ export async function runOdooNode(context: NodeExecutionContext): Promise<any> {
           return { success: false, error: { message: 'method is required for executeMethod' } };
         }
 
-        data = await callOdoo(credentials, uid, model, method, methodArgs, methodKwargs);
+        data = await callOdoo(credentials, session, model, method, methodArgs, methodKwargs);
         break;
       }
 

@@ -4,7 +4,7 @@
  * Detects and handles stuck executions that haven't sent heartbeats
  */
 
-import { SupabaseClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { getSupabaseClient } from '../../core/database/supabase-compat';
 import { releaseExecutionLock } from './execution-lock';
 import { logExecutionEvent } from './execution-event-logger';
@@ -122,7 +122,7 @@ export async function checkStuckExecutions(
  * 
  * @param intervalMs - Check interval in milliseconds (default: 5 minutes)
  */
-export function startTimeoutWatchdog(intervalMs: number = 5 * 60 * 1000): NodeJS.Timeout {
+export function startTimeoutWatchdog(intervalMs: number = 30 * 60 * 1000): NodeJS.Timeout {
   console.log(`[TimeoutWatchdog] Starting periodic checks (every ${intervalMs / 1000}s)`);
 
   // Run immediately

@@ -20,11 +20,11 @@ class SessionCleanupService {
     console.log('[SessionCleanup] Starting session cleanup service...');
     
     // Run initial cleanup
-    this.runCleanup();
+    void this.runCleanup();
     
     // Schedule periodic cleanup
     this.intervalId = setInterval(() => {
-      this.runCleanup();
+      void this.runCleanup();
     }, this.cleanupInterval);
 
     console.log(`[SessionCleanup] Service started (runs every ${this.cleanupInterval / 1000 / 60} minutes)`);
@@ -44,9 +44,9 @@ class SessionCleanupService {
   /**
    * Run session cleanup
    */
-  private runCleanup(): void {
+  private async runCleanup(): Promise<void> {
     try {
-      const cleanedCount = cleanupExpiredSessions();
+      const cleanedCount = await cleanupExpiredSessions();
       if (cleanedCount > 0) {
         console.log(`[SessionCleanup] Cleaned up ${cleanedCount} expired sessions`);
       }

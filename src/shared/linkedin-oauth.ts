@@ -2,6 +2,7 @@
 // Similar to Google OAuth - uses Supabase OAuth provider
 
 import { getSupabaseClient } from '../core/database/supabase-compat';
+import { decryptToken, encryptToken } from '../core/utils/token-encryption';
 
 /**
  * Get LinkedIn access token for a user
@@ -32,6 +33,8 @@ export async function getLinkedInAccessToken(
         continue;
       }
 
+      const accessToken = decryptToken(tokenData.access_token);
+      const refreshToken = tokenData.refresh_token ? decryptToken(tokenData.refresh_token) : null;
       const expiresAt = tokenData.expires_at ? new Date(tokenData.expires_at) : null;
       const now = new Date();
       const fiveMinutesFromNow = new Date(now.getTime() + 5 * 60 * 1000);
@@ -39,11 +42,11 @@ export async function getLinkedInAccessToken(
       // Check if token is expired or about to expire
       if (expiresAt && expiresAt < fiveMinutesFromNow) {
         // Try to refresh if we have a refresh token
-        if (tokenData.refresh_token) {
+        if (refreshToken) {
           const refreshedToken = await refreshLinkedInToken(
             supabase,
             uid,
-            tokenData.refresh_token
+            refreshToken
           );
           if (refreshedToken) {
             return refreshedToken;
@@ -51,15 +54,15 @@ export async function getLinkedInAccessToken(
           // Refresh failed - credentials might not be configured, but try using expired token anyway.
           // The API call will fail with a proper error if token is truly invalid.
           console.warn('[LinkedIn OAuth] Token refresh failed. Falling back to existing token (may be expired).');
-          return tokenData.access_token;
+          return accessToken;
         }
         // Token expired and no refresh token - try using it anyway, API will return proper error
         console.warn('[LinkedIn OAuth] Token expired and no refresh token available. Using existing token (may be expired).');
-        return tokenData.access_token;
+        return accessToken;
       }
 
       // Found valid token
-      return tokenData.access_token;
+      return accessToken;
     }
 
     // No valid token found for any user ID
@@ -126,8 +129,8 @@ async function refreshLinkedInToken(
     const { error: updateError } = await supabase
       .from('linkedin_oauth_tokens')
       .update({
-        access_token: json.access_token,
-        refresh_token: json.refresh_token || refreshToken,
+        access_token: encryptToken(json.access_token),
+        refresh_token: encryptToken(json.refresh_token || refreshToken),
         expires_at: expiresAt,
         scope: json.scope || null,
         updated_at: new Date().toISOString(),

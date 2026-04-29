@@ -13,6 +13,17 @@ export function overrideWhatsappTrigger(
   def: UnifiedNodeDefinition,
   _schema: NodeSchema,
 ): UnifiedNodeDefinition {
+  const structuralBuildtime = {
+    default: 'buildtime_ai_once' as const,
+    supportsRuntimeAI: false,
+    supportsBuildtimeAI: true,
+  };
+  const manualStatic = {
+    default: 'manual_static' as const,
+    supportsRuntimeAI: false,
+    supportsBuildtimeAI: false,
+  };
+
   return {
     ...def,
     type: 'whatsapp_trigger',
@@ -31,11 +42,17 @@ export function overrideWhatsappTrigger(
         required: true,
         default: 'message.received',
         examples: ['message.received', 'message.sent', 'message.delivered', 'message.read', 'conversation.created', 'conversation.handoff'],
+        ownership: 'structural',
+        role: 'config',
+        fillMode: structuralBuildtime,
       },
       phoneNumberId: {
         type: 'string',
         description: 'WhatsApp Phone Number ID to listen on (optional)',
         required: false,
+        ownership: 'value',
+        role: 'id',
+        fillMode: manualStatic,
       },
     },
     outputSchema: {

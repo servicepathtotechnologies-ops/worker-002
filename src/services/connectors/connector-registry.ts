@@ -124,8 +124,56 @@ export class ConnectorRegistry {
         required: true,
         credentialFieldName: 'webhookUrl', // ✅ PERMANENT: Data-driven mapping
       },
-      nodeTypes: ['slack_message'],
+      nodeTypes: ['slack_message', 'slack_webhook'],
       description: 'Send messages to Slack via webhook',
+    });
+
+    // ============================================
+    // MAILGUN CONNECTOR
+    // ============================================
+    this.register({
+      id: 'mailgun',
+      provider: 'mailgun',
+      service: 'email',
+      capabilities: [
+        'email.send',
+        'mailgun.send',
+      ],
+      keywords: ['mailgun', 'send via mailgun'],
+      credentialContract: {
+        provider: 'mailgun',
+        type: 'api_key',
+        vaultKey: 'mailgun',
+        displayName: 'Mailgun API Key',
+        required: true,
+        credentialFieldName: 'apiKey',
+      },
+      nodeTypes: ['mailgun'],
+      description: 'Send emails via Mailgun REST API',
+    });
+
+    // ============================================
+    // SENDGRID CONNECTOR
+    // ============================================
+    this.register({
+      id: 'sendgrid',
+      provider: 'sendgrid',
+      service: 'email',
+      capabilities: [
+        'email.send',
+        'sendgrid.send',
+      ],
+      keywords: ['sendgrid', 'send grid'],
+      credentialContract: {
+        provider: 'sendgrid',
+        type: 'api_key',
+        vaultKey: 'sendgrid',
+        displayName: 'SendGrid API Key',
+        required: true,
+        credentialFieldName: 'apiKey',
+      },
+      nodeTypes: ['sendgrid'],
+      description: 'Send emails via SendGrid REST API',
     });
 
     // ============================================
@@ -201,7 +249,7 @@ export class ConnectorRegistry {
         required: true,
         credentialFieldName: 'webhookUrl',
       },
-      nodeTypes: ['discord'],
+      nodeTypes: ['discord', 'discord_webhook'],
       description: 'Send messages to Discord via webhook',
     });
 
@@ -226,6 +274,7 @@ export class ConnectorRegistry {
         vaultKey: 'telegram',
         displayName: 'Telegram Bot Token',
         required: true,
+        credentialFieldName: 'botToken',
       },
       nodeTypes: ['telegram'],
       description: 'Send messages to Telegram chats via Bot API',
@@ -278,11 +327,11 @@ export class ConnectorRegistry {
       keywords: ['hubspot', 'hub spot', 'hubspot crm'],
       credentialContract: {
         provider: 'hubspot',
-        type: 'api_key', // HubSpot uses API keys or OAuth, but API key is most common
+        type: 'api_key',
         vaultKey: 'hubspot',
         displayName: 'HubSpot API Key',
         required: true,
-        credentialFieldName: 'apiKey', // ✅ PERMANENT: Data-driven mapping
+        credentialFieldName: 'accessToken', // Private App Tokens are the modern auth method
       },
       nodeTypes: ['hubspot'],
       description: 'Interact with HubSpot CRM objects (contacts, companies, deals, tickets) via API key',
@@ -331,6 +380,7 @@ export class ConnectorRegistry {
         vaultKey: 'database',
         displayName: 'Database Connection String',
         required: true,
+        credentialFieldName: 'connectionString',
       },
       nodeTypes: ['database_read', 'database_write'],
       description: 'Connect to database via connection string',
@@ -383,6 +433,31 @@ export class ConnectorRegistry {
       },
       nodeTypes: ['airtable'],
       description: 'Read/write Airtable records via API key',
+    });
+
+    // ============================================
+    // TYPEFORM CONNECTOR
+    // ============================================
+    this.register({
+      id: 'typeform',
+      provider: 'typeform',
+      service: 'forms',
+      capabilities: [
+        'form.read',
+        'form.write',
+        'typeform.form',
+      ],
+      keywords: ['typeform', 'type form', 'survey'],
+      credentialContract: {
+        provider: 'typeform',
+        type: 'api_key',
+        vaultKey: 'typeform',
+        displayName: 'Typeform API Key',
+        required: true,
+        credentialFieldName: 'apiKey',
+      },
+      nodeTypes: ['typeform'],
+      description: 'Create forms and read Typeform responses via API key',
     });
 
     // ============================================
@@ -606,7 +681,7 @@ export class ConnectorRegistry {
         vaultKey: 'whatsapp',
         displayName: 'WhatsApp Cloud API Token',
         required: true,
-        credentialFieldName: 'apiKey', // ✅ PERMANENT: Data-driven mapping
+        credentialFieldName: 'accessToken',
       },
       nodeTypes: ['whatsapp_cloud'],
       description: 'Send messages via WhatsApp Cloud API',
@@ -785,6 +860,7 @@ export class ConnectorRegistry {
         vaultKey: 'postgresql',
         displayName: 'PostgreSQL Connection String',
         required: true,
+        credentialFieldName: 'connectionString',
       },
       nodeTypes: ['postgresql'],
       description: 'Connect to PostgreSQL database via connection string',
@@ -810,6 +886,7 @@ export class ConnectorRegistry {
         vaultKey: 'mysql',
         displayName: 'MySQL Connection String',
         required: true,
+        credentialFieldName: 'connectionString',
       },
       nodeTypes: ['mysql'],
       description: 'Connect to MySQL database via connection string',
@@ -835,6 +912,7 @@ export class ConnectorRegistry {
         vaultKey: 'mongodb',
         displayName: 'MongoDB Connection String',
         required: true,
+        credentialFieldName: 'connectionString',
       },
       nodeTypes: ['mongodb'],
       description: 'Connect to MongoDB database via connection string',
@@ -860,6 +938,7 @@ export class ConnectorRegistry {
         vaultKey: 'redis',
         displayName: 'Redis Connection String',
         required: true,
+        credentialFieldName: 'connectionString',
       },
       nodeTypes: ['redis'],
       description: 'Connect to Redis cache via connection string',
@@ -1011,7 +1090,7 @@ export class ConnectorRegistry {
         vaultKey: 'twilio',
         displayName: 'Twilio API Key',
         required: true,
-        credentialFieldName: 'apiKey',
+        credentialFieldName: 'accountSid',
       },
       nodeTypes: ['twilio'],
       description: 'Send SMS messages via Twilio API',
@@ -1033,7 +1112,7 @@ export class ConnectorRegistry {
       credentialContract: {
         provider: 'microsoft',
         type: 'webhook',
-        vaultKey: 'microsoft',
+        vaultKey: 'microsoft_teams',
         displayName: 'Microsoft Teams Webhook URL',
         required: true,
         credentialFieldName: 'webhookUrl',

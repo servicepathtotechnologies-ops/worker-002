@@ -1,7 +1,7 @@
 // Zoho OAuth 2.0 Token Manager
 // Handles token retrieval, refresh, and region-specific endpoints
 
-import { SupabaseClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { config } from '../core/config';
 
 export type ZohoRegion = 'US' | 'EU' | 'IN' | 'AU' | 'CN' | 'JP';

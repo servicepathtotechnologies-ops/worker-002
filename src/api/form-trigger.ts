@@ -144,14 +144,24 @@ export async function getFormConfig(req: Request, res: Response) {
 
     // Find the form node
     const nodes = workflow.nodes as any[];
-    const formNode = nodes?.find((node: any) => 
+    const isFormNode = (node: any) => node.data?.type === "form" || node.type === "form";
+    let formNode = nodes?.find((node: any) => 
       (node.id === nodeId || node.data?.id === nodeId) && 
-      (node.data?.type === "form" || node.type === "form")
+      isFormNode(node)
     );
+
+    if (!formNode) {
+      const formNodes = (nodes || []).filter(isFormNode);
+      if (formNodes.length === 1) {
+        formNode = formNodes[0];
+      }
+    }
     
     if (!formNode) {
       return res.status(404).json({ error: "Form not found", message: "The form node was not found in this workflow." });
     }
+
+    const effectiveNodeId = formNode.id || formNode.data?.id || nodeId;
 
     const formConfig = formNode.data?.config || formNode.config || {};
     const formTitle = formConfig.formTitle || "Form Submission";
@@ -175,14 +185,14 @@ export async function getFormConfig(req: Request, res: Response) {
 
     const formConfigResponse = {
       workflowId,
-      nodeId,
+      nodeId: formNode.id || formNode.data?.id || nodeId,
       formTitle,
       formDescription,
       fields,
       submitButtonText,
       successMessage,
       redirectUrl,
-      submitUrl: `${config.publicBaseUrl}/api/form-trigger/${workflowId}/${nodeId}/submit`,
+      submitUrl: `${config.publicBaseUrl}/api/form-trigger/${workflowId}/${formNode.id || formNode.data?.id || nodeId}/submit`,
     };
 
     return res.json(formConfigResponse);
@@ -218,15 +228,24 @@ export async function submitForm(req: Request, res: Response) {
 
     // Find the form node
     const nodes = workflow.nodes as any[];
-    const formNode = nodes?.find((node: any) => 
+    const isFormNode = (node: any) => node.data?.type === "form" || node.type === "form";
+    let formNode = nodes?.find((node: any) => 
       (node.id === nodeId || node.data?.id === nodeId) && 
-      (node.data?.type === "form" || node.type === "form")
+      isFormNode(node)
     );
+
+    if (!formNode) {
+      const formNodes = (nodes || []).filter(isFormNode);
+      if (formNodes.length === 1) {
+        formNode = formNodes[0];
+      }
+    }
     
     if (!formNode) {
       return res.status(404).json({ error: "Form not found", message: "The form node was not found in this workflow." });
     }
 
+    const effectiveNodeId = formNode.id || formNode.data?.id || nodeId;
     const formConfig = formNode.data?.config || formNode.config || {};
     const formTitle = formConfig.formTitle || "Form Submission";
     const successMessage = formConfig.successMessage || "Thank you for your submission!";
@@ -245,7 +264,7 @@ export async function submitForm(req: Request, res: Response) {
 
     // Get idempotency key from header or generate one
     const idempotencyKey = req.headers['x-idempotency-key'] as string || 
-                          `form_${workflowId}_${nodeId}_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+                          `form_${workflowId}_${effectiveNodeId}_${Date.now()}_${Math.random().toString(36).substring(7)}`;
 
     // Check for duplicate submission (idempotency)
     const { data: existingSubmission } = await supabase
@@ -315,8 +334,8 @@ export async function submitForm(req: Request, res: Response) {
       .order("started_at", { ascending: false })
       .limit(5);
     
-    console.log(`[Form Submit] Looking for waiting execution - workflowId: ${workflowId}, nodeId: ${nodeId}`);
-    console.log(`[Form Submit] Recent executions for this workflow:`, allExecutions?.map(e => ({
+    console.log(`[Form Submit] Looking for waiting execution - workflowId: ${workflowId}, nodeId: ${effectiveNodeId}`);
+    console.log(`[Form Submit] Recent executions for this workflow:`, allExecutions?.map((e: any) => ({
       id: e.id,
       status: e.status,
       trigger: e.trigger,
@@ -330,7 +349,7 @@ export async function submitForm(req: Request, res: Response) {
       .eq("workflow_id", workflowId)
       .eq("status", "waiting")
       .eq("trigger", "form")
-      .eq("waiting_for_node_id", nodeId)
+      .eq("waiting_for_node_id", effectiveNodeId)
       .order("started_at", { ascending: true })
       .limit(1)
       .single();
@@ -350,7 +369,7 @@ export async function submitForm(req: Request, res: Response) {
           user_id: workflow.user_id,
           status: "waiting",
           trigger: "form",
-          waiting_for_node_id: nodeId,
+          waiting_for_node_id: effectiveNodeId,
           input: {},
           logs: [],
           started_at: startedAt,
@@ -373,12 +392,12 @@ export async function submitForm(req: Request, res: Response) {
       executionToUse = newExecution;
     } else if (waitError || !waitingExecution) {
       // Workflow is not active or execution not found - return error
-      console.error("No waiting execution found for form node:", nodeId, waitError);
+      console.error("No waiting execution found for form node:", effectiveNodeId, waitError);
       console.error("Searched for:", {
         workflow_id: workflowId,
         status: "waiting",
         trigger: "form",
-        waiting_for_node_id: nodeId
+        waiting_for_node_id: effectiveNodeId
       });
       
       return res.status(400).json({ 
@@ -392,7 +411,7 @@ export async function submitForm(req: Request, res: Response) {
       submitted_at: submittedAt,
       form: {
         title: formTitle,
-        id: nodeId,
+        id: effectiveNodeId,
       },
       data: sanitizeInput(formData),
       files: files,
@@ -404,7 +423,7 @@ export async function submitForm(req: Request, res: Response) {
       .from("form_submissions")
       .insert({
         workflow_id: workflowId,
-        node_id: nodeId,
+        node_id: effectiveNodeId,
         execution_id: executionToUse.id,
         idempotency_key: idempotencyKey,
         form_data: submissionData,
@@ -419,7 +438,7 @@ export async function submitForm(req: Request, res: Response) {
       submitted_at: submittedAt,
       form: {
         title: formTitle,
-        id: nodeId,
+        id: effectiveNodeId,
       },
       data: submissionData.data, // Also keep under data for explicit access
       files: submissionData.files,

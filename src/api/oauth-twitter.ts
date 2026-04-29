@@ -48,7 +48,7 @@ function generatePKCE(): { codeVerifier: string; codeChallenge: string } {
  */
 export async function twitterAuthorizeHandler(req: Request, res: Response) {
   try {
-    const redirectUri = req.query.redirect_uri as string;
+    const redirectUri = (req.query.redirect_uri as string) || process.env.TWITTER_OAUTH_REDIRECT_URI;
     
     if (!redirectUri) {
       return res.status(400).json({
@@ -140,7 +140,8 @@ export async function twitterCallbackHandler(req: Request, res: Response) {
       });
     }
 
-    const { code, state, redirect_uri } = req.body;
+    const { code, state } = req.body;
+    const redirect_uri = req.body.redirect_uri || process.env.TWITTER_OAUTH_REDIRECT_URI;
 
     if (!code) {
       return res.status(400).json({

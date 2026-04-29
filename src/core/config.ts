@@ -13,14 +13,18 @@ const requireEnv = (key: string, defaultValue?: string): string => {
 };
 
 export const config: any = {
-  // Database
-  databaseUrl: process.env.DATABASE_URL || process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL,
-  
-  // Supabase (if still using for auth)
-  // Support both standard naming and VITE_ prefix (for shared .env files)
-  supabaseUrl: requireEnv('SUPABASE_URL', process.env.VITE_SUPABASE_URL || ''),
-  supabaseKey: requireEnv('SUPABASE_SERVICE_ROLE_KEY', process.env.VITE_SUPABASE_SERVICE_ROLE_KEY || ''),
-  
+  // Database — AWS RDS PostgreSQL
+  databaseUrl: process.env.DATABASE_URL,
+
+  // AWS Cognito
+  cognitoUserPoolId: process.env.COGNITO_USER_POOL_ID || '',
+  cognitoClientId: process.env.COGNITO_CLIENT_ID || '',
+  cognitoClientSecret: process.env.COGNITO_CLIENT_SECRET || '',
+  cognitoDomain: process.env.COGNITO_DOMAIN || '',
+  cognitoIssuer: process.env.COGNITO_ISSUER ||
+    `https://cognito-idp.${process.env.AWS_REGION || 'ap-south-1'}.amazonaws.com/${process.env.COGNITO_USER_POOL_ID || ''}`,
+  awsRegion: process.env.AWS_REGION || 'ap-south-1',
+
   // Redis (if used)
   redisUrl: process.env.REDIS_URL,
   
@@ -60,10 +64,10 @@ export const config: any = {
   jwtSecret: process.env.JWT_SECRET || process.env.SUPABASE_JWT_SECRET,
   
   // Gemini-first node selection (Path B): use LLM + registry for node selection; when false or Path B fails, use keyword-based (Path A)
-  useGeminiFirstNodeSelection: process.env.USE_GEMINI_FIRST_NODE_SELECTION !== 'false',
+  useGeminiFirstNodeSelection: true,
 
   // When true, skip enhanced-keyword-matcher.ts fallback entirely and use Gemini-first exclusively
-  useGeminiFirstExclusively: process.env.USE_GEMINI_FIRST_EXCLUSIVELY !== 'false',
+  useGeminiFirstExclusively: true,
 
   // Other
   lovableApiKey: process.env.LOVABLE_API_KEY,
@@ -75,4 +79,28 @@ export const config: any = {
   maxRetries: parseInt(process.env.MAX_RETRIES || '3', 10),
   nodeEnv: process.env.NODE_ENV || 'development',
   isProduction,
+  reliability: {
+    strictValidation: true,
+    validateNodeOutput: true,
+    aiSelfCheckEnabled: true,
+    aiSelfCheckMaxAttempts: 2,
+    distributedRateLimitEnabled: true,
+    distributedRateLimitRedisUrl: process.env.REDIS_URL || '',
+    redisSessionEnabled: true,
+    redisSessionPrefix: 'session:',
+    tracingEnabled: true,
+    tracingServiceName: 'ctrlchecks-worker',
+    tracingOtlpEndpoint: '',
+    dlqMandatoryRouting: true,
+    autonomousOpsEnabled: true,
+    autonomousOpsMaxRemediationAttempts: 3,
+    autonomousOpsIntervalMs: 10 * 60_000, // 10 minutes (was 60s — reduced to cut idle DB load)
+    autonomousOpsBreakerResetCooldownMs: 120_000,
+    circuitBreaker: {
+      failureThreshold: 5,
+      successThreshold: 2,
+      timeoutMs: 60_000,
+      resetTimeoutMs: 300_000,
+    },
+  },
 };

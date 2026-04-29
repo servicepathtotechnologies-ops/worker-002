@@ -11,6 +11,59 @@ import { getUnifiedMissingItems } from '../services/ai/credential-input-discover
 import { workflowLifecycleManager } from '../services/workflow-lifecycle-manager';
 import { workflowValidator } from '../services/ai/workflow-validator';
 import { Workflow } from '../core/types/ai-types';
+import { credentialDiscoveryPhase } from '../services/ai/credential-discovery-phase';
+
+function asArray(value: any): any[] {
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string' && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+async function injectSatisfiedVaultReferences(workflow: Workflow, userId?: string): Promise<Workflow> {
+  const discovery = await credentialDiscoveryPhase.discoverCredentials(workflow, userId);
+  const satisfied = discovery.satisfiedCredentials || [];
+  if (satisfied.length === 0) return workflow;
+
+  const nodes = workflow.nodes.map((node: any) => {
+    const config = { ...(node?.data?.config || {}) };
+    let updated = false;
+
+    for (const credential of satisfied) {
+      const nodeIds = (credential.nodeIds || []).map(String);
+      if (!nodeIds.includes(String(node?.id || ''))) continue;
+
+      const vaultKey = String(credential.vaultKey || credential.provider || '').trim();
+      if (!vaultKey) continue;
+
+      if (!config.credentialId) {
+        config.credentialId = vaultKey;
+        updated = true;
+      }
+      if (!config.credentialRef && credential.type === 'oauth') {
+        config.credentialRef = vaultKey;
+        updated = true;
+      }
+    }
+
+    if (!updated) return node;
+    return {
+      ...node,
+      data: {
+        ...(node.data || {}),
+        config,
+      },
+    };
+  });
+
+  return { ...workflow, nodes };
+}
 
 export default async function configureWorkflowHandler(req: Request, res: Response) {
   try {
@@ -109,8 +162,8 @@ export default async function configureWorkflowHandler(req: Request, res: Respon
         graphData.metadata) ||
       {};
     let workflow: Workflow = {
-      nodes: workflowData.nodes || graphData.nodes || [],
-      edges: workflowData.edges || graphData.edges || [],
+      nodes: asArray(workflowData.nodes).length > 0 ? asArray(workflowData.nodes) : asArray(graphData.nodes),
+      edges: asArray(workflowData.edges).length > 0 ? asArray(workflowData.edges) : asArray(graphData.edges),
       metadata: {
         created_at: workflowData.created_at,
         updated_at: workflowData.updated_at,
@@ -167,7 +220,12 @@ export default async function configureWorkflowHandler(req: Request, res: Respon
       };
     }
 
-    // Step 3: AI auto-config for remaining non-credential fields
+    // Step 3: Attach already-satisfied vault credentials (OAuth/connected accounts).
+    // The newer attach-inputs path does this automatically; /configure must keep
+    // the same node-id-aligned contract.
+    workflow = await injectSatisfiedVaultReferences(workflow, userId);
+
+    // Step 4: AI auto-config for remaining non-credential fields
     console.log(`[ConfigureWorkflow] Running AI auto-config for remaining fields`);
     try {
       const { universalNodeAIContext } = await import('../services/ai/universal-node-ai-context');
@@ -211,7 +269,7 @@ export default async function configureWorkflowHandler(req: Request, res: Respon
       // Continue without auto-config - workflow can still be saved
     }
 
-    // Step 4: Validate workflow
+    // Step 5: Validate workflow
     console.log(`[ConfigureWorkflow] Validating workflow`);
     const validation = await workflowValidator.validateAndFix(workflow);
     
@@ -223,8 +281,16 @@ export default async function configureWorkflowHandler(req: Request, res: Respon
       });
     }
 
-    // Step 5: Save updated workflow to database
+    // Step 6: Save updated workflow to database
     const updatedWorkflow = validation.fixedWorkflow || workflow;
+    const readiness = await workflowLifecycleManager.validateExecutionReady(updatedWorkflow, userId);
+    const finalStatus = 'active';
+    const finalPhase = readiness.ready ? 'ready_for_execution' : 'ready_for_ownership';
+    const metadata = {
+      ...((workflowData as any).metadata || {}),
+      ...((updatedWorkflow as any).metadata || {}),
+      workflowId,
+    };
     
     const { error: updateError } = await supabase
       .from('workflows')
@@ -234,8 +300,12 @@ export default async function configureWorkflowHandler(req: Request, res: Respon
         graph: {
           nodes: updatedWorkflow.nodes,
           edges: updatedWorkflow.edges,
+          metadata,
         },
-        ready_to_run: true, // Mark as ready to run
+        metadata,
+        status: finalStatus,
+        phase: finalPhase,
+        ready_to_run: readiness.ready,
         updated_at: new Date().toISOString(),
       })
       .eq('id', workflowId);
@@ -253,7 +323,12 @@ export default async function configureWorkflowHandler(req: Request, res: Respon
     return res.json({
       success: true,
       workflowId,
-      ready_to_run: true,
+      ready_to_run: readiness.ready,
+      status: finalStatus,
+      phase: finalPhase,
+      workflow: updatedWorkflow,
+      nodes: updatedWorkflow.nodes,
+      edges: updatedWorkflow.edges,
       message: 'Workflow configured successfully',
     });
   } catch (error: any) {

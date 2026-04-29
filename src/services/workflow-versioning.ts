@@ -338,7 +338,7 @@ export class WorkflowVersionManager {
       return [];
     }
 
-    return (data || []).map(item => this.mapDatabaseToVersion(item));
+    return (data || []).map((item: any) => this.mapDatabaseToVersion(item));
   }
 
   /**

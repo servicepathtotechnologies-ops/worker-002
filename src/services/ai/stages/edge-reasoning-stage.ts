@@ -258,7 +258,8 @@ export async function runEdgeReasoningStage(
   const switchCaseValueMap = new Map<string, string[]>();
   for (const node of finalNodes) {
     const def = unifiedNodeRegistry.get(node.type);
-    if (def?.isBranching && node.type === 'switch') {
+    const nodeType = String(node.type || '');
+    if (def?.isBranching && nodeType === 'switch') {
       const caseValues = extractSwitchCasePortNames(node.data?.config as any);
       if (caseValues.length > 0) switchCaseValueMap.set(node.id, caseValues);
     }
@@ -397,8 +398,18 @@ function tryParseEdgeReasoning(text: string): { orderedNodes: string[]; edges: P
     if (start === -1 || end === -1) return null;
     const obj = JSON.parse(cleaned.substring(start, end + 1));
     if (!Array.isArray(obj.orderedNodes) || !Array.isArray(obj.edges)) return null;
+    // Deduplicate orderedNodes — the AI occasionally lists the trigger node twice which
+    // causes it to execute twice in the execution engine.
+    const seenOrdered = new Set<string>();
+    const orderedNodes: string[] = [];
+    for (const id of obj.orderedNodes.map(String)) {
+      if (!seenOrdered.has(id)) {
+        seenOrdered.add(id);
+        orderedNodes.push(id);
+      }
+    }
     return {
-      orderedNodes: obj.orderedNodes.map(String),
+      orderedNodes,
       edges: obj.edges.filter((e: any) => e.source && e.target && e.type),
     };
   } catch {

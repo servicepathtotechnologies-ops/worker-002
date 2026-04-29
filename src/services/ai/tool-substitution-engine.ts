@@ -14,7 +14,7 @@
 import { WorkflowNode, WorkflowEdge, Workflow } from '../../core/types/ai-types';
 import { nodeLibrary } from '../nodes/node-library';
 import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../../core/utils/unified-node-type-normalizer';
-import { getSupabaseClient } from '../../core/database/supabase-compat';
+import { CredentialResolver } from './credential-resolver';
 
 /**
  * Tool equivalence mapping
@@ -559,38 +559,28 @@ export class ToolSubstitutionEngine {
       };
     }
 
-    const supabase = getSupabaseClient();
-    
     try {
-      // Get tool schema to determine required credentials
-      const schema = nodeLibrary.getSchema(toolType);
-      if (!schema) {
-        return {
-          hasCredentials: false,
-          missingCredentials: ['Tool schema not found'],
-        };
-      }
+      const canonicalTool = nodeLibrary.getCanonicalType(toolType);
+      const resolver = new CredentialResolver(nodeLibrary);
+      const contracts = resolver.getCredentialContracts(canonicalTool);
 
-      // Check for credentials in vault (simplified - actual implementation depends on credential storage)
-      // This is a placeholder - actual credential checking should use your credential vault system
-      const { data: credentials, error } = await supabase
-        .from('credentials')
-        .select('*')
-        .eq('user_id', userId)
-        .eq('service', toolType)
-        .single();
+      if (contracts.length === 0) return { hasCredentials: true, missingCredentials: [] };
 
-      if (error && error.code !== 'PGRST116') { // PGRST116 = not found
-        console.error(`[ToolSubstitution] Error checking credentials:`, error);
-        return {
-          hasCredentials: false,
-          missingCredentials: ['Error checking credentials'],
-        };
+      const missingCredentials: string[] = [];
+      for (const contract of contracts) {
+        const available = await resolver.checkVaultForCredential(
+          contract.vaultKey,
+          contract.type,
+          userId
+        );
+        if (!available && contract.required) {
+          missingCredentials.push(`${contract.displayName} (${contract.vaultKey})`);
+        }
       }
 
       return {
-        hasCredentials: !!credentials,
-        missingCredentials: credentials ? [] : [`Credentials for ${toolType} not found`],
+        hasCredentials: missingCredentials.length === 0,
+        missingCredentials,
       };
     } catch (error) {
       console.error(`[ToolSubstitution] Credential validation failed:`, error);
