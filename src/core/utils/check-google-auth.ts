@@ -1,16 +1,19 @@
 import { Request } from 'express';
 import { getSupabaseClient } from '../database/supabase-compat';
+import { resolveCanonicalUserId } from '../database/identity-resolver';
 import { ErrorCode, createError } from './error-codes';
 
 /**
  * Check if request has a valid authenticated user.
- * Returns user ID if authenticated, throws UNAUTHORIZED otherwise.
+ * Returns the CANONICAL user ID (resolves across OAuth providers with same email).
+ * Throws UNAUTHORIZED otherwise.
  */
 export async function requireAuthenticatedUser(req: Request): Promise<string> {
   const supabase = getSupabaseClient();
 
   const authHeader = req.headers.authorization;
   let userId: string | undefined;
+  let email: string | undefined;
 
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.replace('Bearer ', '').trim();
@@ -18,6 +21,7 @@ export async function requireAuthenticatedUser(req: Request): Promise<string> {
       const { data: { user }, error } = await supabase.auth.getUser(token);
       if (!error && user) {
         userId = user.id;
+        email  = user.email || '';
       }
     }
   }
@@ -30,18 +34,19 @@ export async function requireAuthenticatedUser(req: Request): Promise<string> {
     );
   }
 
-  return userId;
+  // Resolve canonical ID so all providers with the same email map to the same DB row
+  const canonicalId = await resolveCanonicalUserId(userId, email || '').catch(() => userId!);
+  return canonicalId;
 }
 
 /**
- * Check if user has Google OAuth connected
- * Returns user ID if Google is connected, throws error otherwise
+ * Check if user has Google OAuth connected.
+ * Returns the canonical user ID if Google is connected, throws error otherwise.
  */
 export async function requireGoogleAuth(req: Request): Promise<string> {
   const supabase = getSupabaseClient();
   const userId = await requireAuthenticatedUser(req);
 
-  // Check Google OAuth connection
   const { data: googleTokenData, error: googleError } = await supabase
     .from('google_oauth_tokens')
     .select('id, expires_at')
@@ -50,7 +55,7 @@ export async function requireGoogleAuth(req: Request): Promise<string> {
 
   const now = new Date();
   let googleConnected = false;
-  
+
   if (!googleError && googleTokenData) {
     const expiresAt = googleTokenData.expires_at ? new Date(googleTokenData.expires_at) : null;
     googleConnected = expiresAt ? expiresAt > now : true;
@@ -60,9 +65,9 @@ export async function requireGoogleAuth(req: Request): Promise<string> {
     throw createError(
       ErrorCode.GOOGLE_AUTH_REQUIRED,
       'Google account connection required',
-      { 
+      {
         hint: 'Please connect your Google account to create or run workflows',
-        recoverable: true
+        recoverable: true,
       }
     );
   }

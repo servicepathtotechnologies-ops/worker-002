@@ -8,6 +8,7 @@ describe('connections catalog', () => {
     process.env.GITHUB_OAUTH_REDIRECT_URI = 'http://127.0.0.1:3001/api/oauth/github/callback';
     process.env.GOOGLE_OAUTH_REDIRECT_URI = 'http://localhost:3001/api/oauth/google/callback';
     process.env.LINKEDIN_OAUTH_REDIRECT_URI = 'http://localhost:3001/api/oauth/linkedin/callback';
+    process.env.WHATSAPP_OAUTH_REDIRECT_URI = 'http://localhost:8080/auth/whatsapp/callback';
   });
 
   it('includes every ConnectorRegistry credential contract once by vaultKey', () => {
@@ -43,5 +44,25 @@ describe('connections catalog', () => {
       expect.arrayContaining([expect.objectContaining({ name: 'apiKey', type: 'password' })])
     );
   });
-});
 
+  it('marks dashboard OAuth providers as implemented with status and disconnect routes', () => {
+    const catalog = getConnectionCatalog();
+    const byKey = Object.fromEntries(catalog.map((entry) => [entry.vaultKey, entry]));
+
+    for (const key of ['google', 'linkedin', 'github', 'facebook', 'notion', 'twitter', 'instagram', 'whatsapp', 'salesforce', 'zoho']) {
+      expect(byKey[key]).toEqual(
+        expect.objectContaining({
+          authType: 'oauth',
+          oauthImplemented: true,
+          statusTable: expect.any(String),
+          connectUrl: expect.any(String),
+        })
+      );
+    }
+
+    expect(byKey.whatsapp.statusTable).toBe('whatsapp_oauth_tokens');
+    expect(byKey.notion.disconnectUrl).toBe('/api/connections/notion');
+    expect(byKey.twitter.disconnectUrl).toBe('/api/connections/twitter');
+    expect(byKey.salesforce.disconnectUrl).toBe('/api/connections/salesforce');
+  });
+});

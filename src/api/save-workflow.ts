@@ -11,6 +11,7 @@ import { validateWorkflowForSave, normalizeWorkflowForSave } from '../core/valid
 import { ErrorCode } from '../core/utils/error-codes';
 import type { WorkflowBuildManifestV1 } from '../core/types/workflow-build-manifest';
 import { buildSyncedGraphPayload } from './workflow-graph-state';
+import { subscriptionService } from '../services/subscription-service';
 
 interface WorkflowNode {
   id: string;
@@ -40,9 +41,10 @@ export default async function saveWorkflowHandler(req: Request, res: Response) {
   
   // Require authenticated user for workflow creation/updates.
   // Do NOT require global Google OAuth at save-time; credentials are node/provider-specific.
+  let authenticatedUserId: string;
   try {
     const { requireAuthenticatedUser } = await import('../core/utils/check-google-auth');
-    await requireAuthenticatedUser(req);
+    authenticatedUserId = await requireAuthenticatedUser(req);
   } catch (authError: any) {
     return res.status(401).json(authError);
   }
@@ -185,9 +187,7 @@ export default async function saveWorkflowHandler(req: Request, res: Response) {
       metadata: mergedMetadata,
     };
 
-    if (user_id) {
-      workflowData.user_id = user_id;
-    }
+    workflowData.user_id = authenticatedUserId;
 
     // 6. Save or update workflow
     let savedWorkflow;
@@ -226,6 +226,23 @@ export default async function saveWorkflowHandler(req: Request, res: Response) {
 
       savedWorkflow = data;
     } else {
+      await subscriptionService.ensureFreeSubscription(authenticatedUserId);
+      const canCreateWorkflow = await subscriptionService.canCreateWorkflow(authenticatedUserId);
+      if (!canCreateWorkflow) {
+        const usage = await subscriptionService.getSubscriptionUsage(authenticatedUserId);
+        return res.status(403).json({
+          code: 'WORKFLOW_LIMIT_EXCEEDED',
+          error: 'Workflow Limit Exceeded',
+          message: `You've reached your workflow limit (${usage.workflowLimit}). Upgrade your plan to create more workflows.`,
+          details: {
+            workflowsUsed: usage.workflowsUsed,
+            workflowLimit: usage.workflowLimit,
+            remainingWorkflows: usage.remainingWorkflows,
+            upgradeUrl: '/subscriptions',
+          },
+        });
+      }
+
       // Create new workflow
       const { data, error } = await supabase
         .from('workflows')
@@ -243,6 +260,7 @@ export default async function saveWorkflowHandler(req: Request, res: Response) {
       }
 
       savedWorkflow = data;
+      await subscriptionService.incrementWorkflowCount(authenticatedUserId);
     }
 
     // 🆕 VERSIONING: Create version after successful save

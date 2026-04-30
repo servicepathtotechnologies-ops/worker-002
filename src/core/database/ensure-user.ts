@@ -10,6 +10,14 @@ function shouldIgnoreOptionalTableError(err: any): boolean {
   return ['42P01', '42703', '42704'].includes(err?.code);
 }
 
+/**
+ * Ensures the canonical user's rows exist in public.users, profiles, and
+ * user_roles.  Called after identity resolution so `userId` is always the
+ * canonical DB ID (not a raw OAuth sub that might differ from the stored ID).
+ *
+ * The former auth.users insert was Supabase-specific and is intentionally
+ * removed — this project now uses AWS RDS exclusively.
+ */
 export async function ensureUserRows(userId: string, email?: string | null, fullName?: string | null): Promise<void> {
   if (!userId) return;
 
@@ -18,30 +26,10 @@ export async function ensureUserRows(userId: string, email?: string | null, full
   if (ensuredUsers.has(cacheKey)) return;
 
   await queryAsService(
-    `INSERT INTO auth.users (id, email, raw_user_meta_data, updated_at, last_sign_in_at, email_confirmed_at)
-     VALUES ($1, $2, $3::jsonb, NOW(), NOW(), NOW())
-     ON CONFLICT (id)
-     DO UPDATE SET email = COALESCE(EXCLUDED.email, auth.users.email),
-                   raw_user_meta_data = auth.users.raw_user_meta_data || EXCLUDED.raw_user_meta_data,
-                   updated_at = NOW(),
-                   last_sign_in_at = NOW()`,
-    [
-      userId,
-      normalizedEmail,
-      JSON.stringify({
-        email: normalizedEmail,
-        full_name: fullName || null,
-        name: fullName || normalizedEmail.split('@')[0],
-        provider: 'cognito',
-      }),
-    ]
-  );
-
-  await queryAsService(
-    `INSERT INTO public.users (id, email, created_at, updated_at)
+    `INSERT INTO users (id, email, created_at, updated_at)
      VALUES ($1, $2, NOW(), NOW())
      ON CONFLICT (id)
-     DO UPDATE SET email = COALESCE(EXCLUDED.email, public.users.email),
+     DO UPDATE SET email      = COALESCE(EXCLUDED.email, users.email),
                    updated_at = NOW()`,
     [userId, normalizedEmail]
   ).catch((err) => {
@@ -52,8 +40,8 @@ export async function ensureUserRows(userId: string, email?: string | null, full
     `INSERT INTO profiles (user_id, email, full_name, created_at, updated_at)
      VALUES ($1, $2, $3, NOW(), NOW())
      ON CONFLICT (user_id)
-     DO UPDATE SET email = COALESCE(EXCLUDED.email, profiles.email),
-                   full_name = COALESCE(profiles.full_name, EXCLUDED.full_name),
+     DO UPDATE SET email      = COALESCE(EXCLUDED.email, profiles.email),
+                   full_name  = COALESCE(profiles.full_name, EXCLUDED.full_name),
                    updated_at = NOW()`,
     [userId, normalizedEmail, fullName || normalizedEmail.split('@')[0]]
   ).catch((err) => {

@@ -174,6 +174,7 @@ import workflowFieldOwnershipCatalogHandler from './api/workflow-field-ownership
 import { linkedinStatusHandler, linkedinTestHandler, linkedinRefreshNowHandler, linkedinDisconnectHandler } from './api/connections-linkedin';
 import { githubStatusHandler, githubDisconnectHandler } from './api/connections-github';
 import { makeSocialDisconnectHandler } from './api/connections-social';
+import { makeOAuthTableDisconnectHandler } from './api/connections-oauth';
 import { zohoStatusHandler, zohoConnectHandler, zohoTestHandler, zohoDisconnectHandler } from './api/connections-zoho';
 import {
   connectionsCatalogHandler,
@@ -182,11 +183,12 @@ import {
   logConnectionConfigReadiness,
 } from './api/connections-catalog';
 import { authStatusHandler } from './api/auth-status';
+import { transferWorkflowOwnership, transferAllWorkflows } from './api/workflow-transfer';
 import saveSocialTokenRoute from './api/save-social-token';
 import { notionAuthorizeHandler, notionCallbackHandler } from './api/oauth-notion';
 import { twitterAuthorizeHandler, twitterCallbackHandler } from './api/oauth-twitter';
 import { facebookOAuthStart, facebookOAuthCallback } from './api/oauth-facebook';
-import { googleOAuthStart, googleOAuthCallback } from './api/oauth-google';
+import { googleOAuthStart, googleOAuthCallback, googleDisconnectHandler } from './api/oauth-google';
 import { linkedInOAuthStart, linkedInOAuthCallback } from './api/oauth-linkedin';
 import {
   instagramAuthorizeHandler,
@@ -200,7 +202,7 @@ import { getCurrentSubscription, cancelSubscription, getSubscriptionHistory, adm
 import { securityHeaders, subscriptionRateLimit, validateSubscriptionInput, developmentModeHeaders, requestLogger } from './core/middleware/security';
 import { authenticateUser, requireAdmin, optionalAuth, requireRole, requireSubscriptionPlan } from './core/middleware/subscription-auth';
 import { subscriptionLogger, paymentLogger, adminLogger } from './core/middleware/subscription-logging';
-import { checkWorkflowLimitEndpoint } from './core/middleware/workflow-limits';
+import { checkWorkflowLimitEndpoint, requireWorkflowCapacityForAi } from './core/middleware/workflow-limits';
 import { distributedRateLimit } from './core/middleware/distributed-rate-limit';
 import { tracingMiddleware } from './core/observability/distributed-tracing';
 import { 
@@ -816,6 +818,10 @@ app.post('/api/admin/subscriptions/upgrade/:userId',
   asyncHandler(adminUpgradeUser)
 );
 
+// Workflow ownership transfer
+app.post('/api/workflows/transfer-all', asyncHandler(authenticateUser), asyncHandler(transferAllWorkflows));
+app.post('/api/workflows/:workflowId/transfer-ownership', asyncHandler(authenticateUser), asyncHandler(transferWorkflowOwnership));
+
 // LinkedIn connection DX/debugging endpoints
 app.get('/api/connections/catalog', asyncHandler(connectionsCatalogHandler));
 app.get('/api/connections/status', asyncHandler(authenticateUser), asyncHandler(connectionsStatusHandler));
@@ -826,8 +832,11 @@ app.post('/api/connections/linkedin/test', asyncHandler(authenticateUser), async
 app.get('/api/connections/github/status', asyncHandler(authenticateUser), asyncHandler(githubStatusHandler));
 app.post('/api/connections/github/disconnect', asyncHandler(authenticateUser), asyncHandler(githubDisconnectHandler));
 app.post('/api/connections/facebook/disconnect', asyncHandler(authenticateUser), asyncHandler(makeSocialDisconnectHandler('facebook')));
-app.delete('/api/connections/instagram', asyncHandler(authenticateUser), asyncHandler(makeSocialDisconnectHandler('instagram')));
-app.delete('/api/connections/whatsapp', asyncHandler(authenticateUser), asyncHandler(makeSocialDisconnectHandler('whatsapp')));
+app.delete('/api/connections/facebook', asyncHandler(authenticateUser), asyncHandler(makeSocialDisconnectHandler('facebook')));
+app.delete('/api/connections/instagram', asyncHandler(authenticateUser), asyncHandler(makeOAuthTableDisconnectHandler('instagram')));
+app.post('/api/connections/instagram/disconnect', asyncHandler(authenticateUser), asyncHandler(makeOAuthTableDisconnectHandler('instagram')));
+app.delete('/api/connections/whatsapp', asyncHandler(authenticateUser), asyncHandler(makeOAuthTableDisconnectHandler('whatsapp')));
+app.post('/api/connections/whatsapp/disconnect', asyncHandler(authenticateUser), asyncHandler(makeOAuthTableDisconnectHandler('whatsapp')));
 
 // GitHub OAuth flow (no auth middleware on callback or start-login — GitHub redirects here directly)
 import { githubOAuthStart, githubOAuthCallback, githubLoginStart, githubExchangeSession } from './api/oauth-github';
@@ -839,6 +848,7 @@ app.get('/api/oauth/facebook/start',     facebookOAuthStart);
 app.get('/api/oauth/facebook/callback',  asyncHandler(facebookOAuthCallback));
 app.get('/api/oauth/google/start',       googleOAuthStart);
 app.get('/api/oauth/google/callback',    asyncHandler(googleOAuthCallback));
+app.delete('/api/connections/google',    asyncHandler(authenticateUser), asyncHandler(googleDisconnectHandler));
 app.get('/api/oauth/linkedin/start',     linkedInOAuthStart);
 app.get('/api/oauth/linkedin/callback',  asyncHandler(linkedInOAuthCallback));
 app.get('/api/oauth/instagram/authorize', instagramAuthorizeHandler);
@@ -847,6 +857,8 @@ app.get('/api/oauth/whatsapp/authorize', whatsappAuthorizeHandler);
 app.post('/api/oauth/whatsapp/callback', asyncHandler(authenticateUser), asyncHandler(whatsappCallbackHandler));
 app.get('/api/oauth/salesforce/authorize', salesforceAuthorizeHandler);
 app.post('/api/oauth/salesforce/callback', asyncHandler(authenticateUser), asyncHandler(salesforceCallbackHandler));
+app.delete('/api/connections/salesforce', asyncHandler(authenticateUser), asyncHandler(makeOAuthTableDisconnectHandler('salesforce')));
+app.post('/api/connections/salesforce/disconnect', asyncHandler(authenticateUser), asyncHandler(makeOAuthTableDisconnectHandler('salesforce')));
 
 // Zoho connection endpoints
 app.get('/api/connections/zoho/status', asyncHandler(authenticateUser), asyncHandler(zohoStatusHandler));
@@ -858,10 +870,14 @@ app.get('/api/connections/:provider/status', asyncHandler(authenticateUser), asy
 // Notion OAuth endpoints
 app.get('/api/oauth/notion/authorize', asyncHandler(notionAuthorizeHandler));
 app.post('/api/oauth/notion/callback', asyncHandler(notionCallbackHandler));
+app.delete('/api/connections/notion', asyncHandler(authenticateUser), asyncHandler(makeOAuthTableDisconnectHandler('notion')));
+app.post('/api/connections/notion/disconnect', asyncHandler(authenticateUser), asyncHandler(makeOAuthTableDisconnectHandler('notion')));
 
 // Twitter OAuth endpoints
 app.get('/api/oauth/twitter/authorize', asyncHandler(twitterAuthorizeHandler));
 app.post('/api/oauth/twitter/callback', asyncHandler(twitterCallbackHandler));
+app.delete('/api/connections/twitter', asyncHandler(authenticateUser), asyncHandler(makeOAuthTableDisconnectHandler('twitter')));
+app.post('/api/connections/twitter/disconnect', asyncHandler(authenticateUser), asyncHandler(makeOAuthTableDisconnectHandler('twitter')));
 app.post('/api/connections/linkedin/refresh-now', asyncHandler(authenticateUser), asyncHandler(linkedinRefreshNowHandler));
 app.delete('/api/connections/linkedin', asyncHandler(authenticateUser), asyncHandler(linkedinDisconnectHandler));
 
@@ -924,13 +940,15 @@ app.post(
     globalLimit: 300,
     windowMs: 60_000,
   }),
+  asyncHandler(authenticateUser),
+  asyncHandler(requireWorkflowCapacityForAi),
   asyncHandler(generateWorkflowRoute)
 );
 
 // Capability-Based Node Selection Flow (3-phase pipeline)
-app.post('/api/capability-selection/analyze', asyncHandler(analyzeCapabilitySelection));
-app.post('/api/capability-selection/generate', asyncHandler(generateCapabilityWorkflow));
-app.post('/api/capability-selection/confirm', asyncHandler(confirmCapabilityWorkflow));
+app.post('/api/capability-selection/analyze', asyncHandler(authenticateUser), asyncHandler(requireWorkflowCapacityForAi), asyncHandler(analyzeCapabilitySelection));
+app.post('/api/capability-selection/generate', asyncHandler(authenticateUser), asyncHandler(requireWorkflowCapacityForAi), asyncHandler(generateCapabilityWorkflow));
+app.post('/api/capability-selection/confirm', asyncHandler(authenticateUser), asyncHandler(requireWorkflowCapacityForAi), asyncHandler(confirmCapabilityWorkflow));
 console.log('🎯 Capability Selection API available at /api/capability-selection/{analyze,generate,confirm}');
 
 // Smart Planner–Driven Workflow Orchestration (planner decides WHAT, system decides HOW)
@@ -942,6 +960,8 @@ app.post(
     globalLimit: 300,
     windowMs: 60_000,
   }),
+  asyncHandler(authenticateUser),
+  asyncHandler(requireWorkflowCapacityForAi),
   asyncHandler(smartPlannerGenerate)
 );
 app.post('/api/answer', asyncHandler(smartPlannerAnswer));
@@ -1091,6 +1111,8 @@ app.delete('/api/workflows/:id', authenticateUser, asyncHandler(async (req: Requ
     return res.status(403).json({ error: 'Forbidden' });
   }
   await queryAsService(`DELETE FROM workflows WHERE id = $1`, [id]);
+  const { subscriptionService } = await import('./services/subscription-service');
+  await subscriptionService.decrementWorkflowCount(userId);
   res.json({ success: true });
 }));
 console.log('🗑️  Delete Workflow API available at DELETE /api/workflows/:id');

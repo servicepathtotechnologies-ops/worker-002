@@ -16,6 +16,7 @@
 import { Request, Response } from 'express';
 import { queryAsService, DbUnavailableError } from '../core/database/db-pool';
 import { preparePayload } from '../core/database/column-types';
+import { subscriptionService } from '../services/subscription-service';
 
 function isDbUnavailable(err: any) {
   return err instanceof DbUnavailableError || err?.code === 'DB_UNAVAILABLE';
@@ -83,6 +84,35 @@ const SAFE_COLS = /^[a-z_]+$/;
 
 function deny(res: Response, msg: string, status = 403) {
   return res.status(status).json({ error: msg });
+}
+
+async function enforceWorkflowCreationLimit(userId: string, res: Response): Promise<boolean> {
+  await subscriptionService.ensureFreeSubscription(userId);
+  const canCreate = await subscriptionService.canCreateWorkflow(userId);
+  if (canCreate) return true;
+
+  const usage = await subscriptionService.getSubscriptionUsage(userId);
+  res.status(403).json({
+    data: null,
+    error: {
+      message: `You've reached your workflow limit (${usage.workflowLimit}). Upgrade your plan to create more workflows.`,
+      code: 'WORKFLOW_LIMIT_EXCEEDED',
+      workflowsUsed: usage.workflowsUsed,
+      workflowLimit: usage.workflowLimit,
+      remainingWorkflows: usage.remainingWorkflows,
+      upgradeUrl: '/subscriptions',
+    },
+  });
+  return false;
+}
+
+async function workflowExistsForUser(userId: string, id: unknown): Promise<boolean> {
+  if (id === undefined || id === null || String(id).trim() === '') return false;
+  const rows = await queryAsService<{ id: string }>(
+    `SELECT id FROM "workflows" WHERE "user_id" = $1 AND "id" = $2 LIMIT 1`,
+    [userId, id]
+  );
+  return rows.length > 0;
 }
 
 export async function dbProxyGet(req: Request, res: Response) {
@@ -184,6 +214,11 @@ export async function dbProxyPost(req: Request, res: Response) {
   const userCol = USER_COL[table];
   const payload = preparePayload(table, { ...req.body, [userCol]: userId });
 
+  if (table === 'workflows') {
+    const allowed = await enforceWorkflowCreationLimit(userId, res);
+    if (!allowed) return;
+  }
+
   const keys = Object.keys(payload);
   const vals: any[] = keys.map((k) => payload[k]);
   const placeholders = keys.map((_, i) => `$${i + 1}`).join(', ');
@@ -194,6 +229,9 @@ export async function dbProxyPost(req: Request, res: Response) {
       `INSERT INTO "${table}" (${cols}) VALUES (${placeholders}) RETURNING *`,
       vals
     );
+    if (table === 'workflows') {
+      await subscriptionService.incrementWorkflowCount(userId);
+    }
     res.json({ data: rows[0] || null, error: null });
   } catch (err: any) {
     if (isDbUnavailable(err)) return res.status(503).json({ data: null, error: { message: 'Database temporarily unavailable' } });
@@ -211,6 +249,12 @@ export async function dbProxyUpsert(req: Request, res: Response) {
   const userCol    = USER_COL[table];
   const { data: body, onConflict } = req.body as { data: any; onConflict?: string };
   const payload    = preparePayload(table, { ...(body || req.body), [userCol]: userId });
+
+  const isWorkflowCreate = table === 'workflows' && !(await workflowExistsForUser(userId, payload.id));
+  if (isWorkflowCreate) {
+    const allowed = await enforceWorkflowCreationLimit(userId, res);
+    if (!allowed) return;
+  }
 
   const keys         = Object.keys(payload);
   const vals: any[]  = keys.map((k) => payload[k]);
@@ -239,6 +283,9 @@ export async function dbProxyUpsert(req: Request, res: Response) {
 
   try {
     const rows = await queryAsService(sql, vals);
+    if (isWorkflowCreate && rows[0]) {
+      await subscriptionService.incrementWorkflowCount(userId);
+    }
     res.json({ data: rows[0] || null, error: null });
   } catch (err: any) {
     if (isDbUnavailable(err)) return res.status(503).json({ data: null, error: { message: 'Database temporarily unavailable' } });
@@ -328,7 +375,12 @@ export async function dbProxyDelete(req: Request, res: Response) {
       `DELETE FROM "${table}" WHERE ${whereSql} RETURNING id`,
       whereVals
     );
-    if (!rows[0]) return res.status(404).json({ data: null, error: { message: 'Not found' } });
+    if (!rows[0] && id !== undefined && id !== null && String(id).trim() !== '') {
+      return res.status(404).json({ data: null, error: { message: 'Not found' } });
+    }
+    if (table === 'workflows' && rows.length > 0) {
+      await subscriptionService.decrementWorkflowCount(userId);
+    }
     res.json({ data: null, error: null });
   } catch (err: any) {
     if (isDbUnavailable(err)) return res.status(503).json({ data: null, error: { message: 'Database temporarily unavailable' } });

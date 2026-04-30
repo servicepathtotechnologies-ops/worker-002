@@ -27,6 +27,13 @@ export interface PaymentResult {
   success: boolean;
   paymentId?: string;
   subscriptionId?: string;
+  subscription?: {
+    id: string;
+    planName: string;
+    workflowLimit: number;
+    workflowsUsed: number;
+    status: string;
+  };
   error?: string;
   code?: string;
 }
@@ -190,7 +197,7 @@ export class PaymentService {
         .update(body)
         .digest('hex');
 
-      return expectedSignature === signature;
+      return this.safeCompare(expectedSignature, signature);
     } catch (error: any) {
       console.error('[PaymentService] verifyPaymentSignature error:', error);
       return false;
@@ -207,7 +214,6 @@ export class PaymentService {
     signature: string
   ): Promise<PaymentResult> {
     try {
-      // Verify signature
       const isValidSignature = this.verifyPaymentSignature(orderId, paymentId, signature);
       
       if (!isValidSignature) {
@@ -224,7 +230,17 @@ export class PaymentService {
         };
       }
 
-      // Get payment record from database
+      const razorpayOrder = await this.fetchRazorpayOrder(orderId);
+      const razorpayPayment = await this.fetchRazorpayPayment(paymentId);
+
+      if (razorpayPayment.order_id !== orderId) {
+        return {
+          success: false,
+          error: 'Payment does not belong to this order',
+          code: 'PAYMENT_ORDER_MISMATCH'
+        };
+      }
+
       const supabase = getSupabaseClient();
       const { data: payment, error: paymentError } = await supabase
         .from('payments')
@@ -242,13 +258,121 @@ export class PaymentService {
         };
       }
 
-      // Update payment record
+      if (payment.status === 'paid') {
+        const orderNotes = razorpayOrder.notes || {};
+        const orderPlanName = orderNotes.planName;
+        const plan = await subscriptionService.getPlanByName(orderPlanName);
+        if (!plan || plan.name === 'Free') {
+          return {
+            success: false,
+            error: 'Invalid paid plan in payment order',
+            code: 'INVALID_ORDER_PLAN'
+          };
+        }
+
+        const existingSubscription = await subscriptionService.getUserSubscription(userId);
+        if (!payment.subscription_id) {
+          const activationRetry = await subscriptionService.upgradeSubscription(
+            userId,
+            plan.name,
+            payment.id
+          );
+
+          if (!activationRetry.success) {
+            console.error('[PaymentService] Failed to retry subscription activation:', activationRetry.error);
+            return {
+              success: false,
+              error: activationRetry.error || 'Failed to activate subscription',
+              code: 'ACTIVATION_FAILED'
+            };
+          }
+
+          return {
+            success: true,
+            paymentId: payment.id,
+            subscriptionId: activationRetry.subscription?.id,
+            subscription: activationRetry.subscription
+              ? {
+                  id: activationRetry.subscription.id,
+                  planName: activationRetry.subscription.planName,
+                  workflowLimit: activationRetry.subscription.workflowLimit,
+                  workflowsUsed: activationRetry.subscription.workflowsUsed,
+                  status: activationRetry.subscription.status
+                }
+              : undefined
+          };
+        }
+
+        return {
+          success: true,
+          paymentId: payment.id,
+          subscriptionId: existingSubscription?.id,
+          subscription: existingSubscription
+            ? {
+                id: existingSubscription.id,
+                planName: existingSubscription.planName,
+                workflowLimit: existingSubscription.workflowLimit,
+                workflowsUsed: existingSubscription.workflowsUsed,
+                status: existingSubscription.status
+              }
+            : undefined
+        };
+      }
+
+      const orderNotes = razorpayOrder.notes || {};
+      const orderPlanName = orderNotes.planName;
+
+      if (orderNotes.userId !== userId) {
+        await this.markPaymentFailed(payment.id, paymentId, signature, 'Razorpay order user mismatch');
+        return {
+          success: false,
+          error: 'Payment order does not belong to this user',
+          code: 'ORDER_USER_MISMATCH'
+        };
+      }
+
+      const plan = await subscriptionService.getPlanByName(orderPlanName);
+      if (!plan || plan.name === 'Free') {
+        await this.markPaymentFailed(payment.id, paymentId, signature, 'Invalid paid plan in Razorpay order');
+        return {
+          success: false,
+          error: 'Invalid paid plan in payment order',
+          code: 'INVALID_ORDER_PLAN'
+        };
+      }
+
+      const expectedAmount = plan.price;
+      if (
+        payment.amount_inr !== expectedAmount ||
+        razorpayOrder.amount !== expectedAmount ||
+        razorpayPayment.amount !== expectedAmount ||
+        razorpayOrder.currency !== 'INR' ||
+        razorpayPayment.currency !== 'INR'
+      ) {
+        await this.markPaymentFailed(payment.id, paymentId, signature, 'Payment amount or currency mismatch');
+        return {
+          success: false,
+          error: 'Payment amount or currency mismatch',
+          code: 'AMOUNT_MISMATCH'
+        };
+      }
+
+      if (!['captured', 'authorized'].includes(razorpayPayment.status)) {
+        await this.markPaymentFailed(payment.id, paymentId, signature, `Razorpay payment status: ${razorpayPayment.status}`);
+        return {
+          success: false,
+          error: `Payment is not complete. Current status: ${razorpayPayment.status}`,
+          code: 'PAYMENT_NOT_COMPLETE'
+        };
+      }
+
       const { error: updateError } = await supabase
         .from('payments')
         .update({
           razorpay_payment_id: paymentId,
           razorpay_signature: signature,
           status: 'paid',
+          payment_method: razorpayPayment.method || null,
           verified_at: new Date().toISOString()
         })
         .eq('id', payment.id);
@@ -262,18 +386,9 @@ export class PaymentService {
         };
       }
 
-      // Get plan name from payment notes or amount
-      let planName = 'Pro'; // Default fallback
-      if (payment.amount_inr === 100 && config.developmentPricing) {
-        // In development mode, both Pro and Enterprise cost ₹1
-        // We need to determine from the original order or notes
-        planName = 'Pro'; // Default to Pro for ₹1 payments
-      }
-
-      // Activate subscription
       const subscriptionResult = await subscriptionService.upgradeSubscription(
         userId,
-        planName,
+        plan.name,
         payment.id
       );
 
@@ -289,7 +404,16 @@ export class PaymentService {
       return {
         success: true,
         paymentId: payment.id,
-        subscriptionId: subscriptionResult.subscription?.id
+        subscriptionId: subscriptionResult.subscription?.id,
+        subscription: subscriptionResult.subscription
+          ? {
+              id: subscriptionResult.subscription.id,
+              planName: subscriptionResult.subscription.planName,
+              workflowLimit: subscriptionResult.subscription.workflowLimit,
+              workflowsUsed: subscriptionResult.subscription.workflowsUsed,
+              status: subscriptionResult.subscription.status
+            }
+          : undefined
       };
     } catch (error: any) {
       console.error('[PaymentService] processPaymentVerification error:', error);
@@ -466,6 +590,17 @@ export class PaymentService {
     return `Basic ${Buffer.from(`${this.razorpayKeyId}:${this.razorpayKeySecret}`).toString('base64')}`;
   }
 
+  private safeCompare(expected: string, actual: string): boolean {
+    const expectedBuffer = Buffer.from(expected);
+    const actualBuffer = Buffer.from(actual || '');
+
+    if (expectedBuffer.length !== actualBuffer.length) {
+      return false;
+    }
+
+    return crypto.timingSafeEqual(expectedBuffer, actualBuffer);
+  }
+
   private verifyWebhookSignature(payload: string, signature: string): boolean {
     try {
       if (!this.webhookSecret) {
@@ -478,7 +613,10 @@ export class PaymentService {
         .update(payload)
         .digest('hex');
 
-      return `sha256=${expectedSignature}` === signature;
+      return (
+        this.safeCompare(expectedSignature, signature) ||
+        this.safeCompare(`sha256=${expectedSignature}`, signature)
+      );
     } catch (error: any) {
       console.error('[PaymentService] verifyWebhookSignature error:', error);
       return false;
@@ -511,6 +649,62 @@ export class PaymentService {
       console.error('[PaymentService] storePaymentIntent error:', error);
       throw error;
     }
+  }
+
+  private async markPaymentFailed(
+    paymentRecordId: string,
+    paymentId: string,
+    signature: string,
+    reason: string
+  ): Promise<void> {
+    const supabase = getSupabaseClient();
+    const { error } = await supabase
+      .from('payments')
+      .update({
+        status: 'failed',
+        razorpay_payment_id: paymentId,
+        razorpay_signature: signature,
+        failure_reason: reason
+      })
+      .eq('id', paymentRecordId);
+
+    if (error) {
+      console.error('[PaymentService] Failed to mark payment failed:', error);
+    }
+  }
+
+  private async fetchRazorpayOrder(orderId: string): Promise<OrderEntity> {
+    const response = await fetch(`https://api.razorpay.com/v1/orders/${encodeURIComponent(orderId)}`, {
+      method: 'GET',
+      headers: {
+        Authorization: this.getRazorpayAuthHeader(),
+      },
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('[PaymentService] Failed to fetch Razorpay order:', errorText);
+      throw new Error(`Failed to fetch Razorpay order: ${response.status}`);
+    }
+
+    return await response.json() as OrderEntity;
+  }
+
+  private async fetchRazorpayPayment(paymentId: string): Promise<PaymentEntity> {
+    const response = await fetch(`https://api.razorpay.com/v1/payments/${encodeURIComponent(paymentId)}`, {
+      method: 'GET',
+      headers: {
+        Authorization: this.getRazorpayAuthHeader(),
+      },
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('[PaymentService] Failed to fetch Razorpay payment:', errorText);
+      throw new Error(`Failed to fetch Razorpay payment: ${response.status}`);
+    }
+
+    return await response.json() as PaymentEntity;
   }
 
   private async handlePaymentCaptured(payment: PaymentEntity): Promise<void> {

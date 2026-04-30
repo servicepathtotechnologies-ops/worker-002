@@ -352,3 +352,48 @@ export const checkWorkflowLimitEndpoint = async (req: WorkflowLimitRequest, res:
     });
   }
 };
+
+/**
+ * Blocks AI workflow generation when the user has no remaining workflow slots.
+ * Manual builder pages may still open, but all creation/save endpoints remain
+ * protected separately.
+ */
+export const requireWorkflowCapacityForAi = async (req: WorkflowLimitRequest, res: Response, next: NextFunction) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized',
+        message: 'Authentication required for AI workflow generation',
+        code: 'AUTH_REQUIRED'
+      });
+    }
+
+    await subscriptionService.ensureFreeSubscription(req.user.id);
+    const usage = await subscriptionService.getSubscriptionUsage(req.user.id);
+
+    if (usage.remainingWorkflows <= 0) {
+      return res.status(403).json({
+        success: false,
+        error: 'Workflow Limit Exceeded',
+        message: `You've reached your workflow limit (${usage.workflowLimit}). Upgrade your plan to generate more workflows with AI.`,
+        code: 'WORKFLOW_LIMIT_EXCEEDED',
+        workflowsUsed: usage.workflowsUsed,
+        workflowLimit: usage.workflowLimit,
+        remainingWorkflows: usage.remainingWorkflows,
+        upgradeUrl: '/subscriptions',
+        suggestedPlans: usage.workflowLimit <= 2 ? ['Pro', 'Enterprise'] : ['Enterprise']
+      });
+    }
+
+    next();
+  } catch (error: any) {
+    console.error('[WorkflowLimits] requireWorkflowCapacityForAi error:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Workflow Limit Check Failed',
+      message: 'Unable to verify workflow creation limits',
+      code: 'LIMIT_CHECK_ERROR'
+    });
+  }
+};

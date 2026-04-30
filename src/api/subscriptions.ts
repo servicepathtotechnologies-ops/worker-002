@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { subscriptionService } from '../services/subscription-service';
 import { AuthenticatedRequest } from '../core/middleware/subscription-auth';
 import { getSupabaseClient } from '../core/database/supabase-compat';
+import { queryAsService } from '../core/database/db-pool';
 
 async function ensureUserExists(userId: string, email: string): Promise<void> {
   const supabase = getSupabaseClient();
@@ -42,7 +43,7 @@ export async function getCurrentSubscription(req: AuthenticatedRequest, res: Res
         planName: subscription.planName,
         status: subscription.status,
         workflowLimit: subscription.workflowLimit,
-        workflowsUsed: subscription.workflowsUsed,
+        workflowsUsed: usage.workflowsUsed,
         startedAt: subscription.startedAt,
         expiresAt: subscription.expiresAt,
         cancelledAt: subscription.cancelledAt,
@@ -272,37 +273,41 @@ export async function adminGetUsers(req: AuthenticatedRequest, res: Response) {
     const limit = parseInt((req.query.limit as string) || '50', 10);
     const search = (req.query.search as string) || '';
     const offset = (page - 1) * limit;
+    const safeLimit = Math.max(1, Math.min(limit, 100));
+    const safeOffset = Math.max(0, offset);
+    const searchPattern = `%${search}%`;
 
-    const supabase = getSupabaseClient();
+    const users = await queryAsService(
+      `SELECT
+         u.id,
+         u.email,
+         u.workflow_count,
+         u.created_at,
+         s.id AS subscription_id,
+         s.status AS subscription_status,
+         s.started_at AS subscription_started_at,
+         s.expires_at AS subscription_expires_at,
+         sp.name AS plan_name,
+         sp.workflow_limit AS plan_workflow_limit
+       FROM users u
+       LEFT JOIN subscriptions s
+         ON s.id = u.subscription_id
+       LEFT JOIN subscription_plans sp
+         ON sp.id = s.plan_id
+       WHERE ($1 = '' OR u.email ILIKE $2)
+       ORDER BY u.created_at DESC
+       LIMIT $3
+       OFFSET $4`,
+      [search, searchPattern, safeLimit, safeOffset]
+    );
 
-    let query = supabase
-      .from('users')
-      .select(`
-        id,
-        email,
-        workflow_count,
-        created_at,
-        subscriptions (
-          id,
-          status,
-          started_at,
-          expires_at,
-          subscription_plans (
-            name,
-            workflow_limit
-          )
-        )
-      `, { count: 'exact' })
-      .order('created_at', { ascending: false })
-      .range(offset, offset + limit - 1);
-
-    if (search) {
-      query = query.ilike('email', `%${search}%`);
-    }
-
-    const { data: users, error, count } = await query;
-
-    if (error) throw new Error(`Failed to fetch users: ${error.message}`);
+    const totalRows = await queryAsService<{ count: string }>(
+      `SELECT COUNT(*)::text AS count
+       FROM users u
+       WHERE ($1 = '' OR u.email ILIKE $2)`,
+      [search, searchPattern]
+    );
+    const total = parseInt(totalRows[0]?.count || '0', 10);
 
     return res.json({
       success: true,
@@ -311,22 +316,22 @@ export async function adminGetUsers(req: AuthenticatedRequest, res: Response) {
         email: user.email,
         workflowCount: user.workflow_count,
         createdAt: user.created_at,
-        subscription: user.subscriptions
+        subscription: user.subscription_id
           ? {
-              id: user.subscriptions.id,
-              planName: user.subscriptions.subscription_plans?.name || 'Free',
-              workflowLimit: user.subscriptions.subscription_plans?.workflow_limit || 2,
-              status: user.subscriptions.status,
-              startedAt: user.subscriptions.started_at,
-              expiresAt: user.subscriptions.expires_at
+              id: user.subscription_id,
+              planName: user.plan_name || 'Free',
+              workflowLimit: user.plan_workflow_limit || 2,
+              status: user.subscription_status,
+              startedAt: user.subscription_started_at,
+              expiresAt: user.subscription_expires_at
             }
           : null
       })),
       pagination: {
         page,
-        limit,
-        total: count || 0,
-        totalPages: Math.ceil((count || 0) / limit)
+        limit: safeLimit,
+        total,
+        totalPages: Math.ceil(total / safeLimit)
       }
     });
   } catch (error: any) {

@@ -3,6 +3,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { config } from '../core/config';
+import { resolveOAuthTokenString } from './credential-resolver';
 
 export type ZohoRegion = 'US' | 'EU' | 'IN' | 'AU' | 'CN' | 'JP';
 
@@ -63,63 +64,8 @@ export async function getZohoAccessToken(
   userId: string | string[],
   region: ZohoRegion = 'US'
 ): Promise<string | null> {
-  try {
-    // Support both single user ID and array of user IDs (for fallback)
-    const userIds = Array.isArray(userId) ? userId : [userId];
-    
-    // Try each user ID in order until we find a valid token
-    for (const uid of userIds) {
-      if (!uid) continue;
-      
-      const { data: tokenData, error } = await supabase
-        .from('zoho_oauth_tokens')
-        .select('access_token, refresh_token, expires_at, region')
-        .eq('user_id', uid)
-        .eq('region', region)
-        .single();
-
-      if (error || !tokenData) {
-        // Try next user ID
-        continue;
-      }
-
-      const expiresAt = tokenData.expires_at ? new Date(tokenData.expires_at) : null;
-      const now = new Date();
-      const fiveMinutesFromNow = new Date(now.getTime() + 5 * 60 * 1000);
-
-      // Check if token is expired or about to expire
-      if (expiresAt && expiresAt < fiveMinutesFromNow) {
-        // Try to refresh if we have a refresh token
-        if (tokenData.refresh_token) {
-          const refreshedToken = await refreshZohoToken(
-            supabase,
-            uid,
-            tokenData.refresh_token,
-            (tokenData.region as ZohoRegion) || region
-          );
-          if (refreshedToken) {
-            return refreshedToken;
-          }
-          // Refresh failed - credentials might not be configured, but try using expired token anyway
-          console.log('[Zoho OAuth] Token refresh failed (credentials may not be configured). Using existing token - it may be expired.');
-          return tokenData.access_token;
-        }
-        // Token expired and no refresh token - try using it anyway, API will return proper error
-        console.log('[Zoho OAuth] Token expired but no refresh token available. Using expired token - API call may fail.');
-        return tokenData.access_token;
-      }
-
-      // Found valid token
-      return tokenData.access_token;
-    }
-
-    // No valid token found for any user ID
-    return null;
-  } catch (error) {
-    // Only log unexpected errors, not configuration issues
-    console.error('[Zoho OAuth] Unexpected error getting access token:', error);
-    return null;
-  }
+  const userIds = Array.isArray(userId) ? userId : [userId];
+  return resolveOAuthTokenString('zoho', userIds);
 }
 
 /**

@@ -12,7 +12,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { getGoogleAccessToken } from './google-sheets';
+import { resolveOAuthToken } from './credential-resolver';
 import { fetchWithRetry, parseGoogleApiError, validateEmail } from './google-api-utils';
 
 export interface GmailCredential {
@@ -64,167 +64,28 @@ export async function resolveGmailCredentials(
   currentUserId?: string
 ): Promise<GmailCredential | null> {
   console.log(`[GmailNode] Resolving credentials for workflow ${workflowId}, node ${nodeId}`);
-  
-  // Try user IDs in order: workflow owner first, then current user
-  const userIdsToTry: string[] = [];
-  if (userId) userIdsToTry.push(userId);
-  if (currentUserId && currentUserId !== userId) userIdsToTry.push(currentUserId);
-  
-  if (userIdsToTry.length === 0) {
+
+  const candidates = [userId, currentUserId].filter((id): id is string => Boolean(id));
+  if (candidates.length === 0) {
     console.warn('[GmailNode] No user IDs provided for credential resolution');
     return null;
   }
-  
-  // Try each user ID until we find valid credentials
-  for (const uid of userIdsToTry) {
-    if (!uid) continue;
-    
-    try {
-      // Fetch token data including scopes (field is 'scope' in DB, may be string or array)
-      const { data: tokenData, error } = await supabase
-        .from('google_oauth_tokens')
-        .select('access_token, refresh_token, expires_at, scope')
-        .eq('user_id', uid)
-        .single();
-      
-      if (error || !tokenData) {
-        console.log(`[GmailNode] No token found for user ${uid}, trying next user...`);
-        continue;
-      }
-      
-      // Check if token has required scopes (DB field is 'scope', may be string or array)
-      const scopeField = (tokenData as any).scope || (tokenData as any).scopes || '';
-      const scopes = Array.isArray(scopeField) ? scopeField : 
-                     (typeof scopeField === 'string' ? scopeField.split(' ') : []);
-      const scopesArray = scopes.map((s: string) => s.trim()).filter(Boolean);
-      
-      // Check if any required scope is present
-      const hasRequiredScopes = REQUIRED_GMAIL_SCOPES.some(requiredScope =>
-        scopesArray.some((scope: string) => scope === requiredScope || scope.includes('gmail'))
-      );
-      
-      if (!hasRequiredScopes && scopesArray.length > 0) {
-        console.warn(`[GmailNode] Token found but missing required Gmail scopes. Found: ${scopesArray.join(', ')}. Required: ${REQUIRED_GMAIL_SCOPES.join(' or ')}`);
-        // Continue to next user instead of failing - might have valid token
-      }
-      
-      const expiresAt = tokenData.expires_at ? new Date(tokenData.expires_at) : null;
-      const now = new Date();
-      const fiveMinutesFromNow = new Date(now.getTime() + 5 * 60 * 1000);
-      
-      let accessToken = tokenData.access_token;
-      let wasRefreshed = false;
-      
-      // Refresh token if expired or about to expire
-      if (expiresAt && expiresAt < fiveMinutesFromNow) {
-        if (tokenData.refresh_token) {
-          console.log(`[GmailNode] Token expired, refreshing for user ${uid}...`);
-          const refreshedToken = await refreshGmailToken(supabase, uid, tokenData.refresh_token);
-          if (refreshedToken) {
-            accessToken = refreshedToken;
-            wasRefreshed = true;
-            console.log(`[GmailNode] ✅ Token refreshed successfully`);
-          } else {
-            console.warn(`[GmailNode] ⚠️ Token refresh failed, using existing token (may be expired)`);
-          }
-        } else {
-          console.warn(`[GmailNode] ⚠️ Token expired but no refresh token available`);
-        }
-      }
-      
-      console.log(`[GmailNode] ✅ Resolved credential: { userId: ${uid}, scopes: ${scopesArray.join(', ') || 'none'}, expiresAt: ${expiresAt?.toISOString() || 'N/A'}, refreshed: ${wasRefreshed} }`);
-      
-      return {
-        accessToken,
-        refreshToken: tokenData.refresh_token,
-        expiresAt: expiresAt || undefined,
-        scopes: scopesArray,
-        userId: uid,
-      };
-    } catch (error) {
-      console.error(`[GmailNode] Error resolving credentials for user ${uid}:`, error);
-      continue;
-    }
-  }
-  
-  console.error(`[GmailNode] ❌ No valid credentials found for any user`);
-  return null;
-}
 
-/**
- * Refresh Gmail OAuth token
- */
-async function refreshGmailToken(
-  supabase: SupabaseClient,
-  userId: string,
-  refreshToken: string
-): Promise<string | null> {
-  try {
-    const { config } = await import('../core/config');
-    const clientId = config.googleOAuthClientId;
-    const clientSecret = config.googleOAuthClientSecret;
-    
-    if (!clientId || !clientSecret) {
-      console.warn('[GmailNode] Google OAuth credentials not configured - cannot refresh token');
-      return null;
-    }
-    
-    console.log(`[GmailNode] Refreshing token for user ${userId}...`);
-    
-    const response = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: new URLSearchParams({
-        client_id: clientId,
-        client_secret: clientSecret,
-        refresh_token: refreshToken,
-        grant_type: 'refresh_token',
-      }),
-    });
-    
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`[GmailNode] Token refresh failed: ${response.status} ${errorText}`);
-      return null;
-    }
-    
-    const tokenData = await response.json() as {
-      access_token: string;
-      refresh_token?: string;
-      expires_in: number;
-    };
-    
-    const expiresAt = new Date(Date.now() + (tokenData.expires_in * 1000));
-    
-    const updateData: Record<string, unknown> = {
-      access_token: tokenData.access_token,
-      expires_at: expiresAt.toISOString(),
-      updated_at: new Date().toISOString(),
-    };
-    
-    if (tokenData.refresh_token) {
-      updateData.refresh_token = tokenData.refresh_token;
-    }
-    
-    const { error: updateError } = await supabase
-      .from('google_oauth_tokens')
-      .update(updateData)
-      .eq('user_id', userId);
-    
-    if (updateError) {
-      console.error('[GmailNode] Failed to update refreshed token in database:', updateError);
-      return null;
-    }
-    
-    console.log(`[GmailNode] ✅ Token refreshed and saved`);
-    return tokenData.access_token;
-  } catch (error) {
-    console.error('[GmailNode] Error refreshing token:', error);
+  // Unified resolver: checks oauth_table → credential_vault → user_credentials
+  // Also handles token refresh automatically for Google tokens
+  const result = await resolveOAuthToken('google', candidates);
+  if (!result) {
+    console.error(`[GmailNode] No Google token found. Tried users: [${candidates.join(', ')}]`);
     return null;
   }
+
+  console.log(`[GmailNode] Resolved credential via ${result.source} (user: ${result.userId})`);
+  return {
+    accessToken: result.token,
+    userId: result.userId,
+  };
 }
+
 
 /**
  * Send email via Gmail API

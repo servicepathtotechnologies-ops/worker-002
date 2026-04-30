@@ -1,13 +1,13 @@
 import { Request, Response, NextFunction } from 'express';
 import * as jwt from 'jsonwebtoken';
 import { CognitoJwtVerifier } from 'aws-jwt-verify';
+import AWS from 'aws-sdk';
 import { config } from '../config';
 import { queryAsService } from '../database/db-pool';
 import { ensureUserRows } from '../database/ensure-user';
+import { resolveCanonicalUserId } from '../database/identity-resolver';
 
 // Cognito JWT verifier — verifies access tokens issued by our User Pool
-// Accept tokens from any app client in this user pool (covers both the
-// server-side client and the SPA client created for browser-based OAuth).
 const cognitoVerifier = config.cognitoUserPoolId
   ? CognitoJwtVerifier.create({
       userPoolId: config.cognitoUserPoolId,
@@ -16,14 +16,63 @@ const cognitoVerifier = config.cognitoUserPoolId
     })
   : null;
 
+// Cognito admin client for user attribute lookup (email from federated users)
+const cognitoAdmin = new AWS.CognitoIdentityServiceProvider({
+  region: process.env.AWS_REGION || 'ap-south-1',
+});
+
+// Cache email lookups per Cognito sub (5-minute TTL)
+const _emailCache = new Map<string, { email: string; expiresAt: number }>();
+const EMAIL_CACHE_TTL = 5 * 60_000;
+
+/**
+ * Resolves the email for a Cognito user sub.
+ * Cognito ACCESS tokens don't always include the email claim (especially for
+ * Google/Facebook federated users).  Falls back to:
+ *   1. payload.email (direct claim)
+ *   2. payload.username if it looks like an email (email/password + GitHub flow)
+ *   3. Cognito Admin API lookup by sub → filter by sub attribute
+ */
+async function resolveEmailFromCognito(sub: string, payload: Record<string, any>): Promise<string> {
+  // 1. Direct claim
+  const directEmail = (payload.email as string) || '';
+  if (directEmail) return directEmail;
+
+  // 2. username looks like an email (email/password login & our GitHub flow)
+  const username = (payload.username as string) || (payload['cognito:username'] as string) || '';
+  if (username.includes('@')) return username;
+
+  // Check cache before hitting Cognito API
+  const cached = _emailCache.get(sub);
+  if (cached && Date.now() < cached.expiresAt) return cached.email;
+
+  // 3. Cognito Admin API — list users filtered by sub
+  if (!config.cognitoUserPoolId) return '';
+  try {
+    const result = await cognitoAdmin.listUsers({
+      UserPoolId: config.cognitoUserPoolId,
+      Filter:     `sub = "${sub}"`,
+      Limit:      1,
+    }).promise();
+    const attrs  = result.Users?.[0]?.Attributes || [];
+    const email  = attrs.find((a) => a.Name === 'email')?.Value || '';
+    _emailCache.set(sub, { email, expiresAt: Date.now() + EMAIL_CACHE_TTL });
+    return email;
+  } catch {
+    return '';
+  }
+}
+
 async function verifyCognitoToken(token: string): Promise<{ id: string; email: string; role: string } | null> {
   if (!cognitoVerifier) return null;
   try {
     const payload = await (cognitoVerifier as any).verify(token, { clientId: null });
+    const sub   = payload.sub as string;
+    const email = await resolveEmailFromCognito(sub, payload as Record<string, any>);
     return {
-      id: (payload.sub as string),
-      email: (payload.email as string) || '',
-      role: ((payload['cognito:groups'] as string[] || [])[0] === 'admin' ? 'admin' : 'user'),
+      id:    sub,
+      email,
+      role:  ((payload['cognito:groups'] as string[] || [])[0] === 'admin' ? 'admin' : 'user'),
     };
   } catch {
     return null;
@@ -44,10 +93,11 @@ async function getUserSubscription(userId: string) {
     const rows = await queryAsService(
       `SELECT u.id, u.email, u.workflow_count,
               sp.name  AS plan_name,
-              sp.workflow_limit
+              (COALESCE(fp.workflow_limit, 2) + COALESCE(u.workflow_quota_bonus, 0))::int AS workflow_limit
        FROM   users u
        LEFT   JOIN subscriptions s  ON s.id = u.subscription_id AND s.status = 'active'
        LEFT   JOIN subscription_plans sp ON sp.id = s.plan_id
+       LEFT   JOIN subscription_plans fp ON fp.name = 'Free' AND fp.is_active = true
        WHERE  u.id = $1
        LIMIT  1`,
       [userId]
@@ -65,7 +115,15 @@ async function getUserRoleFromDb(userId: string): Promise<string | null> {
   if (hit && Date.now() < hit.expiry) return hit.value;
   try {
     const rows = await queryAsService(
-      `SELECT role FROM user_roles WHERE user_id = $1 LIMIT 1`,
+      `SELECT role
+       FROM user_roles
+       WHERE user_id = $1
+       ORDER BY CASE role
+         WHEN 'admin' THEN 3
+         WHEN 'moderator' THEN 2
+         ELSE 1
+       END DESC
+       LIMIT 1`,
       [userId]
     );
     const value = (rows[0]?.role as string) || null;
@@ -173,6 +231,14 @@ export const authenticateUser = async (req: AuthenticatedRequest, res: Response,
         message: 'Invalid or expired token',
         code: 'INVALID_TOKEN',
       });
+    }
+
+    // Resolve canonical user ID: multiple Cognito subs for the same email
+    // (email/password + Google/Facebook/GitHub OAuth) must map to the same DB row.
+    const rawSub = user.id;
+    user.id = await resolveCanonicalUserId(rawSub, user.email || '').catch(() => rawSub);
+    if (user.id !== rawSub) {
+      console.log(`[Auth] Identity linked: ${rawSub} → ${user.id} (${user.email})`);
     }
 
     // Pool-level circuit breaker absorbs connection failures; fall through on error.
@@ -394,6 +460,10 @@ export const optionalAuth = async (req: AuthenticatedRequest, res: Response, nex
     }
 
     if (user) {
+      // Resolve canonical user ID for multi-provider auth
+      const rawSubOpt = user.id;
+      user.id = await resolveCanonicalUserId(rawSubOpt, user.email || '').catch(() => rawSubOpt);
+
       const userData = await getUserSubscription(user.id);
       const subscriptionPlan = userData?.plan_name || 'Free';
       const workflowLimit = userData?.workflow_limit || 2;
@@ -409,7 +479,7 @@ export const optionalAuth = async (req: AuthenticatedRequest, res: Response, nex
         tokenExp: tokenPayload?.exp
       };
     }
-    
+
     next();
   } catch (error) {
     console.error('[Auth] Optional authentication error:', error);

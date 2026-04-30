@@ -1,5 +1,7 @@
 import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbPool } from '../core/database/db-pool';
 import { config } from '../core/config';
+import type { PoolClient } from 'pg';
 
 export interface SubscriptionPlan {
   id: string;
@@ -61,17 +63,81 @@ export class SubscriptionService {
 
   private async buildFreeSubscriptionFallback(userId: string): Promise<UserSubscription> {
     const freePlan = await this.getPlanByName('Free').catch(() => null);
+    const workflowLimit = await this.getEffectiveWorkflowLimit(userId).catch(() => freePlan?.workflowLimit ?? 2);
     return {
       id: `free:${userId}`,
       userId,
       planId: freePlan?.id || 'free',
       planName: 'Free',
       status: 'active',
-      workflowLimit: freePlan?.workflowLimit ?? 2,
+      workflowLimit,
       workflowsUsed: 0,
       startedAt: new Date(),
       autoRenew: false,
     };
+  }
+
+  private async getActualWorkflowCount(userId: string): Promise<number> {
+    const client = await getDbPool().connect();
+    try {
+      const result = await client.query(
+        `SELECT COUNT(*)::int AS count FROM public.workflows WHERE user_id = $1`,
+        [userId]
+      );
+      return Number(result.rows[0]?.count || 0);
+    } finally {
+      client.release();
+    }
+  }
+
+  private async syncWorkflowCount(userId: string, count?: number): Promise<number> {
+    const actualCount = count ?? await this.getActualWorkflowCount(userId);
+    const client = await getDbPool().connect();
+    try {
+      await client.query(
+        `
+          UPDATE public.users
+          SET workflow_count = $2, last_workflow_check = NOW(), updated_at = NOW()
+          WHERE id = $1
+        `,
+        [userId, actualCount]
+      );
+      return actualCount;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async getEffectiveWorkflowLimit(userId: string): Promise<number> {
+    const client = await getDbPool().connect();
+    try {
+      const result = await client.query(
+        `
+          SELECT (COALESCE(fp.workflow_limit, 2) + COALESCE(u.workflow_quota_bonus, 0))::int AS workflow_limit
+          FROM public.users u
+          LEFT JOIN public.subscription_plans fp ON fp.name = 'Free' AND fp.is_active = true
+          WHERE u.id = $1
+          LIMIT 1
+        `,
+        [userId]
+      );
+      return Number(result.rows[0]?.workflow_limit || 2);
+    } finally {
+      client.release();
+    }
+  }
+
+  private async addWorkflowCredits(client: PoolClient, userId: string, credits: number): Promise<void> {
+    if (credits <= 0) return;
+    await client.query(
+      `
+        UPDATE public.users
+        SET workflow_quota_bonus = COALESCE(workflow_quota_bonus, 0) + $2,
+            updated_at = NOW()
+        WHERE id = $1
+      `,
+      [userId, credits]
+    );
   }
 
   /**
@@ -197,7 +263,9 @@ export class SubscriptionService {
         }
       }
 
-      return this.transformSubscriptionData(row);
+      const subscription = this.transformSubscriptionData(row);
+      subscription.workflowLimit = await this.getEffectiveWorkflowLimit(userId).catch(() => subscription.workflowLimit || 2);
+      return subscription;
     } catch (error: any) {
       console.error('[SubscriptionService] getUserSubscription error:', error);
       throw error;
@@ -234,9 +302,8 @@ export class SubscriptionService {
     planName: string, 
     paymentId?: string
   ): Promise<SubscriptionResult> {
+    const client = await getDbPool().connect();
     try {
-      const supabase = getSupabaseClient();
-      
       // Validate plan exists
       const plan = await this.getPlanByName(planName);
       if (!plan) {
@@ -247,24 +314,141 @@ export class SubscriptionService {
         };
       }
 
-      // Use database function to upgrade subscription
-      const { data, error } = await supabase
-        .rpc('upgrade_subscription', {
-          p_uid: userId,
-          p_plan: planName,
-          p_pay: paymentId || null
-        });
+      await client.query('BEGIN');
 
-      if (error) {
-        console.error('[SubscriptionService] Failed to upgrade subscription:', error);
-        return {
-          success: false,
-          error: `Failed to upgrade subscription: ${error.message}`,
-          code: 'UPGRADE_FAILED'
-        };
+      if (paymentId) {
+        const paymentResult = await client.query(
+          `
+            SELECT subscription_id
+            FROM public.payments
+            WHERE id = $1 AND user_id = $2
+            FOR UPDATE
+          `,
+          [paymentId, userId]
+        );
+        const payment = paymentResult.rows[0] || null;
+        if (payment?.subscription_id) {
+          await client.query('COMMIT');
+          const existingSubscription = await this.getUserSubscription(userId);
+          return {
+            success: true,
+            subscription: existingSubscription || undefined,
+          };
+        }
+
+        const creditedPaymentResult = await client.query(
+          `
+            SELECT subscription_id
+            FROM public.subscription_history
+            WHERE payment_id = $1 AND user_id = $2
+            ORDER BY created_at DESC
+            LIMIT 1
+          `,
+          [paymentId, userId]
+        );
+        const creditedSubscriptionId = creditedPaymentResult.rows[0]?.subscription_id;
+        if (creditedSubscriptionId) {
+          await client.query(
+            `
+              UPDATE public.payments
+              SET subscription_id = $1
+              WHERE id = $2 AND user_id = $3
+            `,
+            [creditedSubscriptionId, paymentId, userId]
+          );
+          await client.query('COMMIT');
+          const existingSubscription = await this.getUserSubscription(userId);
+          return {
+            success: true,
+            subscription: existingSubscription || undefined,
+          };
+        }
       }
 
-      // Get updated subscription details
+      const currentResult = await client.query(
+        `
+          SELECT s.id, s.plan_id, sp.name AS plan_name
+          FROM public.subscriptions s
+          JOIN public.subscription_plans sp ON sp.id = s.plan_id
+          WHERE s.user_id = $1 AND s.status = 'active'
+          ORDER BY s.started_at DESC
+          LIMIT 1
+          FOR UPDATE OF s
+        `,
+        [userId]
+      );
+      const current = currentResult.rows[0] || null;
+
+      let subscriptionId: string;
+      let historyAction: 'created' | 'upgraded' | 'renewed';
+      const samePlanPurchase = current?.plan_id === plan.id;
+
+      if (current && !samePlanPurchase) {
+        await client.query(
+          `
+            UPDATE public.subscriptions
+            SET status = 'cancelled', cancelled_at = NOW(), auto_renew = false
+            WHERE id = $1
+          `,
+          [current.id]
+        );
+      }
+
+      if (samePlanPurchase && current) {
+        subscriptionId = current.id;
+        historyAction = 'renewed';
+      } else {
+        const inserted = await client.query(
+          `
+            INSERT INTO public.subscriptions (user_id, plan_id, status, started_at, auto_renew)
+            VALUES ($1, $2, 'active', NOW(), true)
+            RETURNING id
+          `,
+          [userId, plan.id]
+        );
+        subscriptionId = inserted.rows[0].id;
+        historyAction = current?.plan_id ? 'upgraded' : 'created';
+      }
+
+      await client.query(
+        `
+          INSERT INTO public.subscription_history (
+            user_id, subscription_id, action, from_plan_id, to_plan_id, payment_id, notes
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `,
+        [
+          userId,
+          subscriptionId,
+          historyAction,
+          current?.plan_id || null,
+          plan.id,
+          paymentId || null,
+          historyAction === 'renewed'
+            ? `${plan.name} workflow quota renewed with ${plan.workflowLimit} additional workflows`
+            : current?.plan_name
+              ? `Subscription changed from ${current.plan_name} to ${plan.name}`
+              : `Subscription created as ${plan.name}`,
+        ]
+      );
+
+      if (plan.name !== 'Free' && paymentId) {
+        await this.addWorkflowCredits(client, userId, plan.workflowLimit);
+      }
+
+      if (paymentId) {
+        await client.query(
+          `
+            UPDATE public.payments
+            SET subscription_id = $1
+            WHERE id = $2 AND user_id = $3
+          `,
+          [subscriptionId, paymentId, userId]
+        );
+      }
+
+      await client.query('COMMIT');
+
       const updatedSubscription = await this.getUserSubscription(userId);
       
       return {
@@ -272,12 +456,17 @@ export class SubscriptionService {
         subscription: updatedSubscription || undefined
       };
     } catch (error: any) {
+      try {
+        await client.query('ROLLBACK');
+      } catch { /* ignore rollback failures */ }
       console.error('[SubscriptionService] upgradeSubscription error:', error);
       return {
         success: false,
         error: error?.message || 'Failed to upgrade subscription',
         code: 'UPGRADE_ERROR'
       };
+    } finally {
+      client.release();
     }
   }
 
@@ -352,23 +541,27 @@ export class SubscriptionService {
   async getSubscriptionUsage(userId: string): Promise<SubscriptionUsage> {
     try {
       const subscription = await this.getUserSubscription(userId);
+      const workflowsUsed = await this.syncWorkflowCount(userId);
+      const workflowLimit = await this.getEffectiveWorkflowLimit(userId).catch(() => subscription?.workflowLimit || 2);
       
       if (!subscription) {
-        // Default to Free plan limits
         return {
-          workflowsUsed: 0,
-          workflowLimit: 2,
-          remainingWorkflows: 2,
-          utilizationPercentage: 0
+          workflowsUsed,
+          workflowLimit,
+          remainingWorkflows: Math.max(0, workflowLimit - workflowsUsed),
+          utilizationPercentage: Math.min(100, Math.round((workflowsUsed / workflowLimit) * 100))
         };
       }
 
-      const remainingWorkflows = Math.max(0, subscription.workflowLimit - subscription.workflowsUsed);
-      const utilizationPercentage = Math.round((subscription.workflowsUsed / subscription.workflowLimit) * 100);
+      const remainingWorkflows = Math.max(0, workflowLimit - workflowsUsed);
+      const utilizationPercentage = Math.min(
+        100,
+        Math.round((workflowsUsed / workflowLimit) * 100)
+      );
 
       return {
-        workflowsUsed: subscription.workflowsUsed,
-        workflowLimit: subscription.workflowLimit,
+        workflowsUsed,
+        workflowLimit,
         remainingWorkflows,
         utilizationPercentage
       };
@@ -389,17 +582,8 @@ export class SubscriptionService {
    */
   async canCreateWorkflow(userId: string): Promise<boolean> {
     try {
-      const supabase = getSupabaseClient();
-      
-      const { data, error } = await supabase
-        .rpc('check_workflow_limit', { p_uid: userId });
-
-      if (error) {
-        console.error('[SubscriptionService] Failed to check workflow limit:', error);
-        return false; // Fail safe
-      }
-
-      return data && data.length > 0 ? data[0].can_create : false;
+      const usage = await this.getSubscriptionUsage(userId);
+      return usage.workflowsUsed < usage.workflowLimit;
     } catch (error: any) {
       console.error('[SubscriptionService] canCreateWorkflow error:', error);
       return false; // Fail safe
@@ -411,17 +595,8 @@ export class SubscriptionService {
    */
   async incrementWorkflowCount(userId: string): Promise<boolean> {
     try {
-      const supabase = getSupabaseClient();
-      
-      const { data, error } = await supabase
-        .rpc('increment_workflow_count', { p_uid: userId });
-
-      if (error) {
-        console.error('[SubscriptionService] Failed to increment workflow count:', error);
-        return false;
-      }
-
-      return data === true;
+      await this.syncWorkflowCount(userId);
+      return true;
     } catch (error: any) {
       console.error('[SubscriptionService] incrementWorkflowCount error:', error);
       return false;
@@ -433,17 +608,8 @@ export class SubscriptionService {
    */
   async decrementWorkflowCount(userId: string): Promise<boolean> {
     try {
-      const supabase = getSupabaseClient();
-      
-      const { data, error } = await supabase
-        .rpc('decrement_workflow_count', { p_uid: userId });
-
-      if (error) {
-        console.error('[SubscriptionService] Failed to decrement workflow count:', error);
-        return false;
-      }
-
-      return data === true;
+      await this.syncWorkflowCount(userId);
+      return true;
     } catch (error: any) {
       console.error('[SubscriptionService] decrementWorkflowCount error:', error);
       return false;

@@ -5,6 +5,7 @@
 import { getSupabaseClient } from '../core/database/supabase-compat';
 import { config } from '../core/config';
 import { decryptToken, encryptToken } from '../core/utils/token-encryption';
+import { resolveOAuthTokenString } from './credential-resolver';
 
 interface GoogleSheetsConfig {
   spreadsheetId: string;
@@ -35,64 +36,8 @@ export async function getGoogleAccessToken(
   supabase: any,
   userId: string | string[]
 ): Promise<string | null> {
-  try {
-    // Support both single user ID and array of user IDs (for fallback)
-    const userIds = Array.isArray(userId) ? userId : [userId];
-    
-    // Try each user ID in order until we find a valid token
-    for (const uid of userIds) {
-      if (!uid) continue;
-      
-      const { data: tokenData, error } = await supabase
-        .from('google_oauth_tokens')
-        .select('access_token, refresh_token, expires_at')
-        .eq('user_id', uid)
-        .single();
-
-      if (error || !tokenData) {
-        // Try next user ID
-        continue;
-      }
-
-      const accessToken = decryptToken(tokenData.access_token);
-      const refreshToken = tokenData.refresh_token ? decryptToken(tokenData.refresh_token) : null;
-      const expiresAt = tokenData.expires_at ? new Date(tokenData.expires_at) : null;
-      const now = new Date();
-      const fiveMinutesFromNow = new Date(now.getTime() + 5 * 60 * 1000);
-
-      // Check if token is expired or about to expire
-      if (expiresAt && expiresAt < fiveMinutesFromNow) {
-        // Try to refresh if we have a refresh token
-        if (refreshToken) {
-          const refreshedToken = await refreshGoogleToken(
-            supabase,
-            uid,
-            refreshToken
-          );
-          if (refreshedToken) {
-            return refreshedToken;
-          }
-          // Refresh failed - credentials might not be configured, but try using expired token anyway
-          // The API call will fail with a proper error if token is truly invalid
-          console.log('[Google OAuth] Token refresh failed (credentials may not be configured). Using existing token - it may be expired.');
-          return accessToken;
-        }
-        // Token expired and no refresh token - try using it anyway, API will return proper error
-        console.log('[Google OAuth] Token expired but no refresh token available. Using expired token - API call may fail.');
-        return accessToken;
-      }
-
-      // Found valid token
-      return accessToken;
-    }
-
-    // No valid token found for any user ID
-    return null;
-  } catch (error) {
-    // Only log unexpected errors, not configuration issues
-    console.error('[Google OAuth] Unexpected error getting access token:', error);
-    return null;
-  }
+  const userIds = Array.isArray(userId) ? userId : [userId];
+  return resolveOAuthTokenString('google', userIds);
 }
 
 async function refreshGoogleToken(

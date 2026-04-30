@@ -29,6 +29,10 @@ export function makeSocialDisconnectHandler(provider: SocialProvider) {
         `DELETE FROM user_credentials WHERE user_id = $1 AND service = $2`,
         [userId, provider]
       ).catch(() => []);
+      await queryAsService(
+        `DELETE FROM credential_vault WHERE user_id = $1 AND key = $2`,
+        [userId, provider]
+      ).catch(() => []);
 
       return res.json({ success: true, message: `${provider} account disconnected` });
     } catch (err: any) {

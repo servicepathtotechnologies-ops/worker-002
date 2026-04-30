@@ -48,6 +48,7 @@ class QueryBuilder {
   private _data: any = null;
   private _single = false;
   private _limitVal?: number;
+  private _offsetVal?: number;
   private _orderCol?: string;
   private _orderAsc = true;
   private _upsertConflict?: string;
@@ -105,6 +106,13 @@ class QueryBuilder {
   single()     { this._single = true; this._limitVal = 1; return this; }
   maybeSingle(){ this._single = true; this._limitVal = 1; return this; }
   limit(n: number) { this._limitVal = n; return this; }
+  range(from: number, to: number) {
+    const start = Number.isFinite(from) ? Math.max(0, Math.floor(from)) : 0;
+    const end = Number.isFinite(to) ? Math.max(start, Math.floor(to)) : start;
+    this._offsetVal = start;
+    this._limitVal = end - start + 1;
+    return this;
+  }
   order(col: string, opts?: { ascending?: boolean }) {
     this._orderCol = col;
     this._orderAsc = opts?.ascending !== false;
@@ -191,6 +199,7 @@ class QueryBuilder {
         let sql = `SELECT ${cols} FROM "${this._table}"${where}`;
         if (this._orderCol) sql += ` ORDER BY "${this._orderCol}" ${this._orderAsc ? 'ASC' : 'DESC'}`;
         if (this._limitVal) sql += ` LIMIT ${this._limitVal}`;
+        if (this._offsetVal !== undefined) sql += ` OFFSET ${this._offsetVal}`;
         rows = (await client.query(sql, values)).rows;
 
       } else if (this._op === 'insert') {
@@ -303,7 +312,36 @@ class AdminStub {
   async listUsers() {
     const client = await this._pool.connect();
     try {
-      const rows = (await client.query(`SELECT id, email, created_at, updated_at, last_sign_in_at, banned_until FROM "users" ORDER BY created_at DESC`)).rows;
+      let rows: any[] = [];
+      try {
+        rows = (await client.query(
+          `SELECT
+             id,
+             email,
+             created_at,
+             updated_at,
+             NULL::timestamptz AS last_sign_in_at,
+             banned_until
+           FROM "users"
+           ORDER BY created_at DESC`
+        )).rows;
+      } catch (columnErr: any) {
+        if (!String(columnErr?.message || '').includes('banned_until')) {
+          throw columnErr;
+        }
+        // Some DBs don't have users.banned_until yet; keep auth payload shape stable.
+        rows = (await client.query(
+          `SELECT
+             id,
+             email,
+             created_at,
+             updated_at,
+             NULL::timestamptz AS last_sign_in_at,
+             NULL::timestamptz AS banned_until
+           FROM "users"
+           ORDER BY created_at DESC`
+        )).rows;
+      }
       return { data: { users: rows }, error: null };
     } catch (err: any) {
       return { data: { users: [] }, error: { message: err.message } };
@@ -374,11 +412,17 @@ class AuthStub {
     try {
       if (this.verifier) {
         const payload = await (this.verifier as any).verify(token, { clientId: null });
+        // Access tokens may lack the email claim for federated (Google/Facebook) users.
+        // Fall back: use the username if it looks like an email (email/password + GitHub flow).
+        const sub      = payload.sub as string;
+        const direct   = (payload.email as string) || '';
+        const username = (payload.username as string) || (payload['cognito:username'] as string) || '';
+        const email    = direct || (username.includes('@') ? username : '');
         return {
           data: {
             user: {
-              id: payload.sub as string,
-              email: (payload.email as string) || '',
+              id: sub,
+              email,
               user_metadata: {
                 role: ((payload['cognito:groups'] as string[] | undefined)?.[0] === 'admin' ? 'admin' : 'user'),
               },

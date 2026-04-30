@@ -91,20 +91,6 @@ export async function createRazorpayOrder(req: AuthenticatedRequest, res: Respon
     // Ensure user has a subscription record
     await subscriptionService.ensureFreeSubscription(req.user.id);
 
-    // Check if already on this plan
-    let currentSubscription = null;
-    try {
-      currentSubscription = await subscriptionService.getUserSubscription(req.user.id);
-    } catch { /* ignore */ }
-
-    if (currentSubscription?.planName === planName) {
-      return res.status(400).json({
-        error: 'Already Subscribed',
-        message: `You already have the ${planName} plan`,
-        code: 'ALREADY_SUBSCRIBED'
-      });
-    }
-
     const order = await paymentService.createPaymentOrder(
       req.user.id,
       planName,
@@ -143,7 +129,7 @@ export async function createRazorpayOrder(req: AuthenticatedRequest, res: Respon
  */
 export async function verifyRazorpayPayment(req: AuthenticatedRequest, res: Response) {
   try {
-    const { orderId, paymentId, signature, planName } = req.body;
+    const { orderId, paymentId, signature } = req.body;
 
     if (!req.user) {
       return res.status(401).json({ error: 'Unauthorized', code: 'AUTH_REQUIRED' });
@@ -157,42 +143,26 @@ export async function verifyRazorpayPayment(req: AuthenticatedRequest, res: Resp
       });
     }
 
-    // Verify signature
-    const isValid = paymentService.verifyPaymentSignature(orderId, paymentId, signature);
-    if (!isValid) {
-      return res.status(400).json({
-        error: 'Payment Verification Failed',
-        message: 'Invalid payment signature',
-        code: 'INVALID_SIGNATURE'
-      });
-    }
+    const result = await paymentService.processPaymentVerification(
+      req.user.id,
+      orderId,
+      paymentId,
+      signature
+    );
 
     // Activate subscription — planName comes from the frontend (stored in order notes)
-    const targetPlan = planName || 'Pro';
-    const result = await subscriptionService.upgradeSubscription(req.user.id, targetPlan);
-
     if (!result.success) {
       return res.status(400).json({
-        error: 'Subscription Activation Failed',
-        message: result.error || 'Failed to activate subscription',
-        code: result.code || 'ACTIVATION_FAILED'
+        error: 'Payment Verification Failed',
+        message: result.error || 'Failed to verify payment',
+        code: result.code || 'VERIFICATION_FAILED'
       });
     }
-
-    const subscription = await subscriptionService.getUserSubscription(req.user.id);
 
     return res.json({
       success: true,
       message: 'Payment verified and subscription activated',
-      subscription: subscription
-        ? {
-            id: subscription.id,
-            planName: subscription.planName,
-            workflowLimit: subscription.workflowLimit,
-            workflowsUsed: subscription.workflowsUsed,
-            status: subscription.status
-          }
-        : null
+      subscription: result.subscription || null
     });
   } catch (error: any) {
     console.error('[PaymentAPI] verifyRazorpayPayment error:', error);

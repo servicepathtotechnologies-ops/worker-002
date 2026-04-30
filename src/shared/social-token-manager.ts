@@ -9,6 +9,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { encryptToken, decryptToken, encryptTokens, decryptTokens } from '../core/utils/token-encryption';
+import { resolveOAuthTokenString, OAuthProvider } from './credential-resolver';
 
 export type SocialProvider = 'github' | 'facebook' | 'twitter' | 'linkedin' | 'google';
 
@@ -43,91 +44,8 @@ export async function getProviderToken(
   userId: string | string[],
   provider: SocialProvider
 ): Promise<string | null> {
-  try {
-    const userIds = Array.isArray(userId) ? userId : [userId];
-    
-    // Try each user ID in order until we find a valid token
-    for (const uid of userIds) {
-      if (!uid) continue;
-      
-      let { data: tokenData, error } = await supabase
-        .from('social_tokens')
-        .select('access_token, refresh_token, expires_at')
-        .eq('user_id', uid)
-        .eq('provider', provider)
-        .single();
-      
-      if (error || !tokenData) {
-        const fallbackTableByProvider: Partial<Record<SocialProvider, string>> = {
-          twitter: 'twitter_oauth_tokens',
-          linkedin: 'linkedin_oauth_tokens',
-          google: 'google_oauth_tokens',
-        };
-        const fallbackTable = fallbackTableByProvider[provider];
-        if (fallbackTable) {
-          const fallback = await supabase
-            .from(fallbackTable)
-            .select('access_token, refresh_token, expires_at')
-            .eq('user_id', uid)
-            .single();
-          tokenData = fallback.data;
-          error = fallback.error;
-        }
-
-        if (error || !tokenData) {
-          continue; // Try next user ID
-        }
-      }
-      
-      // Decrypt token
-      let accessToken: string;
-      try {
-        accessToken = decryptToken(tokenData.access_token);
-      } catch (decryptError) {
-        console.warn(`[Social Token] Failed to decrypt token for user ${uid}, provider ${provider}:`, decryptError);
-        continue; // Try next user ID
-      }
-      
-      // Check if token is expired or about to expire (within 5 minutes)
-      const expiresAt = tokenData.expires_at ? new Date(tokenData.expires_at) : null;
-      const now = new Date();
-      const fiveMinutesFromNow = new Date(now.getTime() + 5 * 60 * 1000);
-      
-      if (expiresAt && expiresAt < fiveMinutesFromNow) {
-        // Try to refresh if we have a refresh token
-        if (tokenData.refresh_token) {
-          try {
-            const refreshedToken = await refreshProviderToken(
-              supabase,
-              uid,
-              provider,
-              decryptToken(tokenData.refresh_token)
-            );
-            if (refreshedToken) {
-              return refreshedToken;
-            }
-          } catch (refreshError) {
-            console.warn(`[Social Token] Token refresh failed for user ${uid}, provider ${provider}:`, refreshError);
-            // Continue to use expired token - API will return proper error if truly invalid
-          }
-        }
-        
-        // Token expired but no refresh token or refresh failed
-        // Return expired token anyway - API call will fail with proper error
-        console.warn(`[Social Token] Token expired for user ${uid}, provider ${provider}. Using expired token - API call may fail.`);
-        return accessToken;
-      }
-      
-      // Found valid token
-      return accessToken;
-    }
-    
-    // No valid token found for any user ID
-    return null;
-  } catch (error) {
-    console.error(`[Social Token] Error getting token for provider ${provider}:`, error);
-    return null;
-  }
+  const userIds = Array.isArray(userId) ? userId : [userId];
+  return resolveOAuthTokenString(provider as OAuthProvider, userIds);
 }
 
 /**

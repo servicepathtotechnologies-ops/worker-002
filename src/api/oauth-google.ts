@@ -4,6 +4,7 @@ import { queryAsService } from '../core/database/db-pool';
 import { config } from '../core/config';
 import { encryptToken } from '../core/utils/token-encryption';
 import { ensureUserRows } from '../core/database/ensure-user';
+import { resolveUserIdByEmail } from '../shared/credential-resolver';
 
 function googleClientId() {
   return process.env.GOOGLE_OAUTH_CLIENT_ID || config.googleOAuthClientId || '';
@@ -215,5 +216,66 @@ export async function googleOAuthCallback(req: Request, res: Response) {
   } catch (err: any) {
     console.error('[GoogleOAuth] Error:', err.message);
     return res.redirect(`${frontendUrl()}/auth/google/callback?error=${encodeURIComponent(err.message || 'oauth_failed')}`);
+  }
+}
+
+/**
+ * DELETE /api/connections/google
+ *
+ * Removes Google OAuth tokens for the authenticated user across ALL Cognito
+ * sub IDs that share the same email address (handles identity fragmentation
+ * where the user has both an email/password sub and a Google OAuth sub).
+ */
+export async function googleDisconnectHandler(req: Request, res: Response) {
+  try {
+    const currentUserId: string = (req as any).user?.id;
+    if (!currentUserId) return res.status(401).json({ success: false, error: 'Unauthenticated' });
+
+    // Gather all sub IDs that share this user's email so we delete tokens under any of them
+    const emailRow = await queryAsService<{ email: string }>(
+      `SELECT email FROM users WHERE id = $1 LIMIT 1`,
+      [currentUserId],
+    ).catch(() => [] as { email: string }[]);
+
+    const email = emailRow[0]?.email || '';
+    const allUserIds = new Set<string>([currentUserId]);
+
+    if (email) {
+      const peers = await queryAsService<{ id: string }>(
+        `SELECT id FROM users WHERE LOWER(email) = LOWER($1)`,
+        [email],
+      ).catch(() => [] as { id: string }[]);
+      for (const r of peers) allUserIds.add(r.id);
+    }
+
+    const ids = Array.from(allUserIds);
+
+    // Delete google_oauth_tokens for all matching subs
+    await queryAsService(
+      `DELETE FROM google_oauth_tokens WHERE user_id = ANY($1)`,
+      [ids],
+    );
+
+    // Also clean up legacy user_credentials entries for google
+    await queryAsService(
+      `DELETE FROM user_credentials WHERE user_id = ANY($1) AND service = 'google'`,
+      [ids],
+    ).catch(() => { /* non-fatal */ });
+
+    await queryAsService(
+      `DELETE FROM social_tokens WHERE user_id = ANY($1) AND provider = 'google'`,
+      [ids],
+    ).catch(() => { /* non-fatal */ });
+
+    await queryAsService(
+      `DELETE FROM credential_vault WHERE user_id = ANY($1) AND key = 'google'`,
+      [ids],
+    ).catch(() => { /* non-fatal */ });
+
+    console.log(`[GoogleDisconnect] Removed Google tokens for user ${currentUserId} (checked ${ids.length} sub(s))`);
+    return res.json({ success: true, message: 'Google account disconnected successfully' });
+  } catch (err: any) {
+    console.error('[GoogleDisconnect] Error:', err.message);
+    return res.status(500).json({ success: false, error: 'Failed to disconnect Google account' });
   }
 }

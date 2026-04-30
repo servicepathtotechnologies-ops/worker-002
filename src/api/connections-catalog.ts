@@ -76,6 +76,7 @@ const DASHBOARD_OAUTH: Record<string, OAuthProviderMetadata> = {
     frontendReturnPath: '/auth/google/callback',
     statusTable: 'google_oauth_tokens',
     connectUrl: '/api/oauth/google/start',
+    disconnectUrl: '/api/connections/google',
     scopes: [
       'email',
       'profile',
@@ -146,6 +147,7 @@ const DASHBOARD_OAUTH: Record<string, OAuthProviderMetadata> = {
     frontendReturnPath: '/auth/notion/callback',
     statusTable: 'notion_oauth_tokens',
     connectUrl: '/api/oauth/notion/authorize',
+    disconnectUrl: '/api/connections/notion',
     scopes: [],
     flow: 'frontend_code_exchange',
   },
@@ -160,6 +162,7 @@ const DASHBOARD_OAUTH: Record<string, OAuthProviderMetadata> = {
     frontendReturnPath: '/auth/twitter/callback',
     statusTable: 'twitter_oauth_tokens',
     connectUrl: '/api/oauth/twitter/authorize',
+    disconnectUrl: '/api/connections/twitter',
     scopes: ['users.read', 'offline.access'],
     flow: 'frontend_code_exchange',
   },
@@ -189,7 +192,23 @@ const DASHBOARD_OAUTH: Record<string, OAuthProviderMetadata> = {
     frontendReturnPath: '/auth/salesforce/callback',
     statusTable: 'salesforce_oauth_tokens',
     connectUrl: '/api/oauth/salesforce/authorize',
+    disconnectUrl: '/api/connections/salesforce',
     scopes: ['api', 'refresh_token'],
+    flow: 'frontend_code_exchange',
+  },
+  whatsapp: {
+    provider: 'whatsapp',
+    vaultKey: 'whatsapp',
+    displayName: 'WhatsApp',
+    clientEnv: ['META_APP_ID', 'FACEBOOK_APP_ID', 'WHATSAPP_APP_ID'],
+    secretEnv: ['META_APP_SECRET', 'FACEBOOK_APP_SECRET', 'WHATSAPP_APP_SECRET'],
+    redirectEnv: 'WHATSAPP_OAUTH_REDIRECT_URI',
+    callbackPath: '/auth/whatsapp/callback',
+    frontendReturnPath: '/auth/whatsapp/callback',
+    statusTable: 'whatsapp_oauth_tokens',
+    connectUrl: '/api/oauth/whatsapp/authorize',
+    disconnectUrl: '/api/connections/whatsapp',
+    scopes: ['business_management', 'whatsapp_business_management', 'whatsapp_business_messaging'],
     flow: 'frontend_code_exchange',
   },
   zoho: {
@@ -479,8 +498,9 @@ async function tokenTableStatus(entry: ConnectionCatalogEntry, userId: string) {
   try {
     const providerClause = entry.statusTable === 'social_tokens' && entry.statusProvider ? ' AND provider = $2' : '';
     const params = entry.statusTable === 'social_tokens' && entry.statusProvider ? [userId, entry.statusProvider] : [userId];
+    const selectProviderUserId = entry.statusTable === 'social_tokens' ? 'provider_user_id' : 'NULL::text AS provider_user_id';
     const rows = await queryAsService<{ expires_at?: string | null; updated_at?: string | null; provider_user_id?: string | null; scope?: string | null }>(
-      `SELECT expires_at, updated_at, provider_user_id, scope FROM ${entry.statusTable} WHERE user_id = $1${providerClause} LIMIT 1`,
+      `SELECT expires_at, updated_at, ${selectProviderUserId}, scope FROM ${entry.statusTable} WHERE user_id = $1${providerClause} LIMIT 1`,
       params
     );
     if (rows.length === 0) return { connected: false };
@@ -500,17 +520,21 @@ async function tokenTableStatus(entry: ConnectionCatalogEntry, userId: string) {
   }
 }
 
-async function userCredentialStatus(entry: ConnectionCatalogEntry, userId: string) {
+async function userCredentialStatus(entry: ConnectionCatalogEntry, userId: string, requireToken = false) {
   try {
     const rows = await queryAsService<{ updated_at?: string | null; credentials?: Record<string, unknown> | null }>(
       `SELECT updated_at, credentials FROM user_credentials WHERE user_id = $1 AND service = $2 LIMIT 1`,
       [userId, entry.vaultKey]
     );
     if (rows.length === 0) return { connected: false };
+    const credentials = rows[0].credentials || {};
+    if (requireToken && !credentials.access_token && !credentials.accessToken && !credentials.token) {
+      return { connected: false };
+    }
     return {
       connected: true,
       updatedAt: rows[0].updated_at || null,
-      metadata: rows[0].credentials || {},
+      metadata: credentials,
     };
   } catch {
     return { connected: false };
@@ -539,7 +563,7 @@ export async function connectionsStatusHandler(req: Request, res: Response) {
     }
 
     if (!status || !status.connected) {
-      const legacy = await userCredentialStatus(entry, userId);
+      const legacy = await userCredentialStatus(entry, userId, entry.oauthImplemented);
       if (legacy.connected) status = { ...legacy, source: 'user_credentials' };
     }
 

@@ -3532,52 +3532,14 @@ export async function executeNodeLegacy(
           };
         }
 
-        // Try to get OAuth tokens from provider-specific tables
+        // Try to get OAuth tokens via unified resolver (oauth_table → credential_vault → user_credentials)
         let tokenData: any = null;
 
-        // Check provider-specific token tables
-        if (provider === 'google') {
-          const { data: googleToken } = await supabase
-            .from('google_oauth_tokens')
-            .select('access_token, refresh_token, expires_at, token_type, scope')
-            .eq('user_id', effectiveUserId)
-            .single();
-          tokenData = googleToken;
-        } else if (provider === 'salesforce') {
-          const { data: salesforceToken } = await supabase
-            .from('salesforce_oauth_tokens')
-            .select('access_token, refresh_token, expires_at, token_type, scope, instance_url')
-            .eq('user_id', effectiveUserId)
-            .single();
-          tokenData = salesforceToken;
-        } else if (provider === 'github' || provider === 'facebook' || provider === 'twitter' || provider === 'linkedin') {
-          // Check unified social_tokens table
-          let { data: socialToken } = await supabase
-            .from('social_tokens')
-            .select('access_token, refresh_token, expires_at, token_type, scope')
-            .eq('user_id', effectiveUserId)
-            .eq('provider', provider)
-            .single();
-          const fallbackOAuthTable: Record<string, string> = {
-            twitter: 'twitter_oauth_tokens',
-            linkedin: 'linkedin_oauth_tokens',
-          };
-          if (!socialToken && fallbackOAuthTable[provider]) {
-            const { data: providerToken } = await supabase
-              .from(fallbackOAuthTable[provider])
-              .select('access_token, refresh_token, expires_at, token_type, scope')
-              .eq('user_id', effectiveUserId)
-              .single();
-            socialToken = providerToken;
-          }
-          tokenData = socialToken;
-        } else if (provider === 'zoho') {
-          const { data: zohoToken } = await supabase
-            .from('zoho_oauth_tokens')
-            .select('access_token, refresh_token, expires_at, region')
-            .eq('user_id', effectiveUserId)
-            .single();
-          tokenData = zohoToken;
+        const knownOAuthProviders = ['google','linkedin','github','facebook','notion','twitter','instagram','whatsapp','zoho','salesforce'];
+        if (knownOAuthProviders.includes(provider)) {
+          const { resolveOAuthTokenString } = await import('../shared/credential-resolver');
+          const resolved = await resolveOAuthTokenString(provider as any, [effectiveUserId]);
+          if (resolved) tokenData = { access_token: resolved };
         } else {
           const credential = await retrieveRuntimeCredentialObject({
             userId,
@@ -16426,6 +16388,24 @@ export default async function executeWorkflowHandler(req: Request, res: Response
           if (!authError && user) {
             currentUserId = user.id;
             console.log(`[Execute Workflow] Current user: ${currentUserId}`);
+
+            // Email-based fallback: resolve the Cognito sub that has the OAuth token.
+            // JWT access tokens often lack the email claim, so fall back to a DB lookup.
+            let emailForResolution = user.email || '';
+            if (!emailForResolution) {
+              const { data: emailRow } = await supabase
+                .from('users').select('email').eq('id', currentUserId).single()
+                .catch(() => ({ data: null }));
+              emailForResolution = (emailRow as any)?.email || '';
+            }
+            if (emailForResolution) {
+              const { resolveUserIdByEmail } = await import('../shared/credential-resolver');
+              const resolvedId = await resolveUserIdByEmail(emailForResolution).catch(() => null);
+              if (resolvedId && resolvedId !== currentUserId) {
+                console.log(`[Execute Workflow] Email-based user resolution: ${currentUserId} → ${resolvedId}`);
+                currentUserId = resolvedId;
+              }
+            }
           } else if (authError) {
             // Log auth error but don't fail - workflow can still execute
             console.log(`[Execute Workflow] Auth error (non-fatal): ${authError.message || 'Unknown auth error'}`);
