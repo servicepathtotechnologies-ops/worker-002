@@ -127,20 +127,8 @@ export async function runNodeSelectionStage(
     parsed = parseNodeSelection(raw2) ?? parseNodeSelection(text2);
 
     if (!parsed) {
-      const recovered = buildDeterministicNodeSelection(intent);
-      if (recovered.length === 0) {
-        logger.error({ event: 'ai_pipeline_stage_error', stage: 'node_selection', correlationId, error: 'INVALID_LLM_RESPONSE', llmResponse: text2 });
-        return { ok: false, code: 'INVALID_LLM_RESPONSE', rawResponse: text2, durationMs: Date.now() - startedAt };
-      }
-      incrementPipelineCounter('node_selection_deterministic_recovery_used');
-      logger.warn({
-        event: 'ai_pipeline_stage_recovered',
-        stage: 'node_selection',
-        correlationId,
-        strategy: 'deterministic_intent_registry_recovery',
-        recoveredCount: recovered.length,
-      });
-      parsed = recovered;
+      logger.error({ event: 'ai_pipeline_stage_error', stage: 'node_selection', correlationId, error: 'INVALID_LLM_RESPONSE', llmResponse: text2 });
+      return { ok: false, code: 'INVALID_LLM_RESPONSE', rawResponse: text2, durationMs: Date.now() - startedAt };
     }
   }
 
@@ -292,72 +280,4 @@ function deriveNodeRole(nodeType: string): SelectedNode['role'] {
   // Use registry flag instead of hardcoded type name
   if (unifiedNodeRegistry.get(nodeType)?.workflowBehavior?.alwaysTerminal === true) return 'terminal';
   return 'action';
-}
-
-function buildDeterministicNodeSelection(
-  intent: StructuredIntent
-): Array<{ type: string; role: SelectedNode['role']; reason: string }> {
-  const selected = new Map<string, { type: string; role: SelectedNode['role']; reason: string }>();
-  const allTypes = unifiedNodeRegistry.getAllTypes();
-  const triggerAlias = unifiedNodeRegistry.resolveAlias(String(intent.triggerType || '').trim()) || '';
-  const fallbackTrigger =
-    (triggerAlias && unifiedNodeRegistry.isTrigger(triggerAlias) && triggerAlias) ||
-    (unifiedNodeRegistry.has('manual_trigger') ? 'manual_trigger' : allTypes.find((t) => unifiedNodeRegistry.isTrigger(t)) || '');
-
-  if (fallbackTrigger) {
-    selected.set(fallbackTrigger, {
-      type: fallbackTrigger,
-      role: 'trigger',
-      reason: `Trigger derived from intent.triggerType="${intent.triggerType}"`,
-    });
-  }
-
-  const actionTexts = Array.isArray(intent.actions) ? intent.actions : [];
-  for (const action of actionTexts) {
-    const actionText = String(action || '').trim().toLowerCase();
-    if (!actionText) continue;
-    let bestType = '';
-    let bestScore = 0;
-    for (const type of allTypes) {
-      if (unifiedNodeRegistry.isTrigger(type)) continue;
-      const score = scoreTypeForAction(type, actionText);
-      if (score > bestScore) {
-        bestScore = score;
-        bestType = type;
-      }
-    }
-    if (bestType && bestScore > 0) {
-      selected.set(bestType, {
-        type: bestType,
-        role: deriveNodeRole(bestType),
-        reason: `Matched intent action "${actionText}"`,
-      });
-    }
-  }
-
-  return [...selected.values()];
-}
-
-function scoreTypeForAction(type: string, actionText: string): number {
-  const def: any = unifiedNodeRegistry.get(type);
-  if (!def) return 0;
-  const lexicon = [
-    type,
-    String(def.label || ''),
-    ...(Array.isArray(def.tags) ? def.tags : []),
-    ...(Array.isArray(def.keywords) ? def.keywords : []),
-    ...(Array.isArray(def.capabilities) ? def.capabilities : []),
-  ]
-    .map((s) => String(s || '').toLowerCase().trim())
-    .filter(Boolean);
-  let score = 0;
-  for (const token of lexicon) {
-    if (!token) continue;
-    if (actionText.includes(token)) score += 3;
-    const tokenWords = token.split(/[^a-z0-9]+/).filter((w) => w.length > 2);
-    for (const word of tokenWords) {
-      if (actionText.includes(word)) score += 1;
-    }
-  }
-  return score;
 }

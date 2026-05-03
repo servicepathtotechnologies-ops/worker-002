@@ -3,17 +3,91 @@
  *
  * POST /api/capability-selection/analyze
  *
- * Runs Intent_Analyzer and Capability_Grouper, returning Capability_Containers
- * to the frontend. No workflow graph is constructed at this point.
+ * Runs the AI intent stage and AI registry-grounded node selection, returning
+ * Capability_Containers to the frontend. No workflow graph is constructed here.
  *
  * Requirements: 2.8, 7.1, 7.3
  */
 
 import { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
+import { createHash } from 'crypto';
 import { buildNodeCatalogText } from '../../services/ai/node-catalog-builder';
-import { runIntentAnalysis } from '../../services/ai/stages/capability-intent-analyzer';
-import { runCapabilityGrouping } from '../../services/ai/stages/capability-grouper-stage';
+import { runIntentStage } from '../../services/ai/stages/intent-stage';
+import {
+  runCapabilitySelectionStage,
+  type CapabilityIntentClass,
+  type CapabilityOptionStep,
+} from '../../services/ai/stages/capability-selection-stage';
+import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
+import { getCredentialVault } from '../../services/credential-vault';
+import type {
+  CandidateNode,
+  CapabilityContainer,
+  UseCaseUnit,
+} from '../../services/ai/stages/capability-types';
+
+function mapIntentClassToSemanticRole(intentClass: CapabilityIntentClass): UseCaseUnit['semanticRole'] {
+  if (intentClass === 'generic_action') return 'output';
+  return intentClass;
+}
+
+async function hydrateCandidateNode(nodeType: string, userId: string): Promise<CandidateNode> {
+  const def = unifiedNodeRegistry.get(nodeType);
+  const requirements = unifiedNodeRegistry.getRequiredCredentials(nodeType);
+  const credentialRequirements = requirements.map((req) => req.category);
+
+  let hasCredentials = requirements.length === 0;
+  if (requirements.length > 0) {
+    try {
+      const vault = getCredentialVault();
+      const checks = await Promise.all(
+        requirements.map((req) => vault.exists({ userId } as any, req.provider).catch(() => false)),
+      );
+      hasCredentials = checks.some(Boolean);
+    } catch {
+      hasCredentials = false;
+    }
+  }
+
+  return {
+    nodeType,
+    label: def?.label ?? nodeType,
+    description: def?.description ?? '',
+    credentialRequirements,
+    hasCredentials,
+  };
+}
+
+async function capabilityStepsToContainers(
+  steps: CapabilityOptionStep[],
+  userId: string,
+): Promise<CapabilityContainer[]> {
+  const containers: CapabilityContainer[] = [];
+
+  for (let index = 0; index < steps.length; index++) {
+    const step = steps[index];
+    const unit: UseCaseUnit = {
+      unitId: step.stepId,
+      label: step.stepText,
+      semanticRole: mapIntentClassToSemanticRole(step.intentClass),
+      description: step.reason || step.stepText,
+      orderIndex: index,
+    };
+    const candidates = await Promise.all(
+      step.candidateNodeTypes.map((nodeType) => hydrateCandidateNode(nodeType, userId)),
+    );
+
+    containers.push({
+      containerId: randomUUID(),
+      label: step.stepText,
+      useCaseUnit: unit,
+      candidates,
+    });
+  }
+
+  return containers;
+}
 
 export default async function analyzeCapabilitySelection(req: Request, res: Response): Promise<void> {
   const startedAt = Date.now();
@@ -36,43 +110,39 @@ export default async function analyzeCapabilitySelection(req: Request, res: Resp
       return;
     }
 
-    // Build catalog once; reused across all LLM calls in this request (Req 7.3)
+    // Build catalog once for the AI intent stage. Node selection builds its own
+    // fresh registry catalog so newly registered nodes are always eligible.
     const nodeCatalog = buildNodeCatalogText();
 
-    // Stage 1: Intent Analysis
-    const intentResult = await runIntentAnalysis(prompt, nodeCatalog, correlationId);
+    // Stage 1: AI intent extraction.
+    const intentResult = await runIntentStage(prompt, nodeCatalog, correlationId);
     if (!intentResult.ok) {
       res.status(422).json({
         ok: false,
         code: intentResult.code,
-        message: intentResult.message,
+        message: 'message' in intentResult ? intentResult.message : 'AI intent analysis failed',
       });
       return;
     }
 
-    // Stage 2: Capability Grouping
-    const groupingResult = await runCapabilityGrouping(
-      intentResult.units,
-      nodeCatalog,
-      userId,
-      correlationId,
-    );
-    if (!groupingResult.ok) {
+    // Stage 2: AI node selection against the live unifiedNodeRegistry catalog.
+    const selectionResult = await runCapabilitySelectionStage(intentResult.intent, correlationId);
+    if (!selectionResult.ok) {
       res.status(422).json({
         ok: false,
-        code: groupingResult.code,
-        message: groupingResult.message,
-        failedUnitId: groupingResult.failedUnitId,
+        code: selectionResult.code,
+        message: selectionResult.message,
       });
       return;
     }
 
+    const containers = await capabilityStepsToContainers(selectionResult.steps, userId);
     const durationMs = Date.now() - startedAt;
 
     res.status(200).json({
       correlationId,
-      containers: groupingResult.containers,
-      promptHash: intentResult.promptHash,
+      containers,
+      promptHash: createHash('sha256').update(prompt).digest('hex'),
       durationMs,
     });
   } catch (error: unknown) {

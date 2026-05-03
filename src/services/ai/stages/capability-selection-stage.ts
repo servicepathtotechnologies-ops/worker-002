@@ -1,6 +1,8 @@
 import { logger } from '../../../core/logger';
 import { unifiedNodeRegistry } from '../../../core/registry/unified-node-registry';
-import { semanticNodeEquivalenceRegistry } from '../../../core/registry/semantic-node-equivalence-registry';
+import { geminiOrchestrator } from '../gemini-orchestrator';
+import { systemPromptBuilder } from '../system-prompt-builder';
+import { buildNodeCatalogText } from '../node-catalog-builder';
 import type { StructuredIntent } from './intent-stage';
 
 export type CapabilityIntentClass =
@@ -23,6 +25,9 @@ export interface CapabilityOptionStep {
   candidateNodeTypes: string[];
   defaultSuggestedNodeType: string | null;
   selectionPolicy: CapabilitySelectionPolicy;
+  confidence?: number;
+  ambiguous?: boolean;
+  reason?: string;
 }
 
 export interface CapabilitySelectionResult {
@@ -33,105 +38,58 @@ export interface CapabilitySelectionResult {
 
 export interface CapabilitySelectionError {
   ok: false;
-  code: 'CAPABILITY_SELECTION_FAILED';
+  code: 'CAPABILITY_SELECTION_FAILED' | 'INVALID_AI_RESPONSE' | 'NO_VALID_REGISTRY_NODES';
   durationMs: number;
   message: string;
+  rawResponse?: string;
 }
 
 export type CapabilitySelectionOutput = CapabilitySelectionResult | CapabilitySelectionError;
 
-const MAX_CANDIDATES_PER_STEP = 8;
-const MIN_FALLBACK_CANDIDATES = 3;
-/**
- * Minimum score gap between rank-1 and rank-2 candidates for the AI to be
- * considered "confident" about a step. When the gap is below this threshold
- * the step is ambiguous and the Node_Selection_UI will be shown.
- */
-const CONFIDENCE_SCORE_GAP_THRESHOLD = 3;
-const TOKEN_STOPWORDS = new Set([
-  'the',
-  'and',
-  'for',
-  'from',
-  'with',
-  'into',
-  'onto',
-  'this',
-  'that',
-  'your',
-  'data',
-  'task',
-  'workflow',
-  'node',
-  'service',
-  'provider',
-  'google',
-  'microsoft',
-  'meta',
-  'api',
-]);
-const GENERIC_ACTION_TOKENS = new Set([
-  'get',
-  'fetch',
-  'read',
-  'list',
-  'load',
-  'send',
-  'write',
-  'create',
-  'update',
-  'post',
-  'notify',
-  'process',
-  'run',
-  'execute',
-  'use',
-]);
-
-interface CandidateScore {
-  nodeType: string;
-  canonicalType: string;
-  score: number;
-  specificMatchCount: number;
-  matchedTokens: string[];
-}
-
-export function runCapabilitySelectionStage(
+export async function runCapabilitySelectionStage(
   intent: StructuredIntent,
   correlationId?: string,
-): CapabilitySelectionOutput {
+): Promise<CapabilitySelectionOutput> {
   const startedAt = Date.now();
+  const nodeCatalog = buildNodeCatalogText();
+  const { systemPrompt } = systemPromptBuilder.build({
+    stage: 'capability_selection',
+    nodeCatalog,
+    userIntent: intent.intent,
+  });
+
+  const userMessage = [
+    'STRUCTURED_INTENT:',
+    JSON.stringify(intent, null, 2),
+    '',
+    'TASK:',
+    'Return one capability-selection step for the trigger and one for every user action.',
+    'Use only canonical node types present in NODE CATALOG.',
+    'Be decisive: choose the single best canonical registry node for every step.',
+    'Return exactly one candidateNodeType per step and set it as defaultSuggestedNodeType.',
+    'Only mark ambiguous=true if no registry node can be chosen from the catalog.',
+  ].join('\n');
+
+  logger.info({
+    event: 'ai_pipeline_stage_start',
+    stage: 'capability_selection',
+    correlationId,
+    inputSummary: `actions=${intent.actions.length}`,
+  });
+
+  let raw: unknown;
+  let text: string;
   try {
-    const steps: CapabilityOptionStep[] = [];
-
-    const triggerType = unifiedNodeRegistry.resolveAlias(intent.triggerType) || intent.triggerType;
-    steps.push(buildTriggerStep(triggerType));
-
-    const actions = Array.isArray(intent.actions) ? intent.actions : [];
-    const actionStepIdCounts = new Map<string, number>();
-    actions.forEach((actionText) => {
-      const stepText = String(actionText || '').trim();
-      if (!stepText) return;
-      const baseStepId = buildStableActionStepId(stepText);
-      const seen = actionStepIdCounts.get(baseStepId) || 0;
-      actionStepIdCounts.set(baseStepId, seen + 1);
-      const stepId = seen === 0 ? baseStepId : `${baseStepId}_${seen + 1}`;
-      steps.push(buildActionStep(stepId, stepText));
-    });
-
-    logger.info({
-      event: 'ai_pipeline_stage_end',
-      stage: 'capability_selection',
-      correlationId,
-      outputSummary: `steps=${steps.length}`,
-      durationMs: Date.now() - startedAt,
-    });
-
-    return {
-      ok: true,
-      steps,
-      durationMs: Date.now() - startedAt,
-    };
+    raw = await geminiOrchestrator.processRequest(
+      'node-suggestion',
+      { system: systemPrompt, message: userMessage },
+      {
+        model: 'gemini-2.5-flash',
+        temperature: 0.1,
+        cache: false,
+      },
+    );
+    text = typeof raw === 'string' ? raw : JSON.stringify(raw);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.error({
@@ -148,315 +106,610 @@ export function runCapabilitySelectionStage(
       message,
     };
   }
-}
 
-function buildTriggerStep(triggerType: string): CapabilityOptionStep {
-  const triggerCandidates = unifiedNodeRegistry
-    .getAllTypes()
-    .filter((type) => unifiedNodeRegistry.isTrigger(type))
-    .sort();
-  const defaultTrigger = triggerCandidates.includes(triggerType) ? triggerType : triggerCandidates[0] || null;
-  return {
-    stepId: 'trigger',
-    stepText: `Trigger via ${triggerType || 'manual_trigger'}`,
-    intentClass: 'trigger',
-    candidateNodeTypes: triggerCandidates,
-    defaultSuggestedNodeType: defaultTrigger,
-    selectionPolicy: { multiSelectAllowed: false, required: true },
-  };
-}
-
-function buildActionStep(stepId: string, stepText: string): CapabilityOptionStep {
-  const explicitCanonical = resolveExplicitNodeType(stepText);
-  const operationHint = inferOperationHint(stepText);
-  const categoryHint = explicitCanonical
-    ? String(unifiedNodeRegistry.getCategory(explicitCanonical) || '').toLowerCase()
-    : undefined;
-  const candidatePool = getCandidatePool(categoryHint, explicitCanonical);
-  const ranked = rankCandidates(stepText, candidatePool, explicitCanonical, operationHint, categoryHint);
-  const allCandidates = finalizeCandidates(
-    ranked,
-    candidatePool,
-    explicitCanonical,
-    operationHint,
-    categoryHint,
-  );
-
-  // ── Confidence threshold ──────────────────────────────────────────────────
-  // If the score gap between rank-1 and rank-2 is >= CONFIDENCE_SCORE_GAP_THRESHOLD,
-  // the AI is confident: collapse to a single candidate so Node_Selection_UI is skipped.
-  // If only one candidate exists it is always confident.
-  let candidateNodeTypes: string[];
-  if (allCandidates.length <= 1) {
-    candidateNodeTypes = allCandidates;
-  } else {
-    const rank1Score = ranked.find((r) => r.nodeType === allCandidates[0])?.score ?? 0;
-    const rank2Score = ranked.find((r) => r.nodeType === allCandidates[1])?.score ?? 0;
-    const gap = rank1Score - rank2Score;
-    if (gap >= CONFIDENCE_SCORE_GAP_THRESHOLD) {
-      // Confident — single candidate, UI will not be shown for this step
-      candidateNodeTypes = [allCandidates[0]];
-    } else {
-      // Ambiguous — keep all candidates, UI will be shown
-      candidateNodeTypes = allCandidates;
+  let parsed = parseCapabilitySelection(raw) ?? parseCapabilitySelection(text);
+  if (!parsed) {
+    logger.warn({
+      event: 'ai_pipeline_stage_retry',
+      stage: 'capability_selection',
+      correlationId,
+      reason: 'STRUCTURED_DECODE_FAILED',
+    });
+    try {
+      const retryPrompt = `${systemPrompt}\n\nCRITICAL: Return ONLY valid JSON that conforms to the schema.`;
+      raw = await geminiOrchestrator.processRequest(
+        'node-suggestion',
+        { system: retryPrompt, message: userMessage },
+        {
+          model: 'gemini-2.5-flash',
+          temperature: 0.1,
+          cache: false,
+        },
+      );
+      text = typeof raw === 'string' ? raw : JSON.stringify(raw);
+      parsed = parseCapabilitySelection(raw) ?? parseCapabilitySelection(text);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error({
+        event: 'ai_pipeline_stage_error',
+        stage: 'capability_selection',
+        correlationId,
+        error: 'CAPABILITY_SELECTION_RETRY_FAILED',
+        message,
+      });
+      return {
+        ok: false,
+        code: 'CAPABILITY_SELECTION_FAILED',
+        durationMs: Date.now() - startedAt,
+        message,
+      };
     }
   }
 
-  const topNodeType = candidateNodeTypes[0];
-  const intentClass = classifyStep(stepText, explicitCanonical, topNodeType);
-  const uiStepText = normalizeStepText(stepText);
+  if (!parsed) {
+    logger.error({
+      event: 'ai_pipeline_stage_fallback',
+      stage: 'capability_selection',
+      correlationId,
+      reason: 'INVALID_AI_RESPONSE',
+      rawResponse: text,
+    });
+    parsed = buildDeterministicStepsFromIntent(intent);
+  }
+
+  const reconciled = reconcileDestinationCoverage(parsed, intent, correlationId);
+  const validated = validateRegistryBackedSteps(reconciled, intent);
+  if (!validated.ok) {
+    logger.error({
+      event: 'ai_pipeline_stage_error',
+      stage: 'capability_selection',
+      correlationId,
+      error: validated.code,
+      message: validated.message,
+    });
+    return {
+      ok: false,
+      code: validated.code,
+      durationMs: Date.now() - startedAt,
+      message: validated.message,
+      rawResponse: text,
+    };
+  }
+
+  logger.info({
+    event: 'ai_pipeline_stage_end',
+    stage: 'capability_selection',
+    correlationId,
+    outputSummary: `steps=${validated.steps.length}`,
+    durationMs: Date.now() - startedAt,
+  });
 
   return {
-    stepId,
-    stepText: uiStepText,
-    intentClass,
-    candidateNodeTypes,
-    defaultSuggestedNodeType: candidateNodeTypes[0] || null,
-    selectionPolicy: { multiSelectAllowed: true, required: true },
+    ok: true,
+    steps: validated.steps,
+    durationMs: Date.now() - startedAt,
   };
 }
 
-function classifyStep(text: string, explicitCanonical?: string, topNodeType?: string): CapabilityIntentClass {
-  if (explicitCanonical) {
-    return mapRegistryCategoryToIntentClass(String(unifiedNodeRegistry.getCategory(explicitCanonical) || ''));
+function stripMarkdownFences(text: string): string {
+  return text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
+}
+
+function parseCapabilitySelection(input: unknown): CapabilityOptionStep[] | null {
+  if (input && typeof input === 'object') {
+    return validateCapabilitySelectionObject(input);
   }
-  if (topNodeType) {
-    return mapRegistryCategoryToIntentClass(String(unifiedNodeRegistry.getCategory(topNodeType) || ''));
+  if (typeof input !== 'string') return null;
+  try {
+    const cleaned = stripMarkdownFences(input);
+    const start = cleaned.indexOf('{');
+    const end = cleaned.lastIndexOf('}');
+    if (start === -1 || end === -1) return null;
+    return validateCapabilitySelectionObject(JSON.parse(cleaned.substring(start, end + 1)));
+  } catch {
+    return null;
   }
-  const lower = normalizeForIntentMatching(text);
-  if (/\b(if|switch|condition|branch|else|case|when)\b/.test(lower)) return 'logic';
-  if (/\b(summarize|transform|convert|parse|format|clean|analy[sz]e)\b/.test(lower)) return 'transformation';
-  if (/\b(send|email|mail|notify|message|slack|teams|telegram|outlook|whatsapp|sms)\b/.test(lower)) {
-    return 'communication';
+}
+
+function validateCapabilitySelectionObject(obj: any): CapabilityOptionStep[] | null {
+  if (!obj || typeof obj !== 'object' || !Array.isArray(obj.steps)) return null;
+  const validClasses: CapabilityIntentClass[] = [
+    'trigger',
+    'data_source',
+    'communication',
+    'logic',
+    'transformation',
+    'generic_action',
+  ];
+  const steps: CapabilityOptionStep[] = [];
+  for (const raw of obj.steps) {
+    if (!raw || typeof raw !== 'object') continue;
+    const stepId = String(raw.stepId || '').trim();
+    const stepText = String(raw.stepText || '').trim();
+    const intentClass = String(raw.intentClass || '').trim() as CapabilityIntentClass;
+    const candidateNodeTypes = Array.isArray(raw.candidateNodeTypes)
+      ? raw.candidateNodeTypes.map((x: unknown) => String(x || '').trim()).filter(Boolean)
+      : [];
+    if (!stepId || !stepText || !validClasses.includes(intentClass) || candidateNodeTypes.length === 0) {
+      continue;
+    }
+    const defaultSuggestedNodeType =
+      raw.defaultSuggestedNodeType === null || raw.defaultSuggestedNodeType === undefined
+        ? null
+        : String(raw.defaultSuggestedNodeType || '').trim() || null;
+    const confidenceRaw = Number(raw.confidence);
+    steps.push({
+      stepId,
+      stepText,
+      intentClass,
+      candidateNodeTypes,
+      defaultSuggestedNodeType,
+      selectionPolicy: {
+        multiSelectAllowed: raw.selectionPolicy?.multiSelectAllowed !== false,
+        required: raw.selectionPolicy?.required !== false,
+      },
+      confidence: Number.isFinite(confidenceRaw) ? Math.max(0, Math.min(1, confidenceRaw)) : undefined,
+      ambiguous: raw.ambiguous === true,
+      reason: typeof raw.reason === 'string' ? raw.reason : undefined,
+    });
   }
-  if (/\b(get|fetch|read|from|import|load|collect|sheet|sheets|excel|database|table|source)\b/.test(lower)) {
-    return 'data_source';
+  return steps.length > 0 ? steps : null;
+}
+
+function validateRegistryBackedSteps(
+  steps: CapabilityOptionStep[],
+  intent: StructuredIntent,
+):
+  | { ok: true; steps: CapabilityOptionStep[] }
+  | { ok: false; code: 'NO_VALID_REGISTRY_NODES'; message: string } {
+  const out: CapabilityOptionStep[] = [];
+  const stepIds = new Set<string>();
+
+  const inputSteps = ensureTriggerStep(steps, intent);
+
+  for (const step of inputSteps) {
+    const canonicalCandidates = [
+      ...new Set(
+        step.candidateNodeTypes
+          .map((type) => unifiedNodeRegistry.resolveAlias(type) || type)
+          .filter((type) => !!unifiedNodeRegistry.get(type)),
+      ),
+    ];
+    const globalBestCandidate = chooseBestRegistryNodeCandidate(step, intent);
+    const candidateBest = canonicalCandidates.length > 0
+      ? chooseBestRegistryNodeCandidate(step, intent, canonicalCandidates)
+      : null;
+    const fallbackCandidate = globalBestCandidate?.nodeType || null;
+    const eligibleCandidates = shouldPreferGlobalRegistryMatch(candidateBest, globalBestCandidate)
+      ? [globalBestCandidate.nodeType]
+      : canonicalCandidates.length > 0
+        ? canonicalCandidates
+        : fallbackCandidate
+          ? [fallbackCandidate]
+          : [];
+
+    if (eligibleCandidates.length === 0) {
+      return {
+        ok: false,
+        code: 'NO_VALID_REGISTRY_NODES',
+        message: `AI capability step "${step.stepId}" did not contain any registered node types`,
+      };
+    }
+
+    const suggested = step.defaultSuggestedNodeType
+      ? (unifiedNodeRegistry.resolveAlias(step.defaultSuggestedNodeType) || step.defaultSuggestedNodeType)
+      : null;
+    const defaultSuggestedNodeType =
+      suggested && eligibleCandidates.includes(suggested)
+        ? suggested
+        : chooseBestRegistryNode(step, intent, eligibleCandidates) || eligibleCandidates[0];
+
+    const baseStepId = step.stepId;
+    let stepId = baseStepId;
+    let suffix = 2;
+    while (stepIds.has(stepId)) {
+      stepId = `${baseStepId}_${suffix++}`;
+    }
+    stepIds.add(stepId);
+
+    out.push({
+      ...step,
+      stepId,
+      candidateNodeTypes: [defaultSuggestedNodeType],
+      defaultSuggestedNodeType,
+      ambiguous: false,
+      confidence: Math.max(step.confidence ?? 0, 0.75),
+    });
   }
+
+  const hasTriggerStep = out.some((step) =>
+    step.candidateNodeTypes.some((type) => unifiedNodeRegistry.isTrigger(type)),
+  );
+  if (!hasTriggerStep) {
+    return {
+      ok: false,
+      code: 'NO_VALID_REGISTRY_NODES',
+      message: 'AI capability selection did not include any registered trigger node',
+    };
+  }
+
+  return { ok: true, steps: out };
+}
+
+function reconcileDestinationCoverage(
+  steps: CapabilityOptionStep[],
+  intent: StructuredIntent,
+  correlationId?: string,
+): CapabilityOptionStep[] {
+  const out = [...steps];
+  const coveredTypes = new Set(
+    out.flatMap((step) =>
+      step.candidateNodeTypes
+        .map((type) => unifiedNodeRegistry.resolveAlias(type) || type)
+        .filter((type) => !!unifiedNodeRegistry.get(type)),
+    ),
+  );
+
+  const destinationTargets = collectDestinationCoverageTargets(intent);
+  for (const target of destinationTargets) {
+    if (coveredTypes.has(target.nodeType)) continue;
+
+    out.push({
+      stepId: buildCoverageStepId(target.nodeType, out.length + 1),
+      stepText: target.stepText,
+      intentClass: mapRegistryCategoryToIntentClass(unifiedNodeRegistry.getCategory(target.nodeType) || ''),
+      candidateNodeTypes: [target.nodeType],
+      defaultSuggestedNodeType: target.nodeType,
+      selectionPolicy: { multiSelectAllowed: false, required: true },
+      confidence: target.confidence,
+      ambiguous: false,
+      reason: target.reason,
+    });
+    coveredTypes.add(target.nodeType);
+
+    logger.info({
+      event: 'ai_pipeline_destination_coverage_repaired',
+      stage: 'capability_selection',
+      correlationId,
+      nodeType: target.nodeType,
+      source: target.source,
+    });
+  }
+
+  return out;
+}
+
+interface DestinationCoverageTarget {
+  nodeType: string;
+  stepText: string;
+  confidence: number;
+  reason: string;
+  source: string;
+}
+
+function collectDestinationCoverageTargets(intent: StructuredIntent): DestinationCoverageTarget[] {
+  const targets: DestinationCoverageTarget[] = [];
+  const seen = new Set<string>();
+
+  const addTarget = (
+    rawText: string,
+    source: string,
+    fallbackStepText?: string,
+  ) => {
+    const candidate = resolveDestinationNode(rawText, intent);
+    if (!candidate || seen.has(candidate.nodeType)) return;
+    const def = unifiedNodeRegistry.get(candidate.nodeType);
+    targets.push({
+      nodeType: candidate.nodeType,
+      stepText: fallbackStepText || buildDestinationStepText(def?.label || candidate.nodeType),
+      confidence: Math.max(0.8, Math.min(1, candidate.score / 30)),
+      reason: `Destination coverage inferred from ${source}`,
+      source,
+    });
+    seen.add(candidate.nodeType);
+  };
+
+  for (const flow of intent.dataFlows || []) {
+    addTarget(String(flow?.to || ''), 'dataFlows.to');
+    addTarget(String(flow?.dataDescription || ''), 'dataFlows.dataDescription');
+  }
+
+  for (const phrase of extractDestinationPhrases(intent.intent)) {
+    addTarget(phrase, 'intent.destination_phrase');
+  }
+
+  return targets;
+}
+
+function resolveDestinationNode(
+  rawText: string,
+  intent: StructuredIntent,
+): { nodeType: string; score: number } | null {
+  const text = normalizeText(rawText);
+  if (!text) return null;
+
+  const direct = unifiedNodeRegistry.resolveAlias(text);
+  if (direct && unifiedNodeRegistry.get(direct) && isDestinationCapableNode(direct)) {
+    return { nodeType: direct, score: 30 };
+  }
+
+  const best = chooseBestRegistryNodeCandidate(
+    { stepText: rawText, intentClass: 'communication' },
+    intent,
+    unifiedNodeRegistry.getAllTypes().filter(isDestinationCapableNode),
+  );
+  return best && best.score >= 10 ? best : null;
+}
+
+function extractDestinationPhrases(intentText: string): string[] {
+  const text = String(intentText || '');
+  const phrases: string[] = [];
+  const destinationPattern = /\b(?:send|post|publish|notify|message|email|forward|deliver)\b[\s\S]{0,80}?\b(?:to|via|through|using)\s+([a-zA-Z0-9][a-zA-Z0-9 _.-]{1,40})/gi;
+  for (const match of text.matchAll(destinationPattern)) {
+    const phrase = trimDestinationPhrase(match[1]);
+    if (phrase) phrases.push(phrase);
+  }
+  return [...new Set(phrases)];
+}
+
+function trimDestinationPhrase(value: string): string {
+  return normalizeText(value)
+    .split(/\b(?:and|then|after|before|when|with|from|get|read|summarize|summary)\b/)[0]
+    .trim();
+}
+
+function isDestinationCapableNode(nodeType: string): boolean {
+  const def = unifiedNodeRegistry.get(nodeType);
+  if (!def || unifiedNodeRegistry.isTrigger(nodeType)) return false;
+  if (def.deprecated) return false;
+  if (def.category === 'communication') return true;
+  if (def.workflowBehavior?.alwaysTerminal === true || def.isTerminal === true || def.maxOutDegree === 0) return true;
+  const searchable = normalizeText([
+    def.type,
+    def.label,
+    def.description,
+    ...(def.tags || []),
+    ...(def.capabilities || []),
+    ...(def.aiSelectionCriteria?.keywords || []),
+    ...(def.aiSelectionCriteria?.useCases || []),
+    ...(def.aiSelectionCriteria?.whenToUse || []),
+  ].join(' '));
+  return /\b(send|message|email|notify|post|publish|webhook|terminal|output)\b/.test(searchable);
+}
+
+function buildCoverageStepId(nodeType: string, ordinal: number): string {
+  return `destination_${normalizeText(nodeType).replace(/\s+/g, '_') || ordinal}`;
+}
+
+function buildDestinationStepText(label: string): string {
+  return `Send result to ${label}`;
+}
+
+function ensureTriggerStep(steps: CapabilityOptionStep[], intent: StructuredIntent): CapabilityOptionStep[] {
+  const hasTriggerStep = steps.some((step) =>
+    step.intentClass === 'trigger' ||
+    step.candidateNodeTypes.some((type) => {
+      const canonical = unifiedNodeRegistry.resolveAlias(type) || type;
+      return unifiedNodeRegistry.isTrigger(canonical);
+    }),
+  );
+  if (hasTriggerStep) return steps;
+  const triggerType = resolveTriggerType(intent.triggerType);
+  return [
+    {
+      stepId: 'trigger',
+      stepText: `${intent.triggerType.replace(/_/g, ' ')} trigger`,
+      intentClass: 'trigger',
+      candidateNodeTypes: [triggerType],
+      defaultSuggestedNodeType: triggerType,
+      selectionPolicy: { multiSelectAllowed: false, required: true },
+      confidence: 0.9,
+      ambiguous: false,
+      reason: 'Trigger selected from structured intent',
+    },
+    ...steps,
+  ];
+}
+
+function buildDeterministicStepsFromIntent(intent: StructuredIntent): CapabilityOptionStep[] {
+  const triggerType = resolveTriggerType(intent.triggerType);
+  const steps: CapabilityOptionStep[] = [
+    {
+      stepId: 'trigger',
+      stepText: `${intent.triggerType.replace(/_/g, ' ')} trigger`,
+      intentClass: 'trigger',
+      candidateNodeTypes: [triggerType],
+      defaultSuggestedNodeType: triggerType,
+      selectionPolicy: { multiSelectAllowed: false, required: true },
+      confidence: 0.9,
+      ambiguous: false,
+      reason: 'Trigger selected from structured intent',
+    },
+  ];
+
+  intent.actions.forEach((action, index) => {
+    const intentClass = inferIntentClassForAction(action);
+    const candidate = chooseBestRegistryNode(
+      {
+        stepText: action,
+        intentClass,
+      },
+      intent,
+    );
+    if (!candidate) return;
+    steps.push({
+      stepId: `action_${index + 1}`,
+      stepText: action,
+      intentClass,
+      candidateNodeTypes: [candidate],
+      defaultSuggestedNodeType: candidate,
+      selectionPolicy: { multiSelectAllowed: false, required: true },
+      confidence: 0.75,
+      ambiguous: false,
+      reason: 'Registry-selected node for intent action',
+    });
+  });
+
+  return steps;
+}
+
+function resolveTriggerType(triggerType: StructuredIntent['triggerType']): string {
+  const canonical = unifiedNodeRegistry.resolveAlias(triggerType) || triggerType;
+  if (unifiedNodeRegistry.isTrigger(canonical)) return canonical;
+  const manual = unifiedNodeRegistry.resolveAlias('manual_trigger') || 'manual_trigger';
+  return unifiedNodeRegistry.isTrigger(manual) ? manual : canonical;
+}
+
+function inferIntentClassForAction(action: string): CapabilityIntentClass {
+  const text = normalizeText(action);
+  const best = chooseBestRegistryNode(
+    {
+      stepText: action,
+      intentClass: 'generic_action',
+    },
+    {
+      intent: action,
+      triggerType: 'manual_trigger',
+      actions: [action],
+      dataFlows: [],
+      constraints: [],
+    },
+  );
+  const category = best ? unifiedNodeRegistry.getCategory(best) || '' : '';
+  if (category) return mapRegistryCategoryToIntentClass(category);
+  if (/\b(if|when|condition|filter|route|switch|branch)\b/.test(text)) return 'logic';
+  if (/\b(send|message|email|notify|post|publish|reply)\b/.test(text)) return 'communication';
+  if (/\b(read|get|fetch|list|query|retrieve|load|search)\b/.test(text)) return 'data_source';
+  if (/\b(transform|format|parse|summarize|analyze|extract|convert)\b/.test(text)) return 'transformation';
   return 'generic_action';
 }
 
-function getCandidatePool(categoryHint?: string, explicitCanonical?: string): string[] {
-  const all = unifiedNodeRegistry.getAllTypes();
-  if (explicitCanonical && unifiedNodeRegistry.get(explicitCanonical)) {
-    const category = String(unifiedNodeRegistry.getCategory(explicitCanonical) || '').toLowerCase();
-    const scoped = all.filter((type) => String(unifiedNodeRegistry.getCategory(type) || '').toLowerCase() === category);
-    if (scoped.length > 0) return scoped;
-  }
-  if (categoryHint) {
-    const scoped = all.filter((type) => String(unifiedNodeRegistry.getCategory(type) || '').toLowerCase() === categoryHint);
-    if (scoped.length > 0) return scoped;
-  }
-  return all.filter((type) => {
-    if (unifiedNodeRegistry.isTrigger(type)) return false;
-    const c = String(unifiedNodeRegistry.getCategory(type) || '').toLowerCase();
-    return c !== 'utility';
-  });
+function chooseBestRegistryNode(
+  step: Pick<CapabilityOptionStep, 'stepText' | 'intentClass'>,
+  intent: StructuredIntent,
+  allowedTypes?: string[],
+): string | null {
+  return chooseBestRegistryNodeCandidate(step, intent, allowedTypes)?.nodeType || null;
 }
 
-function rankCandidates(
-  stepText: string,
-  pool: string[],
-  explicitCanonical?: string,
-  operationHint?: string,
-  categoryHint?: string,
-): CandidateScore[] {
-  const tokens = tokenize(normalizeForIntentMatching(stepText));
-  const specificQueryTokens = tokens.filter((t) => !GENERIC_ACTION_TOKENS.has(t) && !TOKEN_STOPWORDS.has(t));
+function chooseBestRegistryNodeCandidate(
+  step: Pick<CapabilityOptionStep, 'stepText' | 'intentClass'>,
+  intent: StructuredIntent,
+  allowedTypes?: string[],
+): { nodeType: string; score: number } | null {
+  const types = allowedTypes && allowedTypes.length > 0 ? allowedTypes : unifiedNodeRegistry.getAllTypes();
+  let bestType: string | null = null;
+  let bestScore = Number.NEGATIVE_INFINITY;
 
-  return pool
-    .map((nodeType) => {
-      const def = unifiedNodeRegistry.get(nodeType);
-      if (!def) return { nodeType, canonicalType: nodeType, score: 0, specificMatchCount: 0, matchedTokens: [] };
-      const lexicon = [
-        ...tokenize(nodeType.replace(/_/g, ' ')),
-        ...tokenize(String(def.label || '')),
-        ...tokenize(String(def.description || '')),
-        ...(def.tags || []).flatMap((tag) => tokenize(String(tag))),
-        ...(def.capabilities || []).flatMap((cap) => tokenize(String(cap))),
-        ...((def.aiSelectionCriteria?.keywords || []).flatMap((x) => tokenize(String(x)))),
-        ...((def.aiSelectionCriteria?.useCases || []).flatMap((x) => tokenize(String(x)))),
-        ...((def.aiSelectionCriteria?.whenToUse || []).flatMap((x) => tokenize(String(x)))),
-        ...Object.keys(def.inputSchema || {}).flatMap((key) => tokenize(String(key))),
-      ];
-      const lexiconSet = new Set(lexicon.filter((x) => !TOKEN_STOPWORDS.has(x)));
-      let score = 0;
-      const specificMatched = new Set<string>();
-      const matchedTokens = new Set<string>();
+  for (const type of types) {
+    const def = unifiedNodeRegistry.get(type);
+    if (!def) continue;
+    const score = scoreDefinitionForStep(def, step, intent);
+    if (score > bestScore) {
+      bestScore = score;
+      bestType = type;
+    }
+  }
 
-      const canonicalType = nodeType.toLowerCase().trim();
-      if (explicitCanonical && canonicalType === explicitCanonical.toLowerCase().trim()) {
-        score += 12;
-      }
-
-      for (const token of tokens) {
-        if (!token) continue;
-        if (TOKEN_STOPWORDS.has(token)) continue;
-        if (lexiconSet.has(token)) {
-          score += 3;
-          matchedTokens.add(token);
-          if (!GENERIC_ACTION_TOKENS.has(token)) specificMatched.add(token);
-          continue;
-        }
-        for (const lx of lexiconSet) {
-          if (lx.startsWith(token) || token.startsWith(lx)) {
-            score += 1;
-            matchedTokens.add(token);
-            if (!GENERIC_ACTION_TOKENS.has(token)) specificMatched.add(token);
-            break;
-          }
-        }
-      }
-
-      // Prefer candidates that match at least one specific (non-generic) query token.
-      for (const token of specificQueryTokens) {
-        if (lexiconSet.has(token)) {
-          score += 2;
-          specificMatched.add(token);
-        }
-      }
-
-      return {
-        nodeType,
-        canonicalType: semanticNodeEquivalenceRegistry.getCanonicalType(
-          nodeType,
-          operationHint,
-          categoryHint || String(unifiedNodeRegistry.getCategory(nodeType) || '').toLowerCase(),
-        ) || nodeType,
-        score,
-        specificMatchCount: specificMatched.size,
-        matchedTokens: [...matchedTokens],
-      };
-    })
-    .sort((a, b) => b.score - a.score || a.nodeType.localeCompare(b.nodeType));
+  return bestType && bestScore > 0 ? { nodeType: bestType, score: bestScore } : null;
 }
 
-function finalizeCandidates(
-  ranked: CandidateScore[],
-  pool: string[],
-  explicitCanonical?: string,
-  operationHint?: string,
-  categoryHint?: string,
-): string[] {
-  const explicit = explicitCanonical && unifiedNodeRegistry.get(explicitCanonical) ? explicitCanonical : null;
-  const grouped = new Map<string, CandidateScore[]>();
-  for (const item of ranked) {
-    if (item.score <= 0) continue;
-    const key = item.canonicalType || item.nodeType;
-    const row = grouped.get(key) || [];
-    row.push(item);
-    grouped.set(key, row);
-  }
-
-  const explicitCanonicalType = explicit
-    ? (semanticNodeEquivalenceRegistry.getCanonicalType(
-        explicit,
-        operationHint,
-        categoryHint || String(unifiedNodeRegistry.getCategory(explicit) || '').toLowerCase(),
-      ) || explicit)
-    : null;
-
-  const rankedGroups = [...grouped.entries()]
-    .map(([canonical, items]) => ({
-      canonical,
-      items: items.sort((a, b) => b.score - a.score || a.nodeType.localeCompare(b.nodeType)),
-      groupScore: Math.max(...items.map((i) => i.score)),
-    }))
-    .sort((a, b) => b.groupScore - a.groupScore || a.canonical.localeCompare(b.canonical));
-
-  const chosenGroup =
-    (explicitCanonicalType && rankedGroups.find((g) => g.canonical === explicitCanonicalType)) ||
-    rankedGroups[0];
-
-  let picked: string[] = [];
-  if (chosenGroup) {
-    const equivalents = semanticNodeEquivalenceRegistry.getEquivalents(
-      chosenGroup.canonical,
-      operationHint,
-      categoryHint,
-    );
-    const candidates = [...new Set([chosenGroup.canonical, ...equivalents, ...chosenGroup.items.map((i) => i.nodeType)])];
-    picked = candidates
-      .map((type) => unifiedNodeRegistry.resolveAlias(type) || type)
-      .filter((type) => !!unifiedNodeRegistry.get(type))
-      .slice(0, MAX_CANDIDATES_PER_STEP);
-  }
-
-  if (picked.length === 0) {
-    picked = ranked
-      .filter((r) => r.score > 0)
-      .slice(0, MIN_FALLBACK_CANDIDATES)
-      .map((r) => r.nodeType);
-  }
-  if (picked.length === 0) {
-    picked = pool.slice(0, MIN_FALLBACK_CANDIDATES);
-  }
-  if (explicit && !picked.includes(explicit)) {
-    picked = [explicit, ...picked].slice(0, MAX_CANDIDATES_PER_STEP);
-  }
-  // Final registry guard (safety belt).
-  const registryOnly = picked.filter((nodeType) => !!unifiedNodeRegistry.get(nodeType));
-  if (registryOnly.length > 0) return [...new Set(registryOnly)];
-  return pool.slice(0, MIN_FALLBACK_CANDIDATES);
+function shouldPreferGlobalRegistryMatch(
+  candidateBest: { nodeType: string; score: number } | null,
+  globalBest: { nodeType: string; score: number } | null,
+): globalBest is { nodeType: string; score: number } {
+  if (!globalBest) return false;
+  if (!candidateBest) return true;
+  if (candidateBest.nodeType === globalBest.nodeType) return false;
+  return globalBest.score >= candidateBest.score + 6 && globalBest.score >= 12;
 }
 
-function tokenize(value: string): string[] {
-  return value
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .map((x) => x.trim())
-    .filter((x) => x.length >= 3);
+function scoreDefinitionForStep(
+  def: NonNullable<ReturnType<typeof unifiedNodeRegistry.get>>,
+  step: Pick<CapabilityOptionStep, 'stepText' | 'intentClass'>,
+  intent: StructuredIntent,
+): number {
+  const stepText = normalizeText(step.stepText);
+  const intentText = normalizeText(`${intent.intent} ${intent.constraints.join(' ')}`);
+  const searchText = normalizeText([
+    def.type,
+    def.type.replace(/_/g, ' '),
+    def.label,
+    def.description,
+    ...(def.tags || []),
+    ...(def.capabilities || []),
+    ...(def.aiSelectionCriteria?.keywords || []),
+    ...(def.aiSelectionCriteria?.useCases || []),
+    ...(def.aiSelectionCriteria?.whenToUse || []),
+  ].join(' '));
+  const directAlias = unifiedNodeRegistry.resolveAlias(stepText);
+  let score = directAlias === def.type ? 20 : 0;
+
+  const category = mapRegistryCategoryToIntentClass(def.category || '');
+  if (step.intentClass === category) score += 6;
+  if (step.intentClass === 'trigger' && unifiedNodeRegistry.isTrigger(def.type)) score += 10;
+  if (step.intentClass !== 'trigger' && unifiedNodeRegistry.isTrigger(def.type)) score -= 20;
+  if (def.deprecated) score -= 4;
+  if (def.category === 'utility') score -= 1;
+
+  if (searchText.includes(stepText) && stepText.length >= 3) score += 10;
+  if (stepText.includes(normalizeText(def.label)) && def.label.length >= 3) score += 8;
+  if (intentText.includes(normalizeText(def.label)) && def.label.length >= 3) score += 4;
+
+  const stepTokens = tokenize(stepText);
+  const searchTokens = new Set(tokenize(searchText));
+  for (const token of stepTokens) {
+    if (searchTokens.has(token)) score += 2;
+    if (normalizeText(def.type).split(' ').includes(token)) score += 2;
+  }
+
+  for (const phrase of [
+    ...(def.aiSelectionCriteria?.keywords || []),
+    ...(def.tags || []),
+    ...(def.capabilities || []),
+  ]) {
+    const normalizedPhrase = normalizeText(phrase);
+    if (normalizedPhrase && stepText.includes(normalizedPhrase)) score += 5;
+  }
+
+  return score;
 }
 
-function normalizeForIntentMatching(value: string): string {
+function normalizeText(value: unknown): string {
   return String(value || '')
     .toLowerCase()
     .replace(/[_-]+/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
-function normalizeStepText(value: string): string {
-  const text = String(value || '').trim();
-  if (!text) return text;
-  return text.includes('_') ? text.replace(/_/g, ' ') : text;
+function tokenize(value: string): string[] {
+  const stopWords = new Set([
+    'a',
+    'an',
+    'and',
+    'as',
+    'by',
+    'for',
+    'from',
+    'in',
+    'into',
+    'it',
+    'of',
+    'on',
+    'or',
+    'the',
+    'then',
+    'to',
+    'with',
+  ]);
+  return normalizeText(value)
+    .split(' ')
+    .filter((token) => token.length > 1 && !stopWords.has(token));
 }
 
-function buildStableActionStepId(stepText: string): string {
-  const normalized = normalizeForIntentMatching(stepText)
-    .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .slice(0, 40);
-  return normalized.length > 0 ? `action_${normalized}` : 'action_generic';
-}
-
-function resolveExplicitNodeType(stepText: string): string | undefined {
-  const raw = String(stepText || '').trim();
-  if (!raw) return undefined;
-  const variants = [
-    raw.toLowerCase(),
-    raw.toLowerCase().replace(/\s+/g, '_'),
-    raw.toLowerCase().replace(/-/g, '_'),
-    raw.toLowerCase().replace(/[_-]+/g, ' '),
-  ];
-  for (const v of variants) {
-    const canonical = unifiedNodeRegistry.resolveAlias(v);
-    if (canonical && unifiedNodeRegistry.get(canonical)) return canonical;
-  }
-  return undefined;
-}
-
-function inferOperationHint(stepText: string): string | undefined {
-  const text = normalizeForIntentMatching(stepText);
-  if (/\b(send|notify|message|post|publish|share)\b/.test(text)) return 'send';
-  if (/\b(read|get|fetch|list|query|retrieve|load)\b/.test(text)) return 'read';
-  if (/\b(create|insert|add)\b/.test(text)) return 'create';
-  if (/\b(update|edit|modify|upsert)\b/.test(text)) return 'update';
-  if (/\b(delete|remove)\b/.test(text)) return 'delete';
-  if (/\b(transform|parse|convert|format|summari[sz]e|analy[sz]e|classify)\b/.test(text)) return 'process';
-  return undefined;
-}
-
-function mapRegistryCategoryToIntentClass(category: string): CapabilityIntentClass {
+export function mapRegistryCategoryToIntentClass(category: string): CapabilityIntentClass {
   const c = String(category || '').toLowerCase();
   if (c === 'trigger') return 'trigger';
   if (c === 'communication') return 'communication';
@@ -465,4 +718,3 @@ function mapRegistryCategoryToIntentClass(category: string): CapabilityIntentCla
   if (c === 'data') return 'data_source';
   return 'generic_action';
 }
-

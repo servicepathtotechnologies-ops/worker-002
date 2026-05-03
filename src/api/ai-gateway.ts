@@ -164,6 +164,180 @@ router.post('/field-ownership-guide', async (req: Request, res: Response) => {
   }
 });
 
+// ==================== NODE DESCRIPTION ====================
+router.post('/node-description', async (req: Request, res: Response) => {
+  try {
+    const { nodeType, nodeLabel, nodeNarrative, workflowOverview, userPrompt } = req.body as {
+      nodeType?: string;
+      nodeLabel?: string;
+      nodeNarrative?: string;
+      workflowOverview?: string;
+      userPrompt?: string;
+    };
+
+    if (!nodeType || !nodeLabel) {
+      return res.status(400).json({ success: false, error: 'nodeType and nodeLabel are required' });
+    }
+
+    const fallback =
+      nodeNarrative ||
+      `This ${nodeLabel} node performs its function as part of the automated workflow.`;
+
+    if (!config.geminiApiKey) {
+      return res.status(200).json({ success: true, description: fallback });
+    }
+
+    const contextLines = [
+      workflowOverview ? `Workflow goal: ${workflowOverview}` : null,
+      userPrompt ? `User's original request: ${userPrompt}` : null,
+      nodeNarrative ? `Role in this workflow: ${nodeNarrative}` : null,
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    const aiPrompt = `You explain workflow automation nodes to non-technical users (HR managers, students, business owners).
+
+${contextLines}
+Node: "${nodeLabel}" (technical type: ${nodeType})
+
+Write exactly 2–3 sentences in plain, friendly English:
+1. What this node does in this specific workflow — use the workflow context above, not a generic definition.
+2. One sentence covering what the three ownership choices mean in plain English:
+   - "You" = you manually fill in the values for this node's settings before the workflow runs
+   - "AI build" = the AI fills in the values once when the workflow is being set up
+   - "AI runtime" = the AI figures out the values fresh every single time the workflow runs
+
+No bullet points. No headings. No technical jargon. Under 80 words total. Write as if explaining to a 10th-grade student.`;
+
+    const raw = await geminiOrchestrator.processRequest(
+      'chat-generation',
+      { system: '', message: aiPrompt },
+      { model: 'gemini-2.5-flash', temperature: 0.2, cache: false }
+    );
+
+    const text = (typeof raw === 'string' ? raw : (raw as any)?.content || '').trim();
+    const description = text.length > 20 ? text : fallback;
+
+    res.json({ success: true, description });
+  } catch (error) {
+    console.error('Node description error:', error);
+    res.status(200).json({
+      success: true,
+      description: `This ${(req.body as any)?.nodeLabel || 'node'} performs its role in the workflow automatically.`,
+    });
+  }
+});
+
+// ==================== FIELD DESCRIPTIONS ====================
+router.post('/field-descriptions', async (req: Request, res: Response) => {
+  try {
+    const { nodeType, nodeLabel, nodeNarrative, workflowOverview, userPrompt, fields } = req.body as {
+      nodeType?: string;
+      nodeLabel?: string;
+      nodeNarrative?: string;
+      workflowOverview?: string;
+      userPrompt?: string;
+      fields?: Array<{
+        fieldName: string;
+        label: string;
+        fieldType: string;
+        description?: string;
+        example?: string;
+        required?: boolean;
+        selectedMode?: string;
+        fieldEnabled?: boolean;
+        supportsRuntimeAI: boolean;
+        supportsBuildtimeAI: boolean;
+        fillModeDefault: string;
+        ownership?: string;
+      }>;
+    };
+
+    if (!nodeType || !nodeLabel || !fields || fields.length === 0) {
+      return res.status(400).json({ success: false, error: 'nodeType, nodeLabel, and fields are required' });
+    }
+
+    if (!config.geminiApiKey) {
+      return res.status(200).json({ success: true, descriptions: {} });
+    }
+
+    const contextLines = [
+      workflowOverview ? `Workflow goal: ${workflowOverview}` : null,
+      userPrompt ? `User's original request: ${userPrompt}` : null,
+      nodeNarrative ? `This node's role: ${nodeNarrative}` : null,
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    const fieldsText = fields
+      .map(
+        (f) =>
+          `- fieldName: "${f.fieldName}", label: "${f.label}", type: ${f.fieldType}, docs: "${f.description || ''}", example: "${f.example || ''}", required: ${f.required !== false}, enabledNow: ${f.fieldEnabled === true}, currentOwner: "${f.selectedMode || 'manual_static'}", supportsAIBuild: ${f.supportsBuildtimeAI}, supportsAIRun: ${f.supportsRuntimeAI}`
+      )
+      .join('\n');
+
+    const aiPrompt = `You explain workflow automation field settings to non-technical users (business owners, students, HR managers).
+
+${contextLines}
+Node: "${nodeLabel}" (type: ${nodeType})
+
+Important: do NOT summarize the whole node. Each answer must explain only the exact input field named by fieldName, using the workflow goal and user's request. Keep it simple enough for a beginner.
+
+For each field below, generate a JSON object. Each field needs:
+- "what": 1 plain sentence explaining what this exact input field controls in this workflow use case. Use the docs text only to stay accurate.
+- "needed": 1 plain sentence saying whether this field is needed for this workflow intent, and why.
+- "bestOwner": 1 plain sentence recommending You, AI build, or AI runtime for this exact field based on currentOwner, enabledNow, and the workflow intent.
+- "dataImpact": 1 plain sentence saying how enabling this field changes the data or result in later steps.
+- "you": What happens if the user picks "You" for this exact field (they provide the value manually). Include a short realistic example like 'e.g. "..."'.
+- "aiBuild": What "AI (build)" does — AI fills this value once during setup. 1 sentence describing what it would produce for this workflow.
+- "aiRun": What "AI (runtime)" does — AI decides fresh on every run. 1 sentence.
+- "example": A realistic example value for this field in this workflow, starting with 'e.g. '.
+
+Fields:
+${fieldsText}
+
+Respond with ONLY valid JSON (no markdown, no code fences):
+{
+  "fieldName1": { "what": "...", "needed": "...", "bestOwner": "...", "dataImpact": "...", "you": "...", "aiBuild": "...", "aiRun": "...", "example": "..." },
+  "fieldName2": { ... }
+}
+
+Rules: No technical jargon. Under 25 words per key. Do not repeat the field label at the start. If a field does not support AI build or AI run, write "N/A" for that key.`;
+
+    const raw = await geminiOrchestrator.processRequest(
+      'chat-generation',
+      { system: '', message: aiPrompt },
+      { model: 'gemini-2.5-flash', temperature: 0.2, cache: false }
+    );
+
+    const text = (typeof raw === 'string' ? raw : (raw as any)?.content || '').trim();
+
+    let descriptions: Record<string, {
+      what: string;
+      needed?: string;
+      bestOwner?: string;
+      dataImpact?: string;
+      you: string;
+      aiBuild: string;
+      aiRun: string;
+      example: string;
+    }> = {};
+    try {
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        descriptions = JSON.parse(jsonMatch[0]);
+      }
+    } catch {
+      // fall through to empty descriptions
+    }
+
+    res.json({ success: true, descriptions });
+  } catch (error) {
+    console.error('Field descriptions error:', error);
+    res.status(200).json({ success: true, descriptions: {} });
+  }
+});
+
 // ==================== TEXT (DISABLED) ====================
 router.post('/text/analyze', (req: Request, res: Response) => {
   res.status(501).json({ success: false, error: 'Text analysis has been removed.' });

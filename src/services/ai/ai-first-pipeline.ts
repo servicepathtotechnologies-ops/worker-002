@@ -193,7 +193,7 @@ export class AiFirstPipeline {
 
     // ── Stage 2: Capability Selection ──────────────────────────────────────
     const csStart = Date.now();
-    const csResult = runCapabilitySelectionStage(intentResult.intent, correlationId);
+    const csResult = await runCapabilitySelectionStage(intentResult.intent, correlationId);
     stageTrace.push({
       stage: 'capability_selection',
       startedAt: csStart,

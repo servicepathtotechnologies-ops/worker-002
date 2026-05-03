@@ -46,6 +46,23 @@ export default async function generateCapabilityWorkflow(req: Request, res: Resp
       return;
     }
 
+    const missingOrInvalidSelections = containers.filter((container) => {
+      const selected = selections[container.containerId];
+      if (!selected) return true;
+      const canonical = unifiedNodeRegistry.resolveAlias(selected) || selected;
+      return !container.candidates.some((candidate) => candidate.nodeType === canonical) || !unifiedNodeRegistry.get(canonical);
+    });
+    if (missingOrInvalidSelections.length > 0) {
+      res.status(422).json({
+        ok: false,
+        code: 'MISSING_REQUIRED_NODE_SELECTION',
+        message: 'Select one valid registry node for every workflow step before continuing.',
+        missingContainerIds: missingOrInvalidSelections.map((container) => container.containerId),
+        selections,
+      });
+      return;
+    }
+
     // Reconstruct ordered NodeSelection[] from selections map and containers.
     // Match containerId → nodeType, preserve useCaseUnit.orderIndex order.
     const orderedSelections: NodeSelection[] = containers
@@ -55,7 +72,7 @@ export default async function generateCapabilityWorkflow(req: Request, res: Resp
       .map((container) => ({
         containerId: container.containerId,
         useCaseUnit: container.useCaseUnit,
-        selectedNodeType: selections[container.containerId],
+        selectedNodeType: unifiedNodeRegistry.resolveAlias(selections[container.containerId]) || selections[container.containerId],
       }));
 
     if (orderedSelections.length === 0) {

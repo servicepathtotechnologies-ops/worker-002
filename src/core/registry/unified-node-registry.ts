@@ -66,6 +66,8 @@ export class UnifiedNodeRegistry implements INodeRegistry {
   private communicationCategoryDefsCache: UnifiedNodeDefinition[] | null = null;
   /** Lowercased keywords derived from nodes that declare email/Gmail send capabilities (for intent matching). */
   private emailChannelIntentKeywordCache: string[] | null = null;
+  /** Exact phrase index derived from live registry metadata for alias-like canonical resolution. */
+  private registryAliasIndexCache: Map<string, string[]> | null = null;
 
   /**
    * Single source of truth for all node type alias → canonical type mappings.
@@ -1286,6 +1288,9 @@ export class UnifiedNodeRegistry implements INodeRegistry {
   
   register(definition: UnifiedNodeDefinition): void {
     this.definitions.set(definition.type, definition);
+    this.registryAliasIndexCache = null;
+    this.communicationCategoryDefsCache = null;
+    this.emailChannelIntentKeywordCache = null;
     
     // ✅ STRICT ARCHITECTURE: No alias awareness in registry
     // Alias resolution belongs at input layer, not registry layer
@@ -1621,11 +1626,6 @@ export class UnifiedNodeRegistry implements INodeRegistry {
   resolveAlias(alias: string): string | undefined {
     if (!alias) return undefined;
     const normalized = alias.toLowerCase().trim();
-    // Check internal alias map first (authoritative)
-    const fromMap = this.ALIAS_MAP[normalized];
-    if (fromMap) {
-      return fromMap;
-    }
     // If alias is itself a canonical type in the registry, return it directly
     if (this.has(normalized)) {
       return normalized;
@@ -1634,7 +1634,75 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     if (this.has(alias)) {
       return alias;
     }
+    // Temporary migration fallback for old saved workflows and legacy callers.
+    // Keep this ahead of registry-derived phrases so broad catalog metadata like
+    // "mail" cannot steal compatibility aliases that intentionally point at Gmail.
+    const fromMap = this.ALIAS_MAP[normalized];
+    if (fromMap) {
+      return fromMap;
+    }
+    const fromRegistry = this.resolveRegistryDerivedAlias(normalized);
+    if (fromRegistry) {
+      return fromRegistry;
+    }
     return undefined;
+  }
+
+  private normalizeRegistryAliasPhrase(raw: string): string {
+    return String(raw || '')
+      .toLowerCase()
+      .replace(/[_-]+/g, ' ')
+      .replace(/[^a-z0-9]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private addRegistryAlias(index: Map<string, string[]>, phrase: string, nodeType: string): void {
+    const normalized = this.normalizeRegistryAliasPhrase(phrase);
+    if (!normalized || normalized.length < 2) return;
+    const existing = index.get(normalized) || [];
+    if (!existing.includes(nodeType)) {
+      index.set(normalized, [...existing, nodeType]);
+    }
+  }
+
+  private buildRegistryAliasIndex(): Map<string, string[]> {
+    if (this.registryAliasIndexCache) {
+      return this.registryAliasIndexCache;
+    }
+    const index = new Map<string, string[]>();
+    for (const def of this.definitions.values()) {
+      this.addRegistryAlias(index, def.type, def.type);
+      this.addRegistryAlias(index, def.type.replace(/_/g, ' '), def.type);
+      this.addRegistryAlias(index, def.label || '', def.type);
+      this.addRegistryAlias(index, String(def.label || '').replace(/\s+/g, '_'), def.type);
+      this.addRegistryAlias(index, def.description || '', def.type);
+      for (const tag of def.tags || []) this.addRegistryAlias(index, String(tag), def.type);
+      for (const capability of def.capabilities || []) this.addRegistryAlias(index, String(capability), def.type);
+      const criteria = def.aiSelectionCriteria;
+      for (const keyword of criteria?.keywords || []) this.addRegistryAlias(index, String(keyword), def.type);
+      for (const useCase of criteria?.useCases || []) this.addRegistryAlias(index, String(useCase), def.type);
+      for (const whenToUse of criteria?.whenToUse || []) this.addRegistryAlias(index, String(whenToUse), def.type);
+      const operation = (def.inputSchema || {}).operation as any;
+      const operationValues = Array.isArray(operation?.enum)
+        ? operation.enum
+        : Array.isArray(operation?.oneOf)
+          ? operation.oneOf.map((x: any) => x?.const || x?.enum?.[0]).filter(Boolean)
+          : [];
+      for (const op of operationValues) {
+        this.addRegistryAlias(index, `${def.label || def.type} ${op}`, def.type);
+        this.addRegistryAlias(index, `${def.type} ${op}`, def.type);
+      }
+    }
+    this.registryAliasIndexCache = index;
+    return index;
+  }
+
+  private resolveRegistryDerivedAlias(alias: string): string | undefined {
+    const key = this.normalizeRegistryAliasPhrase(alias);
+    if (!key) return undefined;
+    const matches = this.buildRegistryAliasIndex().get(key) || [];
+    return matches.length === 1 ? matches[0] : undefined;
   }
 
   private getCommunicationCategoryDefinitions(): UnifiedNodeDefinition[] {

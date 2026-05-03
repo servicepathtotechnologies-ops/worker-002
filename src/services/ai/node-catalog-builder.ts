@@ -31,6 +31,10 @@ export interface CompactNodeEntry {
   isTrigger: boolean;
   isBranching: boolean;
   operations?: string[];
+  tags?: string[];
+  capabilities?: string[];
+  aiKeywords?: string[];
+  useCases?: string[];
 }
 
 export type NodeCatalogText = string;
@@ -101,6 +105,14 @@ export function buildNodeCatalogText(options: NodeCatalogOptions = {}): NodeCata
       isBranching: !!(def as any).isBranching,
     };
     if (operations?.length) entry.operations = operations;
+    if (def.tags?.length) entry.tags = def.tags.slice(0, 8);
+    if (def.capabilities?.length) entry.capabilities = def.capabilities.slice(0, 8);
+    if (def.aiSelectionCriteria?.keywords?.length) {
+      entry.aiKeywords = def.aiSelectionCriteria.keywords.slice(0, 8);
+    }
+    if (def.aiSelectionCriteria?.useCases?.length) {
+      entry.useCases = def.aiSelectionCriteria.useCases.slice(0, 4);
+    }
 
     entries.push(entry);
   }
@@ -247,4 +259,3 @@ export function buildNodeCatalog(): NodeCatalogEntry[] {
 
   return catalog;
 }
-

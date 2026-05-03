@@ -22,7 +22,6 @@ import { runStructuralPromptStage } from '../stages/structural-prompt-stage';
 import { runNodeSelectionStage } from '../stages/node-selection-stage';
 import { StructuralPromptGenerator } from '../stages/structural-prompt-generator';
 import { BackendFinalizer } from './backend-finalizer';
-import { unifiedGraphOrchestrator } from '../../../core/orchestration/unified-graph-orchestrator';
 import { unifiedNodeRegistry } from '../../../core/registry/unified-node-registry';
 import { getStageProgress, STAGE_LOG_LABELS } from '../stage-progress-map';
 import {
@@ -92,7 +91,7 @@ export class WorkflowGenerationPipeline {
 
       // ── Stage 1b: Capability Selection ───────────────────────────────────
       const csStart = Date.now();
-      const csResult = runCapabilitySelectionStage(intentResult.intent, correlationId);
+      const csResult = await runCapabilitySelectionStage(intentResult.intent, correlationId);
       stageTrace.push({
         stage: 'capability_selection',
         startedAt: csStart,
@@ -113,26 +112,36 @@ export class WorkflowGenerationPipeline {
         csResult.steps,
         input.capabilitySelectionsByStep,
       );
-
-      // Check if any step is ambiguous (candidateNodeTypes.length > 1) and no user selections provided
-      const ambiguousSteps = csResult.steps.filter((s) => s.candidateNodeTypes.length > 1);
+      // Capability selection is decisive by default. The analyze endpoint can
+      // still render candidate containers, but workflow generation should keep
+      // moving with registry-backed defaults instead of stopping for user choice.
+      const ambiguousSteps = csResult.steps.filter((s) =>
+        s.candidateNodeTypes.length > 1 ||
+        s.ambiguous === true ||
+        (typeof s.confidence === 'number' && s.confidence < 0.75)
+      );
       if (ambiguousSteps.length > 0 && !input.capabilitySelectionsByStep) {
-        // Return early — UI must show Node_Selection_UI before pipeline can continue
         logger.info({
-          event: 'workflow_generation_pipeline_needs_capability_selection',
+          event: 'workflow_generation_pipeline_auto_resolved_capability_selection',
           correlationId,
           ambiguousSteps: ambiguousSteps.length,
         });
-        return {
-          ok: true,
-          needsCapabilitySelection: true,
-          capabilityOptions: csResult.steps,
-          stageTrace,
-          correlationId,
-        };
       }
 
       // ── Stage 1c: Structural Prompt (Gemini) ──────────────────────────────
+      const missingRequiredSelection = csResult.steps.find((step) =>
+        step.selectionPolicy?.required !== false &&
+        !(appliedSelections.byStep[step.stepId]?.length > 0)
+      );
+      if (missingRequiredSelection) {
+        return this.error(
+          'CAPABILITY_SELECTION_FAILED',
+          `Required capability step "${missingRequiredSelection.stepId}" has no selected registry node`,
+          stageTrace,
+          correlationId,
+        );
+      }
+
       const spStart = Date.now();
       const spResult = await runStructuralPromptStage(intentResult.intent, nodeCatalog, correlationId, {
         selectedNodeConstraintsByStep: appliedSelections.byStep,
@@ -181,20 +190,7 @@ export class WorkflowGenerationPipeline {
       try { input.onStageComplete?.('node_selection', getStageProgress('node_selection'), STAGE_LOG_LABELS['node_selection'] ?? 'node_selection'); } catch (_) {}
 
       if (!nsResult.ok) {
-        // Try LLM fallback → minimal workflow
-        const fallback = this.buildFallbackWorkflow(correlationId);
-        if (!fallback) {
-          return this.error(nsResult.code, `Node selection failed: ${nsResult.code}`, stageTrace, correlationId);
-        }
-        logger.warn({ event: 'workflow_generation_pipeline_fallback', correlationId, reason: nsResult.code });
-        return {
-          ok: true,
-          workflow: fallback,
-          buildManifest: {} as any,
-          fieldOwnershipMap: {},
-          validationIssues: [],
-          stageTrace,
-        };
+        return this.error(nsResult.code, `Node selection failed: ${nsResult.code}`, stageTrace, correlationId);
       }
 
       let selectedForGraph = nsResult.selectedNodes;
@@ -340,34 +336,6 @@ export class WorkflowGenerationPipeline {
       }
     }
     return { byStep, flat: [...branchingFlat, ...new Set(nonBranchingFlat)] };
-  }
-
-  /**
-   * Fallback workflow when node selection fails completely.
-   * manual_trigger → ai_chat_model → log_output via orchestrator.
-   */
-  private buildFallbackWorkflow(correlationId: string): Workflow | null {
-    try {
-      const types = ['manual_trigger', 'ai_chat_model', 'log_output'];
-      const nodes = types.map((type) => {
-        const def = unifiedNodeRegistry.get(type);
-        return {
-          id: randomUUID(),
-          type,
-          data: {
-            label: def?.label || type,
-            type,
-            category: def?.category || 'action',
-            config: def?.defaultConfig ? def.defaultConfig() : {},
-          },
-        };
-      });
-      const { workflow } = unifiedGraphOrchestrator.initializeWorkflow(nodes);
-      logger.warn({ event: 'workflow_generation_pipeline_fallback_built', correlationId });
-      return workflow;
-    } catch {
-      return null;
-    }
   }
 
   /**

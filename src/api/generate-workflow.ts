@@ -69,7 +69,7 @@ function resolveAnalyzeCapabilitySelections(
     stepId: string;
     candidateNodeTypes: string[];
     defaultSuggestedNodeType: string | null;
-    selectionPolicy?: { multiSelectAllowed?: boolean };
+    selectionPolicy?: { multiSelectAllowed?: boolean; required?: boolean };
   }>,
   userSelectionsByStep: Record<string, string[]> | undefined,
 ):
@@ -116,6 +116,13 @@ function resolveAnalyzeCapabilitySelections(
       });
       const combined = [...new Set([...selectedForStep, ...fallbackCompatible])];
       const limited = step.selectionPolicy?.multiSelectAllowed === false ? combined.slice(0, 1) : combined;
+      if (step.selectionPolicy?.required !== false && limited.length === 0) {
+        return {
+          ok: false,
+          message: `Required capability step "${step.stepId}" has no selected registry node`,
+          invalidByStep: { [step.stepId]: [] },
+        };
+      }
       byStep[step.stepId] = limited;
       limited.forEach((x) => globallyAssigned.add(x));
       continue;
@@ -193,7 +200,7 @@ export default async function generateWorkflow(req: Request, res: Response): Pro
       }
 
       // Stage 2: capability options from registry
-      const capabilityResult = runCapabilitySelectionStage(intentForAnalyze, correlationId);
+      const capabilityResult = await runCapabilitySelectionStage(intentForAnalyze, correlationId);
       const capabilityOptions = capabilityResult.ok ? capabilityResult.steps : [];
       const resolvedSelections = resolveAnalyzeCapabilitySelections(capabilityOptions, analyzeCapabilitySelectionsByStep);
       if (!resolvedSelections.ok) {
