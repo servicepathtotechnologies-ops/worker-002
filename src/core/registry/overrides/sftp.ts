@@ -68,7 +68,7 @@ export function overrideSftp(def: UnifiedNodeDefinition, _schema: NodeSchema): U
       description: 'File content for upload. Supports plain text, base64, or data URL payloads.',
       required: false,
       role: 'content' as const,
-      fillMode: { default: 'runtime_ai' as const, supportsRuntimeAI: true, supportsBuildtimeAI: true },
+      fillMode: { default: 'manual_static' as const, supportsRuntimeAI: true, supportsBuildtimeAI: true },
     },
   };
 

@@ -22,7 +22,7 @@ export function overrideGoogleDrive(
       required: false,
       ownership: 'value' as const,
       role: 'content' as const,
-      fillMode: { default: 'runtime_ai' as const, supportsRuntimeAI: true, supportsBuildtimeAI: true },
+      fillMode: { default: 'manual_static' as const, supportsRuntimeAI: true, supportsBuildtimeAI: true },
     },
     mimeType: {
       type: 'string' as const,

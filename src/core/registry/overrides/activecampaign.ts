@@ -4,7 +4,7 @@ import { integrationJsonRequest, mergeContextInputs, stripTrailingSlash } from '
 
 export function overrideActivecampaign(def: UnifiedNodeDefinition, _schema: NodeSchema): UnifiedNodeDefinition {
   const manualStatic = { default: 'manual_static' as const, supportsRuntimeAI: false, supportsBuildtimeAI: false };
-  const runtimeValue = { default: 'runtime_ai' as const, supportsRuntimeAI: true, supportsBuildtimeAI: true };
+  const runtimeValue = { default: 'manual_static' as const, supportsRuntimeAI: true, supportsBuildtimeAI: true };
   const inputSchema = {
     ...def.inputSchema,
     operation: {

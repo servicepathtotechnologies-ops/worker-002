@@ -19,7 +19,7 @@ function subscriberHash(email: string): string {
 
 export function overrideMailchimp(def: UnifiedNodeDefinition, _schema: NodeSchema): UnifiedNodeDefinition {
   const manualStatic = { default: 'manual_static' as const, supportsRuntimeAI: false, supportsBuildtimeAI: false };
-  const runtimeValue = { default: 'runtime_ai' as const, supportsRuntimeAI: true, supportsBuildtimeAI: true };
+  const runtimeValue = { default: 'manual_static' as const, supportsRuntimeAI: true, supportsBuildtimeAI: true };
   const operationOptions = ['subscribe', 'unsubscribe', 'send'].map((value) => ({
     label: value.charAt(0).toUpperCase() + value.slice(1),
     value,
@@ -58,14 +58,14 @@ export function overrideMailchimp(def: UnifiedNodeDefinition, _schema: NodeSchem
       ...def.inputSchema.email,
       required: false,
       role: 'recipient' as const,
-      fillMode: { default: 'runtime_ai' as const, supportsRuntimeAI: true, supportsBuildtimeAI: true },
+      fillMode: { default: 'manual_static' as const, supportsRuntimeAI: true, supportsBuildtimeAI: true },
     },
     mergeFields: {
       type: 'object' as const,
       description: 'Mailchimp merge fields, e.g. { "FNAME": "Asha" }',
       required: false,
       role: 'raw_json' as const,
-      fillMode: { default: 'runtime_ai' as const, supportsRuntimeAI: true, supportsBuildtimeAI: true },
+      fillMode: { default: 'manual_static' as const, supportsRuntimeAI: true, supportsBuildtimeAI: true },
     },
     campaignId: {
       type: 'string' as const,

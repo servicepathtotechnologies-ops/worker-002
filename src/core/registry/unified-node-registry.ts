@@ -544,10 +544,11 @@ export class UnifiedNodeRegistry implements INodeRegistry {
           supportsBuildtimeAI: true,
         };
       }
-      // Text-like fields can support all strategies.
+      // Text-like fields: always default to manual so manually placed nodes start empty.
+      // User or AI can switch to runtime_ai; supportsRuntimeAI stays true.
       if (normalizedType === 'string' || normalizedType === 'expression') {
         return {
-          default: isRuntimeSemanticText && !isDeterministicConfig ? 'runtime_ai' : 'manual_static',
+          default: 'manual_static',
           supportsRuntimeAI: true,
           supportsBuildtimeAI: true,
         };

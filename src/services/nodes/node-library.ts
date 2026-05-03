@@ -1329,6 +1329,25 @@ export class NodeLibrary {
 
     // Integration Nodes
     this.addSchema(this.createScheduleWiseNodeSchema());
+
+    // ── Missing Tier-2 nodes (have switch cases, missing schema registration) ──
+    this.addSchema(this.createCalendlySchema());
+    this.addSchema(this.createChargebeeSchema());
+    this.addSchema(this.createTypeformSchema());
+    this.addSchema(this.createXeroSchema());
+    this.addSchema(this.createOracleDatabaseSchema());
+    this.addSchema(this.createSqlServerSchema());
+    this.addSchema(this.createTimescaleDBSchema());
+
+    // ── Missing Tier-3 nodes (need schema registration + execution wiring) ──
+    this.addSchema(this.createContentfulSchema());
+    this.addSchema(this.createWordPressSchema());
+    this.addSchema(this.createZendeskSchema());
+    this.addSchema(this.createNetlifySchema());
+    this.addSchema(this.createWorkdaySchema());
+    this.addSchema(this.createPineconeSchema());
+    this.addSchema(this.createLangchainSchema());
+    this.addSchema(this.createLightricksSchema());
   }
 
   private addSchema(schema: NodeSchema): void {
@@ -11431,9 +11450,713 @@ export class NodeLibrary {
     };
   }
 
+  private createCalendlySchema(): NodeSchema {
+    return {
+      type: 'calendly',
+      label: 'Calendly',
+      category: 'productivity',
+      description: 'Fetch events, event types, scheduled meetings, and user info from Calendly.',
+      configSchema: {
+        required: ['accessToken', 'operation'],
+        optional: {
+          accessToken: { type: 'string', description: 'Calendly personal access token', default: '' },
+          operation: {
+            type: 'string', description: 'Action to perform', default: 'get_events',
+            options: [
+              { label: 'Get Events', value: 'get_events' },
+              { label: 'Get Event Types', value: 'get_event_types' },
+              { label: 'Get Scheduled Events', value: 'get_scheduled_events' },
+              { label: 'Get User', value: 'get_user' },
+            ],
+          },
+          userUri: { type: 'string', description: 'Calendly user URI', default: '' },
+          eventTypeUri: { type: 'string', description: 'Calendly event type URI', default: '' },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: ['User wants to fetch Calendly events or meetings', 'User mentions scheduling or Calendly'],
+        whenNotToUse: ['Generic calendar operations (use Google Calendar)'],
+        keywords: ['calendly', 'scheduling', 'meeting', 'event', 'calendar', 'booking'],
+        useCases: ['Get user events', 'Get event types', 'Get scheduled meetings'],
+        intentDescription: 'Calendly scheduling integration for fetching events and meeting data.',
+        intentCategories: ['scheduling', 'calendar', 'meetings', 'productivity'],
+      },
+      commonPatterns: [
+        { name: 'get_events', description: 'List user events', config: { operation: 'get_events', accessToken: '{{$credentials.calendly.accessToken}}' } },
+      ],
+      validationRules: [
+        { field: 'operation', validator: (v: any) => ['get_events','get_event_types','get_scheduled_events','get_user'].includes(v), errorMessage: 'Invalid operation' },
+      ],
+    };
+  }
+
+  private createChargebeeSchema(): NodeSchema {
+    return {
+      type: 'chargebee',
+      label: 'Chargebee',
+      category: 'payment',
+      description: 'Create customers, manage subscriptions, and automate billing with Chargebee.',
+      configSchema: {
+        required: ['operation', 'apiKey', 'site'],
+        optional: {
+          operation: {
+            type: 'string', description: 'Billing operation to perform', default: 'create_customer',
+            options: [
+              { label: 'Create Customer', value: 'create_customer' },
+              { label: 'Create Subscription', value: 'create_subscription' },
+              { label: 'Get Customer', value: 'get_customer' },
+              { label: 'Cancel Subscription', value: 'cancel_subscription' },
+            ],
+          },
+          apiKey: { type: 'string', description: 'Chargebee API key', default: '' },
+          site: { type: 'string', description: 'Chargebee site name (subdomain)', default: '' },
+          customerId: { type: 'string', description: 'Customer ID', default: '' },
+          email: { type: 'string', description: 'Customer email', default: '' },
+          planId: { type: 'string', description: 'Plan / item price ID', default: '' },
+          subscriptionId: { type: 'string', description: 'Subscription ID', default: '' },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: ['User wants to manage subscriptions or billing', 'User mentions Chargebee'],
+        whenNotToUse: ['One-time payments (use Stripe)'],
+        keywords: ['chargebee', 'subscription', 'billing', 'customer', 'payment', 'recurring'],
+        useCases: ['Create customer', 'Create subscription', 'Cancel subscription'],
+        intentDescription: 'Chargebee subscription billing integration.',
+        intentCategories: ['billing', 'subscription', 'payment', 'crm'],
+      },
+      commonPatterns: [
+        { name: 'create_customer', description: 'Create a new Chargebee customer', config: { operation: 'create_customer', apiKey: '{{$credentials.chargebee.apiKey}}', site: '{{$credentials.chargebee.site}}', email: '{{$json.email}}' } },
+      ],
+      validationRules: [
+        { field: 'operation', validator: (v: any) => ['create_customer','create_subscription','get_customer','cancel_subscription'].includes(v), errorMessage: 'Invalid operation' },
+      ],
+    };
+  }
+
+  private createTypeformSchema(): NodeSchema {
+    return {
+      type: 'typeform',
+      label: 'Typeform',
+      category: 'productivity',
+      description: 'Retrieve form responses, create forms, and fetch form definitions using Typeform.',
+      configSchema: {
+        required: ['operation', 'apiKey'],
+        optional: {
+          operation: {
+            type: 'string', description: 'Typeform operation', default: 'get_responses',
+            options: [
+              { label: 'Get Responses', value: 'get_responses' },
+              { label: 'Create Form', value: 'create_form' },
+              { label: 'Get Form', value: 'get_form' },
+            ],
+          },
+          apiKey: { type: 'string', description: 'Typeform personal access token', default: '' },
+          formId: { type: 'string', description: 'Form ID', default: '' },
+          title: { type: 'string', description: 'Form title (for create_form)', default: '' },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: ['User wants to get Typeform responses', 'User mentions Typeform survey data'],
+        whenNotToUse: ['Generic form handling'],
+        keywords: ['typeform', 'form', 'survey', 'responses', 'questionnaire'],
+        useCases: ['Get form responses', 'Create form', 'Fetch form definition'],
+        intentDescription: 'Typeform form and survey data integration.',
+        intentCategories: ['forms', 'survey', 'data_collection', 'productivity'],
+      },
+      commonPatterns: [
+        { name: 'get_responses', description: 'Get responses for a form', config: { operation: 'get_responses', apiKey: '{{$credentials.typeform.apiKey}}', formId: '{{$json.formId}}' } },
+      ],
+      validationRules: [
+        { field: 'operation', validator: (v: any) => ['get_responses','create_form','get_form'].includes(v), errorMessage: 'Invalid operation' },
+      ],
+    };
+  }
+
+  private createXeroSchema(): NodeSchema {
+    return {
+      type: 'xero',
+      label: 'Xero',
+      category: 'http_api',
+      description: 'Create, fetch, update, and search Xero accounting records (contacts, invoices, items, payments, accounts).',
+      configSchema: {
+        required: ['accessToken', 'tenantId', 'resource', 'operation'],
+        optional: {
+          accessToken: { type: 'string', description: 'Xero OAuth 2.0 access token', default: '' },
+          tenantId: { type: 'string', description: 'Xero tenant ID', default: '' },
+          resource: {
+            type: 'string', description: 'Xero resource', default: 'invoices',
+            options: [
+              { label: 'Contacts', value: 'contacts' },
+              { label: 'Invoices', value: 'invoices' },
+              { label: 'Items', value: 'items' },
+              { label: 'Payments', value: 'payments' },
+              { label: 'Accounts', value: 'accounts' },
+            ],
+          },
+          operation: {
+            type: 'string', description: 'Action to perform', default: 'get_many',
+            options: [
+              { label: 'Get Many', value: 'get_many' },
+              { label: 'Get By ID', value: 'get_by_id' },
+              { label: 'Create', value: 'create' },
+              { label: 'Update', value: 'update' },
+            ],
+          },
+          recordId: { type: 'string', description: 'Record ID for get_by_id or update', default: '' },
+          payload: { type: 'object', description: 'Request body for create/update', default: {} },
+          where: { type: 'string', description: 'Xero WHERE filter', default: '' },
+          order: { type: 'string', description: 'Sort order', default: '' },
+          page: { type: 'number', description: 'Page number', default: 1 },
+          modifiedAfter: { type: 'string', description: 'ISO date — only records modified after', default: '' },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: ['User wants to manage Xero accounting data', 'User mentions Xero invoices or contacts'],
+        whenNotToUse: ['Non-Xero accounting systems'],
+        keywords: ['xero', 'accounting', 'invoice', 'contact', 'payment', 'accounts'],
+        useCases: ['Get invoices', 'Create contact', 'Update payment record'],
+        intentDescription: 'Xero accounting platform integration.',
+        intentCategories: ['accounting', 'finance', 'erp', 'invoicing'],
+      },
+      commonPatterns: [
+        { name: 'get_invoices', description: 'List invoices', config: { operation: 'get_many', resource: 'invoices', accessToken: '{{$credentials.xero.accessToken}}', tenantId: '{{$credentials.xero.tenantId}}' } },
+      ],
+      validationRules: [
+        { field: 'operation', validator: (v: any) => ['get_many','get_by_id','create','update'].includes(v), errorMessage: 'Invalid operation' },
+      ],
+    };
+  }
+
+  private createOracleDatabaseSchema(): NodeSchema {
+    return {
+      type: 'oracle_database',
+      label: 'Oracle Database',
+      category: 'database',
+      description: 'Execute SQL and perform select, insert, update, upsert, and delete operations on Oracle Database.',
+      configSchema: {
+        required: ['user', 'password', 'connectionString', 'operation'],
+        optional: {
+          user: { type: 'string', description: 'Oracle username', default: '' },
+          password: { type: 'string', description: 'Oracle password', default: '' },
+          connectionString: { type: 'string', description: 'Oracle connection string', default: '' },
+          operation: {
+            type: 'string', description: 'Database operation', default: 'select',
+            options: [
+              { label: 'Select', value: 'select' },
+              { label: 'Insert', value: 'insert' },
+              { label: 'Update', value: 'update' },
+              { label: 'Insert or Update (Upsert)', value: 'insert_or_update' },
+              { label: 'Delete', value: 'delete' },
+              { label: 'Execute SQL', value: 'execute_sql' },
+            ],
+          },
+          schema: { type: 'string', description: 'Oracle schema', default: '' },
+          table: { type: 'string', description: 'Table name', default: '' },
+          statement: { type: 'string', description: 'SQL statement for execute_sql', default: '' },
+          limit: { type: 'number', description: 'Max rows to return', default: 50 },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: ['User wants to query Oracle Database', 'User mentions Oracle DB operations'],
+        whenNotToUse: ['PostgreSQL, MySQL, or other databases'],
+        keywords: ['oracle', 'oracle database', 'sql', 'database', 'query', 'oracledb'],
+        useCases: ['Select rows', 'Insert records', 'Execute stored procedures'],
+        intentDescription: 'Oracle Database integration for SQL operations.',
+        intentCategories: ['database', 'sql', 'oracle', 'data'],
+      },
+      commonPatterns: [
+        { name: 'select_rows', description: 'Select rows from table', config: { operation: 'select', user: '{{$credentials.oracle.user}}', password: '{{$credentials.oracle.password}}', connectionString: '{{$credentials.oracle.connectionString}}', schema: '', table: '' } },
+      ],
+      validationRules: [
+        { field: 'operation', validator: (v: any) => ['select','insert','update','insert_or_update','delete','execute_sql'].includes(v), errorMessage: 'Invalid operation' },
+      ],
+    };
+  }
+
+  private createSqlServerSchema(): NodeSchema {
+    return {
+      type: 'sql_server',
+      label: 'SQL Server',
+      category: 'database',
+      description: 'Connect to and query Microsoft SQL Server databases.',
+      configSchema: {
+        required: ['host', 'username', 'password', 'database', 'operation'],
+        optional: {
+          host: { type: 'string', description: 'SQL Server hostname', default: '' },
+          port: { type: 'number', description: 'SQL Server port', default: 1433 },
+          username: { type: 'string', description: 'SQL Server username', default: '' },
+          password: { type: 'string', description: 'SQL Server password', default: '' },
+          database: { type: 'string', description: 'Database name', default: '' },
+          encrypt: { type: 'boolean', description: 'Enable encryption', default: true },
+          trustServerCertificate: { type: 'boolean', description: 'Trust server certificate', default: false },
+          operation: {
+            type: 'string', description: 'Operation to perform', default: 'executeQuery',
+            options: [
+              { label: 'Execute Query', value: 'executeQuery' },
+              { label: 'Insert', value: 'insert' },
+              { label: 'Update', value: 'update' },
+              { label: 'Delete', value: 'delete' },
+              { label: 'Stored Procedure', value: 'storedProcedure' },
+            ],
+          },
+          query: { type: 'string', description: 'SQL query', default: '' },
+          table: { type: 'string', description: 'Table name', default: '' },
+          procedureName: { type: 'string', description: 'Stored procedure name', default: '' },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: ['User wants to query SQL Server', 'User mentions MSSQL or Microsoft SQL Server'],
+        whenNotToUse: ['PostgreSQL, MySQL, or Oracle databases'],
+        keywords: ['sql server', 'mssql', 'microsoft sql', 'database', 'query', 't-sql'],
+        useCases: ['Execute queries', 'Insert data', 'Call stored procedures'],
+        intentDescription: 'Microsoft SQL Server database integration.',
+        intentCategories: ['database', 'sql', 'mssql', 'data'],
+      },
+      commonPatterns: [
+        { name: 'execute_query', description: 'Run a SQL query', config: { operation: 'executeQuery', host: '{{$credentials.sqlserver.host}}', username: '{{$credentials.sqlserver.username}}', password: '{{$credentials.sqlserver.password}}', database: '{{$credentials.sqlserver.database}}', query: '' } },
+      ],
+      validationRules: [
+        { field: 'operation', validator: (v: any) => ['executeQuery','insert','update','delete','storedProcedure'].includes(v), errorMessage: 'Invalid operation' },
+      ],
+    };
+  }
+
+  private createTimescaleDBSchema(): NodeSchema {
+    return {
+      type: 'timescaledb',
+      label: 'TimescaleDB',
+      category: 'database',
+      description: 'Connect to and query TimescaleDB time-series databases (PostgreSQL extension).',
+      configSchema: {
+        required: ['host', 'username', 'password', 'database', 'operation'],
+        optional: {
+          host: { type: 'string', description: 'TimescaleDB hostname', default: '' },
+          port: { type: 'number', description: 'TimescaleDB port', default: 5432 },
+          username: { type: 'string', description: 'TimescaleDB username', default: '' },
+          password: { type: 'string', description: 'TimescaleDB password', default: '' },
+          database: { type: 'string', description: 'Database name', default: '' },
+          ssl: { type: 'boolean', description: 'Enable SSL', default: false },
+          operation: {
+            type: 'string', description: 'Operation to perform', default: 'executeQuery',
+            options: [
+              { label: 'Execute Query', value: 'executeQuery' },
+              { label: 'Insert', value: 'insert' },
+              { label: 'Update', value: 'update' },
+              { label: 'Delete', value: 'delete' },
+              { label: 'Time Bucket', value: 'timeBucket' },
+              { label: 'First', value: 'first' },
+              { label: 'Last', value: 'last' },
+            ],
+          },
+          query: { type: 'string', description: 'SQL query', default: '' },
+          table: { type: 'string', description: 'Table name', default: '' },
+          timeColumn: { type: 'string', description: 'Time column for timeBucket/first/last', default: '' },
+          interval: { type: 'string', description: 'Time interval', default: '' },
+          valueColumn: { type: 'string', description: 'Value column for first/last', default: '' },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: ['User wants to query time-series data with TimescaleDB', 'User mentions time-series database'],
+        whenNotToUse: ['Non-time-series relational data'],
+        keywords: ['timescaledb', 'timescale', 'time-series', 'database', 'postgresql', 'iot'],
+        useCases: ['Time bucket aggregation', 'First/last value queries', 'Insert time-series data'],
+        intentDescription: 'TimescaleDB time-series database integration.',
+        intentCategories: ['database', 'time-series', 'postgresql', 'iot'],
+      },
+      commonPatterns: [
+        { name: 'execute_query', description: 'Run a SQL query', config: { operation: 'executeQuery', host: '{{$credentials.timescaledb.host}}', username: '{{$credentials.timescaledb.username}}', password: '{{$credentials.timescaledb.password}}', database: '{{$credentials.timescaledb.database}}', query: '' } },
+      ],
+      validationRules: [
+        { field: 'operation', validator: (v: any) => ['executeQuery','insert','update','delete','timeBucket','first','last'].includes(v), errorMessage: 'Invalid operation' },
+      ],
+    };
+  }
+
+  private createContentfulSchema(): NodeSchema {
+    return {
+      type: 'contentful',
+      label: 'Contentful',
+      category: 'cms',
+      description: 'Create, read, update, and delete content entries on any Contentful space.',
+      configSchema: {
+        required: ['operation', 'spaceId', 'accessToken'],
+        optional: {
+          operation: {
+            type: 'string', description: 'Contentful action', default: 'get_entries',
+            options: [
+              { label: 'Get Entries', value: 'get_entries' },
+              { label: 'Get Entry', value: 'get_entry' },
+              { label: 'Create Entry', value: 'create_entry' },
+              { label: 'Update Entry', value: 'update_entry' },
+              { label: 'Delete Entry', value: 'delete_entry' },
+            ],
+          },
+          spaceId: { type: 'string', description: 'Contentful space ID', default: '' },
+          accessToken: { type: 'string', description: 'Contentful CMA personal access token', default: '' },
+          environment: { type: 'string', description: 'Contentful environment', default: 'master' },
+          contentType: { type: 'string', description: 'Content type ID', default: '' },
+          entryId: { type: 'string', description: 'Entry ID', default: '' },
+          fields: { type: 'string', description: 'JSON string of entry fields', default: '' },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: ['User wants to manage Contentful CMS entries', 'User mentions headless CMS or Contentful'],
+        whenNotToUse: ['WordPress or other CMS platforms'],
+        keywords: ['contentful', 'cms', 'headless', 'entries', 'content', 'api'],
+        useCases: ['Get entries', 'Create entry', 'Update content'],
+        intentDescription: 'Contentful headless CMS integration.',
+        intentCategories: ['cms', 'content', 'headless', 'api'],
+      },
+      commonPatterns: [
+        { name: 'get_entries', description: 'Get content entries', config: { operation: 'get_entries', spaceId: '{{$credentials.contentful.spaceId}}', accessToken: '{{$credentials.contentful.accessToken}}' } },
+      ],
+      validationRules: [
+        { field: 'operation', validator: (v: any) => ['get_entries','get_entry','create_entry','update_entry','delete_entry'].includes(v), errorMessage: 'Invalid operation' },
+      ],
+    };
+  }
+
+  private createWordPressSchema(): NodeSchema {
+    return {
+      type: 'wordpress',
+      label: 'WordPress',
+      category: 'cms',
+      description: 'Create, read, update, and delete posts on a WordPress site via the WordPress REST API.',
+      configSchema: {
+        required: ['operation', 'siteUrl', 'username', 'password'],
+        optional: {
+          operation: {
+            type: 'string', description: 'WordPress action', default: 'get_posts',
+            options: [
+              { label: 'Create Post', value: 'create_post' },
+              { label: 'Get Posts', value: 'get_posts' },
+              { label: 'Update Post', value: 'update_post' },
+              { label: 'Delete Post', value: 'delete_post' },
+            ],
+          },
+          siteUrl: { type: 'string', description: 'WordPress site base URL', default: '' },
+          username: { type: 'string', description: 'WordPress username', default: '' },
+          password: { type: 'string', description: 'WordPress Application Password', default: '' },
+          postId: { type: 'string', description: 'Post ID for update/delete', default: '' },
+          title: { type: 'string', description: 'Post title', default: '' },
+          content: { type: 'string', description: 'Post body', default: '' },
+          status: { type: 'string', description: 'Post status', default: 'publish', options: [{ label: 'Publish', value: 'publish' }, { label: 'Draft', value: 'draft' }, { label: 'Pending', value: 'pending' }] },
+          limit: { type: 'number', description: 'Max posts to return', default: 10 },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: ['User wants to publish or manage WordPress posts', 'User mentions WordPress blog'],
+        whenNotToUse: ['Contentful or other headless CMS'],
+        keywords: ['wordpress', 'blog', 'post', 'cms', 'publish', 'wp'],
+        useCases: ['Create blog post', 'Get posts', 'Update post'],
+        intentDescription: 'WordPress CMS post management integration.',
+        intentCategories: ['cms', 'blog', 'content', 'publishing'],
+      },
+      commonPatterns: [
+        { name: 'create_post', description: 'Create a WordPress post', config: { operation: 'create_post', siteUrl: '{{$credentials.wordpress.siteUrl}}', username: '{{$credentials.wordpress.username}}', password: '{{$credentials.wordpress.password}}', title: '{{$json.title}}', content: '{{$json.content}}' } },
+      ],
+      validationRules: [
+        { field: 'operation', validator: (v: any) => ['create_post','get_posts','update_post','delete_post'].includes(v), errorMessage: 'Invalid operation' },
+      ],
+    };
+  }
+
+  private createZendeskSchema(): NodeSchema {
+    return {
+      type: 'zendesk',
+      label: 'Zendesk',
+      category: 'crm',
+      description: 'Create, read, update, and delete Zendesk support tickets and manage users.',
+      configSchema: {
+        required: ['operation', 'subdomain', 'email', 'apiToken'],
+        optional: {
+          operation: {
+            type: 'string', description: 'Zendesk action', default: 'get_tickets',
+            options: [
+              { label: 'Get Tickets', value: 'get_tickets' },
+              { label: 'Get Ticket', value: 'get_ticket' },
+              { label: 'Create Ticket', value: 'create_ticket' },
+              { label: 'Update Ticket', value: 'update_ticket' },
+              { label: 'Delete Ticket', value: 'delete_ticket' },
+              { label: 'Get Users', value: 'get_users' },
+            ],
+          },
+          subdomain: { type: 'string', description: 'Zendesk subdomain', default: '' },
+          email: { type: 'string', description: 'Agent email', default: '' },
+          apiToken: { type: 'string', description: 'Zendesk API token', default: '' },
+          ticketId: { type: 'string', description: 'Ticket ID', default: '' },
+          subject: { type: 'string', description: 'Ticket subject', default: '' },
+          description: { type: 'string', description: 'Ticket body', default: '' },
+          status: { type: 'string', description: 'Ticket status', default: 'open' },
+          priority: { type: 'string', description: 'Ticket priority', default: 'normal' },
+          limit: { type: 'number', description: 'Records per page', default: 25 },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: ['User wants to manage support tickets in Zendesk', 'User mentions Zendesk customer support'],
+        whenNotToUse: ['Non-Zendesk helpdesk systems'],
+        keywords: ['zendesk', 'support', 'ticket', 'helpdesk', 'customer service'],
+        useCases: ['Get tickets', 'Create support ticket', 'Update ticket status'],
+        intentDescription: 'Zendesk support ticket management integration.',
+        intentCategories: ['crm', 'support', 'helpdesk', 'customer_service'],
+      },
+      commonPatterns: [
+        { name: 'get_tickets', description: 'List support tickets', config: { operation: 'get_tickets', subdomain: '{{$credentials.zendesk.subdomain}}', email: '{{$credentials.zendesk.email}}', apiToken: '{{$credentials.zendesk.apiToken}}' } },
+      ],
+      validationRules: [
+        { field: 'operation', validator: (v: any) => ['get_tickets','get_ticket','create_ticket','update_ticket','delete_ticket','get_users'].includes(v), errorMessage: 'Invalid operation' },
+      ],
+    };
+  }
+
+  private createNetlifySchema(): NodeSchema {
+    return {
+      type: 'netlify',
+      label: 'Netlify',
+      category: 'devops',
+      description: 'Deploy sites, manage builds, and query site/deploy data through the Netlify REST API.',
+      configSchema: {
+        required: ['resource', 'operation'],
+        optional: {
+          accessToken: { type: 'string', description: 'Netlify Personal Access Token', default: '' },
+          resource: {
+            type: 'string', description: 'Netlify resource', default: 'sites',
+            options: [
+              { label: 'Sites', value: 'sites' },
+              { label: 'Deploys', value: 'deploys' },
+              { label: 'Forms', value: 'forms' },
+            ],
+          },
+          operation: {
+            type: 'string', description: 'Action to perform', default: 'list_sites',
+            options: [
+              { label: 'List Sites', value: 'list_sites' },
+              { label: 'Get Site', value: 'get_site' },
+              { label: 'Create Deploy', value: 'create_deploy' },
+              { label: 'List Deploys', value: 'list_deploys' },
+              { label: 'Get Deploy', value: 'get_deploy' },
+            ],
+          },
+          siteId: { type: 'string', description: 'Site ID', default: '' },
+          deployId: { type: 'string', description: 'Deploy ID', default: '' },
+          payload: { type: 'object', description: 'Request body for create_deploy', default: {} },
+          limit: { type: 'number', description: 'Max records to return', default: 25 },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: ['User wants to deploy or manage Netlify sites', 'User mentions Netlify deployment'],
+        whenNotToUse: ['Vercel, AWS, or other hosting platforms'],
+        keywords: ['netlify', 'deploy', 'site', 'hosting', 'cdn', 'jamstack'],
+        useCases: ['List sites', 'Create deploy', 'Get deploy status'],
+        intentDescription: 'Netlify site deployment and management integration.',
+        intentCategories: ['devops', 'deployment', 'hosting', 'ci_cd'],
+      },
+      commonPatterns: [
+        { name: 'create_deploy', description: 'Trigger a new deploy', config: { resource: 'deploys', operation: 'create_deploy', accessToken: '{{$credentials.netlify.accessToken}}', siteId: '{{$credentials.netlify.siteId}}', payload: {} } },
+      ],
+      validationRules: [
+        { field: 'operation', validator: (v: any) => ['list_sites','get_site','create_deploy','list_deploys','get_deploy'].includes(v), errorMessage: 'Invalid operation' },
+      ],
+    };
+  }
+
+  private createWorkdaySchema(): NodeSchema {
+    return {
+      type: 'workday',
+      label: 'Workday',
+      category: 'http_api',
+      description: 'Read and manage Workday HR, staffing, and organizational data through the Workday REST APIs.',
+      configSchema: {
+        required: ['resource', 'operation'],
+        optional: {
+          baseUrl: { type: 'string', description: 'Workday REST API base URL', default: '' },
+          tenant: { type: 'string', description: 'Workday tenant identifier', default: '' },
+          authType: { type: 'string', description: 'Auth method: oauth2 or basic', default: 'oauth2', options: [{ label: 'OAuth 2.0', value: 'oauth2' }, { label: 'Basic Auth', value: 'basic' }] },
+          accessToken: { type: 'string', description: 'OAuth 2.0 Bearer token', default: '' },
+          username: { type: 'string', description: 'Basic auth username', default: '' },
+          password: { type: 'string', description: 'Basic auth password', default: '' },
+          resource: {
+            type: 'string', description: 'Workday resource', default: 'workers',
+            options: [
+              { label: 'Workers', value: 'workers' },
+              { label: 'Jobs', value: 'jobs' },
+              { label: 'Organizations', value: 'organizations' },
+              { label: 'Supervisory Organizations', value: 'supervisoryOrganizations' },
+              { label: 'Positions', value: 'positions' },
+            ],
+          },
+          operation: {
+            type: 'string', description: 'Action', default: 'get_many',
+            options: [
+              { label: 'Get Many', value: 'get_many' },
+              { label: 'Get By ID', value: 'get_by_id' },
+              { label: 'Create', value: 'create' },
+              { label: 'Update', value: 'update' },
+            ],
+          },
+          recordId: { type: 'string', description: 'Record ID', default: '' },
+          payload: { type: 'object', description: 'Request body for create/update', default: {} },
+          limit: { type: 'number', description: 'Max records', default: 50 },
+          offset: { type: 'number', description: 'Records to skip', default: 0 },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: ['User wants to query Workday HR data', 'User mentions Workday workers or positions'],
+        whenNotToUse: ['Non-Workday HR systems'],
+        keywords: ['workday', 'hr', 'workers', 'employees', 'hcm', 'human resources'],
+        useCases: ['Get worker list', 'Get organization data', 'Create position'],
+        intentDescription: 'Workday HCM REST API integration.',
+        intentCategories: ['hr', 'hcm', 'employees', 'workday', 'erp'],
+      },
+      commonPatterns: [
+        { name: 'get_workers', description: 'List workers', config: { resource: 'workers', operation: 'get_many', authType: 'oauth2', accessToken: '{{$credentials.workday.accessToken}}', tenant: '{{$credentials.workday.tenant}}' } },
+      ],
+      validationRules: [
+        { field: 'operation', validator: (v: any) => ['get_many','get_by_id','create','update'].includes(v), errorMessage: 'Invalid operation' },
+      ],
+    };
+  }
+
+  private createPineconeSchema(): NodeSchema {
+    return {
+      type: 'pinecone',
+      label: 'Pinecone',
+      category: 'database',
+      description: 'Upsert, query, and delete vectors in a Pinecone vector database index.',
+      configSchema: {
+        required: ['operation', 'index'],
+        optional: {
+          operation: {
+            type: 'string', description: 'Action to perform', default: 'query',
+            options: [
+              { label: 'Upsert', value: 'upsert' },
+              { label: 'Query', value: 'query' },
+              { label: 'Delete', value: 'delete' },
+            ],
+          },
+          index: { type: 'string', description: 'Pinecone index name or host URL', default: '' },
+          apiKey: { type: 'string', description: 'Pinecone API key', default: '' },
+          vector: { type: 'array', description: 'Embedding array of floats', default: [] },
+          topK: { type: 'number', description: 'Nearest-neighbor results count', default: 5 },
+          id: { type: 'string', description: 'Vector ID', default: '' },
+          metadata: { type: 'object', description: 'Key-value metadata for upsert', default: {} },
+          namespace: { type: 'string', description: 'Pinecone namespace', default: '' },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: ['User wants to store or query vectors', 'User mentions Pinecone or vector similarity search'],
+        whenNotToUse: ['Relational database queries'],
+        keywords: ['pinecone', 'vector', 'embeddings', 'similarity', 'semantic search', 'rag'],
+        useCases: ['Upsert embedding', 'Query nearest neighbors', 'Delete vector'],
+        intentDescription: 'Pinecone vector database integration for AI/ML workflows.',
+        intentCategories: ['database', 'vector', 'ai', 'embeddings', 'rag'],
+      },
+      commonPatterns: [
+        { name: 'query_vectors', description: 'Query nearest neighbors', config: { operation: 'query', index: '{{$credentials.pinecone.index}}', apiKey: '{{$credentials.pinecone.apiKey}}', vector: '{{$json.embedding}}', topK: 5 } },
+      ],
+      validationRules: [
+        { field: 'operation', validator: (v: any) => ['upsert','query','delete'].includes(v), errorMessage: 'Invalid operation' },
+      ],
+    };
+  }
+
+  private createLangchainSchema(): NodeSchema {
+    return {
+      type: 'langchain',
+      label: 'LangChain',
+      category: 'ai',
+      description: 'Orchestrate AI chains and agents using LangChain with configurable LLM providers and tools.',
+      configSchema: {
+        required: ['operation', 'prompt'],
+        optional: {
+          operation: {
+            type: 'string', description: 'LangChain execution mode', default: 'run_chain',
+            options: [
+              { label: 'Run Chain', value: 'run_chain' },
+              { label: 'Run Agent', value: 'run_agent' },
+            ],
+          },
+          provider: {
+            type: 'string', description: 'LLM provider', default: 'openai',
+            options: [
+              { label: 'OpenAI', value: 'openai' },
+              { label: 'Anthropic / Claude', value: 'anthropic' },
+            ],
+          },
+          prompt: { type: 'string', description: 'Input prompt or task description', default: '' },
+          tools: { type: 'array', description: 'Tool definitions for agent mode', default: [] },
+          memory: { type: 'boolean', description: 'Enable conversation memory', default: false },
+          apiKey: { type: 'string', description: 'API key for LLM provider', default: '' },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: ['User wants to use LangChain for AI orchestration', 'User needs LLM chains or agents'],
+        whenNotToUse: ['Direct OpenAI or Anthropic calls without chain orchestration'],
+        keywords: ['langchain', 'chain', 'agent', 'llm', 'ai orchestration', 'tools'],
+        useCases: ['Run LLM chain', 'Run reasoning agent with tools'],
+        intentDescription: 'LangChain AI orchestration integration for chains and agents.',
+        intentCategories: ['ai', 'llm', 'chain', 'agent', 'orchestration'],
+      },
+      commonPatterns: [
+        { name: 'run_chain', description: 'Run an LLM chain', config: { operation: 'run_chain', provider: 'openai', prompt: '{{$json.input}}', apiKey: '{{$credentials.openai.apiKey}}' } },
+      ],
+      validationRules: [
+        { field: 'operation', validator: (v: any) => ['run_chain','run_agent'].includes(v), errorMessage: 'Invalid operation' },
+      ],
+    };
+  }
+
+  private createLightricksSchema(): NodeSchema {
+    return {
+      type: 'lightricks',
+      label: 'Lightricks LTX-2',
+      category: 'ai',
+      description: 'Generate videos using Lightricks LTX-2 open-source AI model (text-to-video, image-to-video, and more).',
+      configSchema: {
+        required: ['prompt'],
+        optional: {
+          prompt: { type: 'string', description: 'Text prompt for video generation', default: '' },
+          mode: {
+            type: 'string', description: 'Generation mode', default: 'text-to-video',
+            options: [
+              { label: 'Text to Video', value: 'text-to-video' },
+              { label: 'Image to Video', value: 'image-to-video' },
+              { label: 'Audio to Video', value: 'audio-to-video' },
+              { label: 'Video to Video', value: 'video-to-video' },
+              { label: 'Image+Text to Video', value: 'image-text-to-video' },
+              { label: 'Text to Audio', value: 'text-to-audio' },
+              { label: 'Audio to Audio', value: 'audio-to-audio' },
+            ],
+          },
+          image_url: { type: 'string', description: 'Input image URL (for image-to-video mode)', default: '' },
+          audio_url: { type: 'string', description: 'Input audio URL (for audio modes)', default: '' },
+          video_url: { type: 'string', description: 'Input video URL (for video-to-video mode)', default: '' },
+          duration: { type: 'number', description: 'Video duration in seconds', default: 5.0 },
+          fps: { type: 'number', description: 'Frames per second', default: 25 },
+          resolution: { type: 'string', description: 'Video resolution', default: '1080p', options: [{ label: '720p', value: '720p' }, { label: '1080p', value: '1080p' }, { label: '4K', value: '4k' }] },
+          options: { type: 'object', description: 'Additional generation options', default: {} },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: ['User wants to generate a video from text or image', 'User mentions Lightricks or LTX video generation'],
+        whenNotToUse: ['Image generation (use DALL-E or Stable Diffusion)'],
+        keywords: ['lightricks', 'ltx', 'video generation', 'text-to-video', 'ai video', 'ltx-2'],
+        useCases: ['Generate video from prompt', 'Animate an image', 'Audio-driven video generation'],
+        intentDescription: 'Lightricks LTX-2 AI video generation integration.',
+        intentCategories: ['ai', 'video', 'generation', 'media', 'creative'],
+      },
+      commonPatterns: [
+        { name: 'text_to_video', description: 'Generate video from text prompt', config: { prompt: '{{$json.prompt}}', mode: 'text-to-video', duration: 5, fps: 25, resolution: '1080p' } },
+      ],
+      validationRules: [
+        { field: 'prompt', validator: (v: any) => typeof v === 'string' && v.trim().length > 0, errorMessage: 'Prompt is required' },
+      ],
+    };
+  }
+
   /**
    * Register virtual node types (aliases)
-   * 
+   *
    * ✅ PERMANENT ARCHITECTURE: NO virtual nodes are registered
    * Aliases (gmail, mail, ai) are handled ONLY by node-type-resolver.ts
    * They are NOT separate node types - they resolve to canonical types:

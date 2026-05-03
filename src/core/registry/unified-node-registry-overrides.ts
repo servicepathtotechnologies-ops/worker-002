@@ -124,6 +124,20 @@ import { overrideSap } from './overrides/sap';
 import { overrideVercel } from './overrides/vercel';
 import { overrideJenkins } from './overrides/jenkins';
 import { overrideScheduleWise } from './overrides/schedulewise';
+// ── Previously-unregistered node overrides ──────────────────────────────────
+import { overrideCalendly } from './overrides/calendly';
+import { overrideChargebee } from './overrides/chargebee';
+import { overrideTypeform } from './overrides/typeform';
+import { overrideXero } from './overrides/xero';
+import { overrideOracleDatabase } from './overrides/oracle-database';
+import { overrideContentful } from './overrides/contentful-node';
+import { overrideWordPress } from './overrides/wordpress';
+import { overrideZendesk } from './overrides/zendesk-node';
+import { overrideNetlify } from './overrides/netlify';
+import { overrideWorkday } from './overrides/workday';
+import { overridePinecone } from './overrides/pinecone';
+import { overrideLangchain } from './overrides/langchain';
+import { overrideLightricks } from './overrides/lightricks';
 
 type OverrideFn = (def: UnifiedNodeDefinition, schema: NodeSchema) => UnifiedNodeDefinition;
 
@@ -271,6 +285,21 @@ const overridesByType: Record<string, OverrideFn> = {
   jenkins: overrideJenkins,
   // ✅ ScheduleWise healthcare scheduling integration
   schedulewise: overrideScheduleWise,
+  // ── Tier-2: API nodes with switch cases, now properly registered ──────────
+  calendly: overrideCalendly,
+  chargebee: overrideChargebee,
+  typeform: overrideTypeform,
+  xero: overrideXero,
+  oracle_database: overrideOracleDatabase,
+  // ── Tier-3: nodes needing both schema registration and execution wiring ───
+  contentful: overrideContentful,
+  wordpress: overrideWordPress,
+  zendesk: overrideZendesk,
+  netlify: overrideNetlify,
+  workday: overrideWorkday,
+  pinecone: overridePinecone,
+  langchain: overrideLangchain,
+  lightricks: overrideLightricks,
 };
 
 /**

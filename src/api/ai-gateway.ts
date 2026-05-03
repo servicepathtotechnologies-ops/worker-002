@@ -14,6 +14,7 @@ import { WorkflowVersioning } from '../services/ai/workflow-versioning';
 import { getSupabaseClient } from '../core/database/supabase-compat';
 import {
   buildFieldOwnershipGuidancePrompt,
+  buildDeterministicFieldOwnershipGuidance,
   fallbackFieldOwnershipGuidance,
   type FieldOwnershipGuidanceSections,
 } from '../services/ai/field-ownership-guidance-prompt';
@@ -93,6 +94,7 @@ router.post('/field-ownership-guide', async (req: Request, res: Response) => {
     if (!question || typeof question !== 'string' || !question.trim()) {
       return res.status(400).json({ success: false, error: 'question is required' });
     }
+    const deterministicGuidance = buildDeterministicFieldOwnershipGuidance(question.trim(), context || {});
 
     const authHeader = req.headers.authorization;
     const supabase = getSupabaseClient();
@@ -118,16 +120,17 @@ router.post('/field-ownership-guide', async (req: Request, res: Response) => {
     }
 
     if (!config.geminiApiKey) {
-      return res.status(200).json({ success: true, guidance: fallbackFieldOwnershipGuidance() });
+      return res.status(200).json({ success: true, guidance: deterministicGuidance });
     }
 
     const prompt = buildFieldOwnershipGuidancePrompt({
       question: question.trim(),
       context: context || {},
+      deterministicGuidance,
     });
     const raw = await geminiOrchestrator.processRequest('chat-generation', prompt, {
       model: 'gemini-2.5-flash',
-      temperature: 0.3,
+      temperature: 0.1,
     });
     const text = typeof raw === 'string' ? raw : (raw as any)?.content || '';
 
@@ -152,7 +155,7 @@ router.post('/field-ownership-guide', async (req: Request, res: Response) => {
 
     const guidance = parsed && Object.values(parsed).every((v) => v.trim().length > 0)
       ? parsed
-      : fallbackFieldOwnershipGuidance();
+      : deterministicGuidance;
 
     res.json({ success: true, guidance });
   } catch (error) {

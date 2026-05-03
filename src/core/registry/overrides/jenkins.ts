@@ -104,7 +104,7 @@ export function overrideJenkins(def: UnifiedNodeDefinition, _schema: NodeSchema)
       description: 'Jenkins build parameters for parameterized jobs',
       required: false,
       role: 'raw_json' as const,
-      fillMode: { default: 'runtime_ai' as const, supportsRuntimeAI: true, supportsBuildtimeAI: true },
+      fillMode: { default: 'manual_static' as const, supportsRuntimeAI: true, supportsBuildtimeAI: true },
     },
   };
 

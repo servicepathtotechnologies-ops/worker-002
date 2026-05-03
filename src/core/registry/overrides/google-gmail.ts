@@ -429,7 +429,7 @@ export function overrideGoogleGmail(def: UnifiedNodeDefinition, schema: NodeSche
           ...baseSchema.subject,
           ownership: 'value',
           fillMode: {
-            default: 'runtime_ai',
+            default: 'manual_static',
             supportsRuntimeAI: true,
             supportsBuildtimeAI: true,
           },
@@ -443,7 +443,7 @@ export function overrideGoogleGmail(def: UnifiedNodeDefinition, schema: NodeSche
           ...baseSchema.body,
           ownership: 'value',
           fillMode: {
-            default: 'runtime_ai',
+            default: 'manual_static',
             supportsRuntimeAI: true,
             supportsBuildtimeAI: true,
           },

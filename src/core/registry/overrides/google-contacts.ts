@@ -19,7 +19,7 @@ export function overrideGoogleContacts(
   def: UnifiedNodeDefinition,
   _schema: NodeSchema,
 ): UnifiedNodeDefinition {
-  const runtimeValue = { default: 'runtime_ai' as const, supportsRuntimeAI: true, supportsBuildtimeAI: true };
+  const runtimeValue = { default: 'manual_static' as const, supportsRuntimeAI: true, supportsBuildtimeAI: true };
   const options = ['create', 'read', 'update', 'delete'].map((value) => ({ label: value.charAt(0).toUpperCase() + value.slice(1), value }));
   const inputSchema = {
     ...def.inputSchema,

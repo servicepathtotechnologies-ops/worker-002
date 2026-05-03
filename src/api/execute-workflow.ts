@@ -16241,6 +16241,380 @@ export async function executeNodeLegacy(
       return await executeScheduleWiseRequest(params, credential, node.id, startTime);
     }
 
+    // ── Tier-3 nodes: contentful, wordpress, zendesk, netlify, workday, pinecone, langchain, lightricks ──
+
+    case 'contentful': {
+      try {
+        const operation = getStringProperty(config, 'operation', 'get_entries');
+        const spaceId = getStringProperty(config, 'spaceId', '');
+        const accessToken = getStringProperty(config, 'accessToken', '');
+        const environment = getStringProperty(config, 'environment', 'master');
+        const contentType = getStringProperty(config, 'contentType', '');
+        const entryId = getStringProperty(config, 'entryId', '');
+        const fields = getStringProperty(config, 'fields', '');
+
+        const base = `https://api.contentful.com/spaces/${spaceId}/environments/${environment}/entries`;
+        const authHeader = `Bearer ${accessToken}`;
+        console.log(`[contentful] operation=${operation} spaceId=${spaceId}`);
+
+        let response: any;
+        if (operation === 'get_entries') {
+          const url = contentType?.trim() ? `${base}?content_type=${contentType}` : base;
+          response = await fetch(url, { method: 'GET', headers: { Authorization: authHeader } });
+        } else if (operation === 'get_entry') {
+          response = await fetch(`${base}/${entryId}`, { method: 'GET', headers: { Authorization: authHeader } });
+        } else if (operation === 'create_entry') {
+          let parsedFields: unknown;
+          try { parsedFields = JSON.parse(fields); } catch { return { success: false, data: {}, error: { message: 'Invalid JSON in fields', status: 0 } }; }
+          response = await fetch(base, { method: 'POST', headers: { Authorization: authHeader, 'Content-Type': 'application/vnd.contentful.management.v1+json', 'X-Contentful-Content-Type': contentType }, body: JSON.stringify(parsedFields) });
+        } else if (operation === 'update_entry') {
+          let parsedFields: unknown;
+          try { parsedFields = JSON.parse(fields); } catch { return { success: false, data: {}, error: { message: 'Invalid JSON in fields', status: 0 } }; }
+          response = await fetch(`${base}/${entryId}`, { method: 'PUT', headers: { Authorization: authHeader, 'Content-Type': 'application/vnd.contentful.management.v1+json' }, body: JSON.stringify(parsedFields) });
+        } else if (operation === 'delete_entry') {
+          response = await fetch(`${base}/${entryId}`, { method: 'DELETE', headers: { Authorization: authHeader } });
+        } else {
+          return { success: false, data: {}, error: { message: `Unsupported operation: ${operation}`, status: 400 } };
+        }
+
+        if (response.ok) {
+          const data = await response.json().catch(() => ({}));
+          return { success: true, data, error: {} };
+        }
+        const message = await response.text().catch(() => response.statusText);
+        return { success: false, data: {}, error: { message, status: response.status } };
+      } catch (err: any) {
+        return { success: false, data: {}, error: { message: err?.message || 'Contentful error', status: 0 } };
+      }
+    }
+
+    case 'wordpress': {
+      try {
+        const operation = getStringProperty(config, 'operation', 'get_posts');
+        const siteUrl = getStringProperty(config, 'siteUrl', '');
+        const username = getStringProperty(config, 'username', '');
+        const password = getStringProperty(config, 'password', '');
+        const postId = getStringProperty(config, 'postId', '');
+        const title = getStringProperty(config, 'title', '');
+        const content = getStringProperty(config, 'content', '');
+        const status = getStringProperty(config, 'status', 'publish');
+        const limit = (config as any).limit ?? 10;
+
+        const authHeader = `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
+        const baseUrl = `${siteUrl}/wp-json/wp/v2/posts`;
+        console.log(`[wordpress] operation=${operation} siteUrl=${siteUrl}`);
+
+        let response: any;
+        if (operation === 'create_post') {
+          response = await fetch(baseUrl, { method: 'POST', headers: { Authorization: authHeader, 'Content-Type': 'application/json' }, body: JSON.stringify({ title, content, status }) });
+        } else if (operation === 'get_posts') {
+          response = await fetch(`${baseUrl}?per_page=${limit ?? 10}`, { method: 'GET', headers: { Authorization: authHeader } });
+        } else if (operation === 'update_post') {
+          const body: Record<string, string> = {};
+          if (title) body.title = title;
+          if (content) body.content = content;
+          response = await fetch(`${baseUrl}/${postId}`, { method: 'POST', headers: { Authorization: authHeader, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        } else if (operation === 'delete_post') {
+          response = await fetch(`${baseUrl}/${postId}?force=true`, { method: 'DELETE', headers: { Authorization: authHeader } });
+        } else {
+          return { success: false, data: {}, error: { message: `Unsupported operation: ${operation}`, status: 400 } };
+        }
+
+        if (response.ok) {
+          const data = await response.json().catch(() => ({}));
+          return { success: true, data, error: {} };
+        }
+        const message = await response.text().catch(() => response.statusText);
+        return { success: false, data: {}, error: { message, status: response.status } };
+      } catch (err: any) {
+        return { success: false, data: {}, error: { message: err?.message || 'WordPress error', status: 0 } };
+      }
+    }
+
+    case 'zendesk': {
+      try {
+        const operation = getStringProperty(config, 'operation', 'get_tickets');
+        const subdomain = getStringProperty(config, 'subdomain', '');
+        const email = getStringProperty(config, 'email', '');
+        const apiToken = getStringProperty(config, 'apiToken', '');
+        const ticketId = getStringProperty(config, 'ticketId', '');
+        const subject = getStringProperty(config, 'subject', '');
+        const description = getStringProperty(config, 'description', '');
+        const status = getStringProperty(config, 'status', 'open');
+        const priority = getStringProperty(config, 'priority', 'normal');
+        const assigneeId = getStringProperty(config, 'assigneeId', '');
+        const limit = (config as any).limit ?? 25;
+
+        const baseUrl = `https://${subdomain}.zendesk.com/api/v2`;
+        const authHeader = `Basic ${Buffer.from(`${email}/token:${apiToken}`).toString('base64')}`;
+        console.log(`[zendesk] operation=${operation} subdomain=${subdomain}`);
+
+        let response: any;
+        if (operation === 'get_tickets') {
+          response = await fetch(`${baseUrl}/tickets.json?per_page=${limit}`, { method: 'GET', headers: { Authorization: authHeader } });
+        } else if (operation === 'get_ticket') {
+          response = await fetch(`${baseUrl}/tickets/${ticketId}.json`, { method: 'GET', headers: { Authorization: authHeader } });
+        } else if (operation === 'create_ticket') {
+          response = await fetch(`${baseUrl}/tickets.json`, { method: 'POST', headers: { Authorization: authHeader, 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: { subject, comment: { body: description }, status, priority } }) });
+        } else if (operation === 'update_ticket') {
+          const ticketUpdate: Record<string, unknown> = {};
+          if (subject?.trim()) ticketUpdate.subject = subject;
+          if (status?.trim()) ticketUpdate.status = status;
+          if (priority?.trim()) ticketUpdate.priority = priority;
+          if (assigneeId?.trim()) ticketUpdate.assignee_id = assigneeId;
+          response = await fetch(`${baseUrl}/tickets/${ticketId}.json`, { method: 'PUT', headers: { Authorization: authHeader, 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: ticketUpdate }) });
+        } else if (operation === 'delete_ticket') {
+          response = await fetch(`${baseUrl}/tickets/${ticketId}.json`, { method: 'DELETE', headers: { Authorization: authHeader } });
+        } else if (operation === 'get_users') {
+          response = await fetch(`${baseUrl}/users.json?per_page=${limit}`, { method: 'GET', headers: { Authorization: authHeader } });
+        } else {
+          return { success: false, data: {}, error: { message: `Unsupported operation: ${operation}`, status: 400 } };
+        }
+
+        if (response.ok) {
+          const data = await response.json().catch(() => ({}));
+          return { success: true, data, error: {} };
+        }
+        const message = await response.text().catch(() => response.statusText);
+        return { success: false, data: {}, error: { message, status: response.status } };
+      } catch (err: any) {
+        return { success: false, data: {}, error: { message: err?.message || 'Zendesk error', status: 0 } };
+      }
+    }
+
+    case 'netlify': {
+      try {
+        const resource = getStringProperty(config, 'resource', 'sites');
+        const operation = getStringProperty(config, 'operation', 'list_sites');
+        const accessToken = getStringProperty(config, 'accessToken', '');
+        const siteId = getStringProperty(config, 'siteId', '');
+        const deployId = getStringProperty(config, 'deployId', '');
+        const payload = (config as any).payload || {};
+        const limit = (config as any).limit ?? 25;
+
+        const apiBase = 'https://api.netlify.com/api/v1';
+        const headers: Record<string, string> = { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' };
+        console.log(`[netlify] operation=${operation} resource=${resource}`);
+
+        let response: any;
+        if (operation === 'list_sites') {
+          response = await fetch(`${apiBase}/sites?per_page=${limit}`, { method: 'GET', headers });
+        } else if (operation === 'get_site') {
+          response = await fetch(`${apiBase}/sites/${siteId}`, { method: 'GET', headers });
+        } else if (operation === 'create_deploy') {
+          response = await fetch(`${apiBase}/sites/${siteId}/deploys`, { method: 'POST', headers, body: JSON.stringify(payload) });
+        } else if (operation === 'list_deploys') {
+          response = await fetch(`${apiBase}/sites/${siteId}/deploys?per_page=${limit}`, { method: 'GET', headers });
+        } else if (operation === 'get_deploy') {
+          response = await fetch(`${apiBase}/deploys/${deployId}`, { method: 'GET', headers });
+        } else {
+          return { success: false, resource, operation, records: [], count: 0, error: `Unsupported operation: ${operation}` };
+        }
+
+        if (!response.ok) {
+          const errorText = await response.text().catch(() => response.statusText);
+          return { success: false, resource, operation, records: [], count: 0, error: `Netlify API error ${response.status}: ${errorText}` };
+        }
+
+        const data = await response.json().catch(() => ({}));
+        if (Array.isArray(data)) {
+          return { success: true, resource, operation, records: data, count: data.length, record: undefined, meta: {} };
+        }
+        return { success: true, resource, operation, record: data, records: [], count: 1, meta: {} };
+      } catch (err: any) {
+        return { success: false, resource: config.resource, operation: config.operation, records: [], count: 0, error: err?.message || 'Netlify error' };
+      }
+    }
+
+    case 'workday': {
+      try {
+        const resource = getStringProperty(config, 'resource', 'workers');
+        const operation = getStringProperty(config, 'operation', 'get_many');
+        const authType = getStringProperty(config, 'authType', 'oauth2');
+        const accessToken = getStringProperty(config, 'accessToken', '');
+        const username = getStringProperty(config, 'username', '');
+        const password = getStringProperty(config, 'password', '');
+        const tenant = getStringProperty(config, 'tenant', '');
+        const baseUrl = (getStringProperty(config, 'baseUrl', '') || `https://wd2-impl-services1.workday.com/ccx/api/v1/${tenant}`).replace(/\/$/, '');
+        const recordId = getStringProperty(config, 'recordId', '');
+        const rawPath = getStringProperty(config, 'rawPath', '');
+        const payload = (config as any).payload || {};
+        const limit = (config as any).limit ?? 50;
+        const offset = (config as any).offset ?? 0;
+
+        const authHeader = authType === 'basic'
+          ? `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`
+          : `Bearer ${accessToken}`;
+        const headers: Record<string, string> = { Authorization: authHeader, 'Content-Type': 'application/json' };
+        console.log(`[workday] operation=${operation} resource=${resource} tenant=${tenant}`);
+
+        const resourcePath = rawPath || `/${resource}`;
+        let url: string;
+        let method: string;
+        let body: string | undefined;
+
+        if (operation === 'get_many') {
+          url = `${baseUrl}${resourcePath}?limit=${limit}&offset=${offset}`;
+          method = 'GET';
+        } else if (operation === 'get_by_id') {
+          url = `${baseUrl}${resourcePath}/${recordId}`;
+          method = 'GET';
+        } else if (operation === 'create') {
+          url = `${baseUrl}${resourcePath}`;
+          method = 'POST';
+          body = JSON.stringify(payload);
+        } else if (operation === 'update') {
+          url = `${baseUrl}${resourcePath}/${recordId}`;
+          method = 'PATCH';
+          body = JSON.stringify(payload);
+        } else {
+          return { success: false, resource, operation, tenant, records: [], error: `Unsupported operation: ${operation}` };
+        }
+
+        const fetchOpts: RequestInit = { method, headers };
+        if (body !== undefined) fetchOpts.body = body;
+        const response = await fetch(url, fetchOpts);
+
+        if (!response.ok) {
+          const errorText = await response.text().catch(() => response.statusText);
+          return { success: false, resource, operation, tenant, records: [], error: `Workday API error ${response.status}: ${errorText}` };
+        }
+
+        const data: any = await response.json().catch(() => ({}));
+        const records = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+        return { success: true, resource, operation, tenant, records, record: operation !== 'get_many' ? data : undefined, count: data?.total ?? records.length, pagination: { limit, offset, total: data?.total ?? records.length }, meta: data };
+      } catch (err: any) {
+        return { success: false, resource: config.resource, operation: config.operation, tenant: config.tenant, records: [], error: err?.message || 'Workday error' };
+      }
+    }
+
+    case 'pinecone': {
+      try {
+        const operation = getStringProperty(config, 'operation', 'query');
+        const index = getStringProperty(config, 'index', '');
+        const apiKey = getStringProperty(config, 'apiKey', '');
+        const topK = (config as any).topK ?? 5;
+        const id = getStringProperty(config, 'id', '');
+        const metadata = (config as any).metadata || {};
+        const namespace = getStringProperty(config, 'namespace', '');
+        const vector = (config as any).vector;
+
+        // Resolve the Pinecone host — serverless indexes use a full URL; pod-based use the control plane
+        const indexHost = index.startsWith('http') ? index.replace(/\/$/, '') : `https://controller.us-east1-gcp.pinecone.io`;
+        const indexPath = index.startsWith('http') ? '' : `/databases/${index}`;
+        const baseUrl = `${indexHost}${indexPath}`;
+        const headers: Record<string, string> = { 'Api-Key': apiKey, 'Content-Type': 'application/json' };
+        console.log(`[pinecone] operation=${operation} index=${index}`);
+
+        let response: any;
+        if (operation === 'query') {
+          response = await fetch(`${baseUrl}/query`, { method: 'POST', headers, body: JSON.stringify({ vector, topK, namespace: namespace || undefined, includeMetadata: true }) });
+        } else if (operation === 'upsert') {
+          response = await fetch(`${baseUrl}/vectors/upsert`, { method: 'POST', headers, body: JSON.stringify({ vectors: [{ id, values: vector, metadata }], namespace: namespace || undefined }) });
+        } else if (operation === 'delete') {
+          response = await fetch(`${baseUrl}/vectors/delete`, { method: 'POST', headers, body: JSON.stringify({ ids: [id], namespace: namespace || undefined }) });
+        } else {
+          return { success: false, operation, matches: [], error: `Unsupported operation: ${operation}` };
+        }
+
+        if (!response.ok) {
+          const errorText = await response.text().catch(() => response.statusText);
+          return { success: false, operation, matches: [], error: `Pinecone API error ${response.status}: ${errorText}` };
+        }
+
+        const data: any = await response.json().catch(() => ({}));
+        if (operation === 'query') {
+          return { success: true, operation, matches: data.matches || [], upsertedCount: 0 };
+        } else if (operation === 'upsert') {
+          return { success: true, operation, matches: [], upsertedCount: data.upsertedCount || 1 };
+        }
+        return { success: true, operation, matches: [], upsertedCount: 0 };
+      } catch (err: any) {
+        return { success: false, operation: config.operation, matches: [], error: err?.message || 'Pinecone error' };
+      }
+    }
+
+    case 'langchain': {
+      try {
+        const operation = getStringProperty(config, 'operation', 'run_chain');
+        const provider = getStringProperty(config, 'provider', 'openai');
+        const prompt = getStringProperty(config, 'prompt', '');
+        const apiKey = getStringProperty(config, 'apiKey', '');
+        const tools = (config as any).tools || [];
+
+        console.log(`[langchain] operation=${operation} provider=${provider}`);
+
+        let apiUrl: string;
+        let requestBody: Record<string, unknown>;
+        let authHeader: string;
+
+        if (provider === 'anthropic') {
+          apiUrl = 'https://api.anthropic.com/v1/messages';
+          requestBody = { model: 'claude-3-5-sonnet-20241022', max_tokens: 2048, messages: [{ role: 'user', content: prompt }] };
+          authHeader = apiKey;
+          const response = await fetch(apiUrl, { method: 'POST', headers: { 'x-api-key': authHeader, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }, body: JSON.stringify(requestBody) });
+          if (!response.ok) {
+            const errorText = await response.text().catch(() => response.statusText);
+            return { success: false, operation, response: '', steps: [], error: { message: `Anthropic API error: ${errorText}`, status: response.status } };
+          }
+          const data: any = await response.json();
+          return { success: true, operation, response: data?.content?.[0]?.text || '', steps: [], error: null };
+        } else {
+          // OpenAI (default)
+          apiUrl = 'https://api.openai.com/v1/chat/completions';
+          requestBody = { model: 'gpt-4o-mini', messages: [{ role: 'user', content: prompt }] };
+          if (operation === 'run_agent' && Array.isArray(tools) && tools.length > 0) {
+            (requestBody as any).tools = tools.map((t: any) => ({ type: 'function', function: t }));
+          }
+          const response = await fetch(apiUrl, { method: 'POST', headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify(requestBody) });
+          if (!response.ok) {
+            const errorText = await response.text().catch(() => response.statusText);
+            return { success: false, operation, response: '', steps: [], error: { message: `OpenAI API error: ${errorText}`, status: response.status } };
+          }
+          const data: any = await response.json();
+          const toolCalls = data?.choices?.[0]?.message?.tool_calls || [];
+          return { success: true, operation, response: data?.choices?.[0]?.message?.content || '', steps: toolCalls.length > 0 ? toolCalls : [], error: null };
+        }
+      } catch (err: any) {
+        return { success: false, operation: config.operation, response: '', steps: [], error: { message: err?.message || 'LangChain execution error', status: 0 } };
+      }
+    }
+
+    case 'lightricks': {
+      try {
+        const prompt = getStringProperty(config, 'prompt', '');
+        const mode = getStringProperty(config, 'mode', 'text-to-video');
+        const image_url = getStringProperty(config, 'image_url', '');
+        const audio_url = getStringProperty(config, 'audio_url', '');
+        const video_url = getStringProperty(config, 'video_url', '');
+        const duration = (config as any).duration ?? 5.0;
+        const fps = (config as any).fps ?? 25;
+        const resolution = getStringProperty(config, 'resolution', '1080p');
+        const options = (config as any).options || {};
+
+        // Lightricks LTX-2 runs as a local FastAPI service
+        const serviceUrl = process.env.LIGHTRICKS_SERVICE_URL || 'http://localhost:8000';
+        console.log(`[lightricks] mode=${mode} serviceUrl=${serviceUrl}`);
+
+        const requestBody: Record<string, unknown> = { prompt, mode, duration, fps, resolution, options };
+        if (image_url) requestBody.image_url = image_url;
+        if (audio_url) requestBody.audio_url = audio_url;
+        if (video_url) requestBody.video_url = video_url;
+
+        const response = await fetch(`${serviceUrl}/generate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(requestBody) });
+
+        if (!response.ok) {
+          const errorText = await response.text().catch(() => response.statusText);
+          return { success: false, video_path: null, video_url: null, error: `Lightricks service error ${response.status}: ${errorText}` };
+        }
+
+        const data: any = await response.json().catch(() => ({}));
+        return { success: true, video_path: data.video_path || null, video_url: data.video_url || null, metadata: data.metadata || {}, mode, prompt };
+      } catch (err: any) {
+        return { success: false, video_path: null, video_url: null, error: err?.message || 'Lightricks service unreachable — ensure the LTX-2 service is running' };
+      }
+    }
+
     default: {
       // For unknown node types, return input as output
       console.warn(`Unknown node type: ${type}, returning input as output`);

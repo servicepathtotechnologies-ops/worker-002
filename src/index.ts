@@ -170,6 +170,20 @@ import * as workflowVersioningRoutes from './api/workflow-versioning';
 import memoryRoutes from './api/memory';
 import distributedExecuteWorkflow, { getExecutionStatus } from './api/distributed-execute-workflow';
 import nodeDefinitionsHandler from './api/node-definitions';
+import {
+  createConnectionHandler,
+  credentialTypesHandler,
+  deleteConnectionHandler,
+  executeAuthenticatedRequestHandler,
+  listConnectionsHandler,
+  oauthCallbackHandler as genericOAuthCallbackHandler,
+  oauthReconnectHandler,
+  oauthStartHandler,
+  registryNodesHandler,
+  testConnectionHandler,
+  updateConnectionHandler,
+} from './api/credential-connections';
+import { credentialExecutionAuthMiddleware } from './credentials-system/execution-auth-middleware';
 import workflowFieldOwnershipCatalogHandler from './api/workflow-field-ownership-catalog';
 import { linkedinStatusHandler, linkedinTestHandler, linkedinRefreshNowHandler, linkedinDisconnectHandler } from './api/connections-linkedin';
 import { githubStatusHandler, githubDisconnectHandler } from './api/connections-github';
@@ -205,6 +219,10 @@ import { subscriptionLogger, paymentLogger, adminLogger } from './core/middlewar
 import { checkWorkflowLimitEndpoint, requireWorkflowCapacityForAi } from './core/middleware/workflow-limits';
 import { distributedRateLimit } from './core/middleware/distributed-rate-limit';
 import { tracingMiddleware } from './core/observability/distributed-tracing';
+import { metricsHandler, requestMetricsMiddleware } from './middleware/highScaleMetrics';
+import { redisGetCache } from './middleware/redisGetCache';
+import { tokenBucketRateLimiter } from './middleware/redisTokenBucket';
+import { kafkaWriteQueueMiddleware } from './middleware/kafkaRequestQueue';
 import { 
   refreshTokenEndpoint, 
   getSessionInfo, 
@@ -219,6 +237,7 @@ import {
 
 console.log('[ServerStartup] 🔵 Creating Express app...');
 const app: Express = express();
+app.set('trust proxy', true);
 logConnectionConfigReadiness();
 console.log('[ServerStartup] ✅ Express app created');
 
@@ -247,6 +266,16 @@ console.log('[ServerStartup] 🔵 Registering middleware...');
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(corsMiddleware);
+app.use(requestMetricsMiddleware);
+app.use(tokenBucketRateLimiter({
+  capacity: Number(process.env.RATE_LIMIT_PER_MINUTE || 100),
+  refillPerMinute: Number(process.env.RATE_LIMIT_PER_MINUTE || 100),
+  skipPaths: ['/health', '/metrics'],
+}));
+app.use(redisGetCache({
+  ttlSeconds: Number(process.env.GET_CACHE_TTL_SECONDS || 60),
+  skipPaths: ['/health', '/metrics'],
+}));
 
 // Security middleware for subscription system
 app.use(securityHeaders);
@@ -256,6 +285,8 @@ app.use(tracingMiddleware);
 app.use(validateSubscriptionInput);
 
 console.log('[ServerStartup] ✅ Middleware registered');
+
+app.get('/metrics', asyncHandler(metricsHandler));
 
 // Health check (Gemini AI status)
 console.log('[ServerStartup] 🔵 Registering /health endpoint...');
@@ -594,6 +625,24 @@ app.delete('/api/credentials/:key', asyncHandler(authenticateUser), asyncHandler
 // ✅ Node Definitions API - Backend is source of truth for node schemas
 import './nodes/definitions'; // Register all node definitions
 app.get('/api/node-definitions', asyncHandler(nodeDefinitionsHandler));
+app.get('/api/credential-connections/registry/nodes', asyncHandler(registryNodesHandler));
+app.get('/api/credential-connections/credential-types', asyncHandler(credentialTypesHandler));
+app.get('/api/credential-connections/connections', asyncHandler(authenticateUser), asyncHandler(listConnectionsHandler));
+app.post('/api/credential-connections/connections', asyncHandler(authenticateUser), asyncHandler(createConnectionHandler));
+app.put('/api/credential-connections/connections/:id', asyncHandler(authenticateUser), asyncHandler(updateConnectionHandler));
+app.delete('/api/credential-connections/connections/:id', asyncHandler(authenticateUser), asyncHandler(deleteConnectionHandler));
+app.post('/api/credential-connections/connections/:id/test', asyncHandler(authenticateUser), asyncHandler(testConnectionHandler));
+app.post('/api/credential-connections/connections/:id/reconnect', asyncHandler(authenticateUser), asyncHandler(oauthReconnectHandler));
+app.get('/api/credential-connections/oauth/start', asyncHandler(authenticateUser), asyncHandler(oauthStartHandler));
+app.post('/api/credential-connections/oauth/start', asyncHandler(authenticateUser), asyncHandler(oauthStartHandler));
+app.get('/api/credential-connections/oauth/callback', asyncHandler(genericOAuthCallbackHandler));
+app.post('/api/credential-connections/oauth/callback', asyncHandler(genericOAuthCallbackHandler));
+app.post(
+  '/api/credential-connections/execute-request',
+  asyncHandler(authenticateUser),
+  credentialExecutionAuthMiddleware(),
+  asyncHandler(executeAuthenticatedRequestHandler),
+);
 
 // Distributed Workflow Engine Routes
 app.post(
@@ -1125,12 +1174,12 @@ console.log('🛑 Cancel Execution API available at POST /api/executions/:execut
 // Secure DB Proxy (frontend CRUD on whitelisted tables — user-scoped)
 import { dbProxyGet, dbProxyPost, dbProxyUpsert, dbProxyPut, dbProxyDelete } from './api/db-proxy';
 app.get('/api/db/:table',           authenticateUser, asyncHandler(dbProxyGet));
-app.post('/api/db/:table/upsert',   authenticateUser, asyncHandler(dbProxyUpsert));
-app.post('/api/db/:table',          authenticateUser, asyncHandler(dbProxyPost));
-app.put('/api/db/:table',           authenticateUser, asyncHandler(dbProxyPut));
-app.put('/api/db/:table/:id',       authenticateUser, asyncHandler(dbProxyPut));
-app.delete('/api/db/:table',        authenticateUser, asyncHandler(dbProxyDelete));
-app.delete('/api/db/:table/:id',    authenticateUser, asyncHandler(dbProxyDelete));
+app.post('/api/db/:table/upsert',   authenticateUser, kafkaWriteQueueMiddleware(), asyncHandler(dbProxyUpsert));
+app.post('/api/db/:table',          authenticateUser, kafkaWriteQueueMiddleware(), asyncHandler(dbProxyPost));
+app.put('/api/db/:table',           authenticateUser, kafkaWriteQueueMiddleware(), asyncHandler(dbProxyPut));
+app.put('/api/db/:table/:id',       authenticateUser, kafkaWriteQueueMiddleware(), asyncHandler(dbProxyPut));
+app.delete('/api/db/:table',        authenticateUser, kafkaWriteQueueMiddleware(), asyncHandler(dbProxyDelete));
+app.delete('/api/db/:table/:id',    authenticateUser, kafkaWriteQueueMiddleware(), asyncHandler(dbProxyDelete));
 console.log('🔒 DB Proxy API available at /api/db/:table');
 
 // Field Mode Toggle API (spec task 8)

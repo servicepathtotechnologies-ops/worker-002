@@ -4,7 +4,7 @@ import { authHeaderFromToken, integrationJsonRequest, mergeContextInputs } from 
 
 export function overrideIntercom(def: UnifiedNodeDefinition, _schema: NodeSchema): UnifiedNodeDefinition {
   const manualStatic = { default: 'manual_static' as const, supportsRuntimeAI: false, supportsBuildtimeAI: false };
-  const runtimeValue = { default: 'runtime_ai' as const, supportsRuntimeAI: true, supportsBuildtimeAI: true };
+  const runtimeValue = { default: 'manual_static' as const, supportsRuntimeAI: true, supportsBuildtimeAI: true };
   const operationOptions = ['send', 'get', 'list'].map((value) => ({
     label: value.charAt(0).toUpperCase() + value.slice(1),
     value,
@@ -35,7 +35,7 @@ export function overrideIntercom(def: UnifiedNodeDefinition, _schema: NodeSchema
       description: 'Message body for the conversation reply',
       required: false,
       role: 'long_body' as const,
-      fillMode: { default: 'runtime_ai' as const, supportsRuntimeAI: true, supportsBuildtimeAI: true },
+      fillMode: { default: 'manual_static' as const, supportsRuntimeAI: true, supportsBuildtimeAI: true },
     },
     adminId: {
       type: 'string' as const,
