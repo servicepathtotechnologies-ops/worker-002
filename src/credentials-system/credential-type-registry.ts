@@ -1,4 +1,9 @@
-import type { CredentialTypeDefinition } from './types';
+import type {
+  CredentialFieldGuide,
+  CredentialFieldSchema,
+  CredentialGuide,
+  CredentialTypeDefinition,
+} from './types';
 
 const providerBase = process.env.PUBLIC_WORKER_URL || process.env.WORKER_PUBLIC_URL || 'http://localhost:3001';
 
@@ -26,7 +31,198 @@ const facebookOAuthScopes = Array.from(new Set([
   ...csvEnv('FACEBOOK_EXTRA_SCOPES'),
 ]));
 
-export const credentialTypeDefinitions: CredentialTypeDefinition[] = [
+type CredentialTypeDefinitionInput = Omit<CredentialTypeDefinition, 'guide' | 'inputFields'> & {
+  inputFields: CredentialFieldSchema[];
+  guide?: Partial<CredentialGuide>;
+};
+
+const providerDocsUrls: Record<string, string> = {
+  activecampaign: 'https://developers.activecampaign.com/',
+  airtable: 'https://airtable.com/developers/web/api/authentication',
+  anthropic: 'https://docs.anthropic.com/',
+  asana: 'https://developers.asana.com/docs/personal-access-token',
+  aws: 'https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html',
+  bitbucket: 'https://support.atlassian.com/bitbucket-cloud/docs/app-passwords/',
+  calendly: 'https://developer.calendly.com/',
+  clickup: 'https://developer.clickup.com/docs/authentication',
+  cloudflare: 'https://developers.cloudflare.com/fundamentals/api/get-started/create-token/',
+  cohere: 'https://docs.cohere.com/',
+  discord: 'https://discord.com/developers/docs/intro',
+  dropbox: 'https://www.dropbox.com/developers/documentation',
+  facebook: 'https://developers.facebook.com/docs/facebook-login/',
+  firebase: 'https://firebase.google.com/docs/projects/api-keys',
+  freshdesk: 'https://developers.freshdesk.com/api/',
+  github: 'https://docs.github.com/en/authentication',
+  gitlab: 'https://docs.gitlab.com/user/profile/personal_access_tokens/',
+  google: 'https://developers.google.com/identity/protocols/oauth2',
+  huggingface: 'https://huggingface.co/docs/hub/security-tokens',
+  hubspot: 'https://developers.hubspot.com/docs/api/oauth-quickstart-guide',
+  instagram: 'https://developers.facebook.com/docs/instagram-platform/',
+  intercom: 'https://developers.intercom.com/docs/build-an-integration/learn-more/authentication',
+  jira: 'https://support.atlassian.com/atlassian-account/docs/manage-api-tokens-for-your-atlassian-account/',
+  linear: 'https://developers.linear.app/docs/graphql/working-with-the-graphql-api',
+  mailchimp: 'https://mailchimp.com/developer/marketing/guides/quick-start/',
+  mailgun: 'https://documentation.mailgun.com/docs/mailgun/api-reference/authentication',
+  microsoft: 'https://learn.microsoft.com/graph/auth/',
+  mistral: 'https://docs.mistral.ai/',
+  monday: 'https://developer.monday.com/api-reference/docs/authentication',
+  mongodb: 'https://www.mongodb.com/docs/manual/reference/connection-string/',
+  notion: 'https://developers.notion.com/docs/authorization',
+  openai: 'https://platform.openai.com/api-keys',
+  paypal: 'https://developer.paypal.com/api/rest/authentication/',
+  pinecone: 'https://docs.pinecone.io/guides/projects/manage-api-keys',
+  pipedrive: 'https://developers.pipedrive.com/docs/api/v1',
+  qdrant: 'https://qdrant.tech/documentation/cloud/authentication/',
+  quickbooks: 'https://developer.intuit.com/app/developer/qbo/docs/develop/authentication-and-authorization',
+  salesforce: 'https://help.salesforce.com/s/articleView?id=sf.remoteaccess_oauth_flows.htm',
+  sendgrid: 'https://docs.sendgrid.com/ui/account-and-settings/api-keys',
+  shopify: 'https://shopify.dev/docs/apps/build/authentication-authorization',
+  slack: 'https://api.slack.com/authentication',
+  stripe: 'https://docs.stripe.com/keys',
+  supabase: 'https://supabase.com/docs/guides/api/api-keys',
+  telegram: 'https://core.telegram.org/bots/features#botfather',
+  trello: 'https://developer.atlassian.com/cloud/trello/guides/rest-api/api-introduction/',
+  twilio: 'https://www.twilio.com/docs/iam/keys/api-key',
+  twitter: 'https://developer.x.com/en/docs/authentication/oauth-2-0',
+  typeform: 'https://www.typeform.com/developers/get-started/personal-access-token/',
+  whatsapp: 'https://developers.facebook.com/docs/whatsapp/cloud-api/get-started',
+  woocommerce: 'https://woocommerce.github.io/woocommerce-rest-api-docs/',
+  xero: 'https://developer.xero.com/documentation/guides/oauth2/overview',
+  youtube: 'https://developers.google.com/youtube/v3/guides/authentication',
+  zendesk: 'https://developer.zendesk.com/api-reference/introduction/security-and-auth/',
+  zoho: 'https://www.zoho.com/crm/developer/docs/api/v2/oauth-overview.html',
+};
+
+function titleCase(value: string): string {
+  return value
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
+function providerLabel(provider: string): string {
+  if (provider === 'aws') return 'AWS';
+  if (provider === 'qdrant') return 'Qdrant';
+  if (provider === 'github') return 'GitHub';
+  if (provider === 'gitlab') return 'GitLab';
+  if (provider === 'mysql') return 'MySQL';
+  if (provider === 'sftp') return 'SFTP';
+  if (provider === 'ftp') return 'FTP';
+  return titleCase(provider);
+}
+
+function inferFieldLocation(field: CredentialFieldSchema, definition: CredentialTypeDefinitionInput): string {
+  if (field.helpText) return field.helpText;
+
+  const name = field.name.toLowerCase();
+  const service = providerLabel(definition.provider);
+
+  if (name.includes('host')) return `Find this in your ${service} server, database, or hosting provider connection details.`;
+  if (name.includes('port')) return `Use the port shown in your ${service} connection details. If no custom port is listed, use the default shown in this form.`;
+  if (name.includes('database')) return `Use the exact database name created in your ${service} server or cloud console.`;
+  if (name.includes('username') || name === 'user') return `Use the ${service} account, database user, or integration username that has permission for this workflow.`;
+  if (name.includes('password')) return `Use the password, app password, or generated credential for the selected ${service} user.`;
+  if (name.includes('privatekey')) return `Use the PEM private key from your SSH key pair or server access settings.`;
+  if (name.includes('serviceaccount')) return `Use the service account JSON downloaded from the project service account settings.`;
+  if (name.includes('url') || name.includes('domain') || name.includes('subdomain')) return `Copy this from your ${service} account URL, API base URL, or project settings.`;
+  if (name.includes('project')) return `Copy this from the ${service} project settings or project overview page.`;
+  if (name.includes('region')) return `Choose the region where your ${service} account or resource is hosted.`;
+  if (name.includes('secret')) return `Create or reveal this in the ${service} developer, API, or integration settings page.`;
+  if (name.includes('token')) return `Create this in the ${service} developer, security, API, or personal access token settings page.`;
+  if (name.includes('apikey') || name.includes('api_key') || name.includes('key')) return `Create or copy this from the ${service} API keys, developer, or integration settings page.`;
+  if (name.includes('sid')) return `Copy this identifier from your ${service} project or account dashboard.`;
+  if (name.includes('account') || name.includes('workspace')) return `Copy this from your ${service} account, workspace, or organization settings.`;
+  if (name.includes('header')) return 'Use the exact HTTP header name and value required by the API you are connecting.';
+  if (name.includes('query')) return 'Use the exact query parameter name and value required by the API you are connecting.';
+
+  return `Find this value in your ${service} account settings, developer console, or integration setup page.`;
+}
+
+function buildFieldGuide(field: CredentialFieldSchema, definition: CredentialTypeDefinitionInput): CredentialFieldGuide {
+  const example =
+    !field.secret && field.placeholder
+      ? field.placeholder
+      : field.defaultValue !== undefined
+        ? String(field.defaultValue)
+        : undefined;
+
+  return {
+    label: field.label,
+    description: `${field.label} is used to authenticate or route requests for ${definition.displayName}.`,
+    whereToFind: inferFieldLocation(field, definition),
+    example,
+    notes: [
+      field.required ? 'Required before this connection can be saved.' : 'Optional unless your account setup requires it.',
+      field.secret ? 'Stored encrypted and masked after saving.' : 'Use the exact spelling and casing from the source system.',
+      ...(field.options?.length ? [`Choose one of: ${field.options.map((option) => option.label).join(', ')}.`] : []),
+    ],
+  };
+}
+
+function buildGuide(definition: CredentialTypeDefinitionInput): CredentialGuide {
+  const service = providerLabel(definition.provider);
+  const isOAuth = definition.authType === 'oauth2';
+  const fieldGuides = Object.fromEntries(
+    definition.inputFields.map((field) => [
+      field.name,
+      field.guide || buildFieldGuide(field, definition),
+    ]),
+  );
+
+  return {
+    summary: isOAuth
+      ? `Connect ${service} with OAuth so CtrlChecks can request permission without asking you to paste secret tokens.`
+      : `Use this guide to collect the ${definition.displayName} values required to create a reusable CtrlChecks connection.`,
+    prerequisites: isOAuth
+      ? [
+          `An active ${service} account you can sign in to.`,
+          'Permission to approve the requested scopes for your workspace or account.',
+          'Popups and redirects allowed for this CtrlChecks session.',
+        ]
+      : [
+          `Access to the ${service} account, developer console, admin settings, or server connection details.`,
+          'Permission to create or view API credentials for the account.',
+          'A least-privilege credential dedicated to automation when the provider supports it.',
+        ],
+    steps: isOAuth
+      ? [
+          `Click ${definition.form.oauthButtonLabel || `Connect ${service}`}.`,
+          `Sign in to ${service} in the authorization window.`,
+          'Review the requested permissions and approve only if they match this workflow.',
+          'Return to CtrlChecks and confirm the connection appears as connected.',
+        ]
+      : [
+          `Open your ${service} account, developer console, admin settings, or database connection page.`,
+          'Create a new API key, token, app password, webhook, or database user when possible.',
+          'Copy each value into the matching field in this form.',
+          'Save the connection, then test it before using it in production workflows.',
+        ],
+    fieldGuides,
+    securityNotes: [
+      'Never paste personal passwords when the provider offers API keys, app passwords, or tokens.',
+      'Use the minimum scopes and permissions needed for the workflows that will use this connection.',
+      'Rotate the credential immediately if it is shared outside CtrlChecks or exposed in logs.',
+      'CtrlChecks stores saved secret fields encrypted and masks them in the UI.',
+    ],
+    docsUrl: providerDocsUrls[definition.provider],
+    ...definition.guide,
+  };
+}
+
+function addCredentialGuides(definitions: CredentialTypeDefinitionInput[]): CredentialTypeDefinition[] {
+  return definitions.map((definition) => {
+    const guide = buildGuide(definition);
+    return {
+      ...definition,
+      guide,
+      inputFields: definition.inputFields.map((field) => ({
+        ...field,
+        guide: guide.fieldGuides[field.name] || field.guide || buildFieldGuide(field, definition),
+      })),
+    };
+  });
+}
+
+export const credentialTypeDefinitions: CredentialTypeDefinition[] = addCredentialGuides([
   // ─── Google Suite ───────────────────────────────────────────────────────────
   {
     id: 'google_oauth2',
@@ -1810,7 +2006,7 @@ export const credentialTypeDefinitions: CredentialTypeDefinition[] = [
     refresh: { enabled: false, refreshBeforeSeconds: 0 },
     maskFields: ['password', 'privateKey'],
   },
-];
+]);
 
 export function getCredentialType(id: string): CredentialTypeDefinition | undefined {
   return credentialTypeDefinitions.find((definition) => definition.id === id);

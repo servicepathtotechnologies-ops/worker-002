@@ -19,6 +19,7 @@ export interface CredentialFieldSchema {
   defaultValue?: string | number | boolean;
   options?: Array<{ label: string; value: string }>;
   helpText?: string;
+  guide?: CredentialFieldGuide;
   secret?: boolean;
   validation?: {
     minLength?: number;
@@ -26,6 +27,23 @@ export interface CredentialFieldSchema {
     pattern?: string;
     url?: boolean;
   };
+}
+
+export interface CredentialFieldGuide {
+  label: string;
+  description: string;
+  whereToFind: string;
+  example?: string;
+  notes?: string[];
+}
+
+export interface CredentialGuide {
+  summary: string;
+  prerequisites: string[];
+  steps: string[];
+  fieldGuides: Record<string, CredentialFieldGuide>;
+  securityNotes: string[];
+  docsUrl?: string;
 }
 
 export interface CredentialTestRequest {
@@ -67,6 +85,7 @@ export interface CredentialTypeDefinition {
   displayName: string;
   authType: AuthType;
   inputFields: CredentialFieldSchema[];
+  guide: CredentialGuide;
   form: {
     layout: 'stacked' | 'sections';
     submitLabel?: string;

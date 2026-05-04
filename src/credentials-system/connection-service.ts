@@ -32,6 +32,18 @@ export class ConnectionService {
     return credentialTypeDefinitions.map((definition) => ({
       ...definition,
       inputFields: definition.inputFields.map((field) => ({ ...field })),
+      guide: {
+        ...definition.guide,
+        prerequisites: [...definition.guide.prerequisites],
+        steps: [...definition.guide.steps],
+        securityNotes: [...definition.guide.securityNotes],
+        fieldGuides: Object.fromEntries(
+          Object.entries(definition.guide.fieldGuides).map(([name, guide]) => [
+            name,
+            { ...guide, notes: guide.notes ? [...guide.notes] : undefined },
+          ]),
+        ),
+      },
     }));
   }
 
