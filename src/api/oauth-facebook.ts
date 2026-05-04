@@ -14,9 +14,14 @@ import { config } from '../core/config';
 import { encryptToken } from '../core/utils/token-encryption';
 import crypto from 'crypto';
 
-const META_APP_ID     = process.env.META_APP_ID     || '';
-const META_APP_SECRET = process.env.META_APP_SECRET || '';
+const META_APP_ID     = process.env.META_APP_ID     || process.env.FACEBOOK_APP_ID     || '';
+const META_APP_SECRET = process.env.META_APP_SECRET || process.env.FACEBOOK_APP_SECRET || '';
 const FRONTEND_URL    = process.env.FRONTEND_URL    || 'http://localhost:8080';
+const META_CONFIG_ID  = process.env.META_FACEBOOK_CONFIG_ID || process.env.FACEBOOK_CONFIG_ID || '';
+const META_EXTRA_SCOPES = (process.env.META_FACEBOOK_EXTRA_SCOPES || process.env.FACEBOOK_EXTRA_SCOPES || '')
+  .split(',')
+  .map((scope) => scope.trim())
+  .filter(Boolean);
 
 function callbackUrl() {
   if (process.env.FACEBOOK_OAUTH_REDIRECT_URI) {
@@ -48,15 +53,25 @@ export function facebookOAuthStart(req: Request, res: Response) {
 
   if (!userId) return res.status(400).json({ error: 'user_id required' });
   if (!META_APP_ID) return res.status(500).json({ error: 'META_APP_ID not configured' });
+  if (!/^\d+$/.test(META_APP_ID)) {
+    return res.status(500).json({ error: 'META_APP_ID must be the numeric Facebook App ID from Meta Developer Console' });
+  }
 
   const state   = signState({ userId, redirectTo, ts: Date.now() });
   const authUrl = new URL('https://www.facebook.com/v19.0/dialog/oauth');
   authUrl.searchParams.set('client_id',    META_APP_ID);
   authUrl.searchParams.set('redirect_uri', callbackUrl());
   // Scopes needed for workflow automation: manage pages, post content, read page insights
-  authUrl.searchParams.set('scope',
-    'pages_show_list,pages_read_engagement,pages_manage_posts,public_profile,email'
-  );
+  const scopes = Array.from(new Set([
+    'pages_show_list',
+    'pages_read_engagement',
+    'pages_manage_posts',
+    'public_profile',
+    'email',
+    ...META_EXTRA_SCOPES,
+  ]));
+  authUrl.searchParams.set('scope', scopes.join(','));
+  if (META_CONFIG_ID) authUrl.searchParams.set('config_id', META_CONFIG_ID);
   authUrl.searchParams.set('state', state);
   authUrl.searchParams.set('response_type', 'code');
 
