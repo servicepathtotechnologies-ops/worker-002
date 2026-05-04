@@ -2,6 +2,30 @@ import type { CredentialTypeDefinition } from './types';
 
 const providerBase = process.env.PUBLIC_WORKER_URL || process.env.WORKER_PUBLIC_URL || 'http://localhost:3001';
 
+function csvEnv(name: string): string[] {
+  return (process.env[name] || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function optionalAuthParam(name: string, value: string | undefined): Record<string, string> {
+  return value ? { [name]: value } : {};
+}
+
+const facebookBusinessConfigId =
+  process.env.META_FACEBOOK_CONFIG_ID ||
+  process.env.FACEBOOK_CONFIG_ID ||
+  '';
+
+const facebookOAuthScopes = Array.from(new Set([
+  'public_profile',
+  'email',
+  'pages_show_list',
+  ...csvEnv('META_FACEBOOK_EXTRA_SCOPES'),
+  ...csvEnv('FACEBOOK_EXTRA_SCOPES'),
+]));
+
 export const credentialTypeDefinitions: CredentialTypeDefinition[] = [
   // ─── Google Suite ───────────────────────────────────────────────────────────
   {
@@ -477,7 +501,16 @@ export const credentialTypeDefinitions: CredentialTypeDefinition[] = [
       clientIdEnv: 'HUBSPOT_CLIENT_ID',
       clientSecretEnv: 'HUBSPOT_CLIENT_SECRET',
       redirectUriEnv: 'GENERIC_HUBSPOT_OAUTH_REDIRECT_URI',
-      defaultScopes: ['crm.objects.contacts.read', 'crm.objects.contacts.write'],
+      defaultScopes: [
+        'crm.objects.contacts.read',
+        'crm.objects.contacts.write',
+        'crm.objects.companies.read',
+        'crm.objects.companies.write',
+        'crm.objects.deals.read',
+        'crm.objects.deals.write',
+        'crm.objects.owners.read',
+        'tickets',
+      ],
       scopeSeparator: ' ',
       pkce: false,
     },
@@ -1502,8 +1535,9 @@ export const credentialTypeDefinitions: CredentialTypeDefinition[] = [
       clientIdEnv: 'META_APP_ID',
       clientSecretEnv: 'META_APP_SECRET',
       redirectUriEnv: 'GENERIC_FACEBOOK_OAUTH_REDIRECT_URI',
-      defaultScopes: ['public_profile', 'email'],
+      defaultScopes: facebookOAuthScopes,
       scopeSeparator: ',',
+      authParams: optionalAuthParam('config_id', facebookBusinessConfigId),
     },
     refresh: { enabled: false, refreshBeforeSeconds: 0 },
     maskFields: [],
