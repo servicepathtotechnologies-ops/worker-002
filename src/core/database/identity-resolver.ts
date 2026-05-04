@@ -32,12 +32,26 @@ export async function resolveCanonicalUserId(sub: string, email: string): Promis
   const cached = _cache.get(sub);
   if (cached && Date.now() < cached.expiresAt) return cached.canonicalId;
 
-  if (!email || !email.includes('@')) {
-    _cache.set(sub, { canonicalId: sub, expiresAt: Date.now() + CACHE_TTL_MS });
-    return sub;
-  }
-
   try {
+    // Fast path: identity_links stores a direct sub → canonical mapping recorded at OAuth
+    // callback time (oauth-github.ts) and after the first email-based resolution
+    // (subscription-auth.ts).  Works even when email is absent (Facebook federated users).
+    const linkRows = await queryAsService<{ canonical_user_id: string }>(
+      `SELECT canonical_user_id FROM identity_links WHERE linked_user_id = $1 LIMIT 1`,
+      [sub]
+    );
+    if (linkRows[0]?.canonical_user_id) {
+      const canonicalId = linkRows[0].canonical_user_id;
+      _cache.set(sub, { canonicalId, expiresAt: Date.now() + CACHE_TTL_MS });
+      return canonicalId;
+    }
+
+    // Email required for all remaining lookups.
+    if (!email || !email.includes('@')) {
+      _cache.set(sub, { canonicalId: sub, expiresAt: Date.now() + CACHE_TTL_MS });
+      return sub;
+    }
+
     // Check users table first (email is synced there after first login)
     const rows = await queryAsService<{ id: string }>(
       `SELECT id FROM users WHERE LOWER(email) = LOWER($1) ORDER BY created_at ASC LIMIT 1`,

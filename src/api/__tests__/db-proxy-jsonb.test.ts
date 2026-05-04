@@ -5,6 +5,19 @@ jest.mock('../../core/database/db-pool', () => ({
   queryAsService: jest.fn(async () => [{ id: 'wf-1' }]),
 }));
 
+jest.mock('../../services/subscription-service', () => ({
+  subscriptionService: {
+    ensureFreeSubscription: jest.fn(async () => undefined),
+    canCreateWorkflow: jest.fn(async () => true),
+    getSubscriptionUsage: jest.fn(async () => ({
+      workflowLimit: 10,
+      workflowsUsed: 0,
+      remainingWorkflows: 10,
+    })),
+    incrementWorkflowCount: jest.fn(async () => undefined),
+  },
+}));
+
 function mockResponse() {
   const res: any = {};
   res.status = jest.fn(() => res);
@@ -116,5 +129,27 @@ describe('db proxy jsonb serialization', () => {
     expect(sql).toContain('"user_id" = $1');
     expect(sql).toContain('"cron_expression" IS NOT NULL');
     expect(params).toEqual(['user-1']);
+  });
+
+  it('returns exact counts without selecting all rows for count-only requests', async () => {
+    (queryAsService as jest.Mock).mockResolvedValueOnce([{ count: 42 }]);
+    const req: any = {
+      params: { table: 'executions' },
+      query: { count: 'exact', limit: '0', gte_started_at: '2026-05-04T00:00:00.000Z' },
+      user: { id: 'user-1' },
+    };
+    const res = mockResponse();
+
+    await dbProxyGet(req, res);
+
+    expect(queryAsService).toHaveBeenCalledTimes(1);
+    const [sql, params] = (queryAsService as jest.Mock).mock.calls[0];
+    expect(sql).toContain('SELECT COUNT(*)::int AS count FROM "executions"');
+    expect(sql).toContain('"user_id" = $1');
+    expect(sql).toContain('"started_at" >= $2');
+    expect(sql).not.toContain('ORDER BY');
+    expect(sql).not.toContain('LIMIT');
+    expect(params).toEqual(['user-1', '2026-05-04T00:00:00.000Z']);
+    expect(res.json).toHaveBeenCalledWith({ data: [], count: 42, error: null });
   });
 });

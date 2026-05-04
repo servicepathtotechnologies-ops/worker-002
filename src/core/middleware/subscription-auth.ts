@@ -239,6 +239,13 @@ export const authenticateUser = async (req: AuthenticatedRequest, res: Response,
     user.id = await resolveCanonicalUserId(rawSub, user.email || '').catch(() => rawSub);
     if (user.id !== rawSub) {
       console.log(`[Auth] Identity linked: ${rawSub} → ${user.id} (${user.email})`);
+      // Persist the link so resolveCanonicalUserId's identity_links fast-path works on every
+      // subsequent request without needing to re-derive the email from Cognito.
+      queryAsService(
+        `INSERT INTO identity_links (canonical_user_id, linked_user_id)
+         VALUES ($1, $2) ON CONFLICT (linked_user_id) DO NOTHING`,
+        [user.id, rawSub]
+      ).catch(() => {});
     }
 
     // Pool-level circuit breaker absorbs connection failures; fall through on error.
@@ -463,6 +470,13 @@ export const optionalAuth = async (req: AuthenticatedRequest, res: Response, nex
       // Resolve canonical user ID for multi-provider auth
       const rawSubOpt = user.id;
       user.id = await resolveCanonicalUserId(rawSubOpt, user.email || '').catch(() => rawSubOpt);
+      if (user.id !== rawSubOpt) {
+        queryAsService(
+          `INSERT INTO identity_links (canonical_user_id, linked_user_id)
+           VALUES ($1, $2) ON CONFLICT (linked_user_id) DO NOTHING`,
+          [user.id, rawSubOpt]
+        ).catch(() => {});
+      }
 
       const userData = await getUserSubscription(user.id);
       const subscriptionPlan = userData?.plan_name || 'Free';

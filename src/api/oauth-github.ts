@@ -16,6 +16,8 @@
 
 import { Request, Response } from 'express';
 import { queryAsService } from '../core/database/db-pool';
+import { resolveCanonicalUserId } from '../core/database/identity-resolver';
+import { ensureUserRows } from '../core/database/ensure-user';
 import { config } from '../core/config';
 import { encryptToken } from '../core/utils/token-encryption';
 import crypto from 'crypto';
@@ -301,19 +303,36 @@ export async function githubOAuthCallback(req: Request, res: Response) {
       const cognitoUserId   = jwtPayload.sub as string;
       const cognitoUsername = (jwtPayload['cognito:username'] as string) || username;
 
-      // 4e. Store GitHub token linked to this Cognito user (sub UUID, not email)
+      // 4e. Resolve canonical user — if an email/password (or Google) account already exists
+      // with this email, use that as the canonical ID so tokens and data are stored once.
+      const canonicalUserId = await resolveCanonicalUserId(cognitoUserId, email).catch(() => cognitoUserId);
+
+      if (canonicalUserId !== cognitoUserId) {
+        // Record the link so identity_links fast-path resolves every subsequent request instantly.
+        await queryAsService(
+          `INSERT INTO identity_links (canonical_user_id, linked_user_id, provider)
+           VALUES ($1, $2, 'github') ON CONFLICT (linked_user_id) DO NOTHING`,
+          [canonicalUserId, cognitoUserId]
+        ).catch(() => {});
+      }
+
+      // Ensure a users row exists for the canonical ID (idempotent upsert).
+      await ensureUserRows(canonicalUserId, email, displayName).catch(() => {});
+
+      // 4f. Store GitHub token under the canonical user ID — NOT the ephemeral Cognito sub.
+      // Without this, credential lookups keyed by canonical ID would return nothing.
       await queryAsService(
         `INSERT INTO social_tokens (user_id, provider, access_token, provider_user_id, scope, updated_at)
          VALUES ($1, 'github', $2, $3, $4, NOW())
          ON CONFLICT (user_id, provider)
-         DO UPDATE SET access_token = EXCLUDED.access_token,
+         DO UPDATE SET access_token     = EXCLUDED.access_token,
                        provider_user_id = EXCLUDED.provider_user_id,
-                       scope = EXCLUDED.scope,
-                       updated_at = NOW()`,
-        [cognitoUserId, encryptToken(githubAccessToken), String(profile.id), tokenData.scope || 'user:email read:user']
+                       scope            = EXCLUDED.scope,
+                       updated_at       = NOW()`,
+        [canonicalUserId, encryptToken(githubAccessToken), String(profile.id), tokenData.scope || 'user:email read:user']
       );
 
-      // 4f. Store tokens in pending session (frontend exchanges this code for tokens)
+      // 4g. Store tokens in pending session (frontend exchanges this code for tokens)
       const sessionCode = crypto.randomUUID();
       pendingSessions.set(sessionCode, {
         accessToken:  ar.AccessToken!,
@@ -323,7 +342,7 @@ export async function githubOAuthCallback(req: Request, res: Response) {
         expiresAt:    Date.now() + 90_000,
       });
 
-      console.log(`[GitHubLogin] ✅ Login via GitHub for ${email} (sub: ${cognitoUserId})`);
+      console.log(`[GitHubLogin] ✅ Login via GitHub for ${email} (sub: ${cognitoUserId} → canonical: ${canonicalUserId})`);
 
       const returnUrl = encodeURIComponent(redirectTo || '/dashboard');
       return res.redirect(

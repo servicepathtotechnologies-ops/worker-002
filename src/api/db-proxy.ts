@@ -126,7 +126,9 @@ export async function dbProxyGet(req: Request, res: Response) {
   const indirectFilter = INDIRECT_USER_FILTER[table];
   const orderCol = req.query.order_col as string | undefined;
   const orderDir = (req.query.order_dir as string || 'DESC').toUpperCase();
-  const limitVal = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
+  const limitVal = req.query.limit !== undefined ? parseInt(req.query.limit as string, 10) : undefined;
+  const wantsExactCount = req.query.count === 'exact';
+  const headOnly = req.query.head === 'true';
 
   const ownershipClause = indirectFilter ?? `"${userCol}" = $1`;
   let sql = `SELECT * FROM "${table}" WHERE ${ownershipClause}`;
@@ -186,16 +188,33 @@ export async function dbProxyGet(req: Request, res: Response) {
     }
   }
 
-  if (orderCol && SAFE_COLS.test(orderCol)) {
-    sql += ` ORDER BY "${orderCol}" ${orderDir === 'ASC' ? 'ASC' : 'DESC'}`;
-  }
-
-  if (limitVal && limitVal > 0) {
-    sql += ` LIMIT ${limitVal}`;
-  }
-
   try {
-    const rows = await queryAsService(sql, params);
+    const countSql = wantsExactCount
+      ? sql.replace(/^SELECT \* FROM/i, 'SELECT COUNT(*)::int AS count FROM')
+      : null;
+
+    if (orderCol && SAFE_COLS.test(orderCol)) {
+      sql += ` ORDER BY "${orderCol}" ${orderDir === 'ASC' ? 'ASC' : 'DESC'}`;
+    }
+
+    if (Number.isFinite(limitVal) && limitVal! > 0) {
+      sql += ` LIMIT ${limitVal}`;
+    }
+
+    if (wantsExactCount && (headOnly || limitVal === 0)) {
+      const countRows = await queryAsService<{ count: number }>(countSql!, params);
+      return res.json({ data: [], count: Number(countRows[0]?.count ?? 0), error: null });
+    }
+
+    if (wantsExactCount) {
+      const [rows, countRows] = await Promise.all([
+        headOnly ? Promise.resolve([]) : queryAsService(sql, params),
+        queryAsService<{ count: number }>(countSql!, params),
+      ]);
+      return res.json({ data: rows, count: Number(countRows[0]?.count ?? 0), error: null });
+    }
+
+    const rows = headOnly ? [] : await queryAsService(sql, params);
     res.json({ data: rows, error: null });
   } catch (err: any) {
     // 42P01 = undefined_table, DB_UNAVAILABLE = circuit open — both return empty array
