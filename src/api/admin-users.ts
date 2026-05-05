@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 
 type AppRole = 'admin' | 'moderator' | 'user';
 type WorkflowStatus = 'active' | 'inactive';
@@ -129,7 +129,7 @@ function getWorkflowBuildTokens(workflow: any): number {
   return 0;
 }
 
-async function requireAdminUser(supabase: ReturnType<typeof getSupabaseClient>, req: Request) {
+async function requireAdminUser(supabase: ReturnType<typeof getDbClient>, req: Request) {
   const authHeader = req.headers.authorization;
   if (!authHeader) {
     return { ok: false as const, error: 'Unauthorized', status: 401 };
@@ -157,7 +157,7 @@ async function requireAdminUser(supabase: ReturnType<typeof getSupabaseClient>, 
 }
 
 export default async function adminUsersHandler(req: Request, res: Response) {
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient();
 
   try {
     const auth = await requireAdminUser(supabase, req);
@@ -214,20 +214,23 @@ export default async function adminUsersHandler(req: Request, res: Response) {
 
         const workflowIds = (workflowRows || []).map((workflow: any) => workflow.id);
         let executionCountsByWorkflow = new Map<string, number>();
+        let aiRunCallsByWorkflow = new Map<string, number>();
+        let aiRunTokensByWorkflow = new Map<string, number>();
 
         if (workflowIds.length > 0) {
           const { data: executionRows, error: executionsError } = await supabase
             .from('executions')
-            .select('workflow_id')
+            .select('workflow_id, ai_calls, ai_tokens')
             .in('workflow_id', workflowIds);
           if (executionsError) {
             throw executionsError;
           }
 
-          executionCountsByWorkflow = new Map<string, number>();
           for (const execution of executionRows || []) {
-            const workflowId = execution.workflow_id;
-            executionCountsByWorkflow.set(workflowId, (executionCountsByWorkflow.get(workflowId) || 0) + 1);
+            const wfId = execution.workflow_id;
+            executionCountsByWorkflow.set(wfId, (executionCountsByWorkflow.get(wfId) || 0) + 1);
+            aiRunCallsByWorkflow.set(wfId, (aiRunCallsByWorkflow.get(wfId) || 0) + (execution.ai_calls || 0));
+            aiRunTokensByWorkflow.set(wfId, (aiRunTokensByWorkflow.get(wfId) || 0) + (execution.ai_tokens || 0));
           }
         }
 
@@ -241,6 +244,8 @@ export default async function adminUsersHandler(req: Request, res: Response) {
             workflowRuns,
             aiBuildCalls: getAiBuildCallsFromWorkflow(workflow),
             tokensUsedToBuild: getWorkflowBuildTokens(workflow),
+            aiRunCalls: aiRunCallsByWorkflow.get(workflow.id) || 0,
+            aiRunTokens: aiRunTokensByWorkflow.get(workflow.id) || 0,
             status: workflow.status === 'active' ? ('active' as WorkflowStatus) : ('inactive' as WorkflowStatus),
           };
         });

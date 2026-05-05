@@ -274,7 +274,8 @@ app.use(tokenBucketRateLimiter({
 }));
 app.use(redisGetCache({
   ttlSeconds: Number(process.env.GET_CACHE_TTL_SECONDS || 60),
-  skipPaths: ['/health', '/metrics'],
+  // Connections change on every reconnect/OAuth callback — must always be fresh
+  skipPaths: ['/health', '/metrics', '/api/credential-connections/connections', '/api/execution-status'],
 }));
 
 // Security middleware for subscription system
@@ -1065,8 +1066,8 @@ app.get('/api/workflows/:workflowId/last-resolved-inputs', asyncHandler(async (r
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
-  const { getSupabaseClient } = await import('./core/database/supabase-compat');
-  const supabase = getSupabaseClient();
+  const { getDbClient } = await import('./core/database/supabase-compat');
+  const supabase = getDbClient();
   const { data: authData, error: authError } = await supabase.auth.getUser(token);
   if (authError || !authData?.user?.id) {
     return res.status(401).json({ error: 'Unauthorized' });
@@ -1084,11 +1085,11 @@ app.get('/api/workflows/:workflowId/last-resolved-inputs', asyncHandler(async (r
 
   const { data: executions, error: executionsError } = await supabase
     .from('executions')
-    .select('id, started_at, status, logs')
+    .select('id, started_at, status')
     .eq('workflow_id', workflowId)
     .in('status', ['success', 'failed', 'running', 'waiting'])
     .order('started_at', { ascending: false })
-    .limit(50);
+    .limit(10);
 
   if (executionsError) {
     return res.status(500).json({ error: 'Failed to load execution history' });
@@ -1096,12 +1097,60 @@ app.get('/api/workflows/:workflowId/last-resolved-inputs', asyncHandler(async (r
 
   const values: Record<string, Record<string, {
     value: unknown;
-    source?: 'runtime_ai' | 'static_config';
+    source?: 'static_config' | 'template' | 'deterministic_runtime' | 'runtime_ai';
     executionId: string;
     startedAt: string;
   }>> = {};
 
+  const executionStartedAt = new Map<string, string>();
   for (const execution of executions || []) {
+    executionStartedAt.set(execution.id, execution.started_at);
+  }
+  const executionIds = Array.from(executionStartedAt.keys());
+
+  if (executionIds.length > 0) {
+    const { data: steps, error: stepsError } = await supabase
+      .from('execution_steps')
+      .select('execution_id, node_id, input_json, sequence')
+      .in('execution_id', executionIds)
+      .order('sequence', { ascending: true });
+
+    if (stepsError) {
+      return res.status(500).json({ error: 'Failed to load resolved execution inputs' });
+    }
+
+    for (const step of steps || []) {
+      const nodeId = typeof step.node_id === 'string' ? step.node_id : undefined;
+      const inputJson = step.input_json && typeof step.input_json === 'object' ? step.input_json as Record<string, unknown> : null;
+      const startedAt = executionStartedAt.get(step.execution_id);
+      if (!nodeId || !inputJson || !startedAt) continue;
+      if (!values[nodeId]) values[nodeId] = {};
+      for (const [fieldName, value] of Object.entries(inputJson)) {
+        if (fieldName.startsWith('_') || values[nodeId][fieldName] !== undefined) continue;
+        values[nodeId][fieldName] = {
+          value,
+          source: 'deterministic_runtime',
+          executionId: step.execution_id,
+          startedAt,
+        };
+      }
+    }
+  }
+
+  /*
+   * Legacy fallback for older execution rows that predate execution_steps input_json.
+   * Keep this bounded to the already-selected 10 execution ids.
+   */
+  if (Object.keys(values).length === 0 && executionIds.length > 0) {
+    const { data: executionLogs, error: logsError } = await supabase
+      .from('executions')
+      .select('id, started_at, logs')
+      .in('id', executionIds);
+    if (logsError) {
+      return res.status(500).json({ error: 'Failed to load execution logs' });
+    }
+
+  for (const execution of executionLogs || []) {
     const logs = Array.isArray(execution.logs) ? execution.logs : [];
     for (const rawLog of logs) {
       if (!rawLog || typeof rawLog !== 'object') continue;
@@ -1128,6 +1177,7 @@ app.get('/api/workflows/:workflowId/last-resolved-inputs', asyncHandler(async (r
         };
       }
     }
+  }
   }
 
   return res.json({
@@ -1271,8 +1321,8 @@ app.post('/api/workflows/:workflowId/versions/:version/rollback', asyncHandler(a
     const authHeader = req.headers.authorization;
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const token = authHeader.replace('Bearer ', '').trim();
-      const { getSupabaseClient } = await import('./core/database/supabase-compat');
-      const supabase = getSupabaseClient();
+      const { getDbClient } = await import('./core/database/supabase-compat');
+      const supabase = getDbClient();
       const { data: { user } } = await supabase.auth.getUser(token);
       if (user) {
         userId = user.id;

@@ -11,7 +11,7 @@ import { unifiedGraphOrchestrator } from '../core/orchestration/unified-graph-or
 import type { AiEditorRequest, AiEditorResponse } from '../core/types/ai-editor-contracts';
 import type { Workflow } from '../core/types/ai-types';
 import { WorkflowVersioning } from '../services/ai/workflow-versioning';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 import {
   buildFieldOwnershipGuidancePrompt,
   buildDeterministicFieldOwnershipGuidance,
@@ -29,6 +29,8 @@ import { logAiEditorEvent, hashDiff, readAiEditorAuditForWorkflow } from '../ser
 const router = Router();
 const llmAdapter = new LLMAdapter();
 const aiEditorVersioning = new WorkflowVersioning();
+const guideResponseCache = new Map<string, { expiresAt: number; guidance: FieldOwnershipGuidanceSections }>();
+const GUIDE_CACHE_TTL_MS = 10 * 60 * 1000;
 
 let initialized = false;
 
@@ -97,7 +99,7 @@ router.post('/field-ownership-guide', async (req: Request, res: Response) => {
     const deterministicGuidance = buildDeterministicFieldOwnershipGuidance(question.trim(), context || {});
 
     const authHeader = req.headers.authorization;
-    const supabase = getSupabaseClient();
+    const supabase = getDbClient();
     let userId: string | null = null;
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const token = authHeader.replace('Bearer ', '').trim();
@@ -128,6 +130,15 @@ router.post('/field-ownership-guide', async (req: Request, res: Response) => {
       context: context || {},
       deterministicGuidance,
     });
+    const cacheKey = JSON.stringify({
+      question: question.trim(),
+      workflowId,
+      selectedField: (context || {}).selectedField,
+    });
+    const cached = guideResponseCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return res.json({ success: true, guidance: cached.guidance, cached: true });
+    }
     const raw = await geminiOrchestrator.processRequest('chat-generation', prompt, {
       model: 'gemini-2.5-flash',
       temperature: 0.1,
@@ -156,6 +167,7 @@ router.post('/field-ownership-guide', async (req: Request, res: Response) => {
     const guidance = parsed && Object.values(parsed).every((v) => v.trim().length > 0)
       ? parsed
       : deterministicGuidance;
+    guideResponseCache.set(cacheKey, { expiresAt: Date.now() + GUIDE_CACHE_TTL_MS, guidance });
 
     res.json({ success: true, guidance });
   } catch (error) {

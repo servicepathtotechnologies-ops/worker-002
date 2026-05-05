@@ -1,5 +1,5 @@
 import type { Request } from 'express';
-import { getSupabaseClient } from '../../core/database/supabase-compat';
+import { getDbClient } from '../../core/database/supabase-compat';
 import type { AppRole, AiEditorCapability, WorkflowLifecyclePhase } from '../../core/types/ai-editor-auth';
 import {
   capabilitiesForRole,
@@ -49,7 +49,7 @@ export async function resolveAiEditorPrincipal(req: Request): Promise<
   }
 
   try {
-    const supabase = getSupabaseClient();
+    const supabase = getDbClient();
     const { data: authData, error: authError } = await supabase.auth.getUser(token);
     if (authError || !authData?.user) {
       return { ok: false, status: 401, error: 'Invalid or expired token' };
@@ -102,7 +102,7 @@ export async function fetchWorkflowLifecyclePhase(workflowId: string | undefined
     return 'draft';
   }
   try {
-    const supabase = getSupabaseClient();
+    const supabase = getDbClient();
     const { data, error } = await supabase.from('workflows').select('status').eq('id', workflowId).maybeSingle();
     if (error || !data) {
       return 'draft';

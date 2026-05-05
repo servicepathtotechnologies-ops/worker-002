@@ -1,7 +1,9 @@
 /**
- * Type shim — replaces @supabase/supabase-js type imports across the worker.
+ * AWS RDS type shim — replaces @supabase/supabase-js type imports across the worker.
  * Mapped via tsconfig paths so `import type { SupabaseClient } from '@supabase/supabase-js'`
  * resolves here at compile time (no actual Supabase SDK required at runtime).
+ *
+ * @deprecated Prefer importing from db-types.ts for new code.
  */
 
 export type SupabaseClient = any;

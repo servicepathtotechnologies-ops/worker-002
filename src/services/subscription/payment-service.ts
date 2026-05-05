@@ -1,5 +1,5 @@
 import * as crypto from 'crypto';
-import { getSupabaseClient } from '../../core/database/supabase-compat';
+import { getDbClient } from '../../core/database/supabase-compat';
 import { config } from '../../core/config';
 import { getSubscriptionService } from './subscription-service';
 
@@ -59,7 +59,7 @@ export interface RazorpayWebhook {
  * Implements retry logic for failed payments and secure signature validation
  */
 export class PaymentService {
-  private supabase = getSupabaseClient();
+  private supabase = getDbClient();
   private subscriptionService = getSubscriptionService();
 
   private readonly PLAN_PRICING = {

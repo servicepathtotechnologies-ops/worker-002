@@ -3,7 +3,7 @@ import { authenticateUser, requireAdmin, requireRole, requireSubscriptionPlan, A
 
 // Mock Supabase client
 jest.mock('../core/database/supabase-compat', () => ({
-  getSupabaseClient: () => ({
+  getDbClient: () => ({
     auth: {
       getUser: jest.fn()
     },

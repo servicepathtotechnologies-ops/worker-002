@@ -18,7 +18,7 @@ const mockGetUser = jest.fn();
 const mockDeleteUser = jest.fn();
 
 jest.mock('../../core/database/supabase-compat', () => ({
-  getSupabaseClient: () => ({
+  getDbClient: () => ({
     auth: {
       getUser: mockGetUser,
       admin: {

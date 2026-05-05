@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 import { getZohoApiBaseUrl, ZohoRegion } from '../shared/zoho-oauth';
 
 /**
@@ -12,7 +12,7 @@ import { getZohoApiBaseUrl, ZohoRegion } from '../shared/zoho-oauth';
 
 export async function zohoStatusHandler(req: Request, res: Response) {
   try {
-    const supabase = getSupabaseClient();
+    const supabase = getDbClient();
 
     const authHeader = req.headers.authorization;
     let userId: string | undefined;
@@ -79,7 +79,7 @@ export async function zohoStatusHandler(req: Request, res: Response) {
 
 export async function zohoConnectHandler(req: Request, res: Response) {
   try {
-    const supabase = getSupabaseClient();
+    const supabase = getDbClient();
 
     const authHeader = req.headers.authorization;
     let userId: string | undefined;
@@ -205,7 +205,7 @@ export async function zohoConnectHandler(req: Request, res: Response) {
 
 export async function zohoTestHandler(req: Request, res: Response) {
   try {
-    const supabase = getSupabaseClient();
+    const supabase = getDbClient();
 
     const authHeader = req.headers.authorization;
     let userId: string | undefined;
@@ -305,7 +305,7 @@ export async function zohoTestHandler(req: Request, res: Response) {
 
 export async function zohoDisconnectHandler(req: Request, res: Response) {
   try {
-    const supabase = getSupabaseClient();
+    const supabase = getDbClient();
 
     const authHeader = req.headers.authorization;
     let userId: string | undefined;

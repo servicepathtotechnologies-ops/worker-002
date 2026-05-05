@@ -9,7 +9,7 @@
  * Requirements: 2.8, 7.1, 7.3
  */
 
-import { Request, Response } from 'express';
+import { Response } from 'express';
 import { randomUUID } from 'crypto';
 import { createHash } from 'crypto';
 import { buildNodeCatalogText } from '../../services/ai/node-catalog-builder';
@@ -21,6 +21,7 @@ import {
 } from '../../services/ai/stages/capability-selection-stage';
 import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 import { getCredentialVault } from '../../services/credential-vault';
+import type { AuthenticatedRequest } from '../../core/middleware/subscription-auth';
 import type {
   CandidateNode,
   CapabilityContainer,
@@ -89,13 +90,14 @@ async function capabilityStepsToContainers(
   return containers;
 }
 
-export default async function analyzeCapabilitySelection(req: Request, res: Response): Promise<void> {
+export default async function analyzeCapabilitySelection(req: AuthenticatedRequest, res: Response): Promise<void> {
   const startedAt = Date.now();
 
   try {
     const body = req.body as Record<string, unknown>;
     const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : '';
-    const userId = typeof body.userId === 'string' ? body.userId.trim() : '';
+    const bodyUserId = typeof body.userId === 'string' ? body.userId.trim() : '';
+    const userId = req.user?.id || bodyUserId;
     const correlationId =
       typeof body.correlationId === 'string' && body.correlationId.trim()
         ? body.correlationId.trim()
@@ -106,7 +108,7 @@ export default async function analyzeCapabilitySelection(req: Request, res: Resp
       return;
     }
     if (!userId) {
-      res.status(400).json({ ok: false, code: 'MISSING_USER_ID', message: 'userId is required' });
+      res.status(401).json({ ok: false, code: 'AUTH_REQUIRED', message: 'Authenticated user is required' });
       return;
     }
 

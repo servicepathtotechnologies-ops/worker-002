@@ -1,4 +1,4 @@
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 import { getDbPool } from '../core/database/db-pool';
 import { config } from '../core/config';
 import type { PoolClient } from 'pg';
@@ -150,7 +150,7 @@ export class SubscriptionService {
         return Array.from(this.planCache.values());
       }
 
-      const supabase = getSupabaseClient();
+      const supabase = getDbClient();
       const { data: plans, error } = await supabase
         .from('subscription_plans')
         .select('*')
@@ -226,7 +226,7 @@ export class SubscriptionService {
    */
   async getUserSubscription(userId: string): Promise<UserSubscription | null> {
     try {
-      const supabase = getSupabaseClient();
+      const supabase = getDbClient();
       
       // Use the database function to get subscription details
       const { data, error } = await supabase
@@ -277,7 +277,7 @@ export class SubscriptionService {
    */
   async ensureFreeSubscription(userId: string): Promise<string> {
     try {
-      const supabase = getSupabaseClient();
+      const supabase = getDbClient();
       
       const { data, error } = await supabase
         .rpc('ensure_free_subscription', { p_uid: userId });
@@ -475,7 +475,7 @@ export class SubscriptionService {
    */
   async cancelSubscription(userId: string, reason?: string): Promise<SubscriptionResult> {
     try {
-      const supabase = getSupabaseClient();
+      const supabase = getDbClient();
       
       // Get current subscription
       const currentSubscription = await this.getUserSubscription(userId);

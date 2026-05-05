@@ -2,7 +2,7 @@
 // Migrated from Supabase Edge Function
 
 import { Request, Response } from 'express';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 import { config } from '../core/config';
 
 /**
@@ -10,7 +10,7 @@ import { config } from '../core/config';
  * Creates an execution and triggers workflow execution
  */
 export default async function webhookTriggerHandler(req: Request, res: Response) {
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient();
 
   try {
     // Extract workflow ID from URL path

@@ -6,7 +6,7 @@
 
 import { Request, Response } from 'express';
 import { getUnifiedMissingItems } from '../services/ai/credential-input-discovery';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 
 export default async function getMissingItemsHandler(req: Request, res: Response) {
   try {
@@ -19,7 +19,7 @@ export default async function getMissingItemsHandler(req: Request, res: Response
     }
 
     // Extract user ID from auth header (optional)
-    const supabase = getSupabaseClient();
+    const supabase = getDbClient();
     const authHeader = req.headers.authorization;
     let userId: string | undefined;
 

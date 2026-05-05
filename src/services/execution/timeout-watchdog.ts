@@ -5,7 +5,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { getSupabaseClient } from '../../core/database/supabase-compat';
+import { getDbClient } from '../../core/database/supabase-compat';
 import { releaseExecutionLock } from './execution-lock';
 import { logExecutionEvent } from './execution-event-logger';
 import { ErrorCode } from '../../core/utils/error-codes';
@@ -21,7 +21,7 @@ const HEARTBEAT_TIMEOUT_SECONDS = 300; // 5 minutes - if no heartbeat for 5 min,
  * @returns Number of stuck executions found and cleaned up
  */
 export async function checkStuckExecutions(
-  supabase: SupabaseClient = getSupabaseClient(),
+  supabase: SupabaseClient = getDbClient(),
   timeoutSeconds: number = DEFAULT_TIMEOUT_SECONDS
 ): Promise<number> {
   try {

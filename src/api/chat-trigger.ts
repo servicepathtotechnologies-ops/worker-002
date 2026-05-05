@@ -2,7 +2,7 @@
 // Handles chat messages and workflow resumption for chat trigger nodes
 
 import { Request, Response } from 'express';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 import { config } from '../core/config';
 import { getChatServer } from '../services/chat/chat-server';
 import { v4 as uuidv4 } from 'uuid';
@@ -12,7 +12,7 @@ import { v4 as uuidv4 } from 'uuid';
  * Get chat configuration and serve chat interface
  */
 export async function getChatConfig(req: Request, res: Response) {
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient();
   const { workflowId, nodeId } = req.params;
 
   try {
@@ -113,7 +113,7 @@ export async function getChatConfig(req: Request, res: Response) {
  * Submit chat message and trigger NEW workflow execution (like webhook)
  */
 export async function submitChatMessage(req: Request, res: Response) {
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient();
   const { workflowId, nodeId } = req.params;
   const { message, sessionId } = req.body;
 

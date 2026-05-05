@@ -70,7 +70,8 @@ export class DistributedOrchestrator {
    */
   async startExecution(
     workflowId: string,
-    inputData: ExecutionInput
+    inputData: ExecutionInput,
+    userId?: string          // ← Bug 1 fix: accept caller's userId so the record is user-scoped
   ): Promise<string> {
     try {
       // 1. Get workflow definition
@@ -80,14 +81,20 @@ export class DistributedOrchestrator {
       }
 
       // 2. Create execution record in DB first (to get executionId)
-      // Use workflow definition ID (UUID) if available, otherwise use workflowId as string
-      const workflowIdForExecution = workflowDef.id || workflowId;
+      // Bug 4 fix: always use the caller-supplied workflowId, not workflowDef.id.
+      // workflowDef.id may come from the workflow_definitions table and differ from the
+      // workflows.id that the rest of the system (lock, event logger, frontend) uses.
+      const workflowIdForExecution = workflowId;
       
       const { data: execution, error: execError } = await this.supabase
         .from('executions')
         .insert({
           workflow_id: workflowIdForExecution,
           status: 'pending',
+          // Bug 1 fix: include user_id so db-proxy user-scoped queries can find this record.
+          // Falls back to undefined (omitted) if no userId is available, preserving
+          // backward-compatibility for any non-authenticated call paths.
+          ...(userId ? { user_id: userId } : {}),
           input: {}, // Will update after storing input
           current_node: 'start',
           started_at: new Date().toISOString(),
@@ -127,6 +134,7 @@ export class DistributedOrchestrator {
           executionId,
           node.id,
           node.data.type,
+          node.data.label || node.id,  // pass label for node_name
           inputRefs, // Pass input references
           'pending'
         );
@@ -277,6 +285,7 @@ export class DistributedOrchestrator {
           executionId,
           nextNode.id,
           nextNode.data.type,
+          nextNode.data.label || nextNode.id,  // pass label for node_name
           nextInput,
           'pending'
         );
@@ -474,6 +483,7 @@ export class DistributedOrchestrator {
     executionId: string,
     nodeId: string,
     nodeType: string,
+    nodeName: string,        // ← added: human-readable label for the UI
     inputRefs: Record<string, unknown>,
     status: string
   ): Promise<string> {
@@ -490,6 +500,7 @@ export class DistributedOrchestrator {
       .insert({
         execution_id: executionId,
         node_id: nodeId,
+        node_name: nodeName,   // ← stored so the UI shows the label, not the raw ID
         node_type: nodeType,
         status: status,
         input_refs: inputRefs,

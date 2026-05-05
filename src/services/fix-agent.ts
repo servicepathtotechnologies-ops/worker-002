@@ -3,7 +3,7 @@ import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../cor
 import { workflowValidator, ValidationResult as WorkflowValidationResult } from './ai/workflow-validator';
 import { credentialDiscoveryPhase, CredentialDiscoveryResult } from './ai/credential-discovery-phase';
 import { LRUNodeOutputsCache } from '../core/cache/lru-node-outputs-cache';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 import { executeNodeDynamically } from '../core/execution/dynamic-node-executor';
 import { resolveConfigTemplates } from '../core/utils/universal-template-resolver';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -187,7 +187,7 @@ export class FixAgent {
     const outputs: Record<string, any> = {};
 
     try {
-      const supabase: SupabaseClient = getSupabaseClient();
+      const supabase: SupabaseClient = getDbClient();
       const cache = new LRUNodeOutputsCache(50);
 
       // Very simple topological-ish order: use original node array order,

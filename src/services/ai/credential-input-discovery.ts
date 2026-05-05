@@ -8,7 +8,7 @@
 import { Workflow } from '../../core/types/ai-types';
 import { CredentialDiscoveryPhase, CredentialRequirement } from './credential-discovery-phase';
 import { workflowLifecycleManager } from '../workflow-lifecycle-manager';
-import { getSupabaseClient } from '../../core/database/supabase-compat';
+import { getDbClient } from '../../core/database/supabase-compat';
 import { isPlaceholderValue } from '../../core/utils/placeholder-filter';
 import { InputControlType } from '../../core/utils/schema-input-control';
 
@@ -124,7 +124,7 @@ export async function getUnifiedMissingItems(
   console.log(`[UnifiedDiscovery] Starting unified discovery for workflow ${workflowId}`);
 
   // Load workflow from database
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient();
   const { data: workflowData, error: workflowError } = await supabase
     .from('workflows')
     .select('*')

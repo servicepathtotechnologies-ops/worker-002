@@ -8,7 +8,7 @@
  */
 
 import { Request, Response } from 'express';
-import { getSupabaseClient } from '../../core/database/supabase-compat';
+import { getDbClient } from '../../core/database/supabase-compat';
 import { resolveGmailCredentials, sendGmailEmail, REQUIRED_GMAIL_SCOPES } from '../../shared/gmail-executor';
 
 export default async function debugGmailSendHandler(req: Request, res: Response) {
@@ -30,7 +30,7 @@ export default async function debugGmailSendHandler(req: Request, res: Response)
     }
     
     // Get user from auth header
-    const supabase = getSupabaseClient();
+    const supabase = getDbClient();
     const authHeader = req.headers.authorization;
     let userId: string | undefined;
     let currentUserId: string | undefined;

@@ -145,7 +145,7 @@ export async function executeViaLegacyExecutor(args: {
     const mergedConfig = { ...filteredBaseConfig, ...filteredConfig } as Record<string, any>;
     const inputSources =
       context && typeof (context as any).resolvedInputSources === 'object'
-        ? ((context as any).resolvedInputSources as Record<string, 'runtime_ai' | 'static_config'>)
+        ? ((context as any).resolvedInputSources as Record<string, 'static_config' | 'template' | 'deterministic_runtime' | 'runtime_ai'>)
         : {};
     for (const [fieldName, value] of Object.entries(context.inputs || {})) {
       if (inputSources[fieldName] === 'runtime_ai') {

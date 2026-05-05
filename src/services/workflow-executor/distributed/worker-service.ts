@@ -13,7 +13,7 @@ import { NodeWorker } from './node-worker';
 import { OllamaWorker } from './workers/ollama-worker';
 import { PassThroughWorker } from './workers/pass-through-worker';
 import { LightricksWorker } from './workers/lightricks-worker';
-import { getSupabaseClient } from '../../../core/database/supabase-compat';
+import { getDbClient } from '../../../core/database/supabase-compat';
 import { createObjectStorageService } from '../object-storage-service';
 import { circuitBreakerManager } from './reliability/circuit-breaker';
 import { getProviderCircuitKeyFromNodeType } from '../../../core/reliability/provider-circuit-key';
@@ -40,7 +40,7 @@ export class WorkerService {
 
   constructor(config: WorkerServiceConfig = {}) {
     this.config = config;
-    this.supabase = getSupabaseClient();
+    this.supabase = getDbClient();
     this.queue = createQueueClient();
     this.storage = new StorageManager(
       this.supabase,

@@ -7,7 +7,7 @@
  */
 
 import { Request, Response } from 'express';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 import crypto from 'crypto';
 
 /**
@@ -119,7 +119,7 @@ export async function twitterAuthorizeHandler(req: Request, res: Response) {
  */
 export async function twitterCallbackHandler(req: Request, res: Response) {
   try {
-    const supabase = getSupabaseClient();
+    const supabase = getDbClient();
     
     // Get user from session
     const authHeader = req.headers.authorization;

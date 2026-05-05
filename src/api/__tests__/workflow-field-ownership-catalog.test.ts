@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import { Request, Response } from 'express';
 import workflowFieldOwnershipCatalogHandler from '../workflow-field-ownership-catalog';
-import { getSupabaseClient } from '../../core/database/supabase-compat';
+import { getDbClient } from '../../core/database/supabase-compat';
 
 jest.mock('../../core/database/supabase-compat');
 
@@ -17,7 +17,7 @@ describe('workflow-field-ownership-catalog', () => {
       eq: jest.fn().mockReturnThis(),
       single: jest.fn(),
     };
-    (getSupabaseClient as jest.Mock).mockReturnValue(mockSupabase);
+    (getDbClient as jest.Mock).mockReturnValue(mockSupabase);
     mockRequest = { params: { workflowId: 'wf_1' } };
     mockResponse = {
       status: (jest.fn().mockReturnThis() as any),

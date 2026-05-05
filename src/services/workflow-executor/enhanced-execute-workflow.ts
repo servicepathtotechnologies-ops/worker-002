@@ -4,7 +4,7 @@
  */
 
 import { Request, Response } from 'express';
-import { getSupabaseClient } from '../../core/database/supabase-compat';
+import { getDbClient } from '../../core/database/supabase-compat';
 import { getExecutionStateManager } from './execution-state-manager';
 import { VisualizationService } from './visualization-service';
 import { WorkflowOrchestrator } from './workflow-orchestrator';
@@ -41,7 +41,7 @@ export async function enhancedExecuteWorkflow(
   } = {}
 ): Promise<void> {
   const { useRealtime = true, useWorkerPool = false } = options;
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient();
   const { workflowId, executionId: providedExecutionId, input = {} } = req.body;
 
   if (!workflowId) {

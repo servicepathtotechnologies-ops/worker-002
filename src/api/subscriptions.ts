@@ -1,11 +1,11 @@
 import { Request, Response } from 'express';
 import { subscriptionService } from '../services/subscription-service';
 import { AuthenticatedRequest } from '../core/middleware/subscription-auth';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 import { queryAsService } from '../core/database/db-pool';
 
 async function ensureUserExists(userId: string, email: string): Promise<void> {
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient();
   await supabase
     .from('users')
     .upsert({ id: userId, email, updated_at: new Date().toISOString() }, { onConflict: 'id' });
@@ -119,7 +119,7 @@ export async function getSubscriptionHistory(req: AuthenticatedRequest, res: Res
     }
 
     const limit = parseInt((req.query.limit as string) || '50', 10);
-    const supabase = getSupabaseClient();
+    const supabase = getDbClient();
 
     const { data: history, error } = await supabase
       .from('subscription_history')
@@ -371,7 +371,7 @@ export async function adminUpgradeUser(req: AuthenticatedRequest, res: Response)
     }
 
     // Log admin action
-    const supabase = getSupabaseClient();
+    const supabase = getDbClient();
     await supabase.from('admin_actions').insert({
       admin_user_id: req.user!.id,
       target_user_id: userId,

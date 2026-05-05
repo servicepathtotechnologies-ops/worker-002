@@ -7,7 +7,7 @@ import { EventEmitter } from 'events';
 import { ExecutionStateManager, NodeStatus } from './execution-state-manager';
 import { VisualizationService } from './visualization-service';
 import { executeNode } from '../../api/execute-workflow';
-import { getSupabaseClient } from '../../core/database/supabase-compat';
+import { getDbClient } from '../../core/database/supabase-compat';
 import { LRUNodeOutputsCache } from '../../core/cache/lru-node-outputs-cache';
 import { executionReliability, RetryConfig } from '../execution-reliability';
 import { workflowCheckpoint } from '../workflow-checkpoint';
@@ -62,7 +62,7 @@ export class WorkflowOrchestrator extends EventEmitter {
     super();
     this.stateManager = stateManager;
     this.visualizationService = visualizationService;
-    this.supabase = getSupabaseClient();
+    this.supabase = getDbClient();
   }
 
   /**

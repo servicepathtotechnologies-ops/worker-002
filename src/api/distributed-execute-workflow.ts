@@ -6,7 +6,7 @@
  */
 
 import { Request, Response } from 'express';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 import { DistributedOrchestrator } from '../services/workflow-executor/distributed/distributed-orchestrator';
 import { QueueClient, createQueueClient } from '../services/workflow-executor/distributed/queue-client';
 import { StorageManager } from '../services/workflow-executor/distributed/storage-manager';
@@ -32,7 +32,7 @@ export default async function distributedExecuteWorkflow(
   req: Request,
   res: Response
 ): Promise<void> {
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient();
   const { workflowId, input = {} } = req.body;
 
   if (!workflowId) {
@@ -78,10 +78,9 @@ export default async function distributedExecuteWorkflow(
     const nodes = workflow.nodes as any[];
     const edges = workflow.edges as any[];
 
-    // ✅ CRITICAL: Validate workflow is ready for execution (same logic as execute-workflow)
     const { workflowLifecycleManager } = await import('../services/workflow-lifecycle-manager');
     const { credentialDiscoveryPhase } = await import('../services/ai/credential-discovery-phase');
-    
+
     // Get current user for credential checks
     let currentUserId: string | undefined;
     try {
@@ -99,121 +98,94 @@ export default async function distributedExecuteWorkflow(
       // Auth is optional
     }
 
-    const workflowForValidation = { nodes, edges };
-    const executionValidation = await workflowLifecycleManager.validateExecutionReady(
-      workflowForValidation,
-      currentUserId
-    );
-
     const workflowStatus = workflow.status || 'draft';
-    const workflowPhase = workflow.phase || workflow.status || 'draft'; // Use phase for execution readiness
-    const credentialDiscovery = await credentialDiscoveryPhase.discoverCredentials(
-      { nodes, edges },
-      currentUserId
-    );
+    const workflowPhase = workflow.phase || workflow.status || 'draft';
+    const isStatusReady = workflowPhase === 'ready_for_execution' || workflowPhase === 'executing';
+
+    // ✅ FAST PATH: Workflow already confirmed ready — skip the expensive 5-layer validation pipeline.
+    // The pipeline checks graph structure which doesn't change at runtime; only re-run it for
+    // un-confirmed workflows (draft/built) where the structure may not have been validated yet.
+    let executionValidation: { ready: boolean; errors: string[]; missingCredentials: string[] };
+    let credentialDiscovery: Awaited<ReturnType<typeof credentialDiscoveryPhase.discoverCredentials>>;
+    let allMissingInputs: ReturnType<typeof workflowLifecycleManager.discoverNodeInputs>['inputs'];
+
+    if (isStatusReady) {
+      // Fast path: trust the phase, only check credentials and inputs (cheap DB queries)
+      [executionValidation, credentialDiscovery] = await Promise.all([
+        Promise.resolve({ ready: true, errors: [], missingCredentials: [] }),
+        credentialDiscoveryPhase.discoverCredentials({ nodes, edges }, currentUserId),
+      ]);
+
+      const nodeInputs = workflowLifecycleManager.discoverNodeInputs({ nodes, edges });
+      allMissingInputs = nodeInputs.inputs.filter(inp => {
+        const node = nodes.find((n: any) => n.id === inp.nodeId);
+        if (!node) return true;
+        const config = node.data?.type === 'if_else'
+          ? normalizeIfElseConditions(node.data?.config || {})
+          : (node.data?.config || {});
+        const value = config[inp.fieldName];
+        if (inp.fieldType === 'array') return inp.required && (!Array.isArray(value) || value.length === 0);
+        return inp.required && (value === undefined || value === null || value === '');
+      });
+    } else {
+      // Full validation path for workflows not yet confirmed as ready
+      const [validationResult, discoveryResult] = await Promise.all([
+        workflowLifecycleManager.validateExecutionReady({ nodes, edges }, currentUserId),
+        credentialDiscoveryPhase.discoverCredentials({ nodes, edges }, currentUserId),
+      ]);
+      executionValidation = validationResult;
+      credentialDiscovery = discoveryResult;
+
+      const nodeInputs = workflowLifecycleManager.discoverNodeInputs({ nodes, edges });
+      const { nodeDefinitionRegistry } = await import('../core/types/node-definition');
+      const typeMismatchInputs: typeof nodeInputs.inputs = [];
+
+      for (const node of nodes) {
+        const nodeType = node.data?.type || node.type;
+        const definition = nodeDefinitionRegistry.get(nodeType);
+        if (!definition) continue;
+        const normalizedConfig = nodeType === 'if_else'
+          ? normalizeIfElseConditions(node.data?.config || {})
+          : (node.data?.config || {});
+        for (const requiredField of definition.requiredInputs) {
+          const value = normalizedConfig[requiredField];
+          if (value === undefined || value === null || value === '') continue;
+          const fieldSchema = definition.inputSchema[requiredField];
+          if (!fieldSchema) continue;
+          const expectedType = fieldSchema.type;
+          const typeMismatch =
+            (expectedType === 'array' && !Array.isArray(value)) ||
+            (expectedType === 'string' && typeof value !== 'string') ||
+            (expectedType === 'number' && typeof value !== 'number') ||
+            (expectedType === 'boolean' && typeof value !== 'boolean') ||
+            (expectedType === 'object' && (typeof value !== 'object' || Array.isArray(value) || value === null));
+          if (typeMismatch) {
+            const existing = nodeInputs.inputs.find(i => i.nodeId === node.id && i.fieldName === requiredField);
+            typeMismatchInputs.push(existing || {
+              nodeId: node.id, nodeType, nodeLabel: node.data?.label || node.id,
+              fieldName: requiredField, fieldType: expectedType,
+              inputType: expectedType === 'number' ? 'number' : expectedType === 'boolean' ? 'select' : 'textarea',
+              description: fieldSchema.description || requiredField, required: true,
+            });
+          }
+        }
+      }
+
+      const missingInputs = nodeInputs.inputs.filter(inp => {
+        const node = nodes.find((n: any) => n.id === inp.nodeId);
+        if (!node) return true;
+        const config = node.data?.type === 'if_else'
+          ? normalizeIfElseConditions(node.data?.config || {})
+          : (node.data?.config || {});
+        const value = config[inp.fieldName];
+        if (inp.fieldType === 'array') return inp.required && (!Array.isArray(value) || value.length === 0);
+        return inp.required && (!value || value === '' || value === null || value === undefined);
+      });
+      allMissingInputs = [...missingInputs, ...typeMismatchInputs];
+    }
+
     const requiredCredentialsCount = credentialDiscovery.requiredCredentials?.length || 0;
     const missingCredentialsCount = credentialDiscovery.missingCredentials?.length || 0;
-    
-    const nodeInputs = workflowLifecycleManager.discoverNodeInputs({ nodes, edges });
-    
-    // ✅ FIX: Also check for type mismatches in required fields
-    // discoverNodeInputs only adds fields that are missing, but we need to check
-    // if existing fields have the correct type (e.g., conditions should be array, not string)
-    const { nodeDefinitionRegistry } = await import('../core/types/node-definition');
-    const typeMismatchInputs: typeof nodeInputs.inputs = [];
-    
-    for (const node of nodes) {
-      const nodeType = node.data?.type || node.type;
-      const definition = nodeDefinitionRegistry.get(nodeType);
-      if (!definition) continue;
-      
-      const config = node.data?.config || {};
-      
-      // ✅ FIX: Normalize If/Else conditions before validation
-      const normalizedConfig = nodeType === 'if_else' 
-        ? normalizeIfElseConditions(config)
-        : config;
-      
-      // Check all required inputs for type mismatches
-      for (const requiredField of definition.requiredInputs) {
-        const value = normalizedConfig[requiredField];
-        
-        // Skip if value is missing (handled by discoverNodeInputs)
-        if (value === undefined || value === null || value === '') {
-          continue;
-        }
-        
-        // Check if value matches expected type from schema
-        const fieldSchema = definition.inputSchema[requiredField];
-        if (fieldSchema) {
-          const expectedType = fieldSchema.type;
-          let typeMismatch = false;
-          
-          if (expectedType === 'array' && !Array.isArray(value)) {
-            typeMismatch = true;
-          } else if (expectedType === 'string' && typeof value !== 'string') {
-            typeMismatch = true;
-          } else if (expectedType === 'number' && typeof value !== 'number') {
-            typeMismatch = true;
-          } else if (expectedType === 'boolean' && typeof value !== 'boolean') {
-            typeMismatch = true;
-          } else if (expectedType === 'object' && (typeof value !== 'object' || Array.isArray(value) || value === null)) {
-            typeMismatch = true;
-          }
-          
-          if (typeMismatch) {
-            // Find the input info from nodeInputs or create a synthetic one
-            const existingInput = nodeInputs.inputs.find(i => i.nodeId === node.id && i.fieldName === requiredField);
-            if (existingInput) {
-              typeMismatchInputs.push(existingInput);
-            } else {
-              // Create synthetic input info for type mismatch
-              typeMismatchInputs.push({
-                nodeId: node.id,
-                nodeType,
-                nodeLabel: node.data?.label || node.id,
-                fieldName: requiredField,
-                fieldType: expectedType,
-                inputType:
-                  expectedType === 'number'
-                    ? 'number'
-                    : expectedType === 'boolean'
-                      ? 'select'
-                      : (expectedType === 'array' || expectedType === 'object' || expectedType === 'json')
-                        ? 'textarea'
-                        : 'text',
-                description: fieldSchema.description || requiredField,
-                required: true,
-              });
-            }
-          }
-        }
-      }
-    }
-    
-    const missingInputs = nodeInputs.inputs.filter(input => {
-      const node = nodes.find(n => n.id === input.nodeId);
-      if (!node) return true;
-      const config = node.data?.config || {};
-      
-      // ✅ FIX: Normalize If/Else conditions before validation
-      // Frontend may send conditions as string, but backend expects array
-      const normalizedConfig = node.data?.type === 'if_else' 
-        ? normalizeIfElseConditions(config)
-        : config;
-      
-      const value = normalizedConfig[input.fieldName];
-      
-      // For array fields (like conditions), check if it's a valid non-empty array
-      if (input.fieldType === 'array') {
-        return input.required && (!Array.isArray(value) || value.length === 0);
-      }
-      
-      return input.required && (!value || value === '' || value === null || value === undefined);
-    });
-    
-    // Combine missing inputs and type mismatch inputs
-    const allMissingInputs = [...missingInputs, ...typeMismatchInputs];
 
     const readinessCheck = {
       workflowId,
@@ -229,8 +201,6 @@ export default async function distributedExecuteWorkflow(
 
     console.log('[DistributedExecuteWorkflow] Readiness check:', JSON.stringify(readinessCheck, null, 2));
 
-    // ✅ CRITICAL: Same readiness checks as execute-workflow - check phase field, not status
-    const isStatusReady = workflowPhase === 'ready_for_execution' || workflowPhase === 'executing';
     const isStatusReadyLegacy = workflowStatus === 'ready' && executionValidation.ready && allMissingInputs.length === 0;
     const credentialsAttached = missingCredentialsCount === 0;
 
@@ -323,7 +293,8 @@ export default async function distributedExecuteWorkflow(
       return;
     }
 
-    // ✅ CRITICAL: Distributed execution locking - prevent double runs
+    // ✅ PRE-FLIGHT: Check for existing active execution BEFORE creating any records.
+    // This prevents phantom queue jobs when the lock check fails after the execution is already queued.
     const { acquireExecutionLock } = await import('../services/execution/execution-lock');
     const { logExecutionEvent } = await import('../services/execution/execution-event-logger');
 
@@ -342,21 +313,88 @@ export default async function distributedExecuteWorkflow(
       storage
     );
 
-    // Start execution (returns immediately - workflow continues via queue)
-    // Note: orchestrator.startExecution creates the execution record
-    const executionId = await orchestrator.startExecution(workflowId, input);
+    // ✅ PRE-FLIGHT: Read current lock state on the workflow row
+    const { data: wfLockCheck } = await supabase
+      .from('workflows')
+      .select('active_execution_id')
+      .eq('id', workflowId)
+      .single();
 
-    // ✅ CRITICAL: Acquire distributed execution lock (atomic)
+    const existingActiveId = wfLockCheck?.active_execution_id as string | null;
+    if (existingActiveId) {
+      const { data: existingExec } = await supabase
+        .from('executions')
+        .select('id, status, last_heartbeat, started_at')
+        .eq('id', existingActiveId)
+        .single();
+
+      const STALE_MS = 5 * 60 * 1000; // 5 minutes
+      const lastHb = existingExec?.last_heartbeat ? new Date(existingExec.last_heartbeat).getTime() : 0;
+      const isReallyRunning =
+        existingExec &&
+        existingExec.status === 'running' &&
+        lastHb > 0 &&
+        Date.now() - lastHb < STALE_MS;
+
+      if (isReallyRunning) {
+        await queue.close();
+        res.status(409).json({
+          code: ErrorCode.RUN_ALREADY_ACTIVE,
+          error: 'Workflow already has an active execution',
+          message: `Workflow is currently executing. Please wait for it to finish.`,
+          details: { workflowId, existingExecutionId: existingActiveId },
+          recoverable: true,
+        });
+        return;
+      }
+
+      // Stale or missing execution — clear the lock before starting
+      console.log(`[DistributedExecuteWorkflow] Clearing stale lock for execution ${existingActiveId}`);
+      await supabase
+        .from('workflows')
+        .update({ active_execution_id: null, updated_at: new Date().toISOString() })
+        .eq('id', workflowId)
+        .eq('active_execution_id', existingActiveId);
+
+      if (existingExec?.status === 'running') {
+        await supabase
+          .from('executions')
+          .update({ status: 'failed', error: 'Cleaned up stale execution', finished_at: new Date().toISOString() })
+          .eq('id', existingActiveId);
+      }
+    }
+
+    // Start execution (returns immediately - workflow continues via queue)
+    // Lock is clear at this point — pre-flight ensured it.
+    // Bug 1 fix: pass the authenticated user's ID (or the workflow owner's ID as fallback)
+    // so the execution record is visible to user-scoped db-proxy queries.
+    const executionId = await orchestrator.startExecution(
+      workflowId,
+      input,
+      currentUserId ?? (workflow as any).user_id
+    );
+
+    // Invalidate executions list Redis cache so the sidebar reflects the new execution
+    try {
+      const { getCacheRedisClient } = await import('../middleware/redisGetCache');
+      const cacheClient = await getCacheRedisClient(process.env.REDIS_URL || 'redis://redis:6379');
+      if (cacheClient) {
+        const keys = await cacheClient.keys('/api/db/executions:*');
+        if (keys.length) await cacheClient.del(keys);
+      }
+    } catch (_) {}
+
+    // ✅ Acquire distributed execution lock (atomic — should always succeed after pre-flight)
     const lockResult = await acquireExecutionLock(supabase, workflowId, executionId);
     if (!lockResult.acquired) {
-      // Clean up execution record
+      // Rare race condition — clean up and return 409
       await supabase.from('executions').delete().eq('id', executionId);
       await queue.close();
-      
+
       res.status(409).json({
         code: ErrorCode.RUN_ALREADY_ACTIVE,
         error: 'Workflow already has an active execution',
-        message: `Cannot start execution - workflow is locked by execution ${lockResult.existingExecutionId}`,
+        message: `Cannot start execution — workflow is locked by execution ${lockResult.existingExecutionId}`,
         details: {
           workflowId,
           executionId,
@@ -380,7 +418,10 @@ export default async function distributedExecuteWorkflow(
       distributed: true,
     });
 
-    // Return execution ID immediately
+    // Capture auth header before the HTTP response is sent (req may be GC'd after res.json)
+    const authHeader = req.headers.authorization;
+
+    // Return execution ID immediately — client starts polling now
     res.json({
       success: true,
       execution_id: executionId,
@@ -388,8 +429,45 @@ export default async function distributedExecuteWorkflow(
       message: 'Workflow execution started. Use /api/execution-status/:id to check progress.',
     });
 
-    // Close queue connection (orchestrator will handle its own connections)
-    await queue.close();
+    // Close queue connection (no longer blocking — response already sent)
+    queue.close().catch(() => {});
+
+    // ✅ BACKGROUND EXECUTION: run the full proven engine after the HTTP response is flushed.
+    // The Redis queue worker is not yet implemented for standard node types (google_sheets, gmail, etc.),
+    // so we fire the existing synchronous execute-workflow engine as a detached background task.
+    // execute-workflow.ts detects the existing executionId via the resume path and runs all nodes.
+    setImmediate(async () => {
+      try {
+        console.log(`[DistributedExecute] 🔵 Starting background execution for ${executionId}`);
+        const { default: executeWorkflow } = await import('./execute-workflow');
+        await executeWorkflow(
+          {
+            body: { workflowId, executionId, input },
+            headers: { authorization: authHeader },
+          } as any,
+          {
+            json: () => {},
+            status: () => ({ json: () => {} }),
+            set: () => {},
+            setHeader: () => {},
+          } as any
+        );
+        console.log(`[DistributedExecute] ✅ Background execution finished for ${executionId}`);
+      } catch (bgErr: any) {
+        console.error(`[DistributedExecute] ❌ Background execution failed for ${executionId}:`, bgErr?.message);
+        try {
+          await supabase
+            .from('executions')
+            .update({
+              status: 'failed',
+              error: bgErr?.message || String(bgErr),
+              finished_at: new Date().toISOString(),
+            })
+            .eq('id', executionId)
+            .eq('status', 'running');
+        } catch (_) {}
+      }
+    });
   } catch (error: any) {
     console.error('[DistributedExecuteWorkflow] ❌ Error:', error);
     
@@ -427,14 +505,19 @@ export async function getExecutionStatus(
   req: Request,
   res: Response
 ): Promise<void> {
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient();
   const { executionId } = req.params;
+  const lite = String(req.query.lite || '').toLowerCase() === '1' || String(req.query.lite || '').toLowerCase() === 'true';
 
   try {
     // Get execution
     const { data: execution, error: execError } = await supabase
       .from('executions')
-      .select('*')
+      .select(lite
+        // Bug 2 fix: use the actual column names written by execute-workflow.ts.
+        // 'finished_at' (not 'completed_at') and 'error' (not 'error_message').
+        ? 'id, workflow_id, status, current_node, started_at, finished_at, error'
+        : '*')
       .eq('id', executionId)
       .single();
 
@@ -446,7 +529,11 @@ export async function getExecutionStatus(
     // Get execution steps
     const { data: steps, error: stepsError } = await supabase
       .from('execution_steps')
-      .select('*')
+      .select(lite
+        // Include input_json and output_json even in lite mode so the frontend can
+        // render the node-by-node data flow (input → output) during live polling.
+        ? 'id, node_id, node_name, node_type, status, error, sequence, started_at, completed_at, input_json, output_json'
+        : '*')
       .eq('execution_id', executionId)
       .order('sequence', { ascending: true });
 
@@ -454,14 +541,17 @@ export async function getExecutionStatus(
       console.error('[GetExecutionStatus] Error fetching steps:', stepsError);
     }
 
-    res.json({
+    const response: Record<string, unknown> = {
       execution_id: executionId,
       status: execution.status,
       workflow_id: execution.workflow_id,
       current_node: execution.current_node,
       started_at: execution.started_at,
-      completed_at: execution.completed_at,
-      error: execution.error || execution.error_message,
+      // Bug 2 fix: map finished_at → completed_at so the frontend's isTerminalStatus check works.
+      // execute-workflow.ts writes 'finished_at'; expose it as 'completed_at' for the polling client.
+      completed_at: execution.finished_at ?? execution.completed_at ?? null,
+      // Bug 2 fix: read 'error' column (not 'error_message') — that's what execute-workflow.ts writes.
+      error: execution.error ?? execution.error_message ?? null,
       steps: steps || [],
       progress: {
         total: steps?.length || 0,
@@ -470,7 +560,11 @@ export async function getExecutionStatus(
         running: steps?.filter((s: any) => s.status === 'running').length || 0,
         pending: steps?.filter((s: any) => s.status === 'pending').length || 0,
       },
-    });
+    };
+    if (!lite) {
+      response.execution = execution;
+    }
+    res.json(response);
   } catch (error: any) {
     console.error('[GetExecutionStatus] ❌ Error:', error);
     res.status(500).json({

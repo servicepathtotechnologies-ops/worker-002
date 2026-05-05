@@ -21,9 +21,9 @@ describe('supabase-compat mutation chains', () => {
   });
 
   it('preserves update operation when select().single() is chained', async () => {
-    const { getSupabaseClient } = require('../supabase-compat');
+    const { getDbClient } = require('../supabase-compat');
 
-    const { data, error } = await getSupabaseClient()
+    const { data, error } = await getDbClient()
       .from('workflows')
       .update({
         status: 'active',
@@ -52,9 +52,9 @@ describe('supabase-compat mutation chains', () => {
   });
 
   it('preserves insert operation when select().single() is chained', async () => {
-    const { getSupabaseClient } = require('../supabase-compat');
+    const { getDbClient } = require('../supabase-compat');
 
-    await getSupabaseClient()
+    await getDbClient()
       .from('workflows')
       .insert({ id: 'wf-1', status: 'draft' })
       .select('id, status')
@@ -66,10 +66,10 @@ describe('supabase-compat mutation chains', () => {
   });
 
   it('serializes durable execution JSON columns before writing to postgres', async () => {
-    const { getSupabaseClient } = require('../supabase-compat');
+    const { getDbClient } = require('../supabase-compat');
     const output = { items: [{ row: 1 }], headers: ['row'] };
 
-    await getSupabaseClient()
+    await getDbClient()
       .from('execution_steps')
       .upsert({
         execution_id: 'exec-1',

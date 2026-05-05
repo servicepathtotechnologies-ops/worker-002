@@ -1,4 +1,4 @@
-/**
+﻿/**
  * DYNAMIC NODE EXECUTOR
  * 
  * This replaces all hardcoded node-specific logic in the execution engine.
@@ -22,7 +22,7 @@ import { NodeExecutionContext, NodeExecutionResult, FieldFillMode, NodeInputFiel
 import { WorkflowNode, Workflow } from '../../core/types/ai-types';
 import { LRUNodeOutputsCache } from '../cache/lru-node-outputs-cache';
 import type { SupabaseClient } from '@supabase/supabase-js';
-// ✅ PRODUCTION-GRADE: Removed normalizeNodeType - node types must be canonical before reaching executor
+// âœ… PRODUCTION-GRADE: Removed normalizeNodeType - node types must be canonical before reaching executor
 import { IntentDrivenJsonRouter, shouldActivateRouter } from '../intent-driven-json-router';
 import { universalNodeAIContext } from '../../services/ai/universal-node-ai-context';
 import { aiFieldDetector } from '../../services/ai/ai-field-detector';
@@ -44,7 +44,7 @@ import { applyDeterministicFieldContracts } from './field-contract-engine';
 import { config as runtimeConfig } from '../config';
 import { verifyAndRepairNodeOutput } from '../../services/ai/ai-output-verifier';
 
-/** Stable nodeOutputs cache keys — see `worker/docs/OBSERVABILITY_CONTRACT.md`. */
+/** Stable nodeOutputs cache keys â€” see `worker/docs/OBSERVABILITY_CONTRACT.md`. */
 export const EXECUTION_OBSERVABILITY_KEYS = {
   resolvedInputs: (nodeId: string) => `__resolved_inputs__:${nodeId}`,
   runtimeResolutionAudit: (nodeId: string) => `__runtime_resolution_audit__:${nodeId}`,
@@ -154,6 +154,7 @@ interface UniversalContractParams {
 
 interface UniversalContractResult {
   resolvedInputs: Record<string, any>;
+  inputSources: Record<string, 'static_config' | 'template' | 'deterministic_runtime' | 'runtime_ai'>;
   runtimeFieldsAudit: string[];
   resolvedRuntimeFieldsAudit: string[];
   missingRuntimeFieldsAudit: string[];
@@ -213,6 +214,99 @@ function isMeaningfulValueForResolution(value: unknown): boolean {
   return true;
 }
 
+function runtimeAutofillEnabled(): boolean {
+  return process.env.ENABLE_RUNTIME_AUTOFILL === 'true';
+}
+
+function getRuntimeAiFields(
+  inputSchema: Record<string, any>,
+  effectiveFillModes: Record<string, FieldFillMode>
+): string[] {
+  return Object.keys(inputSchema || {}).filter((fieldName) => effectiveFillModes[fieldName] === 'runtime_ai');
+}
+
+function pickSchemaFields(inputSchema: Record<string, any>, fieldNames: string[]): Record<string, any> {
+  const picked: Record<string, any> = {};
+  for (const fieldName of fieldNames) {
+    if (inputSchema[fieldName]) picked[fieldName] = inputSchema[fieldName];
+  }
+  return picked;
+}
+
+function findMissingFields(resolved: Record<string, any>, fields: string[]): string[] {
+  return fields.filter((fieldName) => !isMeaningfulValueForResolution(resolved?.[fieldName]));
+}
+
+function firstLineTitle(value: unknown, fallback: string): string {
+  const fromValue = typeof value === 'string' ? value.split(/\r?\n/)[0].trim() : '';
+  const source = fromValue || fallback;
+  return source.trim().replace(/\s+/g, ' ').slice(0, 100);
+}
+
+function applyCostFirstRuntimeFallbacks(params: {
+  resolved: Record<string, any>;
+  runtimeFields: string[];
+  inputSchema: Record<string, any>;
+  upstreamPayload: unknown;
+  workflowIntent: string;
+}): Record<string, any> {
+  const { resolved, runtimeFields, inputSchema, upstreamPayload, workflowIntent } = params;
+  const next = { ...resolved };
+  const upstreamType = getUpstreamNodeTypeFromExecutionGlobal();
+  const narrative = pickPrimaryNarrativeStringFromUpstreamOutput(upstreamType, upstreamPayload);
+  const fallbackIntent = workflowIntent || 'Process the workflow using the configured nodes.';
+
+  for (const fieldName of runtimeFields) {
+    const fieldDef = inputSchema[fieldName] as NodeInputField | undefined;
+    const current = next[fieldName];
+    const missingOrPlaceholder = !isMeaningfulValueForResolution(current) || looksPlaceholderLikeValue(current);
+    if (!missingOrPlaceholder) continue;
+
+    const role = fieldDef?.role;
+    const lower = fieldName.toLowerCase();
+    const stringLike = fieldDef?.type === 'string' || fieldDef?.type === 'expression' || !fieldDef?.type;
+
+    if (
+      stringLike &&
+      narrative &&
+      (role === 'long_body' ||
+        role === 'content' ||
+        role === 'short_summary' ||
+        lower === 'body' ||
+        lower === 'message' ||
+        lower === 'text' ||
+        lower === 'content')
+    ) {
+      next[fieldName] = narrative;
+      continue;
+    }
+
+    if (stringLike && role === 'title_like') {
+      const bodySource =
+        next.body ?? next.message ?? next.text ?? next.content ?? narrative ?? fallbackIntent;
+      next[fieldName] = firstLineTitle(bodySource, fallbackIntent);
+      continue;
+    }
+
+    if (shouldFillRuntimeAiFromWorkflowIntent(fieldName, fieldDef)) {
+      next[fieldName] = fallbackIntent;
+    }
+  }
+
+  fillMissingTitleLikeRuntimeAiFields({
+    resolvedInputs: next,
+    upstreamPayload,
+    inputSchema,
+    effectiveFillModes: runtimeFields.reduce<Record<string, FieldFillMode>>((acc, fieldName) => {
+      acc[fieldName] = 'runtime_ai';
+      return acc;
+    }, {}),
+    workflowIntent,
+  });
+
+  return next;
+}
+
 /**
  * Execute node using dynamic definition from registry
  * 
@@ -226,7 +320,7 @@ export async function executeNodeDynamically(
   const runtimeMarker = 'runtime-marker-2026-03-20-v1';
   const expectedRuntimeMarker = (global as any).__expectedExecutionRuntimeMarker;
   if (expectedRuntimeMarker && expectedRuntimeMarker !== runtimeMarker) {
-    console.warn('[DynamicExecutor] ⚠️ Runtime marker mismatch detected', {
+    console.warn('[DynamicExecutor] âš ï¸ Runtime marker mismatch detected', {
       expectedRuntimeMarker,
       runtimeMarker,
       nodeId: node.id,
@@ -237,13 +331,13 @@ export async function executeNodeDynamically(
   // Step 1: Extract node type
   const nodeType = node.data?.type || node.type;
   
-  // Step 2: ✅ PRODUCTION-GRADE: Strict validation BEFORE registry
+  // Step 2: âœ… PRODUCTION-GRADE: Strict validation BEFORE registry
   // This ensures only canonical node types reach the registry
   try {
     const { assertValidNodeType } = require('../utils/node-authority');
     assertValidNodeType(nodeType);
   } catch (error: any) {
-    console.error(`[DynamicExecutor] ❌ ${error.message}`);
+    console.error(`[DynamicExecutor] âŒ ${error.message}`);
     return {
       _error: error.message,
       _nodeType: nodeType,
@@ -257,7 +351,7 @@ export async function executeNodeDynamically(
   if (!definition) {
     // This should NEVER happen if assertValidNodeType passed
     // If it does, it's an integrity issue
-    const errorMsg = `[DynamicExecutor] ❌ Integrity error: Canonical node type '${nodeType}' not found in registry. This indicates a system initialization failure.`;
+    const errorMsg = `[DynamicExecutor] âŒ Integrity error: Canonical node type '${nodeType}' not found in registry. This indicates a system initialization failure.`;
     console.error(errorMsg);
     return {
       _error: errorMsg,
@@ -265,7 +359,7 @@ export async function executeNodeDynamically(
     };
   }
   
-  console.log(`[DynamicExecutor] ✅ Executing ${nodeType} using definition from registry`);
+  console.log(`[DynamicExecutor] âœ… Executing ${nodeType} using definition from registry`);
   
   // Step 3: Migrate config to current schema version (backward compatibility)
   let config = node.data?.config || {};
@@ -277,12 +371,12 @@ export async function executeNodeDynamically(
   const inputSchema = definition.inputSchema as Record<string, { fillMode?: { default: FieldFillMode; supportsRuntimeAI?: boolean; supportsBuildtimeAI?: boolean } }>;
   const effectiveFillModes = buildEffectiveFillModes(definition.inputSchema, config as Record<string, any>);
   
-  // ✅ ROOT-LEVEL: Auto-fill text fields using AI before validation
+  // âœ… ROOT-LEVEL: Auto-fill text fields using AI before validation
   // This ensures message, subject, body, etc. are auto-generated if empty.
   // Respect registry/UI-driven fill modes so we ONLY auto-fill fields that are
   // allowed to use build-time AI (buildtime_ai_once or runtime_ai) and are not
   // explicitly locked to manual_static.
-  try {
+  if (runtimeAutofillEnabled()) try {
     const aiFields = aiFieldDetector.detectAIFields(node);
     const emptyAIFields = aiFields
       .filter(f => f.shouldAutoGenerate)
@@ -300,7 +394,7 @@ export async function executeNodeDynamically(
       });
     
     if (emptyAIFields.length > 0) {
-      console.log(`[DynamicExecutor] 🤖 Auto-generating ${emptyAIFields.length} text field(s) for ${nodeType}: ${emptyAIFields.join(', ')}`);
+      console.log(`[DynamicExecutor] ðŸ¤– Auto-generating ${emptyAIFields.length} text field(s) for ${nodeType}: ${emptyAIFields.join(', ')}`);
       
       // Get previous node outputs for context
       const previousOutputs: Record<string, any> = {};
@@ -309,7 +403,7 @@ export async function executeNodeDynamically(
         const allOutputs = nodeOutputs.getAll();
         Object.assign(previousOutputs, allOutputs);
       } catch (e) {
-        console.warn(`[DynamicExecutor] ⚠️ Could not get previous outputs for AI context:`, e);
+        console.warn(`[DynamicExecutor] âš ï¸ Could not get previous outputs for AI context:`, e);
       }
       
       // Get user prompt from workflow metadata (if available)
@@ -332,10 +426,10 @@ export async function executeNodeDynamically(
       
       // Update config with AI-generated fields
       config = autoFilledNode.data?.config || config;
-      console.log(`[DynamicExecutor] ✅ AI auto-filled ${emptyAIFields.length} field(s) for ${nodeType}`);
+      console.log(`[DynamicExecutor] âœ… AI auto-filled ${emptyAIFields.length} field(s) for ${nodeType}`);
     }
   } catch (error) {
-    console.warn(`[DynamicExecutor] ⚠️ AI auto-fill failed (non-blocking):`, error);
+    console.warn(`[DynamicExecutor] âš ï¸ AI auto-fill failed (non-blocking):`, error);
     // Continue without auto-fill - use existing config
   }
   
@@ -343,7 +437,7 @@ export async function executeNodeDynamically(
   const validation = unifiedNodeRegistry.validateConfig(nodeType, config);
   
   if (!validation.valid) {
-    console.error(`[DynamicExecutor] ❌ Config validation failed for ${nodeType}:`, validation.errors);
+    console.error(`[DynamicExecutor] âŒ Config validation failed for ${nodeType}:`, validation.errors);
     
     // Single-path strict mode (no env override path).
     const isStrictMode = runtimeConfig.reliability.strictValidation;
@@ -358,7 +452,7 @@ export async function executeNodeDynamically(
     
     // In non-strict mode, log warnings and continue (backward compatibility - NOT RECOMMENDED)
     if (validation.warnings) {
-      console.warn(`[DynamicExecutor] ⚠️  Config warnings for ${nodeType}:`, validation.warnings);
+      console.warn(`[DynamicExecutor] âš ï¸  Config warnings for ${nodeType}:`, validation.warnings);
     }
   }
   
@@ -414,7 +508,7 @@ export async function executeNodeDynamically(
         
         const routerPromise = router.route(routingContext).then((routingResult: any) => {
           filteredOutputs[upstreamNodeId] = routingResult.filteredPayload;
-          console.log(`[DynamicExecutor] 🔄 Router activated for ${upstreamNodeId} → ${node.id}: ${routingResult.explanation}`);
+          console.log(`[DynamicExecutor] ðŸ”„ Router activated for ${upstreamNodeId} â†’ ${node.id}: ${routingResult.explanation}`);
         }).catch(() => {
           // Fallback to original output if routing fails
           filteredOutputs[upstreamNodeId] = output;
@@ -424,7 +518,7 @@ export async function executeNodeDynamically(
       } else {
         // Skip router - use output as-is
         filteredOutputs[upstreamNodeId] = output;
-        console.log(`[DynamicExecutor] ⏭️  Router skipped for ${upstreamNodeId} → ${node.id} (confidence: ${fieldMetadata?.confidence?.toFixed(3) || 'N/A'})`);
+        console.log(`[DynamicExecutor] â­ï¸  Router skipped for ${upstreamNodeId} â†’ ${node.id} (confidence: ${fieldMetadata?.confidence?.toFixed(3) || 'N/A'})`);
       }
     });
     
@@ -432,7 +526,7 @@ export async function executeNodeDynamically(
     await Promise.all(routerPromises);
   }
 
-  // Step 5.5: Raw upstream payload – AI will analyze its keys and produce JSON for this node.
+  // Step 5.5: Raw upstream payload â€“ AI will analyze its keys and produce JSON for this node.
   // Empty-until-runtime: config input fields are left empty at build time; we fill them here from actual previous output.
   const upstreamPayload = input !== undefined && input !== null ? input : getPreviousNodeOutput(nodeOutputs);
 
@@ -519,13 +613,13 @@ export async function executeNodeDynamically(
 
   // Capture resolved runtime inputs for execution observability without leaking secrets.
   // This is used by execution detail views and "last runtime value" previews in UI.
-  let resolvedInputSources: Record<string, 'runtime_ai' | 'static_config'> = {};
+  let resolvedInputSources: Record<string, 'static_config' | 'template' | 'deterministic_runtime' | 'runtime_ai'> = {};
   try {
     resolvedInputSources = {};
     for (const fieldName of Object.keys(resolvedInputs || {})) {
-      resolvedInputSources[fieldName] = effectiveFillModes[fieldName] === 'runtime_ai'
-        ? 'runtime_ai'
-        : 'static_config';
+      resolvedInputSources[fieldName] = contractResult.inputSources[fieldName] || (
+        effectiveFillModes[fieldName] === 'runtime_ai' ? 'deterministic_runtime' : 'static_config'
+      );
     }
     nodeOutputs.set(
       EXECUTION_OBSERVABILITY_KEYS.resolvedInputs(node.id),
@@ -556,13 +650,20 @@ export async function executeNodeDynamically(
     effectiveInput = { ...up, ...res };
     if (Object.keys(res).length > 0) {
       console.log(
-        `[DynamicExecutor] ✅ Merged upstream payload with resolved branching config for ${nodeType} (upstreamKeys=${Object.keys(up).join(', ')}, resolvedKeys=${Object.keys(res).join(', ')})`
+        `[DynamicExecutor] âœ… Merged upstream payload with resolved branching config for ${nodeType} (upstreamKeys=${Object.keys(up).join(', ')}, resolvedKeys=${Object.keys(res).join(', ')})`
       );
     }
   } else if (resolvedInputs && typeof resolvedInputs === 'object' && Object.keys(resolvedInputs).length > 0) {
     effectiveInput = resolvedInputs;
     const prevKeys = typeof upstreamPayload === 'object' && upstreamPayload !== null ? Object.keys(upstreamPayload as object) : [];
-    console.log(`[DynamicExecutor] ✅ AI analyzed previous keys [${prevKeys.join(', ')}] and produced input JSON for ${nodeType}`);
+    const aiFields = Object.entries(contractResult.inputSources)
+      .filter(([, source]) => source === 'runtime_ai')
+      .map(([fieldName]) => fieldName);
+    if (aiFields.length > 0) {
+      console.log(`[DynamicExecutor] Runtime AI resolved fields [${aiFields.join(', ')}] from previous keys [${prevKeys.join(', ')}] for ${nodeType}`);
+    } else {
+      console.log(`[DynamicExecutor] Deterministic input resolution produced input JSON for ${nodeType}`);
+    }
   } else if (upstreamPayload !== undefined && upstreamPayload !== null && typeof upstreamPayload === 'object') {
     const expectedKeys = (node.data?.config as Record<string, unknown>)?._expectedInputKeys as string[] | undefined;
     const { normalizedPayload, normalized } = normalizeRuntimePayload({
@@ -579,7 +680,7 @@ export async function executeNodeDynamically(
     nodeOutputs.set('json', effectiveInput, true);
   }
 
-  // ✅ CRITICAL FIX: Merge AI-generated inputs back into config for UI display
+  // âœ… CRITICAL FIX: Merge AI-generated inputs back into config for UI display
   // This ensures AI-generated values (headers, body, prompts, etc.) are visible in Properties Panel
   // Only merge if the field is empty in config (don't overwrite user-provided values)
   const mergedConfig = { ...migratedConfig };
@@ -597,11 +698,12 @@ export async function executeNodeDynamically(
         (typeof currentValue === 'string' && currentValue.trim() === '') ||
         (typeof currentValue === 'object' && Object.keys(currentValue).length === 0)) {
       mergedConfig[fieldName] = aiValue;
-      console.log(`[DynamicExecutor] ✅ Merged AI-generated value for ${fieldName} into config`);
+      const source = contractResult.inputSources[fieldName] || 'static_config';
+      console.log(`[DynamicExecutor] Merged ${source} value for ${fieldName} into config`);
     }
   }
 
-  // ── runtime_ai resolution contract (spec task 9) ────────────────────────
+  // â”€â”€ runtime_ai resolution contract (spec task 9) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // Resolve all {{$json.*}} template expressions in mergedConfig via
   // universalTemplateResolver BEFORE the legacy executor receives config.
   // This ensures no template syntax leaks into node execution.
@@ -614,7 +716,7 @@ export async function executeNodeDynamically(
       templateResolvedConfig[key] = value;
     }
   }
-  // ─────────────────────────────────────────────────────────────────────────
+  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   // Step 7: Create execution context (rawInput = effective normalized payload for never-failing code)
   const execContext: NodeExecutionContext = {
@@ -644,7 +746,7 @@ export async function executeNodeDynamically(
     const result = await definition.execute(execContext);
     
     if (!result.success) {
-      console.error(`[DynamicExecutor] ❌ Node execution failed:`, result.error);
+      console.error(`[DynamicExecutor] âŒ Node execution failed:`, result.error);
       return {
         _error: result.error?.message || 'Node execution failed',
         _errorCode: result.error?.code,
@@ -661,7 +763,7 @@ export async function executeNodeDynamically(
       const maxAttempts = runtimeConfig.reliability.aiSelfCheckMaxAttempts;
       const strictValidation = runtimeConfig.reliability.strictValidation;
 
-      console.warn(`[DynamicExecutor] ⚠️  Output validation warnings before repair:`, outputValidation.warnings);
+      console.warn(`[DynamicExecutor] âš ï¸  Output validation warnings before repair:`, outputValidation.warnings);
 
       if (selfCheckEnabled) {
         const selfCheck = await verifyAndRepairNodeOutput({
@@ -697,7 +799,7 @@ export async function executeNodeDynamically(
       }
     }
     
-    // ✅ CLEAN OUTPUT FROM CONFIG VALUES (CORE ARCHITECTURE FIX)
+    // âœ… CLEAN OUTPUT FROM CONFIG VALUES (CORE ARCHITECTURE FIX)
     // Remove config values from output to ensure only actual output data is returned
     // This prevents placeholder values and config fields from appearing in output JSON
     const { cleanOutputFromConfig } = await import('../utils/placeholder-filter');
@@ -706,9 +808,9 @@ export async function executeNodeDynamically(
     return cleanedOutput;
     
   } catch (error: any) {
-    console.error(`[DynamicExecutor] ❌ Unhandled error during execution:`, error);
+    console.error(`[DynamicExecutor] âŒ Unhandled error during execution:`, error);
     
-    // ✅ CLEAN ERROR OUTPUT: Don't include config values in error output
+    // âœ… CLEAN ERROR OUTPUT: Don't include config values in error output
     const errorOutput = {
       _error: error.message || 'Unhandled execution error',
       _errorDetails: error,
@@ -742,7 +844,7 @@ async function resolveInputsWithAI(
     previousOutput = overridePreviousOutput;
     (global as any).lastPreviousOutputNodeId = null;
   } else {
-    // ✅ UNIVERSAL FIX: Skip entries that are effectively empty (meta/trigger-only payloads).
+    // âœ… UNIVERSAL FIX: Skip entries that are effectively empty (meta/trigger-only payloads).
     // getMostRecentOutputEntry returns the entry with the highest setTimestamp, but meta keys
     // (e.g. $json, trigger) may be refreshed after the real node output, shadowing it.
     // We iterate from most-recent to least-recent and return the first non-empty real entry.
@@ -780,7 +882,7 @@ async function resolveInputsWithAI(
     isEffectivelyEmptyUpstreamPayload(previousOutput) ||
     isUpstreamNarrativelyThinForRuntimeAi(previousOutput)
   ) {
-    console.log('[DynamicExecutor] ℹ️ Thin upstream payload detected, running intent-only AI input resolution', {
+    console.log('[DynamicExecutor] â„¹ï¸ Thin upstream payload detected, running intent-only AI input resolution', {
       nodeType,
       nodeId: currentNodeId,
     });
@@ -789,7 +891,7 @@ async function resolveInputsWithAI(
     (global as any).lastPreviousOutputNodeId = null;
   }
 
-  // Import AI Input Resolver – AI analyzes actual keys (number, value, number.1, number.list, etc.) and creates input JSON
+  // Import AI Input Resolver â€“ AI analyzes actual keys (number, value, number.1, number.list, etc.) and creates input JSON
   const { aiInputResolver } = await import('../ai-input-resolver');
   
   // Resolve inputs using AI
@@ -797,7 +899,7 @@ async function resolveInputsWithAI(
     const definitionForVerboseLogs = unifiedNodeRegistry.get(nodeType);
     const logVerboseAiResolution = shouldLogVerboseAiInputResolution(definitionForVerboseLogs);
     if (logVerboseAiResolution) {
-      console.log('[DynamicExecutor] 🔍 Starting AI input resolution for node:', {
+      console.log('[DynamicExecutor] ðŸ” Starting AI input resolution for node:', {
         nodeId: currentNodeId,
         nodeType,
         nodeLabel,
@@ -823,7 +925,7 @@ async function resolveInputsWithAI(
     });
 
     if (logVerboseAiResolution) {
-      console.log('[DynamicExecutor] ✅ AI input resolution result:', {
+      console.log('[DynamicExecutor] âœ… AI input resolution result:', {
         nodeId: currentNodeId,
         nodeType,
         mode: resolved.mode,
@@ -845,7 +947,7 @@ async function resolveInputsWithAI(
     const mapped = mapResolvedValueToSchema(resolved.value, inputSchema, resolved.mode);
 
     if (logVerboseAiResolution) {
-      console.log('[DynamicExecutor] ✅ Mapped resolved input to schema:', {
+      console.log('[DynamicExecutor] âœ… Mapped resolved input to schema:', {
         nodeId: currentNodeId,
         mappedKeys: Object.keys(mapped),
         mappedSample: JSON.stringify(mapped).substring(0, 300),
@@ -860,7 +962,7 @@ async function resolveInputsWithAI(
     
     return mapped;
   } catch (error: any) {
-    console.warn(`[DynamicExecutor] ⚠️  AI input resolution failed, using fallback: ${error.message}`);
+    console.warn(`[DynamicExecutor] âš ï¸  AI input resolution failed, using fallback: ${error.message}`);
     
     // Fallback: Use config values as-is (backward compatibility)
     return resolveInputsFromConfig(inputSchema, config, nodeOutputs);
@@ -881,52 +983,89 @@ async function resolveNodeInputsUniversalContract(
   const effectiveFillModes = buildEffectiveFillModes(definition.inputSchema, migratedConfig as Record<string, any>);
   const rawWorkflowIntent = String((global as any).currentWorkflowIntent || '').trim();
 
-  let resolvedInputs = await resolveInputsWithAI(
-    definition.inputSchema as any,
-    migratedConfig,
-    nodeOutputs,
-    node.id,
-    nodeType,
-    node.data?.label,
-    upstreamPayload
-  );
-
   let runtimeFieldsAudit: string[] = [];
   let resolvedRuntimeFieldsAudit: string[] = [];
   let missingRuntimeFieldsAudit: string[] = [];
   let outputFallbackUsed = false;
   let outputFallbackReason: string | undefined;
+  let inputSources: Record<string, 'static_config' | 'template' | 'deterministic_runtime' | 'runtime_ai'> = {};
+  let resolvedInputs: Record<string, any> = resolveInputsFromConfig(
+    runtimeInputSchema,
+    migratedConfig as Record<string, any>,
+    nodeOutputs
+  );
+  for (const fieldName of Object.keys(resolvedInputs)) {
+    const rawConfigValue = (migratedConfig as Record<string, any>)[fieldName];
+    inputSources[fieldName] =
+      typeof rawConfigValue === 'string' && rawConfigValue.includes('{{') ? 'template' : 'static_config';
+  }
 
   if (
     runtimeInputSchema &&
     (upstreamPayload == null || typeof upstreamPayload === 'object' || typeof upstreamPayload === 'string')
   ) {
-    let current = typeof resolvedInputs === 'object' && resolvedInputs !== null ? resolvedInputs : {};
-    const validation = validateResolvedInput(current, runtimeInputSchema, requiredInputs);
-    if (!validation.valid && requiredInputs.length > 0) {
+    const runtimeFields = getRuntimeAiFields(runtimeInputSchema, effectiveFillModes);
+    runtimeFieldsAudit = runtimeFields;
+
+    resolvedInputs = guaranteeInputForSchema({
+      resolved: resolvedInputs,
+      previousOutput: upstreamPayload,
+      inputSchema: runtimeInputSchema,
+      requiredInputs,
+      mappingMetadata: (migratedConfig as Record<string, any>)?._mappingMetadata,
+      fieldFillModes: effectiveFillModes,
+    });
+
+    resolvedInputs = applyCostFirstRuntimeFallbacks({
+      resolved: resolvedInputs,
+      runtimeFields,
+      inputSchema: runtimeInputSchema,
+      upstreamPayload,
+      workflowIntent: rawWorkflowIntent,
+    });
+    for (const fieldName of runtimeFields) {
+      if (isMeaningfulValueForResolution(resolvedInputs[fieldName]) && inputSources[fieldName] !== 'static_config' && inputSources[fieldName] !== 'template') {
+        inputSources[fieldName] = 'deterministic_runtime';
+      }
+    }
+
+    const requiredRuntimeFields = runtimeFields.filter((fieldName) => requiredInputs.includes(fieldName));
+    let missingRequiredRuntimeFields = findMissingFields(resolvedInputs, requiredRuntimeFields);
+
+    if (missingRequiredRuntimeFields.length > 0) {
       try {
-        const retried = await resolveInputsWithAI(
-          definition.inputSchema as any,
+        const aiSchema = pickSchemaFields(runtimeInputSchema, missingRequiredRuntimeFields);
+        const aiResolved = await resolveInputsWithAI(
+          aiSchema,
           migratedConfig,
           nodeOutputs,
           node.id,
           nodeType,
           node.data?.label,
           upstreamPayload,
-          requiredInputs
+          missingRequiredRuntimeFields
         );
-        const retriedCurrent = typeof retried === 'object' && retried !== null ? retried : {};
-        if (validateResolvedInput(retriedCurrent, runtimeInputSchema, requiredInputs).valid) {
-          resolvedInputs = retriedCurrent;
-          current = retriedCurrent;
+        const aiCurrent = typeof aiResolved === 'object' && aiResolved !== null ? aiResolved : {};
+        for (const fieldName of missingRequiredRuntimeFields) {
+          if (isMeaningfulValueForResolution(aiCurrent[fieldName])) {
+            resolvedInputs[fieldName] = aiCurrent[fieldName];
+            inputSources[fieldName] = 'runtime_ai';
+          }
         }
-      } catch {
-        // Keep original and continue through deterministic contract layers.
+        missingRequiredRuntimeFields = findMissingFields(resolvedInputs, requiredRuntimeFields);
+      } catch (runtimeAiError: any) {
+        console.warn('[DynamicExecutor] Runtime AI fallback skipped; using deterministic inputs:', {
+          nodeId: node.id,
+          nodeType,
+          missingRequiredRuntimeFields,
+          code: runtimeAiError?.code,
+          message: runtimeAiError?.message,
+        });
       }
     }
 
     resolvedInputs = guaranteeInputForSchema({
-      resolved: current,
+      resolved: resolvedInputs,
       previousOutput: upstreamPayload,
       inputSchema: runtimeInputSchema,
       requiredInputs,
@@ -941,6 +1080,11 @@ async function resolveNodeInputsUniversalContract(
       effectiveFillModes,
       workflowIntent: rawWorkflowIntent,
     });
+    for (const fieldName of runtimeFields) {
+      if (isMeaningfulValueForResolution(resolvedInputs[fieldName]) && !inputSources[fieldName]) {
+        inputSources[fieldName] = 'deterministic_runtime';
+      }
+    }
 
     const outputNode =
       String(definition.category) === 'output' || definition.category === 'communication';
@@ -978,15 +1122,14 @@ async function resolveNodeInputsUniversalContract(
         const staticValue = (migratedConfig as Record<string, any>)[fieldName];
         if (isMeaningfulStaticValue(staticValue)) {
           (resolvedInputs as Record<string, any>)[fieldName] = staticValue;
+          inputSources[fieldName] =
+            typeof staticValue === 'string' && staticValue.includes('{{') ? 'template' : 'static_config';
         }
       }
     }
 
     applyInputAliasesFromSchema(resolvedInputs as Record<string, unknown>, runtimeInputSchema as Record<string, any>);
 
-    const runtimeFields = Object.keys(runtimeInputSchema).filter(
-      (fieldName) => effectiveFillModes[fieldName] === 'runtime_ai'
-    );
     const resolvedRuntimeFields = runtimeFields.filter((fieldName) =>
       isMeaningfulValueForResolution((resolvedInputs as Record<string, any>)?.[fieldName])
     );
@@ -1013,6 +1156,9 @@ async function resolveNodeInputsUniversalContract(
           narrativeFallback.trim().length > 0
         ) {
           (resolvedInputs as Record<string, any>)[fieldName] = narrativeFallback;
+          if (inputSources[fieldName] !== 'runtime_ai') {
+            inputSources[fieldName] = 'deterministic_runtime';
+          }
           replacedFields.push(fieldName);
         }
       }
@@ -1025,6 +1171,7 @@ async function resolveNodeInputsUniversalContract(
 
   return {
     resolvedInputs,
+    inputSources,
     runtimeFieldsAudit,
     resolvedRuntimeFieldsAudit,
     missingRuntimeFieldsAudit,
@@ -1035,7 +1182,7 @@ async function resolveNodeInputsUniversalContract(
 
 /**
  * Get previous node output from nodeOutputs cache.
- * ✅ UNIVERSAL FIX: Returns the most recently set non-empty, non-meta entry.
+ * âœ… UNIVERSAL FIX: Returns the most recently set non-empty, non-meta entry.
  * Skips entries where isEffectivelyEmptyUpstreamPayload returns true so that
  * meta/trigger-only payloads set after real node output do not shadow the real output.
  */
@@ -1119,7 +1266,7 @@ function mapResolvedValueToSchema(
           if (!hasUpstreamFingerprint && primaryNarrative.length > curTrim.length * 1.1) {
             mapped[fieldName] = primaryNarrative;
             console.log(
-              `[DynamicExecutor] ✅ Replaced ${fieldName} with registry-derived upstream narrative (resolver text did not match upstream fingerprint)`
+              `[DynamicExecutor] âœ… Replaced ${fieldName} with registry-derived upstream narrative (resolver text did not match upstream fingerprint)`
             );
           }
         }
@@ -1132,19 +1279,19 @@ function mapResolvedValueToSchema(
         const fromUpstream = pickPrimaryNarrativeStringFromUpstreamOutput(uType, previousOutput);
         if (fromUpstream) {
           mapped.body = { message: fromUpstream };
-          console.log('[DynamicExecutor] ✅ Mapped primary upstream narrative to HTTP Request body');
+          console.log('[DynamicExecutor] âœ… Mapped primary upstream narrative to HTTP Request body');
         } else if (typeof resolvedValue === 'object' && resolvedValue !== null) {
           const fromResolved = pickPrimaryNarrativeStringFromUpstreamOutput(undefined, resolvedValue);
           if (fromResolved) {
             mapped.body = { message: fromResolved };
-            console.log('[DynamicExecutor] ✅ Mapped primary string from resolved value to HTTP Request body');
+            console.log('[DynamicExecutor] âœ… Mapped primary string from resolved value to HTTP Request body');
           } else if (resolvedValue.body) {
             mapped.body = resolvedValue.body;
           }
         }
         if (!mapped.body && previousOutput && typeof previousOutput === 'object') {
           mapped.body = previousOutput;
-          console.log('[DynamicExecutor] ✅ Using entire previous output as HTTP Request body');
+          console.log('[DynamicExecutor] âœ… Using entire previous output as HTTP Request body');
         }
       }
 
@@ -1241,14 +1388,14 @@ function resolveInputsFromUpstream(
 /**
  * Resolve template expression like {{$json.field}} or {{$json.items[].Column}}
  * 
- * ✅ CORE ARCHITECTURE: Uses universal template resolver
+ * âœ… CORE ARCHITECTURE: Uses universal template resolver
  * This ensures consistent template resolution across ALL nodes
  */
 function resolveTemplateExpression(
   template: string,
   nodeOutputs: LRUNodeOutputsCache
 ): any {
-  // ✅ Use universal template resolver (single source of truth)
+  // âœ… Use universal template resolver (single source of truth)
   const { resolveUniversalTemplate } = require('../utils/universal-template-resolver');
   return resolveUniversalTemplate(template, nodeOutputs);
 }

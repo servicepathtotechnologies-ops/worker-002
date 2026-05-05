@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 import { releaseExecutionLock } from '../services/execution/execution-lock';
 
 export async function cancelExecutionRoute(req: Request, res: Response) {
@@ -10,12 +10,11 @@ export async function cancelExecutionRoute(req: Request, res: Response) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient();
 
-  // Load execution and verify ownership via the parent workflow
   const { data: execution, error: fetchError } = await supabase
     .from('executions')
-    .select('id, status, workflow_id, workflows(user_id)')
+    .select('id, status, workflow_id')
     .eq('id', executionId)
     .single();
 
@@ -23,7 +22,13 @@ export async function cancelExecutionRoute(req: Request, res: Response) {
     return res.status(404).json({ error: 'Execution not found' });
   }
 
-  const ownerUserId = (execution as any).workflows?.user_id;
+  const { data: workflow } = await supabase
+    .from('workflows')
+    .select('user_id')
+    .eq('id', execution.workflow_id)
+    .single();
+
+  const ownerUserId = workflow?.user_id;
   if (ownerUserId !== userId) {
     return res.status(403).json({ error: 'Forbidden' });
   }
@@ -37,17 +42,15 @@ export async function cancelExecutionRoute(req: Request, res: Response) {
 
   const workflowId = execution.workflow_id;
 
-  // Mark execution as failed
   await supabase
     .from('executions')
     .update({
       status: 'failed',
-      error: 'Cancelled by user',
+      error_message: 'Cancelled by user',
       finished_at: new Date().toISOString(),
     })
     .eq('id', executionId);
 
-  // Release the workflow lock (no-op if this execution doesn't hold it)
   if (workflowId) {
     await releaseExecutionLock(supabase, workflowId, executionId);
   }

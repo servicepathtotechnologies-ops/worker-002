@@ -14,7 +14,7 @@
  */
 
 import { Request, Response } from 'express';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 import { workflowLifecycleManager } from '../services/workflow-lifecycle-manager';
 import { ErrorCode, createError } from '../core/utils/error-codes';
 import { validateStructuralReadiness } from '../core/validation/workflow-save-validator';
@@ -133,7 +133,7 @@ export default async function attachCredentialsHandler(req: Request, res: Respon
     console.log(`[AttachCredentials] Received ${Object.keys(credentials).length} credential(s) for workflow ${workflowId}`);
 
     // Get current user
-    const supabase = getSupabaseClient();
+    const supabase = getDbClient();
     const authHeader = req.headers.authorization;
     let userId: string | undefined;
 

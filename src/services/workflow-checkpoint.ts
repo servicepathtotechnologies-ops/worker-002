@@ -11,7 +11,7 @@
  * - Prevent re-running completed nodes
  */
 
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 import { WorkflowNode, WorkflowEdge } from '../core/types/ai-types';
 import { LRUNodeOutputsCache } from '../core/cache/lru-node-outputs-cache';
 
@@ -87,7 +87,7 @@ export class WorkflowCheckpointManager {
     try {
       console.log(`[WorkflowCheckpoint] Saving checkpoint for execution ${executionId} after node ${completedNodeId}`);
       
-      const supabase = getSupabaseClient();
+      const supabase = getDbClient();
       
       // Get existing checkpoint or create new
       const existing = await this.loadCheckpoint(executionId);
@@ -177,7 +177,7 @@ export class WorkflowCheckpointManager {
    */
   async loadCheckpoint(executionId: string): Promise<WorkflowCheckpoint | null> {
     try {
-      const supabase = getSupabaseClient();
+      const supabase = getDbClient();
       
       const { data, error } = await supabase
         .from(this.tableName)
@@ -294,7 +294,7 @@ export class WorkflowCheckpointManager {
         failedNodes.push(nodeId);
       }
       
-      const supabase = getSupabaseClient();
+      const supabase = getDbClient();
       
       const { error: updateError } = await supabase
         .from(this.tableName)
@@ -350,7 +350,7 @@ export class WorkflowCheckpointManager {
         };
       }
       
-      const supabase = getSupabaseClient();
+      const supabase = getDbClient();
       
       const { error } = await supabase
         .from(this.tableName)
@@ -397,7 +397,7 @@ export class WorkflowCheckpointManager {
    */
   async deleteCheckpoint(executionId: string): Promise<boolean> {
     try {
-      const supabase = getSupabaseClient();
+      const supabase = getDbClient();
       
       const { error } = await supabase
         .from(this.tableName)

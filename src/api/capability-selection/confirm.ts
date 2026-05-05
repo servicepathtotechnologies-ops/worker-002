@@ -11,10 +11,11 @@
  * Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 6.6
  */
 
-import { Request, Response } from 'express';
+import { Response } from 'express';
 import { randomUUID } from 'crypto';
 import { unifiedGraphOrchestrator } from '../../core/orchestration/unified-graph-orchestrator';
 import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
+import type { AuthenticatedRequest } from '../../core/middleware/subscription-auth';
 import { runCredentialDiscoveryStage } from '../../services/ai/stages/credential-discovery-stage';
 import { runPropertyPopulationStage } from '../../services/ai/stages/property-population-stage';
 import { runFieldOwnershipStage } from '../../services/ai/stages/field-ownership-stage';
@@ -143,7 +144,7 @@ function buildSwitchContextFromPopulatedNodes(nodes: WorkflowNode[]): SwitchCont
   };
 }
 
-export default async function confirmCapabilityWorkflow(req: Request, res: Response): Promise<void> {
+export default async function confirmCapabilityWorkflow(req: AuthenticatedRequest, res: Response): Promise<void> {
   try {
     const body = req.body as Record<string, unknown>;
     const correlationId =
@@ -153,7 +154,8 @@ export default async function confirmCapabilityWorkflow(req: Request, res: Respo
     const workflow = body.workflow as Workflow | undefined;
     const userPrompt = typeof body.userPrompt === 'string' ? body.userPrompt.trim() : '';
     const structuralPrompt = typeof body.structuralPrompt === 'string' ? body.structuralPrompt.trim() : userPrompt;
-    const userId = typeof body.userId === 'string' ? body.userId.trim() : '';
+    const bodyUserId = typeof body.userId === 'string' ? body.userId.trim() : '';
+    const userId = req.user?.id || bodyUserId;
 
     if (!workflow || !workflow.nodes || !Array.isArray(workflow.nodes)) {
       res.status(400).json({ ok: false, code: 'MISSING_WORKFLOW', message: 'workflow is required' });
@@ -164,7 +166,7 @@ export default async function confirmCapabilityWorkflow(req: Request, res: Respo
       return;
     }
     if (!userId) {
-      res.status(400).json({ ok: false, code: 'MISSING_USER_ID', message: 'userId is required' });
+      res.status(401).json({ ok: false, code: 'AUTH_REQUIRED', message: 'Authenticated user is required' });
       return;
     }
 

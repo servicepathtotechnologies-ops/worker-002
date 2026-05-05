@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 
 /**
  * LinkedIn connection utilities:
@@ -11,7 +11,7 @@ import { getSupabaseClient } from '../core/database/supabase-compat';
 
 export async function linkedinStatusHandler(req: Request, res: Response) {
   try {
-    const supabase = getSupabaseClient();
+    const supabase = getDbClient();
 
     const authHeader = req.headers.authorization;
     let userId: string | undefined;
@@ -77,7 +77,7 @@ export async function linkedinStatusHandler(req: Request, res: Response) {
 
 export async function linkedinDisconnectHandler(req: Request, res: Response) {
   try {
-    const supabase = getSupabaseClient();
+    const supabase = getDbClient();
 
     const authHeader = req.headers.authorization;
     let userId: string | undefined;
@@ -140,7 +140,7 @@ export async function linkedinDisconnectHandler(req: Request, res: Response) {
 
 export async function linkedinTestHandler(req: Request, res: Response) {
   try {
-    const supabase = getSupabaseClient();
+    const supabase = getDbClient();
 
     const authHeader = req.headers.authorization;
     let userId: string | undefined;
@@ -245,7 +245,7 @@ export async function linkedinTestHandler(req: Request, res: Response) {
 
 export async function linkedinRefreshNowHandler(req: Request, res: Response) {
   try {
-    const supabase = getSupabaseClient();
+    const supabase = getDbClient();
 
     const authHeader = req.headers.authorization;
     let userId: string | undefined;

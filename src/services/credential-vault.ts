@@ -13,7 +13,7 @@
  */
 
 import crypto from 'crypto';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 import { config } from '../core/config';
 
 /**
@@ -210,11 +210,11 @@ function sanitizeForLogging(value: any): any {
  * Credential Vault
  */
 export class CredentialVault {
-  private supabase: ReturnType<typeof getSupabaseClient>;
+  private supabase: ReturnType<typeof getDbClient>;
   private tableName = 'credential_vault';
 
   constructor() {
-    this.supabase = getSupabaseClient();
+    this.supabase = getDbClient();
   }
 
   /**

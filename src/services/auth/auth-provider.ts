@@ -1,7 +1,7 @@
 // Auth Provider Service
 // Checks for existing authentication methods (Google OAuth, etc.)
 
-import { getSupabaseClient } from '../../core/database/supabase-compat';
+import { getDbClient } from '../../core/database/supabase-compat';
 
 export interface UserAuthState {
   googleOAuth: {
@@ -23,7 +23,7 @@ export class AuthProvider {
   private userId?: string;
 
   constructor(userId?: string) {
-    this.supabase = getSupabaseClient();
+    this.supabase = getDbClient();
     this.userId = userId;
   }
 

@@ -2,7 +2,7 @@
 // Migrated from Supabase Edge Function
 
 import { Request, Response } from 'express';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 import { corsHeaders } from '../shared/cors';
 
 interface TemplateInput {
@@ -19,7 +19,7 @@ interface TemplateInput {
 }
 
 export default async function adminTemplatesHandler(req: Request, res: Response) {
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient();
 
   try {
     // Get auth token

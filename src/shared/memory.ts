@@ -1,7 +1,7 @@
 // Hybrid Memory Service for CtrlChecks AI
 // Combines Redis (short-term, fast) + PostgreSQL (long-term, semantic search)
 
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 import { getRedisClient, isRedisAvailable } from './redis-client';
 
 export interface MemoryMessage {
@@ -27,7 +27,7 @@ export class HybridMemoryService {
     supabaseKey: string,
     config: MemoryConfig = { type: 'hybrid', ttl: 3600, maxMessages: 100 }
   ) {
-    this.supabase = getSupabaseClient();
+    this.supabase = getDbClient();
     this.config = config;
   }
 

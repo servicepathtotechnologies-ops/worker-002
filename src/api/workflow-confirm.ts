@@ -12,7 +12,7 @@
 import { Request, Response } from 'express';
 import { workflowConfirmationManager, WorkflowState } from '../services/ai/workflow-confirmation-manager';
 import { toolSubstitutionEngine } from '../services/ai/tool-substitution-engine';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 import { nodeLibrary } from '../services/nodes/node-library';
 import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../core/utils/unified-node-type-normalizer';
 import { pendingCredentialStore } from '../services/ai/pending-credential-store';
@@ -166,7 +166,7 @@ async function updateWorkflowStateInDatabase(
   workflow?: { nodes: any[]; edges: any[] },
   userId?: string
 ): Promise<void> {
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient();
 
   try {
     // Check if workflow exists in database
@@ -297,7 +297,7 @@ export async function confirmWorkflow(req: Request, res: Response) {
     }
 
     // Get user ID from auth
-    const supabaseClient = getSupabaseClient();
+    const supabaseClient = getDbClient();
     const { data: { user } } = await supabaseClient.auth.getUser();
     const userId = user?.id;
 

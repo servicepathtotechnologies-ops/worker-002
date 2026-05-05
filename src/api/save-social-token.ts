@@ -6,13 +6,13 @@
  */
 
 import { Request, Response } from 'express';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 import { saveProviderToken, SocialProvider } from '../shared/social-token-manager';
 import { ErrorCode, createError } from '../core/utils/error-codes';
 
 export default async function saveSocialTokenHandler(req: Request, res: Response) {
   try {
-    const supabase = getSupabaseClient();
+    const supabase = getDbClient();
     const user = (req as any).user;
     if (!user?.id) {
       return res.status(401).json({

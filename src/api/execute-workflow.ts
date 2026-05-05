@@ -2,7 +2,7 @@
 // Migrated from Supabase Edge Function with correct state propagation
 
 import { Request, Response } from 'express';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { config } from '../core/config';
 import { LLMAdapter } from '../shared/llm-adapter';
@@ -53,6 +53,7 @@ import { circuitBreakerManager } from '../services/workflow-executor/distributed
 import { getProviderCircuitKeyFromNodeType } from '../core/reliability/provider-circuit-key';
 import { decryptToken } from '../core/utils/token-encryption';
 import { retrieveCredential } from '../core/utils/credential-retriever';
+import { startExecutionTracking, getAndClearExecutionUsage } from '../core/ai/execution-usage-context';
 
 const EXECUTION_RUNTIME_MARKER = 'runtime-marker-2026-03-20-v1';
 
@@ -191,7 +192,7 @@ interface ExecutionLog {
   output?: unknown;
   error?: string;
   resolvedInputs?: Record<string, unknown>;
-  resolvedInputSources?: Record<string, 'runtime_ai' | 'static_config'>;
+  resolvedInputSources?: Record<string, 'static_config' | 'template' | 'deterministic_runtime' | 'runtime_ai'>;
 }
 
 export interface ScheduleWiseNodeParams {
@@ -16643,7 +16644,7 @@ export async function executeNodeLegacy(
  * - Log graph hash to verify fresh data
  */
 export default async function executeWorkflowHandler(req: Request, res: Response) {
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient();
   const { workflowId, executionId: providedExecutionId, input = {}, useQueue } = req.body;
 
   // ✅ TEMP: Structured logging at endpoint start
@@ -16671,11 +16672,13 @@ export default async function executeWorkflowHandler(req: Request, res: Response
       
       // Extract user ID from auth header
       let userId: string | undefined;
+      let authToken: string | undefined;
       try {
         const authHeader = req.headers.authorization;
         if (authHeader && authHeader.startsWith('Bearer ')) {
           const token = authHeader.replace('Bearer ', '').trim();
           if (token) {
+            authToken = token;
             const { data: { user } } = await supabase.auth.getUser(token);
             if (user) {
               userId = user.id;
@@ -16699,6 +16702,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
             'x-internal-chat-execution': req.headers['x-internal-chat-execution'],
             'x-internal-webhook-execution': req.headers['x-internal-webhook-execution'],
           },
+          authToken,
         },
       });
       
@@ -17320,6 +17324,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
       }
 
       executionId = existingExecution.id;
+      startExecutionTracking(executionId!);
 
       // ✅ CRITICAL: Type guard - ensure executionId and workflowId are defined
       if (!executionId || !workflowId) {
@@ -17346,26 +17351,30 @@ export default async function executeWorkflowHandler(req: Request, res: Response
         });
       }
 
-      if (!existingExecution.started_at) {
+      try {
+        if (!existingExecution.started_at) {
+          await supabase
+            .from('executions')
+            .update({ started_at: new Date().toISOString() })
+            .eq('id', executionId);
+        }
+
         await supabase
           .from('executions')
-          .update({ started_at: new Date().toISOString() })
+          .update({
+            status: 'running',
+            last_heartbeat: new Date().toISOString(),
+          })
           .eq('id', executionId);
+
+        await logExecutionEvent(supabase, executionId!, workflowId!, 'RESUME_STARTED', {
+          providedExecutionId,
+          previousStatus: existingExecution.status,
+        });
+      } catch (resumeSetupErr: any) {
+        await releaseExecutionLock(supabase, workflowId, executionId);
+        throw resumeSetupErr;
       }
-
-      await supabase
-        .from('executions')
-        .update({ 
-          status: 'running',
-          last_heartbeat: new Date().toISOString(),
-        })
-        .eq('id', executionId);
-
-      // Log resume event (executionId and workflowId are guaranteed to be defined above)
-      await logExecutionEvent(supabase, executionId!, workflowId!, 'RESUME_STARTED', {
-        providedExecutionId,
-        previousStatus: existingExecution.status,
-      });
     } else {
       // Create new execution
       const startedAt = new Date().toISOString();
@@ -17398,6 +17407,17 @@ export default async function executeWorkflowHandler(req: Request, res: Response
       }
 
       executionId = newExecution.id;
+      startExecutionTracking(executionId!);
+
+      // Invalidate executions list Redis cache so the sidebar reflects the new execution
+      try {
+        const { getCacheRedisClient } = await import('../middleware/redisGetCache');
+        const cacheClient = await getCacheRedisClient(process.env.REDIS_URL || 'redis://redis:6379');
+        if (cacheClient) {
+          const keys = await cacheClient.keys('/api/db/executions:*');
+          if (keys.length) await cacheClient.del(keys);
+        }
+      } catch (_) {}
 
       // ✅ TEMP: Structured logging after execution row created
       console.log('[ExecuteWorkflow] 🟢 EXECUTION_ROW_CREATED', JSON.stringify({
@@ -18304,12 +18324,6 @@ export default async function executeWorkflowHandler(req: Request, res: Response
             console.warn('[ExecuteWorkflow] ⚠️ NODE_STARTED event failed (non-fatal):', eventErr?.message);
           }
 
-          // ✅ CRITICAL: Update heartbeat
-          await supabase
-            .from('executions')
-            .update({ last_heartbeat: new Date().toISOString() })
-            .eq('id', executionId);
-
           // ✅ CRITICAL: Check if node was already completed (resume logic)
           const { data: existingStep } = await supabase
             .from('execution_steps')
@@ -18765,11 +18779,6 @@ export default async function executeWorkflowHandler(req: Request, res: Response
             success: true,
           }, node.id, node.data.label, i + 1);
 
-          // ✅ CRITICAL: Update heartbeat
-          await supabase
-            .from('executions')
-            .update({ last_heartbeat: new Date().toISOString() })
-            .eq('id', executionId);
         } catch (error) {
           const errorObj = error instanceof Error ? error : new Error(String(error));
           console.error(`[Workflow ${workflowId}] [Node ${node.id}] [${node.data.label}] ERROR:`, errorObj.message, errorObj);
@@ -18916,7 +18925,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
     // Attach captured resolved-input metadata to logs before cache is cleared.
     logs = logs.map((log) => {
       const captured = nodeOutputs.get(EXECUTION_OBSERVABILITY_KEYS.resolvedInputs(log.nodeId)) as
-        | { fields?: Record<string, unknown>; sources?: Record<string, 'runtime_ai' | 'static_config'> }
+        | { fields?: Record<string, unknown>; sources?: Record<string, 'static_config' | 'template' | 'deterministic_runtime' | 'runtime_ai'> }
         | undefined;
       if (!captured || typeof captured !== 'object') {
         return log;
@@ -19040,8 +19049,23 @@ export default async function executeWorkflowHandler(req: Request, res: Response
         .eq('id', executionId);
     }
 
-    // 🧠 MEMORY INTEGRATION: Store execution in memory system for analytics and learning
-    try {
+    // Persist AI usage counters (best-effort; won't fail the execution response)
+    if (executionId) {
+      const aiUsage = getAndClearExecutionUsage(executionId);
+      if (aiUsage.calls > 0 || aiUsage.tokens > 0) {
+        try {
+          await supabase
+            .from('executions')
+            .update({ ai_calls: aiUsage.calls, ai_tokens: aiUsage.tokens, ai_usage: aiUsage.stages })
+            .eq('id', executionId);
+        } catch (aiUsageErr) {
+          console.error('[ExecuteWorkflow] Failed to persist AI usage:', aiUsageErr);
+        }
+      }
+    }
+
+    // Optional memory archive. Disabled by default because many environments do not install memory_* tables.
+    if (process.env.ENABLE_MEMORY_ARCHIVE === 'true') try {
       const memoryManager = getMemoryManager();
       
       // Get started_at for execution tracking

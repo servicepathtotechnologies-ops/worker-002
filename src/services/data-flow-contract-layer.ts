@@ -18,7 +18,7 @@
 import { Workflow, WorkflowNode, WorkflowEdge } from '../core/types/ai-types';
 import { executeNode } from '../api/execute-workflow';
 import { LRUNodeOutputsCache } from '../core/cache/lru-node-outputs-cache';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../core/utils/unified-node-type-normalizer';
 import { parseIntent, IntentModel } from '../shared/intent-parser';
 import * as crypto from 'crypto';
@@ -525,7 +525,7 @@ export class DataFlowContractLayer {
     console.log(`[DataFlowContractLayer] Workflow: ${workflow.nodes.length} nodes, ${workflow.edges.length} edges`);
     console.log(`[DataFlowContractLayer] User prompt: "${userPrompt.substring(0, 100)}..."`);
     
-    const supabase = getSupabaseClient();
+    const supabase = getDbClient();
     const executionResults: NodeExecutionResult[] = [];
     const mappings: DataFlowMapping[] = [];
     const intent = parseIntent(userPrompt);

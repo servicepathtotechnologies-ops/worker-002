@@ -3,7 +3,7 @@
 // Handles form submissions and workflow resumption
 
 import { Request, Response } from 'express';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 import { config } from '../core/config';
 import multer from 'multer';
 import { coerceFormFields } from './form-field-coercion';
@@ -123,7 +123,7 @@ function validateFormData(formData: Record<string, any>, fields: any[]): { valid
 
 // GET /api/form-trigger/:workflowId/:nodeId - Get form config
 export async function getFormConfig(req: Request, res: Response) {
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient();
   const { workflowId, nodeId } = req.params;
 
   try {
@@ -207,7 +207,7 @@ export async function getFormConfig(req: Request, res: Response) {
 
 // POST /api/form-trigger/:workflowId/:nodeId/submit - Submit form
 export async function submitForm(req: Request, res: Response) {
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient();
   const { workflowId, nodeId } = req.params;
 
   try {

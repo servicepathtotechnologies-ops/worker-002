@@ -78,7 +78,7 @@ export async function runCapabilitySelectionStage(
   });
 
   let raw: unknown;
-  let text: string;
+  let text = '';
   try {
     raw = await geminiOrchestrator.processRequest(
       'node-suggestion',
@@ -99,12 +99,14 @@ export async function runCapabilitySelectionStage(
       error: 'CAPABILITY_SELECTION_FAILED',
       message,
     });
-    return {
-      ok: false,
-      code: 'CAPABILITY_SELECTION_FAILED',
-      durationMs: Date.now() - startedAt,
-      message,
-    };
+    logger.warn({
+      event: 'ai_pipeline_stage_fallback',
+      stage: 'capability_selection',
+      correlationId,
+      reason: 'LLM_CALL_FAILED',
+    });
+    raw = null;
+    text = message;
   }
 
   let parsed = parseCapabilitySelection(raw) ?? parseCapabilitySelection(text);
@@ -137,12 +139,7 @@ export async function runCapabilitySelectionStage(
         error: 'CAPABILITY_SELECTION_RETRY_FAILED',
         message,
       });
-      return {
-        ok: false,
-        code: 'CAPABILITY_SELECTION_FAILED',
-        durationMs: Date.now() - startedAt,
-        message,
-      };
+      text = message;
     }
   }
 

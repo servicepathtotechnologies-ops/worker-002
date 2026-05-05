@@ -6,7 +6,7 @@
  */
 
 import { Request, Response } from 'express';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 import { getUnifiedMissingItems } from '../services/ai/credential-input-discovery';
 import { workflowLifecycleManager } from '../services/workflow-lifecycle-manager';
 import { workflowValidator } from '../services/ai/workflow-validator';
@@ -79,7 +79,7 @@ export default async function configureWorkflowHandler(req: Request, res: Respon
     console.log(`[ConfigureWorkflow] Configuring workflow ${workflowId}`);
 
     // Get current missing items to validate against
-    const supabase = getSupabaseClient();
+    const supabase = getDbClient();
     const authHeader = req.headers.authorization;
     let userId: string | undefined;
 

@@ -25,7 +25,8 @@
  */
 
 import { Request, Response } from 'express';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { createHash } from 'crypto';
+import { getDbClient } from '../core/database/supabase-compat';
 import { workflowLifecycleManager } from '../services/workflow-lifecycle-manager';
 import { workflowValidator } from '../services/ai/workflow-validator';
 import { nodeLibrary } from '../services/nodes/node-library';
@@ -93,6 +94,30 @@ import {
 } from '../core/ai/build-usage-context';
 import { buildPositionSnapshotFromNodes, mergePreservedNodePositions } from '../core/utils/workflow-node-position';
 import { resolveWorkflowGraphState } from './workflow-graph-state';
+
+function stableStringifyForHash(value: unknown): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringifyForHash(item)).join(',')}]`;
+  }
+  return `{${Object.keys(value as Record<string, unknown>)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringifyForHash((value as Record<string, unknown>)[key])}`)
+    .join(',')}}`;
+}
+
+function hashAttachInputsPayload(params: {
+  workflowId: string;
+  inputs: unknown;
+  originalUserPrompt?: string;
+  fieldOwnershipOverrides?: unknown;
+}): string {
+  return createHash('sha256')
+    .update(stableStringifyForHash(params))
+    .digest('hex');
+}
 
 export function collectEffectiveFillModesForWizard(nodes: any[]): Record<string, string> {
   return (Array.isArray(nodes) ? nodes : []).reduce((acc: Record<string, string>, node: any) => {
@@ -208,7 +233,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
   try {
     // ✅ CRITICAL: Get workflowId from URL params (not body)
     const workflowId = req.params.workflowId || req.body.workflowId;
-    const { inputs, originalUserPrompt: originalUserPromptFromBody } = req.body;
+    const { inputs, originalUserPrompt: originalUserPromptFromBody, fieldOwnershipOverrides } = req.body;
 
     const trimmedOriginalFromRequest =
       typeof originalUserPromptFromBody === 'string' ? originalUserPromptFromBody.trim() : '';
@@ -314,7 +339,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     }
 
     // Get current user
-    const supabase = getSupabaseClient();
+    const supabase = getDbClient();
     const authHeader = req.headers.authorization;
     let userId: string | undefined;
 
@@ -345,6 +370,53 @@ export default async function attachInputsHandler(req: Request, res: Response) {
           ErrorCode.WORKFLOW_NOT_FOUND,
           'Workflow not found',
           { workflowId, error: workflowError?.message }
+        )
+      );
+    }
+
+    const attachPayloadHash = hashAttachInputsPayload({
+      workflowId,
+      inputs: cleanInputs,
+      originalUserPrompt: trimmedOriginalFromRequest,
+      fieldOwnershipOverrides,
+    });
+    const currentGraphForIdempotency = resolveWorkflowGraphState(workflow as any);
+    const currentTopologyForIdempotency = fingerprintWorkflowTopology(
+      currentGraphForIdempotency.nodes || [],
+      currentGraphForIdempotency.edges || []
+    ).fingerprint;
+    const previousAttach = (workflow as any)?.metadata?.lastAttachInputs;
+    if (
+      previousAttach &&
+      typeof previousAttach === 'object' &&
+      previousAttach.payloadHash === attachPayloadHash &&
+      previousAttach.topologyFingerprint === currentTopologyForIdempotency
+    ) {
+      console.log('[AttachInputs] Idempotent duplicate payload, returning cached success:', {
+        workflowId,
+        payloadHash: attachPayloadHash.slice(0, 12),
+      });
+      return res.status(200).json({
+        success: true,
+        idempotent: true,
+        workflowId,
+        status: workflow.status,
+        phase: workflow.phase,
+        workflow,
+      });
+    }
+
+    if ((workflow as any).active_execution_id || ['executing', 'running'].includes(String(workflow.phase || workflow.status || '').toLowerCase())) {
+      return res.status(409).json(
+        createError(
+          ErrorCode.PHASE_LOCKED,
+          'Workflow is currently executing. Cannot attach inputs.',
+          {
+            workflowId,
+            activeExecutionId: (workflow as any).active_execution_id,
+            currentPhase: workflow.phase || workflow.status,
+          },
+          true
         )
       );
     }
@@ -1103,6 +1175,14 @@ export default async function attachInputsHandler(req: Request, res: Response) {
               
               // SPECIAL CASE: For Google resource IDs in nested format, extract from URLs
               let fieldValue: any = fieldValueRaw;
+              if (
+                (fieldName === 'spreadsheetId' || fieldName === 'documentId' || fieldName === 'fileId') &&
+                typeof fieldValueRaw === 'string' &&
+                fieldValueRaw.trim() === ''
+              ) {
+                console.log(`[AttachInputs] Skipping empty ${fieldName} for node ${node.id}`);
+                continue;
+              }
               if (typeof fieldValueRaw === 'string') {
                 try {
                   const { extractSpreadsheetId, extractDocumentId, extractFileId } = require('../shared/google-api-utils');
@@ -1747,6 +1827,14 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       attachInputsPositionSnapshot
     );
     const edgesToSave = finalNormalizedGraph.edges;
+    metadataToPersist = {
+      ...metadataToPersist,
+      lastAttachInputs: {
+        payloadHash: attachPayloadHash,
+        topologyFingerprint: fingerprintWorkflowTopology(nodesToSave, edgesToSave).fingerprint,
+        appliedAt: new Date().toISOString(),
+      },
+    };
     if (isPostFreezeReadonly) {
       const baselineNodeById = new Map(
         (normalizedGraph.nodes || []).map((n: any) => [String(n?.id || ''), n])

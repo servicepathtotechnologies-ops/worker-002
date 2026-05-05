@@ -9,7 +9,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { getSupabaseClient } from '../../../../core/database/supabase-compat';
+import { getDbClient } from '../../../../core/database/supabase-compat';
 import { QueueClient, createQueueClient, NodeJob } from '../queue-client';
 import { DistributedOrchestrator } from '../distributed-orchestrator';
 import { StorageManager } from '../storage-manager';
@@ -26,7 +26,7 @@ describe('Durable Execution Integration Tests', () => {
   let executionId: string;
 
   beforeEach(async () => {
-    supabase = getSupabaseClient();
+    supabase = getDbClient();
     queue = createQueueClient();
     await queue.connect();
 

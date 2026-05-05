@@ -25,7 +25,7 @@ import { unifiedNormalizeNodeType } from '../core/utils/unified-node-type-normal
 // resolveNodeType delegates to unified-node-registry.resolveAlias (single source of truth)
 import { resolveNodeType } from '../core/utils/node-type-resolver-util';
 import { NodeResolver } from './ai/node-resolver';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 import { planWorkflowSpecFromPrompt } from './ai/smart-planner-adapter';
 import { mergePrimaryPlannerPrompt } from './ai/planner-prompt-merge';
 import type { WorkflowSpec } from '../planner/types';
@@ -1127,7 +1127,7 @@ export class WorkflowLifecycleManager {
     let userId: string | undefined = constraints?.vaultUserId;
     if (!userId && constraints?.authToken) {
       try {
-        const supabase = getSupabaseClient();
+        const supabase = getDbClient();
         const { data: { user }, error: authError } = await supabase.auth.getUser(constraints.authToken);
         if (!authError && user) {
           userId = user.id;

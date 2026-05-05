@@ -16,7 +16,7 @@
 
 import { WorkflowNode } from '../../core/types/ai-types';
 import { NodeLibrary } from '../nodes/node-library';
-import { getSupabaseClient } from '../../core/database/supabase-compat';
+import { getDbClient } from '../../core/database/supabase-compat';
 import { connectorRegistry } from '../connectors/connector-registry';
 import { getCredentialVault, CredentialAccessContext } from '../credential-vault';
 import { unifiedNormalizeNodeType } from '../../core/utils/unified-node-type-normalizer';
@@ -91,11 +91,11 @@ export function getCredentialContractsForNode(nodeType: string): Array<{
 
 export class CredentialResolver {
   private nodeLibrary: NodeLibrary;
-  private supabase: ReturnType<typeof getSupabaseClient>;
+  private supabase: ReturnType<typeof getDbClient>;
 
   constructor(nodeLibrary: NodeLibrary) {
     this.nodeLibrary = nodeLibrary;
-    this.supabase = getSupabaseClient();
+    this.supabase = getDbClient();
   }
 
   /**

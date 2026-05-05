@@ -3,7 +3,7 @@
 
 import { Request, Response } from 'express';
 import { chatbotPageGenerator } from '../services/chatbot-page-generator';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 import { HybridMemoryService } from '../shared/memory';
 import { config } from '../core/config';
 
@@ -35,7 +35,7 @@ export async function handleChatbotMessage(req: Request, res: Response) {
       return res.status(400).json({ error: 'user_message is required' });
     }
 
-    const supabase = getSupabaseClient();
+    const supabase = getDbClient();
     
     // Fetch workflow
     const { data: workflow, error } = await supabase

@@ -2,7 +2,7 @@
 // Migrated from Supabase Edge Function
 // Simplified version - full implementation available in functions/_shared/google-sheets.ts
 
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 import { config } from '../core/config';
 import { decryptToken, encryptToken } from '../core/utils/token-encryption';
 import { resolveOAuthTokenString } from './credential-resolver';

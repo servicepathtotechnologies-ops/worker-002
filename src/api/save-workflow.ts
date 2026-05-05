@@ -6,7 +6,7 @@
  */
 
 import { Request, Response } from 'express';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 import { validateWorkflowForSave, normalizeWorkflowForSave } from '../core/validation/workflow-save-validator';
 import { ErrorCode } from '../core/utils/error-codes';
 import type { WorkflowBuildManifestV1 } from '../core/types/workflow-build-manifest';
@@ -37,7 +37,7 @@ interface WorkflowEdge {
  * POST /api/save-workflow
  */
 export default async function saveWorkflowHandler(req: Request, res: Response) {
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient();
   
   // Require authenticated user for workflow creation/updates.
   // Do NOT require global Google OAuth at save-time; credentials are node/provider-specific.

@@ -281,6 +281,7 @@ export class RecoveryManager {
         executionId,
         nextNode.id,
         nextNode.data.type,
+        nextNode.data.label || nextNode.id,
         nextInput,
         'pending'
       );
@@ -325,6 +326,7 @@ export class RecoveryManager {
         executionId,
         node.id,
         node.data.type,
+        node.data.label || node.id,
         inputRefs,
         'pending'
       );

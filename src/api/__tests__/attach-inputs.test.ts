@@ -14,7 +14,7 @@ import attachInputsHandler, {
   mergeOwnershipUnlockInputsForNode,
   normalizeSwitchCasesInput,
 } from '../attach-inputs';
-import { getSupabaseClient } from '../../core/database/supabase-compat';
+import { getDbClient } from '../../core/database/supabase-compat';
 
 const mkNode = (
   id: string,
@@ -55,7 +55,7 @@ describe('Attach Inputs - Normalization and Validation', () => {
       update: jest.fn().mockReturnThis(),
     };
 
-    (getSupabaseClient as jest.Mock).mockReturnValue(mockSupabase);
+    (getDbClient as jest.Mock).mockReturnValue(mockSupabase);
 
     mockRequest = {
       body: {},

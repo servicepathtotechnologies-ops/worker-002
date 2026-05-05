@@ -1,4 +1,4 @@
-import { getSupabaseClient } from '../../core/database/supabase-compat';
+import { getDbClient } from '../../core/database/supabase-compat';
 import { getRedisClient } from '../../shared/redis-client';
 import { getSubscriptionService, LimitCheckResult, EnforcementResult, UsageStats } from './subscription-service';
 
@@ -16,7 +16,7 @@ export interface WorkflowLimitConfig {
  * Provides atomic workflow count increment operations
  */
 export class WorkflowLimitService {
-  private supabase = getSupabaseClient();
+  private supabase = getDbClient();
   private subscriptionService = getSubscriptionService();
   private readonly CACHE_TTL = 300; // 5 minutes
   private readonly LIMIT_CACHE_PREFIX = 'workflow:limit:';

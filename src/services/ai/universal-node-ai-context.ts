@@ -11,6 +11,7 @@ import { nodeLibrary } from '../nodes/node-library';
 import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 import { geminiOrchestrator } from './gemini-orchestrator';
 import { aiFieldDetector } from './ai-field-detector';
+import { compactForAiPrompt } from '../../core/ai-input-resolver';
 
 export interface NodeAIContext {
   nodeType: string;
@@ -99,7 +100,7 @@ NODE CONTEXT:
 USER INTENT: "${context.userPrompt}"
 
 AVAILABLE DATA:
-${JSON.stringify(context.availableData, null, 2)}
+${compactForAiPrompt(context.availableData)}
 
 TASK: Generate appropriate text values for the following fields:
 ${fieldsToGenerate.map(f => `- ${f}`).join('\n')}
@@ -116,7 +117,9 @@ Example: { "message": "Generated message text", "subject": "Generated subject" }
         },
         {
           temperature: 0.7,
-          max_tokens: 1000,
+          max_tokens: Number.parseInt(process.env.WORKFLOW_RUNTIME_AI_MAX_OUTPUT_TOKENS || '500', 10) || 500,
+          usageStage: 'runtime_autofill',
+          enforceExecutionBudget: true,
         }
       );
       
@@ -176,7 +179,7 @@ Example: { "message": "Generated message text", "subject": "Generated subject" }
     const data: Record<string, any> = {};
     
     // Add previous node outputs
-    Object.assign(data, previousOutputs);
+    Object.assign(data, compactPreviousOutputs(previousOutputs));
     
     // Add workflow metadata
     data.workflowId = workflow.metadata?.workflowId || workflow.metadata?.id || 'unknown';
@@ -243,3 +246,15 @@ Example: { "message": "Generated message text", "subject": "Generated subject" }
 
 // Export singleton instance
 export const universalNodeAIContext = new UniversalNodeAIContext();
+
+function compactPreviousOutputs(previousOutputs: Record<string, any>): Record<string, any> {
+  const compacted: Record<string, any> = {};
+  for (const [key, value] of Object.entries(previousOutputs || {})) {
+    try {
+      compacted[key] = JSON.parse(compactForAiPrompt(value, 800));
+    } catch {
+      compacted[key] = compactForAiPrompt(value, 800);
+    }
+  }
+  return compacted;
+}

@@ -5,7 +5,7 @@
  * This ensures the database schema is always up-to-date.
  */
 
-import { getSupabaseClient } from './supabase-compat';
+import { getDbClient } from './supabase-compat';
 
 export interface MigrationCheckResult {
   applied: boolean;
@@ -18,7 +18,7 @@ export interface MigrationCheckResult {
  */
 export async function checkWorkflowsSchemaColumns(): Promise<MigrationCheckResult> {
   try {
-    const supabase = getSupabaseClient();
+    const supabase = getDbClient();
     
     // Check all three columns by attempting to query them
     const { error: checkError } = await supabase

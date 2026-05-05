@@ -2,10 +2,10 @@
 // Returns stored credentials for LinkedIn/Google integrations
 
 import { Request, Response } from 'express';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 
 export default async function getCredentialsHandler(req: Request, res: Response) {
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient();
 
   try {
     const { service } = req.query;

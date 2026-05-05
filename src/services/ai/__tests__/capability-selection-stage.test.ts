@@ -434,6 +434,26 @@ describe('CapabilitySelectionStage', () => {
     expect(result.steps.every((s) => s.ambiguous === false)).toBe(true);
   });
 
+  it('falls back to deterministic registry selection when the AI call fails', async () => {
+    mockedProcessRequest.mockRejectedValue(new Error('provider unavailable'));
+
+    const result = await runCapabilitySelectionStage({
+      intent: 'Get rows from Google Sheets and send the result to Gmail',
+      triggerType: 'manual_trigger',
+      actions: ['get rows from Google Sheets', 'send the result to Gmail'],
+      dataFlows: [],
+      constraints: [],
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.steps.map((s) => s.defaultSuggestedNodeType)).toEqual([
+      'manual_trigger',
+      'google_sheets',
+      'google_gmail',
+    ]);
+  });
+
   it('adds a registry trigger step when AI omits the trigger', async () => {
     mockSteps([
       {

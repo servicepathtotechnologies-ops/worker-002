@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 import { buildWorkflowFieldCatalog } from '../services/ai/workflow-field-catalog';
 import { unifiedNodeRegistry } from '../core/registry/unified-node-registry';
 
@@ -27,7 +27,7 @@ export default async function workflowFieldOwnershipCatalogHandler(req: Request,
       return res.status(400).json({ error: 'workflowId is required' });
     }
 
-    const supabase = getSupabaseClient();
+    const supabase = getDbClient();
     const { data: workflow, error } = await supabase
       .from('workflows')
       .select('id, nodes, edges')

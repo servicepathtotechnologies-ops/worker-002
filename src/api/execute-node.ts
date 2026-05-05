@@ -3,7 +3,7 @@
 // Uses the same execution engine as full workflow execution
 
 import { Request, Response } from 'express';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 import { executeNode } from './execute-workflow';
 import { LRUNodeOutputsCache } from '../core/cache/lru-node-outputs-cache';
 
@@ -24,7 +24,7 @@ interface WorkflowNode {
  * Uses the same execution engine as full workflow execution
  */
 export default async function executeNodeHandler(req: Request, res: Response) {
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient();
   const { runId, nodeId, nodeType, config: nodeConfig, input, workflowId } = req.body;
 
   console.log(`[DEBUG] Execute node request:`, {

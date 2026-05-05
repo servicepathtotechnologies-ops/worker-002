@@ -8,7 +8,7 @@ import {
 
 // Minimal mocks for Supabase client and fetch
 jest.mock('../../core/database/supabase-compat', () => ({
-  getSupabaseClient: () => ({
+  getDbClient: () => ({
     auth: {
       getUser: jest.fn().mockResolvedValue({ data: { user: null }, error: null }),
     },

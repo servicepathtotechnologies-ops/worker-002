@@ -9,11 +9,11 @@ import { Request, Response } from 'express';
 import executeWorkflowHandler from '../execute-workflow';
 import distributedExecuteWorkflow from '../distributed-execute-workflow';
 import { enhancedExecuteWorkflow } from '../../services/workflow-executor/enhanced-execute-workflow';
-import { getSupabaseClient } from '../../core/database/supabase-compat';
+import { getDbClient } from '../../core/database/supabase-compat';
 
 // Mock Supabase client
 jest.mock('../../core/database/supabase-compat', () => ({
-  getSupabaseClient: jest.fn(),
+  getDbClient: jest.fn(),
 }));
 
 // Mock other dependencies
@@ -70,7 +70,7 @@ describe('ExecuteWorkflow Confirmation Guard', () => {
       },
     };
 
-    (getSupabaseClient as jest.Mock).mockReturnValue(mockSupabase);
+    (getDbClient as jest.Mock).mockReturnValue(mockSupabase);
 
     // Setup mock request
     mockRequest = {

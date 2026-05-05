@@ -87,6 +87,8 @@ export class GeminiOrchestrator {
         mimeType?: 'application/json' | 'text/plain';
         schema?: Record<string, unknown>;
       };
+      usageStage?: string;
+      enforceExecutionBudget?: boolean;
     }
   ): Promise<any> {
     const startTime = Date.now();
@@ -126,6 +128,8 @@ export class GeminiOrchestrator {
           maxTokens: options?.max_tokens ?? this.getDefaultMaxTokens(type),
           stream: options?.stream ?? false,
           structuredOutput: options?.structuredOutput,
+          usageStage: options?.usageStage,
+          enforceExecutionBudget: options?.enforceExecutionBudget,
         }
       );
 
@@ -249,6 +253,8 @@ export class GeminiOrchestrator {
         mimeType?: 'application/json' | 'text/plain';
         schema?: Record<string, unknown>;
       };
+      usageStage?: string;
+      enforceExecutionBudget?: boolean;
     },
     maxRetries: number = 3
   ): Promise<any> {
@@ -266,6 +272,8 @@ export class GeminiOrchestrator {
           maxTokens: options.maxTokens,
           stream: options.stream,
           structuredOutput: options.structuredOutput,
+          usageStage: options.usageStage,
+          enforceExecutionBudget: options.enforceExecutionBudget,
         });
 
         return response;

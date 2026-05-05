@@ -2,13 +2,13 @@ import { Request, Response } from 'express';
 import { paymentService } from '../services/payment-service';
 import { subscriptionService } from '../services/subscription-service';
 import { AuthenticatedRequest } from '../core/middleware/subscription-auth';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 
 /**
  * Ensure user exists in public.users — auto-creates if missing
  */
 async function ensureUserExists(userId: string, email: string): Promise<void> {
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient();
   await supabase
     .from('users')
     .upsert({ id: userId, email, updated_at: new Date().toISOString() }, { onConflict: 'id' });

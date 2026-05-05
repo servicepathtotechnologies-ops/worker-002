@@ -28,6 +28,7 @@ export interface IntentStageResult {
   intent: StructuredIntent;
   durationMs: number;
   llmCall: { model: string; temperature: number; promptTokens: number; completionTokens: number };
+  fallback?: boolean;
 }
 
 export interface IntentStageError {
@@ -75,7 +76,16 @@ export async function runIntentStage(
     text = typeof raw === 'string' ? raw : JSON.stringify(raw);
   } catch (err) {
     logger.error({ event: 'ai_pipeline_stage_error', stage: 'intent', correlationId, error: 'LLM_CALL_FAILED', message: String(err) });
-    return { ok: false, code: 'INVALID_LLM_RESPONSE', rawResponse: String(err), durationMs: Date.now() - startedAt };
+    return buildFallbackIntentStageResult({
+      userPrompt,
+      systemPrompt,
+      rawResponse: String(err),
+      startedAt,
+      model,
+      temperature,
+      correlationId,
+      reason: 'LLM_CALL_FAILED',
+    });
   }
 
   const durationMs = Date.now() - startedAt;
@@ -114,7 +124,49 @@ export async function runIntentStage(
   }
 
   logger.error({ event: 'ai_pipeline_stage_error', stage: 'intent', correlationId, error: 'INVALID_LLM_RESPONSE', llmResponse: text2 });
-  return { ok: false, code: 'INVALID_LLM_RESPONSE', rawResponse: text2, durationMs: Date.now() - startedAt };
+  return buildFallbackIntentStageResult({
+    userPrompt,
+    systemPrompt,
+    rawResponse: text2,
+    startedAt,
+    model,
+    temperature,
+    correlationId,
+    reason: 'INVALID_LLM_RESPONSE',
+  });
+}
+
+function buildFallbackIntentStageResult(params: {
+  userPrompt: string;
+  systemPrompt: string;
+  rawResponse: string;
+  startedAt: number;
+  model: string;
+  temperature: number;
+  correlationId?: string;
+  reason: string;
+}): IntentStageResult {
+  const fallbackIntent = buildDeterministicIntent(params.userPrompt);
+  logger.warn({
+    event: 'ai_pipeline_stage_fallback',
+    stage: 'intent',
+    correlationId: params.correlationId,
+    reason: params.reason,
+    outputSummary: `actions=${fallbackIntent.actions.length}`,
+  });
+
+  return {
+    ok: true,
+    intent: fallbackIntent,
+    durationMs: Date.now() - params.startedAt,
+    fallback: true,
+    llmCall: {
+      model: params.model,
+      temperature: params.temperature,
+      promptTokens: Math.ceil(params.systemPrompt.length / 4),
+      completionTokens: Math.ceil(params.rawResponse.length / 4),
+    },
+  };
 }
 
 function stripMarkdownFences(text: string): string {
@@ -181,4 +233,35 @@ function tryParsePartialIntent(partial: string): StructuredIntent | null {
   } catch {
     return null;
   }
+}
+
+function buildDeterministicIntent(userPrompt: string): StructuredIntent {
+  const prompt = userPrompt.trim();
+  const triggerType = inferTriggerType(prompt);
+  const actions = extractActionPhrases(prompt);
+
+  return {
+    intent: prompt,
+    triggerType,
+    actions: actions.length > 0 ? actions : [prompt],
+    dataFlows: [],
+    constraints: [],
+  };
+}
+
+function inferTriggerType(prompt: string): StructuredIntent['triggerType'] {
+  const text = prompt.toLowerCase();
+  if (/\b(webhook|api call|http request|incoming request)\b/.test(text)) return 'webhook';
+  if (/\b(form|submission|submitted)\b/.test(text)) return 'form';
+  if (/\b(chat|message from user|conversation)\b/.test(text)) return 'chat_trigger';
+  if (/\b(schedule|scheduled|every|daily|weekly|monthly|cron)\b/.test(text)) return 'schedule';
+  return 'manual_trigger';
+}
+
+function extractActionPhrases(prompt: string): string[] {
+  return prompt
+    .split(/(?:\b(?:and then|then|after that|afterwards)\b|[,;])/i)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0)
+    .slice(0, 12);
 }

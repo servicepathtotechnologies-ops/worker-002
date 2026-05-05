@@ -1,7 +1,7 @@
 // Scheduler Service
 // Basic cron job execution for scheduled workflows
 
-import { getSupabaseClient } from '../../core/database/supabase-compat';
+import { getDbClient } from '../../core/database/supabase-compat';
 import cron from 'node-cron';
 
 interface ScheduledWorkflow {
@@ -32,7 +32,7 @@ class SchedulerService {
   private initializeSupabase() {
     if (!this.initialized) {
       try {
-        this.supabase = getSupabaseClient();
+        this.supabase = getDbClient();
         this.initialized = true;
       } catch (error) {
         console.warn('⚠️  Scheduler: Supabase not configured. Scheduler will not start.');

@@ -1,4 +1,4 @@
-import { getSupabaseClient } from '../../core/database/supabase-compat';
+import { getDbClient } from '../../core/database/supabase-compat';
 import { getRedisClient } from '../../shared/redis-client';
 import { config } from '../../core/config';
 
@@ -68,7 +68,7 @@ export interface EnforcementResult {
  * Integrates with database functions from Task 1
  */
 export class SubscriptionService {
-  private supabase = getSupabaseClient();
+  private supabase = getDbClient();
   private readonly CACHE_TTL = 300; // 5 minutes
   private readonly PLANS_CACHE_KEY = 'subscription:plans';
   private readonly USER_SUBSCRIPTION_CACHE_PREFIX = 'subscription:user:';

@@ -145,7 +145,7 @@ async function cleanupStaleLock(
       .from('executions')
       .update({
         status: 'failed',
-        error: 'Execution lock was cleaned up - execution was stale or crashed',
+        error_message: 'Execution lock was cleaned up - execution was stale or crashed',
         finished_at: new Date().toISOString(),
       })
       .eq('id', executionId)
@@ -199,6 +199,13 @@ export async function acquireExecutionLock(
     const existingExecutionId = workflow?.active_execution_id;
 
     if (existingExecutionId) {
+      // Re-entrant: the background task in distributed-execute-workflow fires execute-workflow.ts
+      // with the same executionId that was already locked. Treat this as the same execution
+      // continuing — return acquired:true so the resume path proceeds normally.
+      if (existingExecutionId === executionId) {
+        return { acquired: true, executionId, staleLockCleaned: false };
+      }
+
       // Check if existing execution is stale
       const isStale = await isExecutionStale(supabase, existingExecutionId);
       

@@ -2,7 +2,7 @@
 // Migrated from Supabase Edge Function
 
 import { Request, Response } from 'express';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 import { config } from '../core/config';
 import { HybridMemoryService } from '../shared/memory';
 
@@ -22,7 +22,7 @@ interface ChatResponse {
 }
 
 export default async function chatApiHandler(req: Request, res: Response) {
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient();
 
   try {
     const { workflowId, message, sessionId, apiKey, metadata }: ChatRequest = req.body;

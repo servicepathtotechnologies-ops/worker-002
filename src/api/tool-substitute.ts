@@ -8,7 +8,7 @@
 
 import { Request, Response } from 'express';
 import { toolSubstitutionEngine } from '../services/ai/tool-substitution-engine';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 import { Workflow } from '../core/types/ai-types';
 
 interface ToolSubstituteRequest {
@@ -40,7 +40,7 @@ export async function substituteTools(req: Request, res: Response) {
     }
 
     // Get user ID from auth
-    const supabase = getSupabaseClient();
+    const supabase = getDbClient();
     const { data: { user } } = await supabase.auth.getUser();
     const userId = user?.id;
 
@@ -174,7 +174,7 @@ export async function getAvailableSubstitutions(req: Request, res: Response) {
 
     // Get workflow from database if workflowId provided
     if (workflowId && typeof workflowId === 'string') {
-      const supabase = getSupabaseClient();
+      const supabase = getDbClient();
       const { data: dbWorkflow, error: fetchError } = await supabase
         .from('workflows')
         .select('nodes, edges')

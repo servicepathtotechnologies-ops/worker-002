@@ -2,10 +2,10 @@
 // Migrated from Supabase Edge Function
 
 import { Request, Response } from 'express';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 
 export default async function copyTemplateHandler(req: Request, res: Response) {
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient();
 
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });

@@ -3,7 +3,7 @@
 // Executes agent workflows with reasoning and action planning
 
 import { Request, Response } from 'express';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 import { ReasoningEngine, ReasoningContext, Action } from '../shared/reasoning-engine';
 import { HybridMemoryService } from '../shared/memory';
 import { LLMAdapter } from '../shared/llm-adapter';
@@ -304,7 +304,7 @@ class AgentExecutor {
 }
 
 export default async function executeAgent(req: Request, res: Response) {
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient();
 
   try {
     const { workflowId, input = {}, config: agentConfig } = req.body;

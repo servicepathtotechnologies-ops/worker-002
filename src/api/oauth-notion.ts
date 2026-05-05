@@ -7,7 +7,7 @@
  */
 
 import { Request, Response } from 'express';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 import { config } from '../core/config';
 
 /**
@@ -111,7 +111,7 @@ export async function notionAuthorizeHandler(req: Request, res: Response) {
  */
 export async function notionCallbackHandler(req: Request, res: Response) {
   try {
-    const supabase = getSupabaseClient();
+    const supabase = getDbClient();
     
     // Get user from session
     const authHeader = req.headers.authorization;

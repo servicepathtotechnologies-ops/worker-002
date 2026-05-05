@@ -1,5 +1,5 @@
 import * as crypto from 'crypto';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 import { config } from '../core/config';
 import { subscriptionService } from './subscription-service';
 
@@ -241,7 +241,7 @@ export class PaymentService {
         };
       }
 
-      const supabase = getSupabaseClient();
+      const supabase = getDbClient();
       const { data: payment, error: paymentError } = await supabase
         .from('payments')
         .select('*')
@@ -479,7 +479,7 @@ export class PaymentService {
    */
   async retryFailedPayment(paymentId: string): Promise<PaymentResult> {
     try {
-      const supabase = getSupabaseClient();
+      const supabase = getDbClient();
       
       // Get payment record
       const { data: payment, error } = await supabase
@@ -531,7 +531,7 @@ export class PaymentService {
    */
   async getPaymentHistory(userId: string, limit: number = 50): Promise<any[]> {
     try {
-      const supabase = getSupabaseClient();
+      const supabase = getDbClient();
       
       const { data: payments, error } = await supabase
         .from('payments')
@@ -629,7 +629,7 @@ export class PaymentService {
     planName: string
   ): Promise<void> {
     try {
-      const supabase = getSupabaseClient();
+      const supabase = getDbClient();
       
       const { error } = await supabase
         .from('payments')
@@ -657,7 +657,7 @@ export class PaymentService {
     signature: string,
     reason: string
   ): Promise<void> {
-    const supabase = getSupabaseClient();
+    const supabase = getDbClient();
     const { error } = await supabase
       .from('payments')
       .update({
@@ -711,7 +711,7 @@ export class PaymentService {
     try {
       console.log(`[PaymentService] Payment captured: ${payment.id}`);
       
-      const supabase = getSupabaseClient();
+      const supabase = getDbClient();
       
       // Update payment status
       const { error } = await supabase
@@ -737,7 +737,7 @@ export class PaymentService {
     try {
       console.log(`[PaymentService] Payment failed: ${payment.id}`);
       
-      const supabase = getSupabaseClient();
+      const supabase = getDbClient();
       
       // Update payment status
       const { error } = await supabase

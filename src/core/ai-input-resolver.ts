@@ -25,6 +25,57 @@
 import { NodeInputSchema } from './types/unified-node-contract';
 import { LLMAdapter } from '../shared/llm-adapter';
 
+const PREVIOUS_OUTPUT_PREVIEW_BUDGET = 1200;
+const MAX_ARRAY_SAMPLE_ITEMS = 3;
+
+function truncateText(value: string, max = PREVIOUS_OUTPUT_PREVIEW_BUDGET): string {
+  return value.length > max ? `${value.slice(0, max)}... [truncated]` : value;
+}
+
+function compactValueForPrompt(value: any, depth = 0): any {
+  if (value === null || value === undefined) return value;
+  if (typeof value === 'string') return truncateText(value, 500);
+  if (typeof value !== 'object') return value;
+  if (depth >= 3) {
+    if (Array.isArray(value)) return { type: 'array', length: value.length };
+    return { type: 'object', keys: Object.keys(value).slice(0, 20) };
+  }
+
+  if (Array.isArray(value)) {
+    const sample = value.slice(0, MAX_ARRAY_SAMPLE_ITEMS).map((item) => compactValueForPrompt(item, depth + 1));
+    const objectItems = value.filter((item) => item && typeof item === 'object' && !Array.isArray(item));
+    const fieldNames = Array.from(
+      new Set(objectItems.flatMap((item) => Object.keys(item as Record<string, unknown>)))
+    ).slice(0, 40);
+    return {
+      type: 'array',
+      count: value.length,
+      fieldNames,
+      sample,
+      truncated: value.length > sample.length,
+    };
+  }
+
+  const out: Record<string, any> = {};
+  for (const [key, item] of Object.entries(value).slice(0, 30)) {
+    out[key] = compactValueForPrompt(item, depth + 1);
+  }
+  const keys = Object.keys(value);
+  if (keys.length > 30) {
+    out.__truncatedKeys = keys.length - 30;
+  }
+  return out;
+}
+
+export function compactForAiPrompt(value: any, max = PREVIOUS_OUTPUT_PREVIEW_BUDGET): string {
+  if (value === undefined) return 'No previous output available';
+  try {
+    return truncateText(JSON.stringify(compactValueForPrompt(value), null, 2), max);
+  } catch {
+    return truncateText(String(value), max);
+  }
+}
+
 export interface InputResolutionContext {
   /** (2) Previous node JSON – actual output from upstream node. */
   previousOutput?: any;
@@ -71,8 +122,14 @@ export class AIInputResolver {
    * AI analyzes context and generates appropriate input.
    */
   async resolveInput(context: InputResolutionContext): Promise<ResolvedInput> {
+    // Kill switch: runtime AI resolution is expensive (1 Gemini call per field).
+    // Disable by default; enable only when ENABLE_RUNTIME_AI_RESOLUTION=true in .env.
+    if (process.env.ENABLE_RUNTIME_AI_RESOLUTION !== 'true') {
+      return { mode: 'json', value: {} };
+    }
+
     const { previousOutput, nodeInputSchema, userIntent, nodeType, nodeLabel } = context;
-    
+
     // Step 1: Determine resolution mode based on node input schema
     const mode = this.determineResolutionMode(nodeInputSchema, nodeType, previousOutput);
     
@@ -131,9 +188,7 @@ export class AIInputResolver {
   ): string {
     const { previousOutput, nodeInputSchema, userIntent, nodeType, nodeLabel, workflowContext } = context;
     
-    const previousOutputStr = previousOutput 
-      ? JSON.stringify(previousOutput, null, 2).substring(0, 2000) // Limit size
-      : 'No previous output available';
+    const previousOutputStr = compactForAiPrompt(previousOutput);
     
     const schemaStr = JSON.stringify(nodeInputSchema, null, 2);
     
@@ -293,6 +348,9 @@ IMPORTANT:
         model: 'gemini-2.5-flash',
         apiKey: process.env.GEMINI_API_KEY,
         temperature: 0.3,
+        maxTokens: Number.parseInt(process.env.WORKFLOW_RUNTIME_AI_MAX_OUTPUT_TOKENS || '500', 10) || 500,
+        usageStage: 'runtime_input_resolution',
+        enforceExecutionBudget: true,
       });
       
       // Parse response based on mode

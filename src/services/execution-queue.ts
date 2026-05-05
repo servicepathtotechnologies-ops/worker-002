@@ -420,7 +420,7 @@ export class ExecutionQueue extends EventEmitter {
           useQueue: false, // Prevent recursive queueing
         },
         headers: {
-          authorization: job.userId ? `Bearer ${job.userId}` : undefined,
+          authorization: job.metadata?.authToken ? `Bearer ${job.metadata.authToken}` : undefined,
           // Preserve internal execution headers from metadata
           ...(job.metadata?.headers || {}),
         },

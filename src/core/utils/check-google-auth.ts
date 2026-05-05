@@ -1,5 +1,5 @@
 import { Request } from 'express';
-import { getSupabaseClient } from '../database/supabase-compat';
+import { getDbClient } from '../database/supabase-compat';
 import { resolveCanonicalUserId } from '../database/identity-resolver';
 import { ErrorCode, createError } from './error-codes';
 
@@ -9,7 +9,7 @@ import { ErrorCode, createError } from './error-codes';
  * Throws UNAUTHORIZED otherwise.
  */
 export async function requireAuthenticatedUser(req: Request): Promise<string> {
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient();
 
   const authHeader = req.headers.authorization;
   let userId: string | undefined;
@@ -44,7 +44,7 @@ export async function requireAuthenticatedUser(req: Request): Promise<string> {
  * Returns the canonical user ID if Google is connected, throws error otherwise.
  */
 export async function requireGoogleAuth(req: Request): Promise<string> {
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient();
   const userId = await requireAuthenticatedUser(req);
 
   const { data: googleTokenData, error: googleError } = await supabase

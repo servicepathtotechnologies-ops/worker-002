@@ -82,6 +82,19 @@ const USER_COL: Record<string, string> = {
 /** Columns allowed in ORDER BY (prevent SQL injection) */
 const SAFE_COLS = /^[a-z_]+$/;
 
+function buildSelectClause(rawSelect: unknown): string {
+  if (typeof rawSelect !== 'string' || rawSelect.trim() === '' || rawSelect.trim() === '*') {
+    return '*';
+  }
+
+  const cols = rawSelect
+    .split(',')
+    .map((col) => col.trim())
+    .filter((col) => SAFE_COLS.test(col));
+
+  return cols.length > 0 ? cols.map((col) => `"${col}"`).join(', ') : '*';
+}
+
 function deny(res: Response, msg: string, status = 403) {
   return res.status(status).json({ error: msg });
 }
@@ -129,9 +142,10 @@ export async function dbProxyGet(req: Request, res: Response) {
   const limitVal = req.query.limit !== undefined ? parseInt(req.query.limit as string, 10) : undefined;
   const wantsExactCount = req.query.count === 'exact';
   const headOnly = req.query.head === 'true';
+  const selectClause = buildSelectClause(req.query.select);
 
   const ownershipClause = indirectFilter ?? `"${userCol}" = $1`;
-  let sql = `SELECT * FROM "${table}" WHERE ${ownershipClause}`;
+  let sql = `SELECT ${selectClause} FROM "${table}" WHERE ${ownershipClause}`;
   const params: any[] = [userId];
 
   // Additional filters:
@@ -190,7 +204,7 @@ export async function dbProxyGet(req: Request, res: Response) {
 
   try {
     const countSql = wantsExactCount
-      ? sql.replace(/^SELECT \* FROM/i, 'SELECT COUNT(*)::int AS count FROM')
+      ? sql.replace(/^SELECT\s+.+?\s+FROM/i, 'SELECT COUNT(*)::int AS count FROM')
       : null;
 
     if (orderCol && SAFE_COLS.test(orderCol)) {

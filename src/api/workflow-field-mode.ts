@@ -9,7 +9,7 @@
  */
 
 import { Request, Response } from 'express';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 import { unifiedNodeRegistry } from '../core/registry/unified-node-registry';
 import { unifiedNormalizeNodeType } from '../core/utils/unified-node-type-normalizer';
 import { shouldRequireCredential } from '../services/workflow-lifecycle-manager';
@@ -31,7 +31,7 @@ export async function patchWorkflowFieldMode(req: Request, res: Response): Promi
     return;
   }
 
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient();
 
   // Load workflow from database
   const { data: workflowRow, error: loadError } = await supabase

@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 
 function normalizeSearch(value: unknown): string {
   return typeof value === 'string' ? value.trim().toLowerCase() : '';
@@ -10,7 +10,7 @@ export default async function templatesHandler(req: Request, res: Response) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const supabase = getSupabaseClient();
+  const supabase = getDbClient();
   const templateId = req.params.id;
   const category = normalizeSearch(req.query.category);
   const search = normalizeSearch(req.query.search);

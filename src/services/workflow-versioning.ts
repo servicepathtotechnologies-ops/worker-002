@@ -12,7 +12,7 @@
  * - Prevent breaking running executions
  */
 
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 import { WorkflowNode, WorkflowEdge } from '../core/types/ai-types';
 
 /**
@@ -106,11 +106,11 @@ export interface WorkflowSnapshot {
  * Workflow Version Manager
  */
 export class WorkflowVersionManager {
-  private supabase: ReturnType<typeof getSupabaseClient>;
+  private supabase: ReturnType<typeof getDbClient>;
   private tableName = 'workflow_versions';
 
   constructor() {
-    this.supabase = getSupabaseClient();
+    this.supabase = getDbClient();
   }
 
   /**

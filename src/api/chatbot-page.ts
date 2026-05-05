@@ -3,7 +3,7 @@
 
 import { Request, Response } from 'express';
 import { chatbotPageGenerator } from '../services/chatbot-page-generator';
-import { getSupabaseClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/supabase-compat';
 
 /**
  * Serve chatbot page for a workflow
@@ -18,7 +18,7 @@ export async function serveChatbotPage(req: Request, res: Response) {
       return res.status(400).json({ error: 'Workflow ID is required' });
     }
 
-    const supabase = getSupabaseClient();
+    const supabase = getDbClient();
     
     // Fetch workflow
     const { data: workflow, error } = await supabase
