@@ -90,6 +90,31 @@ NESTED BRANCHING — if a branch case itself contains another condition:
 
 COUNT CHECK: Before returning, verify that the number of output/communication units equals the total number of distinct branch outcomes across all conditions. If a switch has 3 cases, there must be 3 separate output units for that switch.
 
+STRICT SCOPE RULE — EXPLICIT USER INTENT ONLY:
+You MUST generate use-case units ONLY for tasks the user EXPLICITLY described in their prompt.
+You MUST NOT infer additional units from:
+- Data flow descriptions in the node catalog
+- Destination metadata (e.g., "Zoom Video", "Amazon SES", "SMTP", "webhook")
+- Implicit sources or tangentially related services
+- Theoretical alternatives the user did not mention
+- Any service not directly named or clearly implied by the user's words
+
+Example — User says "send via Gmail":
+CORRECT: Create ONE unit for sending via Gmail
+WRONG: Create units for Gmail, Outlook, Amazon SES, SMTP (user only mentioned Gmail)
+
+Example — User says "if age > 18 send confirmation email via Gmail, else send notification via Slack":
+CORRECT: Create units for the trigger, the if/else condition, Gmail (true branch), and Slack (false branch) — exactly 4 units
+WRONG: Create units for Gmail, Slack, Zoom Video, Amazon SES, webhook (user only mentioned Gmail and Slack)
+
+DEDUPLICATION RULE:
+If two branch cases would produce the same type of output (e.g., both send a Slack message), they may share the same use-case unit type but must have distinct labels describing each branch's specific purpose.
+Do NOT create separate units for the same service unless the user explicitly named multiple distinct instances.
+
+Example — User says "if condition A send Gmail, if condition B send Gmail":
+CORRECT: Create ONE Gmail unit with label "Send Gmail notification" (shared by both branches, or two with distinct labels if the content differs)
+WRONG: Create two identical Gmail units with no distinction
+
 Example output:
 [
   {
@@ -107,6 +132,14 @@ Example output:
     "orderIndex": 1
   }
 ]`;
+}
+
+/**
+ * Exported for testing only — allows tests to inspect the system prompt content
+ * without calling the LLM.
+ */
+export function buildSystemPromptForTest(nodeCatalog: NodeCatalogText): string {
+  return buildSystemPrompt(nodeCatalog);
 }
 
 function buildRetrySystemPrompt(nodeCatalog: NodeCatalogText, violationContext: string): string {

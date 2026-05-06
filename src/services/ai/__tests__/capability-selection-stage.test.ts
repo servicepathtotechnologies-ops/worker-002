@@ -454,6 +454,72 @@ describe('CapabilitySelectionStage', () => {
     ]);
   });
 
+  it('deterministically selects conditional form workflow nodes without generic enterprise drift', async () => {
+    mockedProcessRequest.mockResolvedValue('not-json');
+
+    const result = await runCapabilitySelectionStage({
+      intent: 'Create an autonomous workflow where a user submits details through a form including age. If age > 18, mark the user as eligible and send a confirmation email via Gmail. If age \u2264 18, mark as not eligible and send a notification message via Slack.',
+      triggerType: 'form',
+      actions: [
+        'a user submits details through a form including age',
+        'check if age > 18',
+        'send a confirmation email via Gmail',
+        'check if age \u2264 18',
+        'send a notification message via Slack',
+      ],
+      dataFlows: [
+        { from: 'form', to: 'email service', dataDescription: 'eligible confirmation' },
+        { from: 'form', to: 'messaging service', dataDescription: 'not eligible notification' },
+      ],
+      constraints: [],
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const selected = result.steps.map((s) => s.defaultSuggestedNodeType);
+    expect(selected).toEqual(expect.arrayContaining([
+      'form',
+      'if_else',
+      'google_gmail',
+      'slack_message',
+    ]));
+    expect(selected).not.toContain('workday');
+    expect(selected).not.toContain('zoom_video');
+    expect(selected).not.toContain('amazon_ses');
+  });
+
+  it('does not add destination coverage from unmentioned dataFlow metadata', async () => {
+    mockSteps([
+      triggerStep,
+      {
+        stepId: 'action_summarize_data',
+        stepText: 'Summarize the submitted data',
+        intentClass: 'transformation',
+        candidateNodeTypes: ['ai_chat_model'],
+        defaultSuggestedNodeType: 'ai_chat_model',
+        confidence: 0.84,
+        ambiguous: false,
+        selectionPolicy: { multiSelectAllowed: true, required: true },
+      },
+    ]);
+
+    const result = await runCapabilitySelectionStage({
+      intent: 'Summarize submitted form data',
+      triggerType: 'form',
+      actions: ['Summarize the submitted data'],
+      dataFlows: [{ from: 'form', to: 'email service', dataDescription: 'send summary to enterprise system' }],
+      constraints: [],
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const selected = result.steps.map((s) => s.defaultSuggestedNodeType);
+    expect(selected).not.toContain('google_gmail');
+    expect(selected).not.toContain('workday');
+    expect(selected).not.toContain('zoom_video');
+    expect(selected).not.toContain('amazon_ses');
+  });
+
   it('adds a registry trigger step when AI omits the trigger', async () => {
     mockSteps([
       {

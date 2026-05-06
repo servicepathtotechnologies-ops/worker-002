@@ -65,8 +65,10 @@ export async function runCapabilitySelectionStage(
     'TASK:',
     'Return one capability-selection step for the trigger and one for every user action.',
     'Use only canonical node types present in NODE CATALOG.',
-    'Be decisive: choose the single best canonical registry node for every step.',
-    'Return exactly one candidateNodeType per step and set it as defaultSuggestedNodeType.',
+    'For each step, list up to 3 candidateNodeTypes ranked best-first.',
+    'Set defaultSuggestedNodeType to the single best match.',
+    'When the action names a specific service (e.g. "via Gmail", "via Slack"), that service',
+    'MUST appear as the first candidateNodeType — do not substitute a generic alternative.',
     'Only mark ambiguous=true if no registry node can be chosen from the catalog.',
   ].join('\n');
 
@@ -189,7 +191,19 @@ export async function runCapabilitySelectionStage(
 }
 
 function stripMarkdownFences(text: string): string {
-  return text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
+  let cleaned = String(text || '').trim();
+  cleaned = cleaned.replace(/^\uFEFF/, '').trim();
+
+  for (let i = 0; i < 3; i += 1) {
+    const next = cleaned
+      .replace(/^\s*```[a-z0-9_-]*\s*/i, '')
+      .replace(/\s*```\s*$/i, '')
+      .trim();
+    if (next === cleaned) break;
+    cleaned = next;
+  }
+
+  return cleaned.replace(/^\s*```[a-z0-9_-]*\s*$/gim, '').trim();
 }
 
 function parseCapabilitySelection(input: unknown): CapabilityOptionStep[] | null {
@@ -197,12 +211,80 @@ function parseCapabilitySelection(input: unknown): CapabilityOptionStep[] | null
     return validateCapabilitySelectionObject(input);
   }
   if (typeof input !== 'string') return null;
+  const cleaned = stripMarkdownFences(input);
   try {
-    const cleaned = stripMarkdownFences(input);
     const start = cleaned.indexOf('{');
     const end = cleaned.lastIndexOf('}');
-    if (start === -1 || end === -1) return null;
-    return validateCapabilitySelectionObject(JSON.parse(cleaned.substring(start, end + 1)));
+    if (start === -1 || end === -1) return tryParsePartialCapabilitySelection(cleaned);
+    const full = validateCapabilitySelectionObject(JSON.parse(cleaned.substring(start, end + 1)));
+    return full ?? tryParsePartialCapabilitySelection(cleaned);
+  } catch {
+    // JSON was truncated (Gemini hit its output token limit mid-response).
+    // Salvage any complete step objects that were emitted before the cut.
+    return tryParsePartialCapabilitySelection(cleaned);
+  }
+}
+
+/**
+ * Partial recovery for truncated Gemini capability-selection responses.
+ *
+ * Gemini may hit its output token limit mid-JSON, leaving the "steps" array
+ * unclosed. This function scans for complete, balanced { } step objects
+ * inside the partial array and returns however many were fully emitted.
+ * The caller's reconcileDestinationCoverage pass then adds any missing
+ * destination nodes from the original prompt.
+ */
+function tryParsePartialCapabilitySelection(text: string): CapabilityOptionStep[] | null {
+  try {
+    const stepsKeyMatch = /"steps"\s*:\s*\[/.exec(text);
+    if (!stepsKeyMatch) return null;
+
+    const arrayStart = text.indexOf('[', stepsKeyMatch.index);
+    if (arrayStart === -1) return null;
+
+    const steps: CapabilityOptionStep[] = [];
+    let i = arrayStart + 1;
+
+    while (i < text.length) {
+      // Skip whitespace and commas between objects
+      while (i < text.length && /[\s,]/.test(text[i])) i++;
+      if (i >= text.length || text[i] === ']') break;
+      if (text[i] !== '{') break;
+
+      // Walk forward to find the matching closing brace for this step object
+      let depth = 0;
+      let inString = false;
+      let escape = false;
+      let j = i;
+
+      for (; j < text.length; j++) {
+        const ch = text[j];
+        if (escape) { escape = false; continue; }
+        if (ch === '\\' && inString) { escape = true; continue; }
+        if (ch === '"') { inString = !inString; continue; }
+        if (!inString) {
+          if (ch === '{') depth++;
+          else if (ch === '}') {
+            depth--;
+            if (depth === 0) { j++; break; }
+          }
+        }
+      }
+
+      if (depth !== 0) break; // Object was truncated — stop salvaging
+
+      try {
+        const obj = JSON.parse(text.substring(i, j));
+        const validated = validateCapabilitySelectionObject({ steps: [obj] });
+        if (validated && validated.length > 0) steps.push(validated[0]);
+      } catch {
+        break; // Malformed object — stop
+      }
+
+      i = j;
+    }
+
+    return steps.length > 0 ? steps : null;
   } catch {
     return null;
   }
@@ -388,6 +470,10 @@ function collectDestinationCoverageTargets(intent: StructuredIntent): Destinatio
   const targets: DestinationCoverageTarget[] = [];
   const seen = new Set<string>();
 
+  // Use the verbatim user prompt so service names like "Gmail" and "Slack" are
+  // always present, regardless of how the AI summarised the intent field.
+  const promptText = intent.originalPrompt || intent.intent;
+
   const addTarget = (
     rawText: string,
     source: string,
@@ -395,6 +481,8 @@ function collectDestinationCoverageTargets(intent: StructuredIntent): Destinatio
   ) => {
     const candidate = resolveDestinationNode(rawText, intent);
     if (!candidate || seen.has(candidate.nodeType)) return;
+    // Gate on the original prompt — not the AI-summarised intent string.
+    if (!isNodeExplicitlyMentioned(candidate.nodeType, promptText)) return;
     const def = unifiedNodeRegistry.get(candidate.nodeType);
     targets.push({
       nodeType: candidate.nodeType,
@@ -406,16 +494,48 @@ function collectDestinationCoverageTargets(intent: StructuredIntent): Destinatio
     seen.add(candidate.nodeType);
   };
 
-  for (const flow of intent.dataFlows || []) {
-    addTarget(String(flow?.to || ''), 'dataFlows.to');
-    addTarget(String(flow?.dataDescription || ''), 'dataFlows.dataDescription');
-  }
-
-  for (const phrase of extractDestinationPhrases(intent.intent)) {
-    addTarget(phrase, 'intent.destination_phrase');
+  // Only scan phrases that appear verbatim in the user's original prompt.
+  // dataFlows entries are AI-inferred and may name generic services (e.g.
+  // "email service") that resolve to unrelated nodes — skip them entirely.
+  for (const phrase of extractDestinationPhrases(promptText)) {
+    addTarget(phrase, 'prompt.destination_phrase');
   }
 
   return targets;
+}
+
+function isNodeExplicitlyMentioned(nodeType: string, promptText: string): boolean {
+  const def = unifiedNodeRegistry.get(nodeType);
+  const phrases = explicitMentionPhrasesForNode(nodeType, def);
+  return phrases.some((phrase) => containsNormalizedPhrase(promptText, phrase));
+}
+
+function explicitMentionPhrasesForNode(
+  nodeType: string,
+  def: NonNullable<ReturnType<typeof unifiedNodeRegistry.get>> | undefined,
+): string[] {
+  const base = [
+    nodeType,
+    nodeType.replace(/_/g, ' '),
+    def?.label || '',
+  ];
+  const serviceAliases: Record<string, string[]> = {
+    google_gmail: ['gmail', 'google gmail', 'email', 'mail'],
+    slack_message: ['slack', 'slack message'],
+    slack_webhook: ['slack', 'slack webhook'],
+    amazon_ses: ['amazon ses', 'aws ses', 'ses'],
+    zoom_video: ['zoom', 'zoom video', 'zoom meeting', 'video call'],
+    workday: ['workday'],
+  };
+  return [...base, ...(serviceAliases[nodeType] || [])]
+    .map(normalizeText)
+    .filter((phrase, index, all) => phrase.length > 1 && all.indexOf(phrase) === index);
+}
+
+function containsNormalizedPhrase(text: string, phrase: string): boolean {
+  const normalizedText = ` ${normalizeText(text)} `;
+  const normalizedPhrase = normalizeText(phrase);
+  return normalizedPhrase.length > 1 && normalizedText.includes(` ${normalizedPhrase} `);
 }
 
 function resolveDestinationNode(
@@ -524,8 +644,31 @@ function buildDeterministicStepsFromIntent(intent: StructuredIntent): Capability
     },
   ];
 
+  let hasDeterministicLogicStep = false;
+
   intent.actions.forEach((action, index) => {
+    if (isActionCoveredByTrigger(action, intent.triggerType)) return;
+
     const intentClass = inferIntentClassForAction(action);
+    if (intentClass === 'logic') {
+      if (hasDeterministicLogicStep) return;
+      const logicType = unifiedNodeRegistry.resolveAlias('if_else') || 'if_else';
+      if (!unifiedNodeRegistry.get(logicType)) return;
+      steps.push({
+        stepId: `action_${index + 1}`,
+        stepText: action,
+        intentClass,
+        candidateNodeTypes: [logicType],
+        defaultSuggestedNodeType: logicType,
+        selectionPolicy: { multiSelectAllowed: false, required: true },
+        confidence: 0.82,
+        ambiguous: false,
+        reason: 'Conditional action mapped to If/Else logic',
+      });
+      hasDeterministicLogicStep = true;
+      return;
+    }
+
     const candidate = chooseBestRegistryNode(
       {
         stepText: action,
@@ -550,6 +693,23 @@ function buildDeterministicStepsFromIntent(intent: StructuredIntent): Capability
   return steps;
 }
 
+function isActionCoveredByTrigger(action: string, triggerType: StructuredIntent['triggerType']): boolean {
+  const text = normalizeText(action);
+  if (triggerType === 'form') {
+    return /\b(form|submission|submit|submits|submitted)\b/.test(text)
+      && !/\b(send|email|notify|message|post|publish|update|create|mark|set|fetch|get|read|query|summarize|analyze)\b/.test(text);
+  }
+  if (triggerType === 'webhook') {
+    return /\b(webhook|incoming request|api call|http request)\b/.test(text)
+      && !/\b(send|email|notify|message|post|publish|update|create|fetch|get|read|query|summarize|analyze)\b/.test(text);
+  }
+  if (triggerType === 'schedule') {
+    return /\b(schedule|scheduled|every|daily|weekly|monthly|cron)\b/.test(text)
+      && !/\b(send|email|notify|message|post|publish|update|create|fetch|get|read|query|summarize|analyze)\b/.test(text);
+  }
+  return false;
+}
+
 function resolveTriggerType(triggerType: StructuredIntent['triggerType']): string {
   const canonical = unifiedNodeRegistry.resolveAlias(triggerType) || triggerType;
   if (unifiedNodeRegistry.isTrigger(canonical)) return canonical;
@@ -559,6 +719,7 @@ function resolveTriggerType(triggerType: StructuredIntent['triggerType']): strin
 
 function inferIntentClassForAction(action: string): CapabilityIntentClass {
   const text = normalizeText(action);
+  if (containsConditionalAction(action)) return 'logic';
   const best = chooseBestRegistryNode(
     {
       stepText: action,
@@ -570,6 +731,7 @@ function inferIntentClassForAction(action: string): CapabilityIntentClass {
       actions: [action],
       dataFlows: [],
       constraints: [],
+      originalPrompt: action,
     },
   );
   const category = best ? unifiedNodeRegistry.getCategory(best) || '' : '';
@@ -579,6 +741,22 @@ function inferIntentClassForAction(action: string): CapabilityIntentClass {
   if (/\b(read|get|fetch|list|query|retrieve|load|search)\b/.test(text)) return 'data_source';
   if (/\b(transform|format|parse|summarize|analyze|extract|convert)\b/.test(text)) return 'transformation';
   return 'generic_action';
+}
+
+function containsConditionalAction(action: string): boolean {
+  const raw = String(action || '');
+  const text = normalizeText(raw);
+  
+  // Check for conditional keywords
+  const hasKeywords = /\b(if|when|else|otherwise|condition|conditional|route|switch|branch|check)\b/.test(text);
+  
+  // Check for comparison operators (including Unicode)
+  const hasOperators = /(?:<=|>=|==|!=|[<>]|\u2264|\u2265)/.test(raw);
+  
+  // Check for conditional phrases
+  const hasPhrases = /\b(check if|verify if|based on whether|depending on|route by|approve or reject)\b/.test(text);
+  
+  return hasKeywords || hasOperators || hasPhrases;
 }
 
 function chooseBestRegistryNode(
@@ -642,6 +820,14 @@ function scoreDefinitionForStep(
   const directAlias = unifiedNodeRegistry.resolveAlias(stepText);
   let score = directAlias === def.type ? 20 : 0;
 
+  // Strong boost when the step text contains a known service alias for this node
+  // (e.g. "gmail" in "send via Gmail" → +15 for google_gmail).
+  // This ensures explicitly-named services always outscore generic alternatives.
+  const nodeAliases = explicitMentionPhrasesForNode(def.type, def);
+  if (nodeAliases.some((alias) => alias.length > 2 && stepText.includes(alias))) {
+    score += 15;
+  }
+
   const category = mapRegistryCategoryToIntentClass(def.category || '');
   if (step.intentClass === category) score += 6;
   if (step.intentClass === 'trigger' && unifiedNodeRegistry.isTrigger(def.type)) score += 10;
@@ -655,9 +841,16 @@ function scoreDefinitionForStep(
 
   const stepTokens = tokenize(stepText);
   const searchTokens = new Set(tokenize(searchText));
+  const matchedTokens: string[] = [];
   for (const token of stepTokens) {
-    if (searchTokens.has(token)) score += 2;
-    if (normalizeText(def.type).split(' ').includes(token)) score += 2;
+    if (searchTokens.has(token)) {
+      score += 2;
+      matchedTokens.push(token);
+    }
+    if (normalizeText(def.type).split(' ').includes(token)) {
+      score += 2;
+      matchedTokens.push(token);
+    }
   }
 
   for (const phrase of [
@@ -669,8 +862,40 @@ function scoreDefinitionForStep(
     if (normalizedPhrase && stepText.includes(normalizedPhrase)) score += 5;
   }
 
+  const genericKeywordMatches = matchedTokens.filter((token) => GENERIC_SELECTION_TOKENS.has(token)).length;
+  if (matchedTokens.length > 0) {
+    const genericRatio = genericKeywordMatches / matchedTokens.length;
+    if (genericRatio > 0.3) {
+      // Penalty scales from -10 (30% generic) to -20 (100% generic)
+      score -= Math.floor(10 + (genericRatio - 0.3) * 14);
+    }
+  }
+
+  // Category mismatch penalties
+  if (step.intentClass === 'communication' && category === 'data_source') {
+    score -= 8;
+  }
+  
+  // Penalize data nodes for communication steps (e.g., Workday, Salesforce)
+  if (step.intentClass === 'communication' && def.category === 'data') {
+    score -= 12;
+  }
+
   return score;
 }
+
+const GENERIC_SELECTION_TOKENS = new Set([
+  'data',
+  'api',
+  'integration',
+  'system',
+  'platform',
+  'service',
+  'details',
+  'user',
+  'record',
+  'records',
+]);
 
 function normalizeText(value: unknown): string {
   return String(value || '')

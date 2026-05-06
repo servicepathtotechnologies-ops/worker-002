@@ -52,12 +52,40 @@ RULES:
 5. Do NOT use hardcoded mappings — derive groupings from the node descriptions in the catalog.
 6. "candidates" should contain at least 1 and at most 10 node type strings.
 
+SEMANTIC RELEVANCE RULE:
+Only include candidates that DIRECTLY fulfill the use-case unit as described.
+Do NOT include nodes that are:
+- Tangentially related to the use-case but serve a different primary purpose
+- Theoretically usable in a different context but not for this specific task
+- Semantically distant from the unit's description
+- General-purpose nodes that happen to have some overlap (e.g., do not include video conferencing nodes for an email use-case)
+
+Example — Use-case: "Send email notification via Gmail":
+CORRECT: Include google_gmail, outlook, amazon_ses (all send email)
+WRONG: Include zoom_video, slack, webhook (these are not email services)
+
+Example — Use-case: "Send Slack notification":
+CORRECT: Include slack (sends Slack messages)
+WRONG: Include google_gmail, zoom_video, amazon_ses (these are not Slack)
+
+Example — Use-case: "Trigger workflow when form is submitted":
+CORRECT: Include form_trigger (form submission trigger)
+WRONG: Include webhook, manual_trigger, schedule_trigger (different trigger types)
+
 Example output:
 {
   "containerId": "550e8400-e29b-41d4-a716-446655440000",
   "label": "Send Email",
   "candidates": ["google_gmail", "outlook", "smtp"]
 }`;
+}
+
+/**
+ * Exported for testing only — allows tests to inspect the grouper system prompt content
+ * without calling the LLM.
+ */
+export function buildGrouperSystemPromptForTest(nodeCatalog: NodeCatalogText): string {
+  return buildSystemPrompt(nodeCatalog);
 }
 
 function buildRetrySystemPrompt(nodeCatalog: NodeCatalogText, violationContext: string): string {

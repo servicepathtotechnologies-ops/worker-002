@@ -38,7 +38,7 @@ export default async function generateCapabilityWorkflow(req: Request, res: Resp
       return;
     }
     if (!selections || Object.keys(selections).length === 0) {
-      res.status(400).json({ ok: false, code: 'MISSING_SELECTIONS', message: 'selections is required', selections });
+      res.status(400).json({ ok: false, code: 'MISSING_SELECTIONS', message: 'Select at least one integration before continuing.', selections });
       return;
     }
     if (!containers || containers.length === 0) {
@@ -48,15 +48,16 @@ export default async function generateCapabilityWorkflow(req: Request, res: Resp
 
     const missingOrInvalidSelections = containers.filter((container) => {
       const selected = selections[container.containerId];
-      if (!selected) return true;
+      if (!selected) return false; // Unselected containers are allowed — user may skip them
       const canonical = unifiedNodeRegistry.resolveAlias(selected) || selected;
+      // Only flag containers where the user DID make a selection but it's invalid
       return !container.candidates.some((candidate) => candidate.nodeType === canonical) || !unifiedNodeRegistry.get(canonical);
     });
     if (missingOrInvalidSelections.length > 0) {
       res.status(422).json({
         ok: false,
-        code: 'MISSING_REQUIRED_NODE_SELECTION',
-        message: 'Select one valid registry node for every workflow step before continuing.',
+        code: 'INVALID_NODE_SELECTION',
+        message: 'One or more selected nodes are not valid registry nodes.',
         missingContainerIds: missingOrInvalidSelections.map((container) => container.containerId),
         selections,
       });

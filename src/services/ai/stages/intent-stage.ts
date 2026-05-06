@@ -21,6 +21,8 @@ export interface StructuredIntent {
   actions: string[];
   dataFlows: Array<{ from: string; to: string; dataDescription: string }>;
   constraints: string[];
+  /** The verbatim user prompt — preserved for downstream destination-coverage checks. */
+  originalPrompt: string;
 }
 
 export interface IntentStageResult {
@@ -95,7 +97,7 @@ export async function runIntentStage(
     const promptTokens = Math.ceil(systemPrompt.length / 4);
     const completionTokens = Math.ceil(text.length / 4);
     logger.info({ event: 'ai_pipeline_stage_end', stage: 'intent', correlationId, outputSummary: `actions=${parsed.actions.length}, dataFlows=${parsed.dataFlows.length}`, durationMs });
-    return { ok: true, intent: parsed, durationMs, llmCall: { model, temperature, promptTokens, completionTokens } };
+    return { ok: true, intent: { ...parsed, originalPrompt: userPrompt }, durationMs, llmCall: { model, temperature, promptTokens, completionTokens } };
   }
 
   // Retry once with schema reminder
@@ -120,7 +122,7 @@ export async function runIntentStage(
     const promptTokens = Math.ceil(systemPrompt.length / 4);
     const completionTokens = Math.ceil(text2.length / 4);
     logger.info({ event: 'ai_pipeline_stage_end', stage: 'intent', correlationId, outputSummary: `actions=${parsed2.actions.length} (retry)`, durationMs: Date.now() - startedAt });
-    return { ok: true, intent: parsed2, durationMs: Date.now() - startedAt, llmCall: { model, temperature, promptTokens, completionTokens } };
+    return { ok: true, intent: { ...parsed2, originalPrompt: userPrompt }, durationMs: Date.now() - startedAt, llmCall: { model, temperature, promptTokens, completionTokens } };
   }
 
   logger.error({ event: 'ai_pipeline_stage_error', stage: 'intent', correlationId, error: 'INVALID_LLM_RESPONSE', llmResponse: text2 });
@@ -170,7 +172,30 @@ function buildFallbackIntentStageResult(params: {
 }
 
 function stripMarkdownFences(text: string): string {
-  return text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
+  let cleaned = String(text || '').trim();
+  
+  // Remove BOM (Byte Order Mark) if present
+  cleaned = cleaned.replace(/^\uFEFF/, '').trim();
+
+  // Iteratively remove markdown fences (handles nested fences)
+  // Supports: ```json, ```, ``` json, ```typescript, etc.
+  for (let i = 0; i < 5; i += 1) {
+    const next = cleaned
+      // Remove opening fence with optional language tag and whitespace
+      .replace(/^\s*```[a-z0-9_-]*\s*/i, '')
+      // Remove closing fence with optional whitespace
+      .replace(/\s*```\s*$/i, '')
+      .trim();
+    
+    // If no change, we've removed all fences
+    if (next === cleaned) break;
+    cleaned = next;
+  }
+
+  // Remove any remaining standalone fence lines (edge case)
+  cleaned = cleaned.replace(/^\s*```[a-z0-9_-]*\s*$/gim, '').trim();
+
+  return cleaned;
 }
 
 function tryParseIntent(text: string): StructuredIntent | null {
@@ -191,6 +216,7 @@ function tryParseIntent(text: string): StructuredIntent | null {
       actions: obj.actions.map(String),
       dataFlows: Array.isArray(obj.dataFlows) ? obj.dataFlows : [],
       constraints: Array.isArray(obj.constraints) ? obj.constraints.map(String) : [],
+      originalPrompt: '', // caller overwrites via { ...parsed, originalPrompt: userPrompt }
     };
   } catch {
     return null;
@@ -229,6 +255,7 @@ function tryParsePartialIntent(partial: string): StructuredIntent | null {
       actions,
       dataFlows: [],   // truncated — safe to default to empty
       constraints: [], // truncated — safe to default to empty
+      originalPrompt: '', // caller overwrites via { ...parsed, originalPrompt: userPrompt }
     };
   } catch {
     return null;
@@ -246,6 +273,7 @@ function buildDeterministicIntent(userPrompt: string): StructuredIntent {
     actions: actions.length > 0 ? actions : [prompt],
     dataFlows: [],
     constraints: [],
+    originalPrompt: prompt,
   };
 }
 
@@ -259,9 +287,67 @@ function inferTriggerType(prompt: string): StructuredIntent['triggerType'] {
 }
 
 function extractActionPhrases(prompt: string): string[] {
-  return prompt
-    .split(/(?:\b(?:and then|then|after that|afterwards)\b|[,;])/i)
+  if (!containsConditionalLanguage(prompt)) {
+    return prompt
+      .split(/(?:\b(?:and then|then|after that|afterwards)\b|[,;])/i)
+      .map((part) => part.trim())
+      .filter((part) => part.length > 0)
+      .slice(0, 12);
+  }
+
+  const actions: string[] = [];
+  const segments = prompt
+    .replace(/\b(else|otherwise)\b/gi, '\n$1')
+    .replace(/\b(if|when)\b/gi, '\n$1')
+    .split(/(?:[.;]|\r?\n)+/)
     .map((part) => part.trim())
-    .filter((part) => part.length > 0)
+    .filter(Boolean);
+
+  const addActionParts = (value: string) => {
+    const cleaned = normalizeFallbackAction(value);
+    if (!cleaned) return;
+    cleaned
+      .split(/(?:\b(?:and then|then|after that|afterwards)\b|,(?=\s*(?:mark|set|send|notify|message|email|post|publish|update|create|call|route)\b)|\band\b(?=\s*(?:mark|set|send|notify|message|email|post|publish|update|create|call|route)\b))/i)
+      .map((part) => normalizeFallbackAction(part))
+      .filter(Boolean)
+      .forEach((part) => actions.push(part));
+  };
+
+  for (const segment of segments) {
+    const conditional = segment.match(/^(if|when)\s+([\s\S]*?)(?:,\s*([\s\S]+))?$/i);
+    if (conditional) {
+      const condition = normalizeFallbackAction(conditional[2]);
+      if (condition) actions.push(`check if ${condition}`);
+      addActionParts(conditional[3] || '');
+      continue;
+    }
+
+    const alternative = segment.match(/^(else|otherwise)\s*,?\s*([\s\S]+)$/i);
+    if (alternative) {
+      addActionParts(alternative[2]);
+      continue;
+    }
+
+    addActionParts(segment);
+  }
+
+  return actions
+    .filter((action, index, all) => all.findIndex((other) => other.toLowerCase() === action.toLowerCase()) === index)
     .slice(0, 12);
+}
+
+function containsConditionalLanguage(value: string): boolean {
+  // Check for comparison operators (including Unicode)
+  if (/[\u2264\u2265]/.test(value)) return true;
+  
+  // Check for conditional keywords, operators, and phrases
+  return /\b(if|when|else|otherwise|condition|conditional|route based on|branch|check if|verify if|based on whether|depending on|route by|approve or reject)\b|(?:<=|>=|==|!=|[<>]|\u2264|\u2265)/i.test(value);
+}
+
+function normalizeFallbackAction(value: string): string {
+  return String(value || '')
+    .replace(/^\s*(?:create|build|make)\s+(?:an?\s+)?(?:autonomous\s+)?workflow\s+(?:where|that|which)\s+/i, '')
+    .replace(/^\s*(?:the\s+)?(?:workflow|automation)\s+(?:should\s+)?/i, '')
+    .trim()
+    .replace(/\s+/g, ' ');
 }

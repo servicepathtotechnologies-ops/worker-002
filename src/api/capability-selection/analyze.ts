@@ -139,11 +139,27 @@ export default async function analyzeCapabilitySelection(req: AuthenticatedReque
     }
 
     const containers = await capabilityStepsToContainers(selectionResult.steps, userId);
+
+    // Deduplicate containers: if two containers have the same single candidate node type,
+    // keep only the first one. This prevents the destination-coverage repair from adding
+    // a duplicate container for a node already covered by the AI selection.
+    const seenSingleCandidates = new Set<string>();
+    const deduplicatedContainers = containers.filter((container) => {
+      if (container.candidates.length === 1) {
+        const nodeType = container.candidates[0].nodeType;
+        if (seenSingleCandidates.has(nodeType)) {
+          return false; // drop duplicate single-candidate container
+        }
+        seenSingleCandidates.add(nodeType);
+      }
+      return true;
+    });
+
     const durationMs = Date.now() - startedAt;
 
     res.status(200).json({
       correlationId,
-      containers,
+      containers: deduplicatedContainers,
       promptHash: createHash('sha256').update(prompt).digest('hex'),
       durationMs,
     });

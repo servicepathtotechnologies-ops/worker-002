@@ -55,12 +55,14 @@ function parseStructuredIntentSnapshot(value: unknown): StructuredIntent | undef
   const allowedTrigger = new Set(['schedule', 'webhook', 'form', 'chat_trigger', 'manual_trigger']);
   if (!allowedTrigger.has(triggerType)) return undefined;
   if (!Array.isArray(obj.actions)) return undefined;
+  const intentStr = String(obj.intent || '').trim();
   return {
-    intent: String(obj.intent || '').trim(),
+    intent: intentStr,
     triggerType: triggerType as StructuredIntent['triggerType'],
     actions: obj.actions.map((x) => String(x || '').trim()).filter((x) => x.length > 0),
     dataFlows: Array.isArray(obj.dataFlows) ? (obj.dataFlows as StructuredIntent['dataFlows']) : [],
     constraints: Array.isArray(obj.constraints) ? obj.constraints.map((x) => String(x || '')).filter((x) => x.length > 0) : [],
+    originalPrompt: String(obj.originalPrompt || intentStr).trim(),
   };
 }
 

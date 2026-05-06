@@ -410,6 +410,35 @@ export class CredentialResolver {
         }
       }
 
+      // 🆕 CONNECTIONS TABLE: Check the unified connections table written by the
+      // Connections page (oauthService.callback → connectionService.createConnection).
+      // This is the primary storage for all OAuth connections created via the UI.
+      // credentialTypeId follows the pattern "<provider>_oauth2" (e.g. "google_oauth2"),
+      // so a prefix match against vaultKey covers all providers universally.
+      if (credentialType === 'oauth') {
+        try {
+          const { data: connRows, error: connError } = await this.supabase
+            .from('connections')
+            .select('id, credential_type_id')
+            .eq('user_id', effectiveUserId)
+            .eq('status', 'active');
+
+          if (!connError && Array.isArray(connRows) && connRows.length > 0) {
+            const match = connRows.some(
+              (row: any) =>
+                typeof row.credential_type_id === 'string' &&
+                row.credential_type_id.toLowerCase().startsWith(vaultKey.toLowerCase()),
+            );
+            if (match) {
+              console.log(`[CredentialResolution] ✅ ${vaultKey} OAuth found in connections table`);
+              return true;
+            }
+          }
+        } catch {
+          // Non-fatal — fall through to remaining checks
+        }
+      }
+
       // 🆕 CREDENTIAL VAULT: Check unified credential vault
       try {
         const vault = getCredentialVault();
@@ -417,7 +446,7 @@ export class CredentialResolver {
           { userId: effectiveUserId } as CredentialAccessContext,
           vaultKey
         );
-        
+
         if (exists) {
           console.log(`[CredentialResolution] ✅ Credential found in vault: ${vaultKey}`);
           return true;

@@ -50,4 +50,52 @@ describe('IntentStage fallback', () => {
     expect(result.intent.triggerType).toBe('form');
     expect(result.intent.actions).toEqual(['Submit a form', 'send a Slack message']);
   });
+
+  it('parses fenced JSON intent responses without falling back', async () => {
+    mockedProcessRequest.mockResolvedValue([
+      '```json',
+      JSON.stringify({
+        intent: 'Submit a form and route by age',
+        triggerType: 'form',
+        actions: ['submit form with age', 'check if age > 18', 'send Gmail', 'send Slack'],
+        dataFlows: [],
+        constraints: [],
+      }),
+      '```',
+    ].join('\n'));
+
+    const result = await runIntentStage('Submit a form and route by age', '[]');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.fallback).toBeUndefined();
+    expect(result.intent.actions).toEqual([
+      'submit form with age',
+      'check if age > 18',
+      'send Gmail',
+      'send Slack',
+    ]);
+  });
+
+  it('splits conditional fallback prompts into discrete actions', async () => {
+    mockedProcessRequest.mockResolvedValue('not-json');
+
+    const result = await runIntentStage(
+      'Create an autonomous workflow where a user submits details through a form including age. If age > 18, mark the user as eligible and send a confirmation email via Gmail. If age \u2264 18, mark as not eligible and send a notification message via Slack.',
+      '[]',
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.fallback).toBe(true);
+    expect(result.intent.triggerType).toBe('form');
+    expect(result.intent.actions).toEqual(expect.arrayContaining([
+      'a user submits details through a form including age',
+      'check if age > 18',
+      'send a confirmation email via Gmail',
+      'check if age \u2264 18',
+      'send a notification message via Slack',
+    ]));
+    expect(result.intent.actions.length).toBeGreaterThanOrEqual(5);
+  });
 });
