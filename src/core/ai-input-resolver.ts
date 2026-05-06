@@ -232,11 +232,41 @@ SPECIAL INSTRUCTIONS FOR HTTP REQUEST NODE:
     const hasBodyField = schemaKeys.some((k) => k.toLowerCase() === 'body');
     const hasSubjectField = schemaKeys.some((k) => k.toLowerCase() === 'subject');
     if (hasBodyField && hasSubjectField) {
+      // Detect whether upstream is tabular / structured data (Google Sheets, DB query, CSV, etc.)
+      const isTabularUpstream =
+        previousOutput !== null &&
+        previousOutput !== undefined &&
+        typeof previousOutput === 'object' &&
+        !Array.isArray(previousOutput) &&
+        (
+          'rows' in (previousOutput as object) ||
+          'count' in (previousOutput as object) ||
+          'headers' in (previousOutput as object) ||
+          'items' in (previousOutput as object) ||
+          'records' in (previousOutput as object)
+        );
+
+      const tabularInstruction = isTabularUpstream ? `
+STRUCTURED / TABULAR DATA UPSTREAM — you MUST write a real analysis, not a template:
+- The previous output contains tabular data (rows of records with field names and values).
+- You have been given a sample of those rows. Use the actual field names and values you see.
+- Your "body" MUST contain SPECIFIC numbers and findings derived from that data sample, for example:
+    • Number of records / rows seen
+    • Field names / columns present
+    • Breakdown by a categorical field (e.g. Region: East / West, Category: Cookies / Bars / Snacks)
+    • Top items by a numeric field (e.g. highest TotalPrice, highest Qty)
+    • Sum or average of a numeric field across the sample
+    • Date range if a date field is present
+- Do NOT write generic sentences like "This email contains a summary of the data".
+- ABSOLUTELY FORBIDDEN: bracket placeholders such as [Insert data here], [Summary goes here], [Add analysis], or any [... here] pattern. If you cannot compute an exact total from a sample, state approximate insights or describe what you see.` : `
+- If the previous output has a "response" field containing a string, use that as the body. If the previous output is itself a string, use it directly.`;
+
       specialInstructions += `
 
 DELIVERABLE CONTENT (email / message nodes — schema has subject + body):
-- "body" MUST be the actual text to deliver: the previous step's summary, analysis, or the string in previous output "response" when present. Copy that substantive text; do NOT output instructions like "The node has been configured to send" or "Please provide recipients".
-- "subject" MUST be a short subject line (ideally under 100 characters), not the entire first paragraph of the body. Derive a concise title from user intent or from the first short phrase of the content, not a full multi-sentence summary.`;
+- "subject" MUST be a short subject line (under 100 characters). Derive it from the user intent or the first phrase of the content — not a full paragraph.
+- "body" MUST be substantive, ready-to-send email text. NEVER output instructions, configurations, or bracket placeholders like [Insert X here].
+- Do NOT output sentences like "The node has been configured to send" or "Please provide recipients".${tabularInstruction}`;
     }
 
     const aliasHints: string[] = [];

@@ -298,42 +298,10 @@ async function executeGmailSend(context: NodeExecutionContext, schema: NodeSchem
     if (!bodyFinal && upstreamBody) bodyFinal = upstreamBody;
   }
 
-  // AI fallback: generate subject/body from upstream data when still empty
-  if (!subjectFinal || !bodyFinal) {
-    try {
-      const upstreamData = upstreamList.length > 0 ? upstreamList[0] : null;
-      if (upstreamData) {
-        const { LLMAdapter } = await import('../../../shared/llm-adapter');
-        const adapter = new LLMAdapter();
-        const dataSnippet = JSON.stringify(upstreamData).slice(0, 4000);
-        const intentHint = userIntent ? `Workflow intent: "${userIntent}". ` : '';
-        const resp = await adapter.chat('gemini', [
-          {
-            role: 'user',
-            content: `${intentHint}Generate a concise email subject line and a clear email body based on the following data. Respond with ONLY a JSON object with "subject" and "body" fields.\n\nData:\n${dataSnippet}`,
-          },
-        ], {
-          model: 'gemini-1.5-flash',
-          temperature: 0.3,
-          maxTokens: 1024,
-          usageStage: 'gmail_runtime_fill',
-          enforceExecutionBudget: true,
-        });
-        try {
-          const cleaned = resp.content.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
-          const parsed = JSON.parse(cleaned);
-          if (!subjectFinal && parsed.subject) subjectFinal = String(parsed.subject).trim();
-          if (!bodyFinal && parsed.body) bodyFinal = String(parsed.body).trim();
-        } catch {
-          const lines = resp.content.trim().split(/\r?\n/);
-          if (!subjectFinal) subjectFinal = lines[0]?.trim() || '';
-          if (!bodyFinal) bodyFinal = lines.slice(1).join('\n').trim() || resp.content.trim();
-        }
-      }
-    } catch (aiErr) {
-      console.warn('[Gmail Override] AI body generation failed, proceeding without:', aiErr);
-    }
-  }
+  // Note: subject/body are filled by the dynamic executor's resolveInputsWithAI() before this
+  // execute() is called (context.inputs carries the AI-resolved values). The merge at
+  // configWithResolvedInputs (line ~47) already brought them in. If still empty here, the
+  // upstream truly has no text content and the errors below are the correct user-facing result.
 
   if (!subjectFinal) {
     return { success: true, output: { ...(context.inputs as any), _error: 'Gmail: "subject" is required', _missingInputs: ['subject'] } };

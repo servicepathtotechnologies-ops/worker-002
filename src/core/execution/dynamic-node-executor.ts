@@ -69,12 +69,18 @@ function looksPlaceholderLikeValue(value: unknown): boolean {
   if (typeof value !== 'string') return false;
   const t = value.trim().toLowerCase();
   if (!t) return true;
+  // Bracket-style placeholders the AI sometimes generates for structured-data upstreams
+  if (/\[insert\b|\[add\b|\[fill\b|\[enter\b|\[.*here\]|\[.*summary.*\]|\[.*data.*\]/i.test(value)) return true;
   return (
     t.includes('process the workflow') ||
     t.includes('using the configured nodes') ||
     t.includes('placeholder') ||
     t.includes('lorem ipsum') ||
-    t === 'generated message'
+    t === 'generated message' ||
+    t.includes('generated manually') ||
+    t.includes('summary was generated manually') ||
+    t.includes('to be generated') ||
+    t.includes('will be generated')
   );
 }
 
