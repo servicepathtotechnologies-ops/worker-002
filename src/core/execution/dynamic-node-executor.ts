@@ -28,7 +28,7 @@ import { universalNodeAIContext } from '../../services/ai/universal-node-ai-cont
 import { aiFieldDetector } from '../../services/ai/ai-field-detector';
 import { normalizeRuntimePayload } from '../runtime/runtime-input-adapter';
 import { validateResolvedInput, guaranteeInputForSchema } from './input-guarantee';
-import { buildEffectiveFillModes, isMeaningfulStaticValue } from '../utils/fill-mode-resolver';
+import { buildEffectiveFillModes, isMeaningfulStaticValue, coerceFieldFillModeByPolicy } from '../utils/fill-mode-resolver';
 import {
   isEffectivelyEmptyUpstreamPayload,
   isUpstreamNarrativelyThinForRuntimeAi,
@@ -256,6 +256,14 @@ function applyCostFirstRuntimeFallbacks(params: {
   const narrative = pickPrimaryNarrativeStringFromUpstreamOutput(upstreamType, upstreamPayload);
   const fallbackIntent = workflowIntent || 'Process the workflow using the configured nodes.';
 
+  // When there is a real upstream payload (non-empty, non-thin), do NOT pre-fill runtime_ai
+  // fields with the intent string. Leave them empty so resolveInputsWithAI can call the LLM
+  // with the actual upstream data. Only apply intent fallbacks when upstream is genuinely absent.
+  const hasRealUpstream =
+    upstreamPayload != null &&
+    !isEffectivelyEmptyUpstreamPayload(upstreamPayload) &&
+    !isUpstreamNarrativelyThinForRuntimeAi(upstreamPayload);
+
   for (const fieldName of runtimeFields) {
     const fieldDef = inputSchema[fieldName] as NodeInputField | undefined;
     const current = next[fieldName];
@@ -266,6 +274,8 @@ function applyCostFirstRuntimeFallbacks(params: {
     const lower = fieldName.toLowerCase();
     const stringLike = fieldDef?.type === 'string' || fieldDef?.type === 'expression' || !fieldDef?.type;
 
+    // Only use narrative (extracted string from upstream) if it's a real narrative string,
+    // not a large structured payload like Google Sheets rows.
     if (
       stringLike &&
       narrative &&
@@ -288,7 +298,10 @@ function applyCostFirstRuntimeFallbacks(params: {
       continue;
     }
 
-    if (shouldFillRuntimeAiFromWorkflowIntent(fieldName, fieldDef)) {
+    // Only fill with intent fallback when there is NO real upstream payload.
+    // When upstream has real data (e.g. Google Sheets rows), leave the field empty
+    // so the LLM call in resolveInputsWithAI can use the actual upstream data.
+    if (!hasRealUpstream && shouldFillRuntimeAiFromWorkflowIntent(fieldName, fieldDef)) {
       next[fieldName] = fallbackIntent;
     }
   }
@@ -1005,7 +1018,22 @@ async function resolveNodeInputsUniversalContract(
     (upstreamPayload == null || typeof upstreamPayload === 'object' || typeof upstreamPayload === 'string')
   ) {
     const runtimeFields = getRuntimeAiFields(runtimeInputSchema, effectiveFillModes);
-    runtimeFieldsAudit = runtimeFields;
+
+    // Universal empty-field resolution: also include empty manual_static fields that don't
+    // explicitly block runtime AI (not credentials, not supportsRuntimeAI=false).
+    // This allows users to leave any field blank at build time and have it auto-filled at
+    // runtime from user intent + previous node output.
+    const emptyUnblockedFields = Object.keys(runtimeInputSchema).filter((fieldName) => {
+      if (runtimeFields.includes(fieldName)) return false; // already in runtime_ai pool
+      if (isMeaningfulValueForResolution(resolvedInputs[fieldName])) return false; // already filled
+      if (inputSources[fieldName] === 'template') return false; // template reference — leave it
+      const wouldAllow = coerceFieldFillModeByPolicy(
+        fieldName, 'runtime_ai', runtimeInputSchema, migratedConfig as Record<string, any>
+      ).mode === 'runtime_ai';
+      return wouldAllow;
+    });
+    const allRuntimeFields = [...runtimeFields, ...emptyUnblockedFields];
+    runtimeFieldsAudit = allRuntimeFields;
 
     resolvedInputs = guaranteeInputForSchema({
       resolved: resolvedInputs,
@@ -1018,23 +1046,32 @@ async function resolveNodeInputsUniversalContract(
 
     resolvedInputs = applyCostFirstRuntimeFallbacks({
       resolved: resolvedInputs,
-      runtimeFields,
+      runtimeFields: allRuntimeFields,
       inputSchema: runtimeInputSchema,
       upstreamPayload,
       workflowIntent: rawWorkflowIntent,
     });
-    for (const fieldName of runtimeFields) {
+    for (const fieldName of allRuntimeFields) {
       if (isMeaningfulValueForResolution(resolvedInputs[fieldName]) && inputSources[fieldName] !== 'static_config' && inputSources[fieldName] !== 'template') {
         inputSources[fieldName] = 'deterministic_runtime';
       }
     }
 
-    const requiredRuntimeFields = runtimeFields.filter((fieldName) => requiredInputs.includes(fieldName));
+    const requiredRuntimeFields = allRuntimeFields.filter((fieldName) => requiredInputs.includes(fieldName));
     let missingRequiredRuntimeFields = findMissingFields(resolvedInputs, requiredRuntimeFields);
 
-    if (missingRequiredRuntimeFields.length > 0) {
+    // Resolve all runtime fields (registry runtime_ai + empty unblocked) still missing after
+    // deterministic fallbacks — using AI with user intent + previous node output.
+    const missingOptionalRuntimeFields = allRuntimeFields.filter(
+      (fieldName) =>
+        !requiredInputs.includes(fieldName) &&
+        !isMeaningfulValueForResolution((resolvedInputs as Record<string, any>)[fieldName])
+    );
+    const allMissingRuntimeFields = [...new Set([...missingRequiredRuntimeFields, ...missingOptionalRuntimeFields])];
+
+    if (allMissingRuntimeFields.length > 0) {
       try {
-        const aiSchema = pickSchemaFields(runtimeInputSchema, missingRequiredRuntimeFields);
+        const aiSchema = pickSchemaFields(runtimeInputSchema, allMissingRuntimeFields);
         const aiResolved = await resolveInputsWithAI(
           aiSchema,
           migratedConfig,
@@ -1043,10 +1080,10 @@ async function resolveNodeInputsUniversalContract(
           nodeType,
           node.data?.label,
           upstreamPayload,
-          missingRequiredRuntimeFields
+          allMissingRuntimeFields
         );
         const aiCurrent = typeof aiResolved === 'object' && aiResolved !== null ? aiResolved : {};
-        for (const fieldName of missingRequiredRuntimeFields) {
+        for (const fieldName of allMissingRuntimeFields) {
           if (isMeaningfulValueForResolution(aiCurrent[fieldName])) {
             resolvedInputs[fieldName] = aiCurrent[fieldName];
             inputSources[fieldName] = 'runtime_ai';
@@ -1057,10 +1094,44 @@ async function resolveNodeInputsUniversalContract(
         console.warn('[DynamicExecutor] Runtime AI fallback skipped; using deterministic inputs:', {
           nodeId: node.id,
           nodeType,
-          missingRequiredRuntimeFields,
+          missingRequiredRuntimeFields: allMissingRuntimeFields,
           code: runtimeAiError?.code,
           message: runtimeAiError?.message,
         });
+      }
+    }
+
+    // Structured-data-to-text fallback: when a text/content-like field is still empty after AI
+    // resolution (AI failed, was budget-blocked, or returned placeholder that was cleared), and
+    // the upstream payload is structured data (array/object), serialize it as compact JSON so
+    // the node (e.g. Text Summarizer) has actual data to process.
+    if (upstreamPayload != null && typeof upstreamPayload === 'object') {
+      const stillMissingTextFields = allRuntimeFields.filter((fieldName) => {
+        if (isMeaningfulValueForResolution(resolvedInputs[fieldName])) return false;
+        const fieldDef = runtimeInputSchema[fieldName] as NodeInputField | undefined;
+        const expectedType = (fieldDef?.type || 'string') as string;
+        if (expectedType !== 'string' && expectedType !== 'expression') return false;
+        const fl = fieldName.toLowerCase();
+        return (
+          fl === 'text' ||
+          fl === 'content' ||
+          (fl.includes('text') && !fl.includes('context') && !fl.includes('subtext'))
+        );
+      });
+      if (stillMissingTextFields.length > 0) {
+        try {
+          const raw = JSON.stringify(upstreamPayload, null, 2);
+          const serialized = raw.length > 4000 ? raw.slice(0, 4000) + '\n...[truncated]' : raw;
+          if (serialized) {
+            for (const fieldName of stillMissingTextFields) {
+              resolvedInputs[fieldName] = serialized;
+              inputSources[fieldName] = 'deterministic_runtime';
+              console.log(
+                `[DynamicExecutor] ✅ Structured-data-to-text fallback applied for '${fieldName}' in ${nodeType} (${Array.isArray(upstreamPayload) ? upstreamPayload.length + ' items' : 'object'})`
+              );
+            }
+          }
+        } catch { /* ignore serialization failures */ }
       }
     }
 

@@ -392,13 +392,11 @@ describe('Bug Condition Exploration — AI Pre-Build Value Persistence (Task 1)'
 
     // Document the counterexample: _fillMode is absent (the bug condition)
     // This assertion PASSES on unfixed code — confirming the bug exists.
-    // After the fix, this assertion will FAIL (because _fillMode will be present).
+    // After the fix: _fillMode IS present — bug is resolved.
     const fillModeTextIsUndefined = config._fillMode?.text === undefined;
     const fillModeChannelIsUndefined = config._fillMode?.channel === undefined;
 
-    // Counterexample: isBugCondition(node, 'text') === true
-    // config.text is non-empty AND config._fillMode.text is undefined
-    console.log('[BugExploration] Counterexample found:', {
+    console.log('[BugExploration] Fix verified:', {
       'config.text': config.text,
       'config.channel': config.channel,
       'config._fillMode': config._fillMode,
@@ -406,9 +404,9 @@ describe('Bug Condition Exploration — AI Pre-Build Value Persistence (Task 1)'
       'isBugCondition(channel)': config.channel !== '' && config._fillMode?.channel === undefined,
     });
 
-    // On unfixed code: _fillMode is absent → these are true
-    expect(fillModeTextIsUndefined).toBe(true);
-    expect(fillModeChannelIsUndefined).toBe(true);
+    // Fixed: _fillMode is now present → these are false (bug is gone)
+    expect(fillModeTextIsUndefined).toBe(false);
+    expect(fillModeChannelIsUndefined).toBe(false);
   });
 
   // ── Counterexample 2: wizard round-trip gap ───────────────────────────────────
@@ -437,11 +435,11 @@ describe('Bug Condition Exploration — AI Pre-Build Value Persistence (Task 1)'
     const nodeAfterStage = result.workflow.nodes[0];
     const wizardModeKeys = collectEffectiveFillModesForWizard([nodeAfterStage]);
 
-    console.log('[BugExploration] Wizard mode keys after stage (unfixed):', wizardModeKeys);
+    console.log('[BugExploration] Wizard mode keys after fix:', wizardModeKeys);
 
-    // On unfixed code: no mode_ keys for text/channel → wizard shows "You" mode
-    expect(Object.keys(wizardModeKeys)).not.toContain('mode_slack_node_1_text');
-    expect(Object.keys(wizardModeKeys)).not.toContain('mode_slack_node_1_channel');
+    // Fixed: mode_ keys for text/channel are now present → wizard shows correct AI mode
+    expect(Object.keys(wizardModeKeys)).toContain('mode_slack_node_1_text');
+    expect(Object.keys(wizardModeKeys)).toContain('mode_slack_node_1_channel');
   });
 
   // ── Counterexample 3: manual_static override causes overwrite ────────────────

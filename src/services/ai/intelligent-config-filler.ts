@@ -342,15 +342,36 @@ Return a JSON object mapping each target field to exactly one upstream key. Exam
       filled._expectedInputKeys = [...new Set(expectedInputKeys)];
     }
 
-    // ── Write _fieldModes metadata (spec task 2) ─────────────────────────
-    // Record the registry fillMode.default for every field so the UI can display
-    // the correct toggle state and the credential gate can read it.
-    filled._fieldModes = Object.fromEntries(
-      Object.entries(inputSchema as Record<string, any>).map(([name, field]: [string, any]) => [
-        name,
-        field?.fillMode?.default ?? 'manual_static',
-      ])
-    );
+    // ── Write _fillMode metadata ──────────────────────────────────────────
+    // Stamp _fillMode[fieldName] for every field so the UI toggle reflects the
+    // correct mode. This is the canonical key read by PropertiesPanel.tsx.
+    // Preserve any entries already written by a prior stage (e.g. property-population-stage.ts
+    // which stamps 'buildtime_ai_once' for fields it fills, or user-set entries from the UI).
+    // Priority: existingConfig._fillMode (prior stage) > filled._fillMode > registry default.
+    const priorFillMode =
+      typeof (existingConfig as any)._fillMode === 'object' && (existingConfig as any)._fillMode !== null
+        ? { ...(existingConfig as any)._fillMode as Record<string, string> }
+        : {} as Record<string, string>;
+    const inFlightFillMode =
+      typeof (filled as any)._fillMode === 'object' && (filled as any)._fillMode !== null
+        ? { ...(filled as any)._fillMode as Record<string, string> }
+        : {} as Record<string, string>;
+    // Merge: start from registry defaults, then apply in-flight stamps, then prior stamps (highest priority)
+    const existingFillMode: Record<string, string> = {};
+    for (const [name, field] of Object.entries(inputSchema as Record<string, any>)) {
+      existingFillMode[name] = (field as any)?.fillMode?.default ?? 'manual_static';
+    }
+    // In-flight stamps (from this run) override registry defaults
+    for (const [name, mode] of Object.entries(inFlightFillMode)) {
+      existingFillMode[name] = mode;
+    }
+    // Prior stage stamps (highest priority) override everything
+    for (const [name, mode] of Object.entries(priorFillMode)) {
+      existingFillMode[name] = mode;
+    }
+    filled._fillMode = existingFillMode;
+    // Remove legacy key — UI reads _fillMode, not _fieldModes
+    delete (filled as any)._fieldModes;
     // ─────────────────────────────────────────────────────────────────────
 
     return filled;

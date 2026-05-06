@@ -17838,6 +17838,13 @@ export default async function executeWorkflowHandler(req: Request, res: Response
     let hasError = false;
     let errorMessage = '';
 
+    // Wire real-time WebSocket visualization (fire-and-forget; never blocks execution)
+    const { getExecutionStateManager } = await import('../services/workflow-executor/execution-state-manager');
+    const wsStateManager = getExecutionStateManager();
+    try {
+      wsStateManager.initializeExecution(executionId, workflowId, executionOrder.length, executionInput);
+    } catch (_wsInitErr) { /* non-fatal */ }
+
     // Execute nodes in order (starting from resume point if applicable)
     for (let i = startFromIndex; i < executionOrder.length; i++) {
       const node = executionOrder[i];
@@ -17909,7 +17916,8 @@ export default async function executeWorkflowHandler(req: Request, res: Response
           log.finishedAt = new Date().toISOString();
           log.output = nodeInput;
           logs.push(log);
-          
+          try { wsStateManager.updateNodeState(executionId, node.id, node.data?.label || node.id, 'skipped'); } catch (_e) { /* non-fatal */ }
+
           console.log('[ExecuteWorkflow] ⏭️  Skipping node (wrong branch):', {
             nodeId: node.id,
             nodeLabel: node.data?.label,
@@ -18362,6 +18370,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
             log.status = 'success';
             log.finishedAt = new Date().toISOString();
             logs.push(log);
+            try { wsStateManager.updateNodeState(executionId, node.id, node.data?.label || node.id, 'success', { output }); } catch (_e) { /* non-fatal */ }
             continue;
           }
 
@@ -18385,6 +18394,28 @@ export default async function executeWorkflowHandler(req: Request, res: Response
                 state_snapshot: { nodeId: node.id, nodeType, startedAt: new Date().toISOString() },
               }, { onConflict: 'execution_id,node_id' });
           } catch (_e) { /* best-effort */ }
+
+          // ✅ PER-NODE UI UPDATE: Write current_node to executions table so the frontend
+          // polling /api/execution-status sees which node is actively running.
+          // Also invalidate the Redis cache so the next poll gets fresh data immediately.
+          try {
+            await supabase
+              .from('executions')
+              .update({ current_node: node.id })
+              .eq('id', executionId);
+          } catch (_e) { /* best-effort */ }
+
+          // Invalidate Redis cache so the frontend poll sees the running node immediately.
+          try {
+            const { getCacheRedisClient, invalidateExecutionStatusCache } = await import('../middleware/redisGetCache');
+            const redisClient = await getCacheRedisClient(process.env.REDIS_URL || 'redis://redis:6379');
+            if (redisClient) {
+              await invalidateExecutionStatusCache(executionId, redisClient);
+            }
+          } catch (_e) { /* best-effort — never block execution for cache */ }
+
+          // Emit 'running' WebSocket event so UI node turns blue immediately.
+          try { wsStateManager.updateNodeState(executionId, node.id, node.data?.label || node.id, 'running', { input: nodeInput }); } catch (_e) { /* non-fatal */ }
 
           // ✅ CRITICAL: Execute node with retry policy
           const { getRetryConfig, calculateBackoff, shouldRetry } = await import('../services/execution/retry-policy');
@@ -18576,7 +18607,17 @@ export default async function executeWorkflowHandler(req: Request, res: Response
             // Don't fail workflow - log error and continue
             // State is still in memory cache for this execution
           }
-          
+
+          // ✅ PER-NODE COMPLETION: Invalidate Redis cache so the frontend poll immediately
+          // sees this node's completed output and the next node's running status.
+          try {
+            const { getCacheRedisClient, invalidateExecutionStatusCache } = await import('../middleware/redisGetCache');
+            const redisClient = await getCacheRedisClient(process.env.REDIS_URL || 'redis://redis:6379');
+            if (redisClient) {
+              await invalidateExecutionStatusCache(executionId, redisClient);
+            }
+          } catch (_e) { /* best-effort — never block execution for cache */ }
+
           finalOutput = output;
 
           // CRITICAL: Auto-forward AI agent responses to chat UI
@@ -18715,6 +18756,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
               log.error = softErrorMsg;
               log.finishedAt = new Date().toISOString();
               logs.push(log);
+              try { wsStateManager.updateNodeState(executionId, node.id, node.data?.label || node.id, 'error', { error: softErrorMsg, output }); } catch (_e) { /* non-fatal */ }
 
               await logExecutionEvent(supabase, executionId, workflowId, 'NODE_FAILED', {
                 nodeId: node.id,
@@ -18739,6 +18781,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
           log.output = output;
           log.status = 'success';
           log.finishedAt = new Date().toISOString();
+          try { wsStateManager.updateNodeState(executionId, node.id, node.data?.label || node.id, 'success', { output }); } catch (_e) { /* non-fatal */ }
 
           // Persist self-validation evidence when available.
           try {
@@ -18782,12 +18825,13 @@ export default async function executeWorkflowHandler(req: Request, res: Response
         } catch (error) {
           const errorObj = error instanceof Error ? error : new Error(String(error));
           console.error(`[Workflow ${workflowId}] [Node ${node.id}] [${node.data.label}] ERROR:`, errorObj.message, errorObj);
-          
+
           log.status = 'failed';
           log.error = errorObj.message;
           log.finishedAt = new Date().toISOString();
           hasError = true;
           errorMessage = log.error;
+          try { wsStateManager.updateNodeState(executionId, node.id, node.data?.label || node.id, 'error', { error: errorObj.message }); } catch (_e) { /* non-fatal */ }
 
           // ✅ CRITICAL: Log node failed event
           await logExecutionEvent(supabase, executionId, workflowId, 'NODE_FAILED', {
@@ -18839,6 +18883,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
         log.finishedAt = new Date().toISOString();
         hasError = true;
         errorMessage = log.error;
+        try { wsStateManager.updateNodeState(executionId, node.id, node.data?.label || node.id, 'error', { error: errorObj.message }); } catch (_e) { /* non-fatal */ }
 
         // Log node failed event
         await logExecutionEvent(supabase, executionId, workflowId, 'NODE_FAILED', {

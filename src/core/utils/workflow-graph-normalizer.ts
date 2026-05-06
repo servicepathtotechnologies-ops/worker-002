@@ -23,6 +23,7 @@ import { unifiedNodeRegistry } from '../registry/unified-node-registry';
 export interface NormalizedWorkflowGraph {
   nodes: WorkflowNode[];
   edges: any[];
+  migrationsApplied: string[];
   metadata?: {
     version?: string;
     createdAt?: string;
@@ -33,6 +34,11 @@ export interface NormalizedWorkflowGraph {
 /** full: legacy (linearization, log rewiring); topologyPreserve: handle fixes only, no structural rewrites */
 export interface NormalizeWorkflowGraphOptions {
   mode?: 'full' | 'topologyPreserve';
+  /**
+   * When true, skip normalization and return the input graph as-is (with minimal wrapping).
+   * Use this when the graph has already been normalized upstream to avoid redundant passes.
+   */
+  skipNormalization?: boolean;
 }
 
 /**
@@ -48,6 +54,17 @@ export function normalizeWorkflowGraph(
   rawGraph: any,
   options?: NormalizeWorkflowGraphOptions
 ): NormalizedWorkflowGraph {
+  // Fast-path: caller guarantees the graph is already normalized — skip all processing.
+  if (options?.skipNormalization) {
+    const parsed = rawGraph && typeof rawGraph === 'object' ? rawGraph : { nodes: [], edges: [] };
+    return {
+      nodes: Array.isArray(parsed.nodes) ? parsed.nodes : [],
+      edges: Array.isArray(parsed.edges) ? parsed.edges : [],
+      metadata: parsed.metadata,
+      migrationsApplied: [],
+    };
+  }
+
   try {
     // Parse if string
     let parsed: any;
@@ -249,6 +266,7 @@ export function normalizeWorkflowGraph(
       return {
         nodes: normalizedNodes,
         edges: normalizedEdges,
+        migrationsApplied: [],
         metadata: {
           version: parsed.metadata?.version || '1.0',
           createdAt: parsed.metadata?.createdAt || new Date().toISOString(),
@@ -497,6 +515,7 @@ export function normalizeWorkflowGraph(
           return {
             nodes: ordered,
             edges: preservedEdges,
+            migrationsApplied: [],
             metadata: {
               version: parsed.metadata?.version || '1.0',
               createdAt: parsed.metadata?.createdAt || new Date().toISOString(),
@@ -571,6 +590,7 @@ export function normalizeWorkflowGraph(
         return {
           nodes: ordered,
           edges: linearEdges,
+          migrationsApplied: [],
           metadata: {
             version: parsed.metadata?.version || '1.0',
             createdAt: parsed.metadata?.createdAt || new Date().toISOString(),
@@ -583,6 +603,7 @@ export function normalizeWorkflowGraph(
       return {
         nodes: normalizedNodes,
         edges: normalizedEdges,
+        migrationsApplied: [],
         metadata: {
           version: parsed.metadata?.version || '1.0',
           createdAt: parsed.metadata?.createdAt || new Date().toISOString(),
@@ -594,6 +615,7 @@ export function normalizeWorkflowGraph(
       return {
         nodes: normalizedNodes,
         edges: normalizedEdges,
+        migrationsApplied: [],
         metadata: {
           version: parsed.metadata?.version || '1.0',
           createdAt: parsed.metadata?.createdAt || new Date().toISOString(),

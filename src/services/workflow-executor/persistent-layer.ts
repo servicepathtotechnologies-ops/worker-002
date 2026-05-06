@@ -12,6 +12,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { getCacheRedisClient, invalidateExecutionStatusCache } from '../../middleware/redisGetCache';
 
 export interface ExecutionStateSnapshot {
   executionId: string;
@@ -316,6 +317,12 @@ export class PersistentLayer {
 
       if (updateError) {
         throw new Error(`Failed to update execution status: ${updateError.message}`);
+      }
+
+      if (status === 'success' || status === 'failed') {
+        getCacheRedisClient(process.env.REDIS_URL || 'redis://redis:6379')
+          .then(client => client ? invalidateExecutionStatusCache(executionId, client) : null)
+          .catch(err => console.warn('[PersistentLayer] Cache invalidation failed (non-fatal):', err));
       }
 
       console.log(`[PersistentLayer] ✅ Updated execution ${executionId} status to ${status}`);

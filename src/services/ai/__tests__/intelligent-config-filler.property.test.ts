@@ -63,7 +63,7 @@ test('Property 10: Config_Filler only fills buildtime_ai_once fields and skips m
           // manual_static and credential fields must NOT have been AI-filled
           if (fillMode === 'manual_static' || ownership === 'credential') {
             // The filler should not have written a non-metadata value for this field
-            // (metadata keys like _fieldModes, _mappingMetadata are allowed)
+            // (metadata keys like _fillMode, _mappingMetadata are allowed)
             const value = filledConfig[fieldName];
             // If the field was already in the original config it's fine; we only care about
             // fields that were empty before and got filled.
@@ -77,10 +77,10 @@ test('Property 10: Config_Filler only fills buildtime_ai_once fields and skips m
   );
 }, 30000);
 
-// ─── Property 12: Pre-filled fields are marked with _fieldModes ─────────────
+// ─── Property 12: Pre-filled fields are marked with _fillMode ──────────────
 
-// Feature: ai-workflow-generation-engine, Property 12: Pre-filled fields are marked with _fieldModes
-test('Property 12: Pre-filled fields are marked with _fieldModes', async () => {
+// Feature: ai-workflow-generation-engine, Property 12: Pre-filled fields are marked with _fillMode
+test('Property 12: Pre-filled fields are marked with _fillMode', async () => {
   const allTypes = unifiedNodeRegistry.getAllTypes();
   if (allTypes.length === 0) return;
 
@@ -103,23 +103,26 @@ test('Property 12: Pre-filled fields are marked with _fieldModes', async () => {
         if (!filledNode) return;
 
         const filledConfig = (filledNode as any).data?.config ?? {};
-        const fieldModes = filledConfig._fieldModes;
 
-        // _fieldModes must be present
-        expect(fieldModes).toBeDefined();
-        expect(typeof fieldModes).toBe('object');
+        // _fillMode must be present (canonical key read by PropertiesPanel.tsx)
+        const fillMode = filledConfig._fillMode;
+        expect(fillMode).toBeDefined();
+        expect(typeof fillMode).toBe('object');
+
+        // _fieldModes must NOT be present (legacy key removed)
+        expect(filledConfig._fieldModes).toBeUndefined();
 
         const inputSchema = def.inputSchema as Record<string, any>;
         const validModes = new Set(['manual_static', 'buildtime_ai_once', 'runtime_ai']);
 
-        // Every field in inputSchema must have an entry in _fieldModes
+        // Every field in inputSchema must have an entry in _fillMode
         for (const [fieldName, fieldDef] of Object.entries(inputSchema)) {
-          expect(fieldModes[fieldName]).toBeDefined();
-          expect(validModes.has(fieldModes[fieldName])).toBe(true);
+          expect(fillMode[fieldName]).toBeDefined();
+          expect(validModes.has(fillMode[fieldName])).toBe(true);
 
           // The recorded mode must match the registry default
           const expectedMode = (fieldDef as any)?.fillMode?.default ?? 'manual_static';
-          expect(fieldModes[fieldName]).toBe(expectedMode);
+          expect(fillMode[fieldName]).toBe(expectedMode);
         }
       }
     ),

@@ -59,6 +59,36 @@ export async function runFieldOwnershipStage(
     }
   }
 
+  // ── Sync _fillMode into node configs ─────────────────────────────────────
+  // Write registry-derived fill modes into each node's config._fillMode so the
+  // UI toggle reflects the correct mode for every field. Preserves any entries
+  // already stamped by property-population-stage.ts or plan-driven-workflow-builder.ts.
+  for (const node of workflow.nodes) {
+    const nodeId = node.id;
+    const nodeFields = fieldOwnershipMap[nodeId];
+    if (!nodeFields) continue;
+
+    const config =
+      node.data?.config && typeof node.data.config === 'object'
+        ? (node.data.config as Record<string, any>)
+        : {};
+
+    const existing: Record<string, string> =
+      typeof config._fillMode === 'object' && config._fillMode !== null
+        ? { ...(config._fillMode as Record<string, string>) }
+        : {};
+
+    for (const [fieldName, fillMode] of Object.entries(nodeFields)) {
+      // Only stamp when not already set by a prior stage — prior stage wins
+      if (existing[fieldName] === undefined) {
+        existing[fieldName] = fillMode;
+      }
+    }
+
+    node.data.config = { ...config, _fillMode: existing };
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
   const durationMs = Date.now() - startedAt;
   const totalFields = Object.values(fieldOwnershipMap).reduce((sum, fields) => sum + Object.keys(fields).length, 0);
 

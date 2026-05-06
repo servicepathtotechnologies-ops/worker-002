@@ -60,6 +60,11 @@ export function fillMissingTitleLikeRuntimeAiFields(options: TitleBackfillOption
   const intentTrim = workflowIntent.trim();
   const intentTitle = intentTrim.length > 0 ? truncateTitle(firstLine(intentTrim)) : undefined;
 
+  // Only use intent as title source when there is no real upstream payload.
+  // When upstream has real data (e.g. Google Sheets rows), the LLM should derive the title
+  // from that data — not from the user's workflow description.
+  const hasRealUpstream = upstreamPayload != null && prev !== null;
+
   for (const fieldName of Object.keys(inputSchema)) {
     if (effectiveFillModes[fieldName] !== 'runtime_ai') continue;
     const fieldDef = inputSchema[fieldName] as NodeInputField | undefined;
@@ -67,12 +72,13 @@ export function fillMissingTitleLikeRuntimeAiFields(options: TitleBackfillOption
     if (isMeaningfulStaticValue(resolvedInputs[fieldName])) continue;
 
     let derived: string | undefined;
-    if (intentTitle && intentTitle.length > 0) {
-      derived = intentTitle;
-    } else if (responseString) {
+    if (responseString) {
       derived = truncateTitle(firstLine(responseString));
     } else if (bodyText) {
       derived = truncateTitle(firstLine(bodyText));
+    } else if (!hasRealUpstream && intentTitle && intentTitle.length > 0) {
+      // Only fall back to intent title when there is no real upstream data
+      derived = intentTitle;
     }
 
     if (derived && derived.trim().length > 0) {

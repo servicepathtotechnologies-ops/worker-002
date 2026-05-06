@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Attach Node Inputs API Endpoint
  * 
  * This endpoint is called AFTER workflow generation to inject node configuration inputs
@@ -9,7 +9,7 @@
  * 2. Backend generates workflow graph
  * 3. Backend returns graph + required inputs + required credentials
  * 4. Frontend shows unified configuration modal
- * 5. User submits inputs → THIS ENDPOINT
+ * 5. User submits inputs â†’ THIS ENDPOINT
  * 6. Backend injects inputs into nodes
  * 7. Frontend calls attach-credentials
  * 8. Auto-run workflow
@@ -19,8 +19,8 @@
  * writable through this endpoint so AI-built and user-edited fields persist (no protected-config 409).
  *
  * Field-plane aligned keys (see ctrl_checks `wizard-types.ts`):
- * - `mode_<nodeId>_<fieldName>` → `data.config._fillMode[fieldName]`
- * - `unlock_<nodeId>_<fieldName>` → `data.config._ownershipUnlock[fieldName]` (registry unlockable credential fields only)
+ * - `mode_<nodeId>_<fieldName>` â†’ `data.config._fillMode[fieldName]`
+ * - `unlock_<nodeId>_<fieldName>` â†’ `data.config._ownershipUnlock[fieldName]` (registry unlockable credential fields only)
  * - Prefixed comprehensive ids: `cred_`, `input_`, `config_`, `resource_`, `op_` + `<nodeId>_<fieldName>`
  */
 
@@ -228,17 +228,25 @@ export function normalizeSwitchCasesInput(raw: unknown): { value: Array<{ value:
   return { value: normalized, valid: normalized.length > 0 };
 }
 
-export default async function attachInputsHandler(req: Request, res: Response) {
+/** Module-level in-flight deduplication map keyed by workflowId. */
+const attachInputsInFlight = new Map<string, Promise<unknown>>();
+
+/**
+ * Core pipeline: runs the full attach-inputs validation + credential discovery +
+ * topology fingerprint pipeline. Returns `{ statusCode, body }` for all paths
+ * (success and error). Does NOT call res.json â€” the caller does that.
+ */
+async function runAttachInputsPipeline(req: Request, res: Response): Promise<{ statusCode: number; body: unknown }> {
   return runWithBuildUsageTracking(async () => {
   try {
-    // ✅ CRITICAL: Get workflowId from URL params (not body)
+    // âœ… CRITICAL: Get workflowId from URL params (not body)
     const workflowId = req.params.workflowId || req.body.workflowId;
     const { inputs, originalUserPrompt: originalUserPromptFromBody, fieldOwnershipOverrides } = req.body;
 
     const trimmedOriginalFromRequest =
       typeof originalUserPromptFromBody === 'string' ? originalUserPromptFromBody.trim() : '';
 
-    // ✅ CRITICAL: Log request for debugging
+    // âœ… CRITICAL: Log request for debugging
     console.log('[AttachInputs] Request received:', {
       workflowId,
       inputsKeys: inputs ? Object.keys(inputs) : [],
@@ -248,15 +256,15 @@ export default async function attachInputsHandler(req: Request, res: Response) {
 
     if (!workflowId) {
       console.error('[AttachInputs] Missing workflowId in params and body');
-      return res.status(400).json({
+      return { statusCode: 400, body: ({
         error: 'workflowId is required',
         details: 'workflowId must be provided in URL path or request body',
-      });
+      }) };
     }
 
     if (!inputs || typeof inputs !== 'object') {
       console.error('[AttachInputs] Invalid inputs:', typeof inputs, inputs);
-      return res.status(400).json(
+      return { statusCode: 400, body: (
         createError(
           ErrorCode.INVALID_INPUT_FORMAT,
           'inputs object is required',
@@ -266,18 +274,18 @@ export default async function attachInputsHandler(req: Request, res: Response) {
             workflowId,
           }
         )
-      );
+      ) };
     }
 
-    // ✅ CRITICAL: Strip any credential fields from inputs
-    // ✅ COMPREHENSIVE: BUT allow question IDs that wrap nodeId + fieldName
+    // âœ… CRITICAL: Strip any credential fields from inputs
+    // âœ… COMPREHENSIVE: BUT allow question IDs that wrap nodeId + fieldName
     // Supported prefixes:
     // - input_ (current unified wizard format)
     // - cred_ / op_ / config_ / resource_ (comprehensive question IDs)
-    // - ownership_ (field-ownership wizard questions — recipientSource, recipientEmails, etc.)
+    // - ownership_ (field-ownership wizard questions â€” recipientSource, recipientEmails, etc.)
     const sanitizedInputs: Record<string, any> = {};
     for (const [key, value] of Object.entries(inputs)) {
-      // ✅ COMPREHENSIVE: Allow comprehensive question IDs - these are handled specially
+      // âœ… COMPREHENSIVE: Allow comprehensive question IDs - these are handled specially
       const isComprehensiveQuestionId = 
         key.startsWith('input_') ||
         key.startsWith('cred_') ||
@@ -325,7 +333,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     // Use sanitized inputs
     const cleanInputs = Object.keys(sanitizedInputs).length > 0 ? sanitizedInputs : inputs;
 
-    /** Keys that look like bare node IDs but are not nested `{ field: value }` objects — worker cannot map fields. */
+    /** Keys that look like bare node IDs but are not nested `{ field: value }` objects â€” worker cannot map fields. */
     const invalidBareNodeIdInputKeys: string[] = [];
     const nodeIdLike =
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -365,13 +373,13 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       .single();
 
     if (workflowError || !workflow) {
-      return res.status(404).json(
+      return { statusCode: 404, body: (
         createError(
           ErrorCode.WORKFLOW_NOT_FOUND,
           'Workflow not found',
           { workflowId, error: workflowError?.message }
         )
-      );
+      ) };
     }
 
     const attachPayloadHash = hashAttachInputsPayload({
@@ -396,18 +404,18 @@ export default async function attachInputsHandler(req: Request, res: Response) {
         workflowId,
         payloadHash: attachPayloadHash.slice(0, 12),
       });
-      return res.status(200).json({
+      return { statusCode: 200, body: ({
         success: true,
         idempotent: true,
         workflowId,
         status: workflow.status,
         phase: workflow.phase,
         workflow,
-      });
+      }) };
     }
 
     if ((workflow as any).active_execution_id || ['executing', 'running'].includes(String(workflow.phase || workflow.status || '').toLowerCase())) {
-      return res.status(409).json(
+      return { statusCode: 409, body: (
         createError(
           ErrorCode.PHASE_LOCKED,
           'Workflow is currently executing. Cannot attach inputs.',
@@ -418,7 +426,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
           },
           true
         )
-      );
+      ) };
     }
 
     const buildManifestFromDb = (workflow as any)?.metadata?.buildManifest;
@@ -431,7 +439,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       }
     }
 
-    // ✅ CRITICAL: Phase locking - prevent duplicate attach calls
+    // âœ… CRITICAL: Phase locking - prevent duplicate attach calls
     // Check phase field first (for execution phases), then fall back to status (for lifecycle)
     const currentPhase = workflow.phase || workflow.status || 'draft';
     const allowedPhases = ['draft', 'active', 'ready', 'configuring_inputs', 'configuring_credentials', 'discover_inputs', 'discover_credentials', 'ready_for_execution', 'complete', 'completed'];
@@ -440,7 +448,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     // This allows users to update inputs even after workflow is ready
     if (!allowedPhases.includes(currentPhase)) {
       if (currentPhase === 'executing') {
-        return res.status(409).json(
+        return { statusCode: 409, body: (
           createError(
             ErrorCode.PHASE_LOCKED,
             'Workflow not in input configuration phase',
@@ -451,9 +459,9 @@ export default async function attachInputsHandler(req: Request, res: Response) {
             },
             true // Recoverable - user can refresh
           )
-        );
+        ) };
       } else {
-        return res.status(400).json(
+        return { statusCode: 400, body: (
           createError(
             ErrorCode.INVALID_PHASE,
             'Workflow not in valid phase for input attachment',
@@ -465,18 +473,18 @@ export default async function attachInputsHandler(req: Request, res: Response) {
               workflowPhase: workflow.phase,
             }
           )
-        );
+        ) };
       }
     }
 
-    // ✅ ATOMIC PHASE FIX: Do NOT update phase here.
+    // âœ… ATOMIC PHASE FIX: Do NOT update phase here.
     // Phase is only advanced to 'configuring_inputs' AFTER successful graph normalization below.
     // If normalization fails, the phase must remain unchanged.
 
-    // ✅ CRITICAL: Use centralized graph normalizer
+    // âœ… CRITICAL: Use centralized graph normalizer
     // Handle both workflow.graph format and direct nodes/edges format
     let normalizedGraph: ReturnType<typeof normalizeWorkflowGraph>;
-    /** Fingerprint after topologyPreserve parse — final save must match this. */
+    /** Fingerprint after topologyPreserve parse â€” final save must match this. */
     let baselineTopologyFingerprint: WorkflowTopologyFingerprint | null = null;
     let baselineProtectedConfigFingerprint: WorkflowProtectedConfigFingerprint | null = null;
     const freezeBoundary = (workflow as any)?.metadata?.freezeBoundary || null;
@@ -494,7 +502,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     try {
       const resolvedGraphState = resolveWorkflowGraphState(workflow as any);
       if (resolvedGraphState.needsHealing) {
-        console.warn('[AttachInputs] ⚠️ Workflow graph state needed healing:', {
+        console.warn('[AttachInputs] âš ï¸ Workflow graph state needed healing:', {
           workflowId,
           source: resolvedGraphState.source,
           inSync: resolvedGraphState.inSync,
@@ -516,13 +524,13 @@ export default async function attachInputsHandler(req: Request, res: Response) {
         edges: Array.isArray(graphToNormalize.edges) ? graphToNormalize.edges : [],
       } as any);
 
-      // ✅ DEBUG: Log node IDs BEFORE any normalization
+      // âœ… DEBUG: Log node IDs BEFORE any normalization
       const nodeIdsBeforeAnyNormalization = (graphAfterTypeReconcile.nodes || []).map((n: any) => n.id);
       const duplicatesBeforeAny = nodeIdsBeforeAnyNormalization.filter((id: string, idx: number) => 
         nodeIdsBeforeAnyNormalization.indexOf(id) !== idx
       );
       if (duplicatesBeforeAny.length > 0) {
-        console.error('[AttachInputs] 🚨 BEFORE any normalization - Duplicate node IDs from DB/frontend:', {
+        console.error('[AttachInputs] ðŸš¨ BEFORE any normalization - Duplicate node IDs from DB/frontend:', {
           workflowId,
           duplicateIds: [...new Set(duplicatesBeforeAny)],
           allNodeIds: nodeIdsBeforeAnyNormalization,
@@ -544,35 +552,35 @@ export default async function attachInputsHandler(req: Request, res: Response) {
         normalizedGraph.edges
       );
       baselineProtectedConfigFingerprint = fingerprintWorkflowProtectedConfig(normalizedGraph.nodes);
-      console.log('[AttachInputs] 📌 Baseline topology fingerprint (topologyPreserve):', {
+      console.log('[AttachInputs] ðŸ“Œ Baseline topology fingerprint (topologyPreserve):', {
         workflowId,
         fingerprint: baselineTopologyFingerprint.fingerprint,
         nodeCount: baselineTopologyFingerprint.nodeIdsSorted.length,
         edgeCount: baselineTopologyFingerprint.edgeKeysSorted.length,
       });
       if (isPostFreezeReadonly) {
-        console.log('[AttachInputs] 🔒 Post-freeze readonly mode enabled');
+        console.log('[AttachInputs] ðŸ”’ Post-freeze readonly mode enabled');
       }
       
-      // ✅ DEBUG: Log node IDs AFTER normalization
+      // âœ… DEBUG: Log node IDs AFTER normalization
       const nodeIdsAfterNormalization = normalizedGraph.nodes.map(n => n.id);
       const duplicatesAfter = nodeIdsAfterNormalization.filter((id, idx) => 
         nodeIdsAfterNormalization.indexOf(id) !== idx
       );
       if (duplicatesAfter.length > 0) {
-        console.error('[AttachInputs] 🚨 AFTER normalization - STILL has duplicate node IDs:', {
+        console.error('[AttachInputs] ðŸš¨ AFTER normalization - STILL has duplicate node IDs:', {
           workflowId,
           duplicateIds: [...new Set(duplicatesAfter)],
         });
       } else {
-        console.log('[AttachInputs] ✅ After normalization - No duplicate node IDs');
+        console.log('[AttachInputs] âœ… After normalization - No duplicate node IDs');
       }
       
       // Validate normalized graph (should pass now since duplicates are removed)
       const validation = validateNormalizedGraph(normalizedGraph);
       if (!validation.valid) {
         console.error('[AttachInputs] Graph validation failed after normalization:', validation.errors);
-        return res.status(400).json(
+        return { statusCode: 400, body: (
           createError(
             ErrorCode.GRAPH_INVALID_STRUCTURE,
             'Workflow graph validation failed',
@@ -582,10 +590,10 @@ export default async function attachInputsHandler(req: Request, res: Response) {
               workflowId,
             }
           )
-        );
+        ) };
       }
 
-      // ✅ ATOMIC PHASE FIX: Advance phase ONLY after successful normalization + validation.
+      // âœ… ATOMIC PHASE FIX: Advance phase ONLY after successful normalization + validation.
       // This ensures a 400 on normalization failure never mutates the phase.
       await supabase
         .from('workflows')
@@ -595,7 +603,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
           updated_at: new Date().toISOString(),
         })
         .eq('id', workflowId);
-      console.log('[AttachInputs] ✅ Phase advanced to configuring_inputs (normalization succeeded)');
+      console.log('[AttachInputs] âœ… Phase advanced to configuring_inputs (normalization succeeded)');
     } catch (error) {
       console.error('[AttachInputs] Graph normalization failed:', error);
       console.error('[AttachInputs] Workflow structure:', {
@@ -610,7 +618,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
         nodesLength: Array.isArray(workflow.nodes) ? workflow.nodes.length : 'N/A',
         edgesLength: Array.isArray(workflow.edges) ? workflow.edges.length : 'N/A',
       });
-      return res.status(400).json(
+      return { statusCode: 400, body: (
         createError(
           ErrorCode.GRAPH_PARSE_ERROR,
           'Failed to normalize workflow graph',
@@ -627,16 +635,16 @@ export default async function attachInputsHandler(req: Request, res: Response) {
             }
           }
         )
-      );
+      ) };
     }
 
     const workflowGraph = normalizedGraph;
 
-    // ✅ DEBUG: Log node IDs BEFORE normalization to detect duplicates from frontend
+    // âœ… DEBUG: Log node IDs BEFORE normalization to detect duplicates from frontend
     const nodeIdsBefore = workflowGraph.nodes.map(n => n.id);
     const duplicateIdsBefore = nodeIdsBefore.filter((id, index) => nodeIdsBefore.indexOf(id) !== index);
     if (duplicateIdsBefore.length > 0) {
-      console.error('[AttachInputs] 🚨 BEFORE normalize - Duplicate node IDs detected:', {
+      console.error('[AttachInputs] ðŸš¨ BEFORE normalize - Duplicate node IDs detected:', {
         workflowId,
         duplicateIds: [...new Set(duplicateIdsBefore)],
         allNodeIds: nodeIdsBefore,
@@ -644,30 +652,30 @@ export default async function attachInputsHandler(req: Request, res: Response) {
         uniqueNodeCount: new Set(nodeIdsBefore).size,
       });
     } else {
-      console.log('[AttachInputs] ✅ BEFORE normalize - No duplicate node IDs detected:', {
+      console.log('[AttachInputs] âœ… BEFORE normalize - No duplicate node IDs detected:', {
         workflowId,
         nodeCount: workflowGraph.nodes.length,
         nodeIds: nodeIdsBefore,
       });
     }
 
-    // ✅ CRITICAL: Config-only save normalization (preserve topology)
+    // âœ… CRITICAL: Config-only save normalization (preserve topology)
     const { normalizeWorkflowForSave: normalizeWorkflow } = await import('../core/validation/workflow-save-validator');
     const normalizedBeforeClone = normalizeWorkflow(workflowGraph.nodes, workflowGraph.edges, {
       structuralMode: isConfigFrozen ? 'post_freeze_readonly' : 'configOnly',
     });
     
-    // ✅ DEBUG: Log node IDs AFTER normalization to verify deduplication
+    // âœ… DEBUG: Log node IDs AFTER normalization to verify deduplication
     const nodeIdsAfter = normalizedBeforeClone.nodes.map(n => n.id);
     const duplicateIdsAfter = nodeIdsAfter.filter((id, index) => nodeIdsAfter.indexOf(id) !== index);
     if (duplicateIdsAfter.length > 0) {
-      console.error('[AttachInputs] 🚨 AFTER normalize - STILL has duplicate node IDs:', {
+      console.error('[AttachInputs] ðŸš¨ AFTER normalize - STILL has duplicate node IDs:', {
         workflowId,
         duplicateIds: [...new Set(duplicateIdsAfter)],
         allNodeIds: nodeIdsAfter,
       });
     } else {
-      console.log('[AttachInputs] ✅ AFTER normalize - Duplicates removed:', {
+      console.log('[AttachInputs] âœ… AFTER normalize - Duplicates removed:', {
         workflowId,
         originalNodeCount: workflowGraph.nodes.length,
         normalizedNodeCount: normalizedBeforeClone.nodes.length,
@@ -676,8 +684,8 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     }
     
     if (normalizedBeforeClone.migrationsApplied.length > 0) {
-      console.log('[AttachInputs] 🔄 Applied normalizations before input injection:', normalizedBeforeClone.migrationsApplied);
-      console.log('[AttachInputs] 📊 Normalization stats:', {
+      console.log('[AttachInputs] ðŸ”„ Applied normalizations before input injection:', normalizedBeforeClone.migrationsApplied);
+      console.log('[AttachInputs] ðŸ“Š Normalization stats:', {
         originalNodes: workflowGraph.nodes.length,
         normalizedNodes: normalizedBeforeClone.nodes.length,
         originalEdges: workflowGraph.edges.length,
@@ -685,7 +693,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       });
     }
     
-    // ✅ CRITICAL: Clone workflow before mutation to ensure immutability
+    // âœ… CRITICAL: Clone workflow before mutation to ensure immutability
     // This prevents any accidental mutations of the original workflow definition
     const { cloneWorkflowDefinition } = await import('../core/utils/workflow-cloner');
     const clonedWorkflow = cloneWorkflowDefinition(
@@ -694,7 +702,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       workflowId
     );
     
-    console.log('[AttachInputs] ✅ Workflow normalized and cloned before input injection (immutable operation)');
+    console.log('[AttachInputs] âœ… Workflow normalized and cloned before input injection (immutable operation)');
 
     // Inject inputs into nodes (operating on clone, not original)
     const modeDiagnostics = {
@@ -724,7 +732,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
         return node; // Skip nodes without schema
       }
 
-      // ✅ CRITICAL: Idempotent input merging - merge with existing config
+      // âœ… CRITICAL: Idempotent input merging - merge with existing config
       const existingConfig = node.data?.config || {};
       const config = { ...existingConfig };
       let updated = false;
@@ -756,7 +764,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
         updated = true;
       }
 
-      // ✅ CRITICAL: Validate inputs are NOT credentials
+      // âœ… CRITICAL: Validate inputs are NOT credentials
       // OAuth connectors must NEVER accept credential fields via attach-inputs
       const connector = connectorRegistry.getConnectorByNodeType(nodeType);
       if (connector && connector.credentialContract.type === 'oauth') {
@@ -777,9 +785,9 @@ export default async function attachInputsHandler(req: Request, res: Response) {
         );
       }
 
-      // ✅ CRITICAL: Idempotent input application
+      // âœ… CRITICAL: Idempotent input application
       // Input format: { "nodeId_fieldName": "value" } or { "nodeId": { "fieldName": "value" } }
-      // ✅ COMPREHENSIVE: Also handle question IDs: { "cred_nodeId_fieldName": "value", "op_nodeId_fieldName": "value", "config_nodeId_fieldName": "value", "resource_nodeId_fieldName": "value" }
+      // âœ… COMPREHENSIVE: Also handle question IDs: { "cred_nodeId_fieldName": "value", "op_nodeId_fieldName": "value", "config_nodeId_fieldName": "value", "resource_nodeId_fieldName": "value" }
       // Process unlock_ / mode_ before field values so credential fields resolve fill mode correctly.
       const cleanInputKeysSorted = Object.keys(cleanInputs).sort((a, b) => {
         const rank = (k: string) => (k.startsWith('unlock_') ? 0 : k.startsWith('mode_') ? 1 : 2);
@@ -791,7 +799,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
         let fieldName: string | null = null;
         
       // Wizard ownership: keys mode_<nodeId>_<fieldName> -> config._fillMode[fieldName] (manual_static vs runtime_ai)
-      // ✅ Handle explicit fill mode keys first: mode_<nodeId>_<fieldName>
+      // âœ… Handle explicit fill mode keys first: mode_<nodeId>_<fieldName>
       if (key.startsWith('mode_')) {
         const afterPrefix = key.substring('mode_'.length);
         const nodeIdPrefix = `${node.id}_`;
@@ -891,10 +899,10 @@ export default async function attachInputsHandler(req: Request, res: Response) {
         }
       }
 
-      // ✅ COMPREHENSIVE: Handle question ID formats (input_*, cred_*, op_*, config_*, resource_*)
+      // âœ… COMPREHENSIVE: Handle question ID formats (input_*, cred_*, op_*, config_*, resource_*)
       // Format: {prefix}_{nodeId}_{fieldName}
       // Example: cred_step_hubspot_1771317308025_authType -> fieldName: authType
-      // ✅ CRITICAL: Also handle cases where nodeId in question doesn't match node.id exactly
+      // âœ… CRITICAL: Also handle cases where nodeId in question doesn't match node.id exactly
       let isFromComprehensiveQuestion = false;
       let prefix = '';
       
@@ -928,13 +936,13 @@ export default async function attachInputsHandler(req: Request, res: Response) {
           fieldName = afterPrefix.substring(nodeIdPrefix.length);
           console.log(`[AttachInputs] Detected comprehensive question ID: ${key} -> fieldName: ${fieldName} (exact nodeId match)`);
         } else {
-          // ✅ SECURITY/INTEGRITY:
+          // âœ… SECURITY/INTEGRITY:
           // Always require exact nodeId match for prefixed keys.
           // Flexible field extraction can leak values across nodes (e.g., spreadsheetId applied to gmail).
           fieldName = null;
         }
       }
-      // ✅ LEGACY: Handle nodeId_fieldName format
+      // âœ… LEGACY: Handle nodeId_fieldName format
       else if (key.startsWith(`${node.id}_`)) {
         fieldName = key.substring(node.id.length + 1);
       }
@@ -942,7 +950,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
         // Check if this input is for this node
         if (fieldName) {
           if (fieldName && schema.configSchema) {
-            // ✅ CRITICAL: Handle authType selection - don't apply it to config, it's just a selection
+            // âœ… CRITICAL: Handle authType selection - don't apply it to config, it's just a selection
             const fieldNameLower = fieldName.toLowerCase();
             if (fieldNameLower === 'authtype' || fieldName === 'authType') {
               // Store authType selection but don't apply it directly to config
@@ -964,7 +972,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
                 )
               ) {
                 console.warn(
-                  `[AttachInputs] Skipped credential-owned field "${fieldName}" for node ${node.id} (${nodeType}) — use vault/attach-credentials, or choose manual / unlock + value`
+                  `[AttachInputs] Skipped credential-owned field "${fieldName}" for node ${node.id} (${nodeType}) â€” use vault/attach-credentials, or choose manual / unlock + value`
                 );
                 continue;
               }
@@ -1024,7 +1032,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
               value = value.trim();
             }
 
-            // ── JSON string coercion for array/object fields ──────────────────────────
+            // â”€â”€ JSON string coercion for array/object fields â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             // The wizard serializes array/object values to JSON strings for display.
             // Parse them back to the correct type before applying.
             const fieldSchemaType = unifiedDefForNode?.inputSchema?.[fieldName]?.type;
@@ -1044,17 +1052,17 @@ export default async function attachInputsHandler(req: Request, res: Response) {
                     `[AttachInputs] Failed to parse JSON string for ${fieldName} on node ${node.id} (${nodeType}), skipping:`,
                     parseErr
                   );
-                  continue; // skip — do not store a malformed string
+                  continue; // skip â€” do not store a malformed string
                 }
               }
             }
 
-            // ✅ CRITICAL: Validate field exists in schema
-            // ✅ RELAXED: Accept optional fields even if not in schema (for flexibility)
+            // âœ… CRITICAL: Validate field exists in schema
+            // âœ… RELAXED: Accept optional fields even if not in schema (for flexibility)
             const isRequired = schema.configSchema.required?.includes(fieldName);
             const isOptional = schema.configSchema.optional?.[fieldName];
             
-            // ✅ CRITICAL: For Gmail, validate based on operation type
+            // âœ… CRITICAL: For Gmail, validate based on operation type
             if (nodeType === 'google_gmail') {
               const operation = config.operation || 'send';
               // messageId is only required for 'get' operation, not 'send'
@@ -1069,7 +1077,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
               }
             }
             
-            // Registry-driven alias (e.g. Slack text → message via inputSchema.aliasOf)
+            // Registry-driven alias (e.g. Slack text â†’ message via inputSchema.aliasOf)
             const aliasFieldDef = unifiedDefForNode?.inputSchema?.[fieldName];
             const aliasTarget = resolveAliasTargetFieldName(fieldName, aliasFieldDef as any);
             if (aliasTarget) {
@@ -1077,7 +1085,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
               if (cur === undefined || cur === null || cur === '') {
                 (config as any)[aliasTarget] = value;
                 updated = true;
-                console.log(`[AttachInputs] Mapped alias '${fieldName}' → '${aliasTarget}' for node ${node.id} (${nodeType})`);
+                console.log(`[AttachInputs] Mapped alias '${fieldName}' â†’ '${aliasTarget}' for node ${node.id} (${nodeType})`);
                 continue;
               }
             }
@@ -1121,7 +1129,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
               if (fieldName === '_fillMode' && fieldValueRaw && typeof fieldValueRaw === 'object') {
                 const existingFillMode = (config as any)._fillMode || {};
                 const incomingFillMode = fieldValueRaw as Record<string, string>;
-                // ✅ Never downgrade buildtime_ai_once to manual_static via auto-persist.
+                // âœ… Never downgrade buildtime_ai_once to manual_static via auto-persist.
                 // buildtime_ai_once can only be changed by an explicit user action.
                 const mergedFillMode: Record<string, string> = { ...existingFillMode };
                 for (const [fKey, fVal] of Object.entries(incomingFillMode)) {
@@ -1162,14 +1170,14 @@ export default async function attachInputsHandler(req: Request, res: Response) {
                   )
                 ) {
                   console.warn(
-                    `[AttachInputs] Skipped credential-owned field "${fieldName}" for node ${node.id} (${nodeType}) — use vault/attach-credentials, or choose manual / unlock + value`
+                    `[AttachInputs] Skipped credential-owned field "${fieldName}" for node ${node.id} (${nodeType}) â€” use vault/attach-credentials, or choose manual / unlock + value`
                   );
                   continue;
                 }
               }
               
-              // ✅ CRITICAL: Validate field exists in schema
-              // ✅ RELAXED: Accept optional fields even if not in schema (for flexibility)
+              // âœ… CRITICAL: Validate field exists in schema
+              // âœ… RELAXED: Accept optional fields even if not in schema (for flexibility)
               const isRequired = schema.configSchema.required?.includes(fieldName);
               const isOptional = schema.configSchema.optional?.[fieldName];
               
@@ -1234,7 +1242,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
                 fieldValue = fieldValue.trim();
               }
 
-              // ✅ CRITICAL: For Gmail, validate based on operation type
+              // âœ… CRITICAL: For Gmail, validate based on operation type
               if (nodeType === 'google_gmail') {
                 const operation = config.operation || 'send';
                 // messageId is only required for 'get' operation, not 'send'
@@ -1256,7 +1264,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
                 if (cur === undefined || cur === null || cur === '') {
                   (config as any)[nestedAliasTarget] = fieldValue;
                   updated = true;
-                  console.log(`[AttachInputs] Mapped alias '${fieldName}' → '${nestedAliasTarget}' for node ${node.id} (${nodeType}) (nested)`);
+                  console.log(`[AttachInputs] Mapped alias '${fieldName}' â†’ '${nestedAliasTarget}' for node ${node.id} (${nodeType}) (nested)`);
                   continue;
                 }
               }
@@ -1264,7 +1272,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
               if (isRequired || isOptional || nodeType === 'google_gmail') {
                 const existingValue = config[fieldName];
 
-                // ✅ JSON string coercion for array/object fields in nested format
+                // âœ… JSON string coercion for array/object fields in nested format
                 const nestedFieldSchemaType = unifiedDefForNode?.inputSchema?.[fieldName]?.type;
                 if (
                   typeof fieldValue === 'string' &&
@@ -1318,7 +1326,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
         }
       }
 
-      // ✅ CRITICAL: Always return node with config, even if no changes were made
+      // âœ… CRITICAL: Always return node with config, even if no changes were made
       // This ensures the config is preserved in the node structure
       if (updated || Object.keys(config).length > 0) {
         if ((config as any)._fillMode && typeof (config as any)._fillMode === 'object') {
@@ -1335,7 +1343,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
             config,
           },
         };
-        // ✅ DEBUG: Log the config being saved for this node
+        // âœ… DEBUG: Log the config being saved for this node
         if (updated) {
           const runtimeFields = modeFieldsApplied.filter((f) => (config as any)?._fillMode?.[f] === 'runtime_ai');
           for (const f of runtimeFields) {
@@ -1348,7 +1356,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
           if (runtimeFields.length > 0) {
             modeDiagnostics.fallbackApplied = true;
           }
-          console.log(`[AttachInputs] ✅ Node ${node.id} (${nodeType}) config updated:`, Object.keys(config).filter(k => config[k] !== undefined && config[k] !== '').map(k => `${k}=${typeof config[k] === 'string' ? config[k].substring(0, 20) : config[k]}`).join(', '));
+          console.log(`[AttachInputs] âœ… Node ${node.id} (${nodeType}) config updated:`, Object.keys(config).filter(k => config[k] !== undefined && config[k] !== '').map(k => `${k}=${typeof config[k] === 'string' ? config[k].substring(0, 20) : config[k]}`).join(', '));
         }
         return updatedNode;
       }
@@ -1363,7 +1371,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
         nodesCount: workflowGraph.nodes.length,
         inputsCount: Object.keys(cleanInputs).length,
       });
-      return res.status(500).json(
+      return { statusCode: 500, body: (
         createError(
           ErrorCode.INTERNAL_ERROR,
           'Failed to inject inputs into nodes',
@@ -1373,10 +1381,10 @@ export default async function attachInputsHandler(req: Request, res: Response) {
             hint: 'An error occurred while applying inputs to workflow nodes. Check server logs for details.',
           }
         )
-      );
+      ) };
     }
 
-    // ✅ FIXED: Keep ai_agent nodes as-is (don't replace with ai_chat_model)
+    // âœ… FIXED: Keep ai_agent nodes as-is (don't replace with ai_chat_model)
     // ai_agent works fine with Ollama and is properly supported in the frontend
     // The ai_chat_model replacement was causing frontend validation errors
     const nodesAfterReplacement = updatedNodes;
@@ -1394,7 +1402,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       edges: updatedEdges, // Use updated edges
     };
 
-    // ✅ CRITICAL: Normalize workflow BEFORE validation to fix duplicate triggers and structure issues
+    // âœ… CRITICAL: Normalize workflow BEFORE validation to fix duplicate triggers and structure issues
     const { validateWorkflowForSave, normalizeWorkflowForSave } = await import('../core/validation/workflow-save-validator');
     
     // Normalize the workflow (config-only: no trigger stripping / switch reconcile)
@@ -1403,7 +1411,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     });
     
     if (preNormalized.migrationsApplied.length > 0) {
-      console.log('[AttachInputs] 🔄 Pre-validation normalization applied:', preNormalized.migrationsApplied);
+      console.log('[AttachInputs] ðŸ”„ Pre-validation normalization applied:', preNormalized.migrationsApplied);
     }
     
     // Validate the normalized workflow (should pass now since normalization fixed issues)
@@ -1412,7 +1420,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       freezeBoundary: (workflow as any)?.metadata?.freezeBoundary,
     });
     
-    // ✅ CRITICAL: Only reject on truly critical errors that can't be auto-fixed
+    // âœ… CRITICAL: Only reject on truly critical errors that can't be auto-fixed
     // Normalization should have fixed duplicate triggers, invalid edges, etc.
     // Only block on errors that indicate the workflow is fundamentally broken
     const criticalSaveErrors = saveValidation.errors.filter((error: string) => {
@@ -1426,7 +1434,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     if (criticalSaveErrors.length > 0) {
       console.error('[AttachInputs] Critical save validation errors (after normalization):', criticalSaveErrors);
       console.warn('[AttachInputs] Non-critical errors (will be auto-fixed):', saveValidation.errors.filter((e: string) => !criticalSaveErrors.includes(e)));
-      return res.status(400).json(
+      return { statusCode: 400, body: (
         createError(
           ErrorCode.INVALID_INPUT,
           'Workflow validation failed',
@@ -1437,7 +1445,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
             hint: 'Please fix the critical validation errors before attaching inputs.',
           }
         )
-      );
+      ) };
     }
     
     // Log warnings but don't block
@@ -1451,7 +1459,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       edges: preNormalized.edges,
     };
     
-    // ✅ CRITICAL: Relax validation - only validate structure, not required fields
+    // âœ… CRITICAL: Relax validation - only validate structure, not required fields
     // Required fields may be filled later or have defaults
     // Use fixedWorkflow even if there are errors (validator will auto-fix issues)
     // Use normalized workflow (already fixed duplicate triggers, etc.)
@@ -1463,7 +1471,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       { mode: 'topologyPreserve' }
     );
 
-    // ✅ CRITICAL: Only reject on critical structural errors (missing nodes, invalid edges)
+    // âœ… CRITICAL: Only reject on critical structural errors (missing nodes, invalid edges)
     // Allow validation errors that can be auto-fixed or are non-critical
     const criticalErrors = validation.errors.filter((e: any) => {
       const msg = e.message?.toLowerCase() || '';
@@ -1476,13 +1484,13 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     });
 
     if (criticalErrors.length > 0) {
-      // ✅ Log detailed validation errors
+      // âœ… Log detailed validation errors
       console.error('[AttachInputs] Critical validation errors:', criticalErrors.map((e: any) => e.message));
       console.warn('[AttachInputs] Non-critical validation errors:', validation.errors.filter((e: any) => !criticalErrors.includes(e)).map((e: any) => e.message));
       console.warn('[AttachInputs] Validation warnings:', validation.warnings.map((w: any) => w.message));
       
-      // ✅ Return structured error only for critical issues
-      return res.status(400).json(
+      // âœ… Return structured error only for critical issues
+      return { statusCode: 400, body: (
         createError(
           ErrorCode.WORKFLOW_VALIDATION_FAILED,
           'Workflow validation failed after input injection',
@@ -1497,10 +1505,10 @@ export default async function attachInputsHandler(req: Request, res: Response) {
             },
           }
         )
-      );
+      ) };
     }
 
-    // ✅ CRITICAL: Use fixedWorkflow even if there are non-critical errors
+    // âœ… CRITICAL: Use fixedWorkflow even if there are non-critical errors
     // The validator auto-fixes issues, so we trust its output
     const finalWorkflow = validation.fixedWorkflow || updatedWorkflow;
     
@@ -1512,7 +1520,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       console.warn('[AttachInputs] Validation warnings:', validation.warnings.map((w: any) => w.message));
     }
 
-    // ✅ CRITICAL: Apply save-time normalization to remove duplicates and fix structure
+    // âœ… CRITICAL: Apply save-time normalization to remove duplicates and fix structure
     const { normalizeWorkflowForSave: normalizeBeforeSave } = await import('../core/validation/workflow-save-validator');
     const structuralInput = {
       ...(finalWorkflow as any),
@@ -1563,10 +1571,10 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     );
     
     if (finalNormalizedForSave.migrationsApplied.length > 0) {
-      console.log('[AttachInputs] 🔄 Applied final normalizations before saving:', finalNormalizedForSave.migrationsApplied);
+      console.log('[AttachInputs] ðŸ”„ Applied final normalizations before saving:', finalNormalizedForSave.migrationsApplied);
     }
     
-    // ✅ CRITICAL: Normalize workflow graph before saving (for graph structure)
+    // âœ… CRITICAL: Normalize workflow graph before saving (for graph structure)
     let finalNormalizedGraph: ReturnType<typeof normalizeWorkflowGraph>;
     try {
       finalNormalizedGraph = normalizeWorkflowGraph(
@@ -1587,7 +1595,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
         edgesIsArray: Array.isArray(finalWorkflow.edges),
         finalWorkflowKeys: Object.keys(finalWorkflow || {}),
       });
-      return res.status(500).json(
+      return { statusCode: 500, body: (
         createError(
           ErrorCode.GRAPH_PARSE_ERROR,
           'Failed to normalize workflow graph before saving',
@@ -1597,7 +1605,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
             hint: 'The workflow structure may be invalid after validation. Check server logs for details.',
           }
         )
-      );
+      ) };
     }
 
     // Universal contract gate (registry + orchestrator): reconcile and validate
@@ -1639,8 +1647,8 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       }).length;
 
       if (!validationResult.valid) {
-        // ✅ FIX: Only block on critical structural errors (cycles, multiple triggers).
-        // Orphaned nodes are non-critical — they get auto-removed during reconciliation.
+        // âœ… FIX: Only block on critical structural errors (cycles, multiple triggers).
+        // Orphaned nodes are non-critical â€” they get auto-removed during reconciliation.
         // Blocking on orphaned nodes causes 400 errors when the workflow has extra nodes
         // that weren't wired (e.g. from a previous generation with more nodes).
         const criticalErrors = (validationResult.errors || []).filter((e: string) => {
@@ -1657,7 +1665,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
         );
 
         if (criticalErrors.length > 0) {
-          return res.status(400).json(
+          return { statusCode: 400, body: (
             createError(
               ErrorCode.WORKFLOW_VALIDATION_FAILED,
               'Workflow contract validation failed before save',
@@ -1666,12 +1674,12 @@ export default async function attachInputsHandler(req: Request, res: Response) {
                 contractDiagnostics,
               }
             )
-          );
+          ) };
         }
 
-        // Orphaned nodes only — log as warning and continue
+        // Orphaned nodes only â€” log as warning and continue
         if (orphanErrors.length > 0) {
-          console.warn('[AttachInputs] ⚠️ Orphaned nodes detected (non-blocking, will be auto-removed):', orphanErrors);
+          console.warn('[AttachInputs] âš ï¸ Orphaned nodes detected (non-blocking, will be auto-removed):', orphanErrors);
           contractDiagnostics.validationValid = true; // treat as valid for save purposes
         }
       }
@@ -1679,7 +1687,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       console.warn('[AttachInputs] Contract gate failed (non-fatal):', contractError);
     }
 
-    // ✅ CRITICAL: Check if credentials are required BEFORE updating
+    // âœ… CRITICAL: Check if credentials are required BEFORE updating
     // If NO credentials are required, set status to ready_for_execution immediately
     let requiredCredentialsCount = 0;
     let missingCredentialsCount = 0;
@@ -1688,7 +1696,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     try {
       const { credentialDiscoveryPhase } = await import('../services/ai/credential-discovery-phase');
       // Use the same reconciled graph as this request (reconcileMisroutedAiCommunicationNodes + normalize).
-      // discoverCredentials(workflowId) re-fetches DB, which still has pre-reconcile types until we save below —
+      // discoverCredentials(workflowId) re-fetches DB, which still has pre-reconcile types until we save below â€”
       // that caused Gmail nodes to be classified as ollama during discovery (wrong vault / requirements).
       credentialDiscovery = await credentialDiscoveryPhase.discoverCredentials(
         {
@@ -1703,7 +1711,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       
       console.log(`[AttachInputs] Credential check: ${requiredCredentialsCount} required, ${missingCredentialsCount} missing`);
       
-      // ✅ CRITICAL: Auto-inject resolved credentials into nodes
+      // âœ… CRITICAL: Auto-inject resolved credentials into nodes
       // If credentials are already satisfied (in vault), automatically inject them into node configs
       if (credentialDiscovery.satisfiedCredentials && credentialDiscovery.satisfiedCredentials.length > 0) {
         console.log(`[AttachInputs] Auto-injecting ${credentialDiscovery.satisfiedCredentials.length} resolved credential(s) into nodes...`);
@@ -1740,9 +1748,9 @@ export default async function attachInputsHandler(req: Request, res: Response) {
               // Only inject if credentialId is not already set
               if (!node.data.config.credentialId) {
                 node.data.config.credentialId = credentialId;
-                console.log(`[AttachInputs] ✅ Auto-injected credentialId "${credentialId}" into node ${nodeId} (${nodeType}) - provider: ${satisfiedCred.provider}, type: ${satisfiedCred.type}, scopes: ${satisfiedCred.scopes?.join(', ') || 'none'}`);
+                console.log(`[AttachInputs] âœ… Auto-injected credentialId "${credentialId}" into node ${nodeId} (${nodeType}) - provider: ${satisfiedCred.provider}, type: ${satisfiedCred.type}, scopes: ${satisfiedCred.scopes?.join(', ') || 'none'}`);
               } else {
-                console.log(`[AttachInputs] ⏭️  Node ${nodeId} (${nodeType}) already has credentialId "${node.data.config.credentialId}", skipping auto-injection`);
+                console.log(`[AttachInputs] â­ï¸  Node ${nodeId} (${nodeType}) already has credentialId "${node.data.config.credentialId}", skipping auto-injection`);
               }
             }
           }
@@ -1755,9 +1763,9 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       missingCredentialsCount = 1;
     }
     
-    // ✅ PHASE PIPELINE: Determine the correct next phase after successful input attachment.
-    // ready_for_ownership → signals attach-credentials that freeze boundary is established.
-    // ready_for_execution → no credentials needed, workflow is ready.
+    // âœ… PHASE PIPELINE: Determine the correct next phase after successful input attachment.
+    // ready_for_ownership â†’ signals attach-credentials that freeze boundary is established.
+    // ready_for_execution â†’ no credentials needed, workflow is ready.
     let nextStatus = 'active';
     let nextPhase = 'ready_for_ownership'; // Default: structure frozen, credentials stage can start
     const readiness = await workflowLifecycleManager.validateExecutionReady(finalNormalizedGraph as any, userId);
@@ -1782,7 +1790,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       );
     });
     if (structuralReadinessErrors.length > 0) {
-      return res.status(400).json(
+      return { statusCode: 400, body: (
         createError(
           ErrorCode.WORKFLOW_VALIDATION_FAILED,
           'Workflow graph is structurally invalid after input attachment',
@@ -1792,7 +1800,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
             phase: nextPhase,
           }
         )
-      );
+      ) };
     }
     if (structuralDiagnostics.unresolved.length > 0) {
       nextPhase = 'configuring_inputs';
@@ -1820,7 +1828,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       }
     }
     
-    // ✅ CRITICAL: Use linearized graph from normalizeWorkflowGraph (has single-trigger, single-chain enforcement)
+    // âœ… CRITICAL: Use linearized graph from normalizeWorkflowGraph (has single-trigger, single-chain enforcement)
     // This ensures workflows are saved with exactly one trigger and linear chain structure
     const nodesToSave = mergePreservedNodePositions(
       finalNormalizedGraph.nodes,
@@ -1874,14 +1882,14 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       }
 
       if (structuralDrifts.length > 0) {
-        return res.status(409).json(
+        return { statusCode: 409, body: (
           createError(
             ErrorCode.TOPOLOGY_MUTATION_BLOCKED_CONFIGURING_INPUTS,
             'Post-freeze structural config drift detected. Switch/form structure cannot be rewritten in this phase.',
             { workflowId, drifts: structuralDrifts },
             true
           )
-        );
+        ) };
       }
     }
     if (!isPostFreezeReadonly && (nextPhase === 'ready_for_ownership' || nextPhase === 'ready_for_execution')) {
@@ -1902,8 +1910,8 @@ export default async function attachInputsHandler(req: Request, res: Response) {
 
     // Skip the baseline-vs-final topology check for post-freeze readonly requests.
     // Post-freeze requests are already protected by:
-    //   1. The structural drift check above (lines 1750-1796) — prevents changes to switch.cases / form.fields
-    //   2. The freeze boundary check below (lines 1840-1880) — compares against the correct frozen baseline
+    //   1. The structural drift check above (lines 1750-1796) â€” prevents changes to switch.cases / form.fields
+    //   2. The freeze boundary check below (lines 1840-1880) â€” compares against the correct frozen baseline
     // The baseline-vs-final check can produce false 409s in post-freeze mode because the
     // topologyPreserve normalizer may produce different edge sourceHandle values on successive passes
     // when a switch node has more cases than connected edges (switch sourceHandle inference is not
@@ -1912,11 +1920,11 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       const finalTopologyFingerprint = fingerprintWorkflowTopology(nodesToSave, edgesToSave);
       if (finalTopologyFingerprint.fingerprint !== baselineTopologyFingerprint.fingerprint) {
         const diff = diffWorkflowTopology(baselineTopologyFingerprint, finalTopologyFingerprint);
-        console.error('[AttachInputs] ❌ Topology mutation blocked before save:', {
+        console.error('[AttachInputs] âŒ Topology mutation blocked before save:', {
           workflowId,
           diff,
         });
-        return res.status(409).json(
+        return { statusCode: 409, body: (
           createError(
             ErrorCode.TOPOLOGY_MUTATION_BLOCKED_CONFIGURING_INPUTS,
             'Workflow topology must not change during input attachment (configuration phase).',
@@ -1928,7 +1936,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
             },
             true
           )
-        );
+        ) };
       }
     }
     const finalProtectedConfigFingerprint = fingerprintWorkflowProtectedConfig(nodesToSave);
@@ -1936,11 +1944,11 @@ export default async function attachInputsHandler(req: Request, res: Response) {
     if (isPostFreezeReadonly && freezeBaselineTopology) {
       const finalTopologyFingerprint = fingerprintWorkflowTopology(nodesToSave, edgesToSave);
       if (finalTopologyFingerprint.fingerprint !== freezeBaselineTopology) {
-        // Allow re-freezing when workflow is ready_for_execution — this handles the case where
+        // Allow re-freezing when workflow is ready_for_execution â€” this handles the case where
         // the stored fingerprint was computed with an older normalizer (e.g. edge.type was '' vs
         // 'default'). The topology hasn't actually changed; only the hashing algorithm was fixed.
         if (nextPhase === 'ready_for_execution' || nextPhase === 'ready_for_ownership') {
-          console.warn('[AttachInputs] ⚠️ Post-freeze fingerprint mismatch — re-freezing with updated topology hash:', {
+          console.warn('[AttachInputs] âš ï¸ Post-freeze fingerprint mismatch â€” re-freezing with updated topology hash:', {
             workflowId,
             oldFingerprint: freezeBaselineTopology,
             newFingerprint: finalTopologyFingerprint.fingerprint,
@@ -1960,7 +1968,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
             },
           };
         } else {
-          return res.status(409).json(
+          return { statusCode: 409, body: (
             createError(
               ErrorCode.TOPOLOGY_MUTATION_BLOCKED_CONFIGURING_INPUTS,
               'Post-freeze topology drift detected. Structural changes are blocked.',
@@ -1971,7 +1979,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
               },
               true
             )
-          );
+          ) };
         }
       }
     }
@@ -1988,7 +1996,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       };
     }
 
-    console.log('[AttachInputs] 💾 Saving workflow with normalized structure:', {
+    console.log('[AttachInputs] ðŸ’¾ Saving workflow with normalized structure:', {
       nodeCount: nodesToSave.length,
       edgeCount: edgesToSave.length,
       triggerNodes: nodesToSave.filter(n => {
@@ -2003,7 +2011,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       contractValidationValid: contractDiagnostics.validationValid,
     });
     
-    // 🆕 VERSIONING: Get previous definition before update
+    // ðŸ†• VERSIONING: Get previous definition before update
     let previousDefinition: any = null;
     try {
       const { data: previousWorkflow } = await supabase
@@ -2019,7 +2027,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
           edges: previousWorkflow.edges || [],
           status: previousWorkflow.status,
           phase: previousWorkflow.phase,
-          // ✅ Use settings with fallback - column may not exist if migration not run
+          // âœ… Use settings with fallback - column may not exist if migration not run
           settings: (previousWorkflow as any).settings || {},
           graph: (previousWorkflow as any).graph || {},
           metadata: (previousWorkflow as any).metadata || {},
@@ -2030,7 +2038,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       console.warn('[AttachInputs] Could not load previous definition for versioning:', versionError);
     }
 
-    // ✅ CRITICAL: Update workflow graph AND status in a single atomic operation
+    // âœ… CRITICAL: Update workflow graph AND status in a single atomic operation
     // Also sync phase field if it exists (for backward compatibility)
     // Note: Database uses 'nodes' and 'edges' columns, not 'graph'
     const { data: updateData, error: updateError } = await supabase
@@ -2044,8 +2052,8 @@ export default async function attachInputsHandler(req: Request, res: Response) {
           edges: edgesToSave,
           metadata: metadataToPersist,
         },
-        status: nextStatus, // ✅ CRITICAL: Use valid enum value ('active')
-        phase: nextPhase, // ✅ CRITICAL: Use TEXT field for execution phase
+        status: nextStatus, // âœ… CRITICAL: Use valid enum value ('active')
+        phase: nextPhase, // âœ… CRITICAL: Use TEXT field for execution phase
         updated_at: new Date().toISOString(),
       })
       .eq('id', workflowId)
@@ -2053,7 +2061,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       .single();
 
     if (updateError) {
-      console.error('[AttachInputs] ❌ Failed to update workflow:', {
+      console.error('[AttachInputs] âŒ Failed to update workflow:', {
         workflowId,
         error: updateError.message,
         errorCode: updateError.code,
@@ -2062,13 +2070,13 @@ export default async function attachInputsHandler(req: Request, res: Response) {
         fullError: updateError,
       });
       
-      // ✅ CRITICAL: Check if error is due to missing 'graph' column
+      // âœ… CRITICAL: Check if error is due to missing 'graph' column
       const isGraphColumnError = updateError.message?.includes('graph') || 
                                  updateError.message?.includes('column') ||
                                  updateError.code === '42703' || // PostgreSQL: undefined column
                                  updateError.code === 'PGRST116'; // PostgREST: column not found
       
-      return res.status(500).json(
+      return { statusCode: 500, body: (
         createError(
           ErrorCode.INTERNAL_ERROR,
           'Failed to update workflow',
@@ -2082,19 +2090,19 @@ export default async function attachInputsHandler(req: Request, res: Response) {
             workflowId 
           }
         )
-      );
+      ) };
     }
 
-    // ✅ CRITICAL: Verify status and phase were actually persisted
+    // âœ… CRITICAL: Verify status and phase were actually persisted
     if (!updateData || updateData.status !== nextStatus || updateData.phase !== nextPhase) {
-      console.error('[AttachInputs] ❌ Status/phase update did not persist:', {
+      console.error('[AttachInputs] âŒ Status/phase update did not persist:', {
         workflowId,
         expectedStatus: nextStatus,
         expectedPhase: nextPhase,
         actualStatus: updateData?.status,
         actualPhase: updateData?.phase,
       });
-      return res.status(500).json(
+      return { statusCode: 500, body: (
         createError(
           ErrorCode.INTERNAL_ERROR,
           'Workflow status/phase update did not persist',
@@ -2106,10 +2114,10 @@ export default async function attachInputsHandler(req: Request, res: Response) {
             actualPhase: updateData?.phase,
           }
         )
-      );
+      ) };
     }
 
-    // 🆕 VERSIONING: Create version after successful update
+    // ðŸ†• VERSIONING: Create version after successful update
     if (updateData) {
       try {
         const { getWorkflowVersionManager } = await import('../services/workflow-versioning');
@@ -2136,13 +2144,13 @@ export default async function attachInputsHandler(req: Request, res: Response) {
           edges: edgesToSave,
           status: nextStatus,
           phase: nextPhase,
-          // ✅ Use settings with fallback - column may not exist if migration not run
+          // âœ… Use settings with fallback - column may not exist if migration not run
           settings: (updateData as any).settings || {},
           graph: (updateData as any).graph || { nodes: nodesToSave, edges: edgesToSave },
           metadata: (updateData as any).metadata || {},
         };
 
-        // ✅ CRITICAL FIX: Create version only if workflow exists
+        // âœ… CRITICAL FIX: Create version only if workflow exists
         // Versioning is optional - if it fails, workflow still saves successfully
         try {
           const version = await versionManager.createVersion(
@@ -2156,9 +2164,9 @@ export default async function attachInputsHandler(req: Request, res: Response) {
           );
           
           if (version) {
-            console.log(`[AttachInputs] ✅ Created workflow version ${version.version} for ${workflowId}`);
+            console.log(`[AttachInputs] âœ… Created workflow version ${version.version} for ${workflowId}`);
           } else {
-            console.log(`[AttachInputs] ⚠️  Versioning skipped - workflow ${workflowId} not found in workflows_new table`);
+            console.log(`[AttachInputs] âš ï¸  Versioning skipped - workflow ${workflowId} not found in workflows_new table`);
           }
         } catch (versionError) {
           // Versioning is non-critical - log but don't fail the update
@@ -2170,9 +2178,9 @@ export default async function attachInputsHandler(req: Request, res: Response) {
       }
     }
 
-    console.log(`[AttachInputs] ✅ Workflow updated - graph saved, status set to ${nextStatus}, phase set to ${nextPhase} for workflow ${workflowId}`);
+    console.log(`[AttachInputs] âœ… Workflow updated - graph saved, status set to ${nextStatus}, phase set to ${nextPhase} for workflow ${workflowId}`);
 
-    // ✅ CRITICAL: Audit trail - log inputs attached event
+    // âœ… CRITICAL: Audit trail - log inputs attached event
     try {
       const ownershipSummary = modeDiagnostics.appliedModes.reduce((acc, item) => {
         acc[item.mode] = (acc[item.mode] || 0) + 1;
@@ -2203,8 +2211,8 @@ export default async function attachInputsHandler(req: Request, res: Response) {
 
     console.log(`[AttachInputs] Successfully injected ${Object.keys(cleanInputs).length} input(s) into workflow ${workflowId}, status: ${nextStatus}`);
     
-    // ✅ DEBUG: Log the config for each node in the response
-    console.log(`[AttachInputs] 📋 Final nodes config summary:`);
+    // âœ… DEBUG: Log the config for each node in the response
+    console.log(`[AttachInputs] ðŸ“‹ Final nodes config summary:`);
     finalNormalizedGraph.nodes.forEach((node: any) => {
       const nodeType = unifiedNormalizeNodeType(node);
       const config = node.data?.config || {};
@@ -2216,7 +2224,7 @@ export default async function attachInputsHandler(req: Request, res: Response) {
 
     const effectiveFillModes = collectEffectiveFillModesForWizard(finalNormalizedGraph.nodes as any[]);
 
-    return res.json({
+    return { statusCode: 200, body: ({
       success: true,
       workflow: finalNormalizedGraph,
       nodes: finalNormalizedGraph.nodes,
@@ -2242,21 +2250,48 @@ export default async function attachInputsHandler(req: Request, res: Response) {
         invalidBareNodeIdInputKeys,
       },
       buildAiUsage: snapshotBuildAiUsage(),
-    });
+    }) };
   } catch (error) {
-    console.error('[AttachInputs] ❌ Unhandled error:', error);
+    console.error('[AttachInputs] âŒ Unhandled error:', error);
     console.error('[AttachInputs] Error stack:', error instanceof Error ? error.stack : 'No stack trace');
     console.error('[AttachInputs] Error details:', {
       name: error instanceof Error ? error.name : typeof error,
       message: error instanceof Error ? error.message : String(error),
       workflowId: req.params.workflowId || req.body?.workflowId,
     });
-    return res.status(500).json({
+    return { statusCode: 500, body: ({
       error: 'Failed to attach inputs',
       details: error instanceof Error ? error.message : String(error),
       code: error instanceof Error && 'code' in error ? (error as any).code : 'UNKNOWN_ERROR',
       hint: 'Check server logs for detailed error information. This may be due to database connection issues, invalid workflow structure, or missing dependencies.',
-    });
+    }) };
   }
   });
+}
+
+/**
+ * Attach-inputs route handler with in-flight deduplication.
+ *
+ * When multiple concurrent POST /attach-inputs requests arrive for the same
+ * workflowId, only the first runs the full pipeline. Subsequent concurrent
+ * callers await the same Promise and receive the same result, preventing
+ * duplicate topology fingerprint writes and `Post-freeze fingerprint mismatch`
+ * warnings.
+ */
+export default async function attachInputsHandler(req: Request, res: Response) {
+  const workflowId = req.params.workflowId || req.body?.workflowId;
+
+  if (attachInputsInFlight.has(workflowId)) {
+    const result = await attachInputsInFlight.get(workflowId)! as { statusCode: number; body: unknown };
+    return res.status(result.statusCode).json(result.body);
+  }
+
+  const pipelinePromise = runAttachInputsPipeline(req, res);
+  attachInputsInFlight.set(workflowId, pipelinePromise);
+  try {
+    const result = await pipelinePromise as { statusCode: number; body: unknown };
+    return res.status(result.statusCode).json(result.body);
+  } finally {
+    attachInputsInFlight.delete(workflowId);
+  }
 }

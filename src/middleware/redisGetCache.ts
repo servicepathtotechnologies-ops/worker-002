@@ -48,6 +48,40 @@ export function buildCacheKey(req: Request): string {
 }
 
 /**
+ * Invalidates all Redis cache keys for a given executionId.
+ *
+ * Uses SCAN with a pattern match on the path prefix so all key variants
+ * (?lite=1, ?lite=true, no-query, different auth-hash suffixes) are covered
+ * without needing to reconstruct the exact buildCacheKey hash.
+ */
+export async function invalidateExecutionStatusCache(executionId: string, client: RedisClientType): Promise<void> {
+  const pattern = `/api/execution-status/${executionId}:*`;
+  const keysToDelete: string[] = [];
+
+  // Use scanIterator if available (real Redis client), otherwise fall back to
+  // iterative scan (used by in-memory test mocks that expose a scan() method).
+  if (typeof (client as any).scanIterator === 'function') {
+    for await (const key of (client as any).scanIterator({ MATCH: pattern })) {
+      keysToDelete.push(key);
+    }
+  } else {
+    // Fallback: manual SCAN loop compatible with test mocks
+    let cursor = 0;
+    do {
+      const result: { cursor: number; keys: string[] } = await (client as any).scan(cursor, { MATCH: pattern, COUNT: 100 });
+      cursor = result.cursor;
+      keysToDelete.push(...result.keys);
+    } while (cursor !== 0);
+  }
+
+  for (const key of keysToDelete) {
+    await client.del(key);
+  }
+
+  console.warn(`[RedisGetCache] invalidated ${keysToDelete.length} key(s) for execution ${executionId}`);
+}
+
+/**
  * Caches successful JSON GET responses with a cache-aside Redis pattern.
  */
 export function redisGetCache(options: CacheOptions = {}) {

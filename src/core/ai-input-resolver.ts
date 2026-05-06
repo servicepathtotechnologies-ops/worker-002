@@ -25,8 +25,8 @@
 import { NodeInputSchema } from './types/unified-node-contract';
 import { LLMAdapter } from '../shared/llm-adapter';
 
-const PREVIOUS_OUTPUT_PREVIEW_BUDGET = 1200;
-const MAX_ARRAY_SAMPLE_ITEMS = 3;
+const PREVIOUS_OUTPUT_PREVIEW_BUDGET = 2000;
+const MAX_ARRAY_SAMPLE_ITEMS = 8;
 
 function truncateText(value: string, max = PREVIOUS_OUTPUT_PREVIEW_BUDGET): string {
   return value.length > max ? `${value.slice(0, max)}... [truncated]` : value;
@@ -122,12 +122,8 @@ export class AIInputResolver {
    * AI analyzes context and generates appropriate input.
    */
   async resolveInput(context: InputResolutionContext): Promise<ResolvedInput> {
-    // Kill switch: runtime AI resolution is expensive (1 Gemini call per field).
-    // Disable by default; enable only when ENABLE_RUNTIME_AI_RESOLUTION=true in .env.
-    if (process.env.ENABLE_RUNTIME_AI_RESOLUTION !== 'true') {
-      return { mode: 'json', value: {} };
-    }
-
+    // Runtime AI resolution is always enabled — no env flag required.
+    // Fields marked runtime_ai in _fillMode are resolved here using upstream context + user intent.
     const { previousOutput, nodeInputSchema, userIntent, nodeType, nodeLabel } = context;
 
     // Step 1: Determine resolution mode based on node input schema
@@ -494,6 +490,10 @@ IMPORTANT:
     if (typeof value !== 'string') return false;
     const t = value.trim().toLowerCase();
     if (!t) return true;
+    // Only treat as placeholder when the string is SHORT — long strings likely contain
+    // real content (e.g. AI-generated text from structured data) even if they mention
+    // workflow-like phrases incidentally.
+    if (t.length > 120) return false;
     return (
       t.includes('process the workflow') ||
       t.includes('configured nodes') ||
