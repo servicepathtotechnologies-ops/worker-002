@@ -214,13 +214,11 @@ export default async function adminUsersHandler(req: Request, res: Response) {
 
         const workflowIds = (workflowRows || []).map((workflow: any) => workflow.id);
         let executionCountsByWorkflow = new Map<string, number>();
-        let aiRunCallsByWorkflow = new Map<string, number>();
-        let aiRunTokensByWorkflow = new Map<string, number>();
 
         if (workflowIds.length > 0) {
           const { data: executionRows, error: executionsError } = await supabase
             .from('executions')
-            .select('workflow_id, ai_calls, ai_tokens')
+            .select('workflow_id')
             .in('workflow_id', workflowIds);
           if (executionsError) {
             throw executionsError;
@@ -229,8 +227,6 @@ export default async function adminUsersHandler(req: Request, res: Response) {
           for (const execution of executionRows || []) {
             const wfId = execution.workflow_id;
             executionCountsByWorkflow.set(wfId, (executionCountsByWorkflow.get(wfId) || 0) + 1);
-            aiRunCallsByWorkflow.set(wfId, (aiRunCallsByWorkflow.get(wfId) || 0) + (execution.ai_calls || 0));
-            aiRunTokensByWorkflow.set(wfId, (aiRunTokensByWorkflow.get(wfId) || 0) + (execution.ai_tokens || 0));
           }
         }
 
@@ -244,8 +240,6 @@ export default async function adminUsersHandler(req: Request, res: Response) {
             workflowRuns,
             aiBuildCalls: getAiBuildCallsFromWorkflow(workflow),
             tokensUsedToBuild: getWorkflowBuildTokens(workflow),
-            aiRunCalls: aiRunCallsByWorkflow.get(workflow.id) || 0,
-            aiRunTokens: aiRunTokensByWorkflow.get(workflow.id) || 0,
             status: workflow.status === 'active' ? ('active' as WorkflowStatus) : ('inactive' as WorkflowStatus),
           };
         });

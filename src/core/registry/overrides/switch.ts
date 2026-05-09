@@ -67,6 +67,7 @@ export function overrideSwitch(
       ? {
           routingType: {
             ...def.inputSchema.routingType,
+            default: 'string',
             fillMode: {
               default: 'manual_static',
               supportsRuntimeAI: false,

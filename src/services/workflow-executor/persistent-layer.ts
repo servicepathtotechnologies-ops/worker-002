@@ -30,6 +30,17 @@ export interface ExecutionStateSnapshot {
  * Manages all durable state writes with ACID compliance.
  * Database is the source of truth for execution state.
  */
+/**
+ * Wrap any non-object value in { result: value } so it is valid for a JSONB column.
+ * log_output and similar nodes return a plain string; storing that raw in a JSONB column
+ * causes "invalid input syntax for type json" because the unquoted text is not valid JSON.
+ */
+function toJsonSafe(val: unknown): unknown {
+  if (val === null || val === undefined) return null;
+  if (typeof val === 'object') return val; // objects and arrays are already JSONB-safe
+  return { result: val };                  // wrap string / number / boolean
+}
+
 export class PersistentLayer {
   private supabase: SupabaseClient;
 
@@ -74,8 +85,8 @@ export class PersistentLayer {
           node_id: nodeId,
           node_name: nodeName,
           node_type: nodeType,
-          input_json: input,
-          output_json: output, // ← CRITICAL: Persist output
+          input_json: toJsonSafe(input),
+          output_json: toJsonSafe(output), // ← CRITICAL: Persist output
           status: status,
           error: error,
           sequence: sequence,
@@ -276,10 +287,10 @@ export class PersistentLayer {
       };
 
       if (output !== undefined) {
-        updateData.output = output;
+        updateData.output = toJsonSafe(output);
         // Supabase may have result_data or just output
         if (updateData.result_data === undefined) {
-          updateData.result_data = output;
+          updateData.result_data = toJsonSafe(output);
         }
       }
 
@@ -297,7 +308,7 @@ export class PersistentLayer {
 
       // Persist execution logs when provided (UI reads executions.logs)
       if (meta?.logs !== undefined) {
-        updateData.logs = meta.logs;
+        updateData.logs = toJsonSafe(meta.logs);
       }
 
       // Persist duration for UI

@@ -56,12 +56,9 @@ export const checkWorkflowLimit = async (req: WorkflowLimitRequest, res: Respons
     
     next();
   } catch (error: any) {
-    console.error('[WorkflowLimits] Check workflow limit error:', error);
-    res.status(500).json({
-      error: 'Workflow Limit Check Failed',
-      message: 'Unable to verify workflow creation limits',
-      code: 'LIMIT_CHECK_ERROR'
-    });
+    // Fail-open: DB unreachable — allow through, hard limit is enforced at save time.
+    console.warn('[WorkflowLimits] checkWorkflowLimit: DB check failed, failing open:', error?.message ?? error);
+    next();
   }
 };
 
@@ -388,12 +385,9 @@ export const requireWorkflowCapacityForAi = async (req: WorkflowLimitRequest, re
 
     next();
   } catch (error: any) {
-    console.error('[WorkflowLimits] requireWorkflowCapacityForAi error:', error);
-    return res.status(500).json({
-      success: false,
-      error: 'Workflow Limit Check Failed',
-      message: 'Unable to verify workflow creation limits',
-      code: 'LIMIT_CHECK_ERROR'
-    });
+    // Fail-open: if the subscription DB is unreachable, let the request through rather
+    // than blocking all AI generation. Hard limits (workflow count) are enforced at save time.
+    console.warn('[WorkflowLimits] requireWorkflowCapacityForAi: DB check failed, failing open:', error?.message ?? error);
+    next();
   }
 };

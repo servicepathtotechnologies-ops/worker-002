@@ -117,9 +117,9 @@ Example: { "message": "Generated message text", "subject": "Generated subject" }
         },
         {
           temperature: 0.7,
-          max_tokens: Number.parseInt(process.env.WORKFLOW_RUNTIME_AI_MAX_OUTPUT_TOKENS || '500', 10) || 500,
+          max_tokens: Number.parseInt(process.env.WORKFLOW_RUNTIME_AI_MAX_OUTPUT_TOKENS || '2000', 10) || 2000,
+          model: 'gemini-2.5-pro',
           usageStage: 'runtime_autofill',
-          enforceExecutionBudget: true,
         }
       );
       

@@ -53,7 +53,6 @@ import { circuitBreakerManager } from '../services/workflow-executor/distributed
 import { getProviderCircuitKeyFromNodeType } from '../core/reliability/provider-circuit-key';
 import { decryptToken } from '../core/utils/token-encryption';
 import { retrieveCredential } from '../core/utils/credential-retriever';
-import { startExecutionTracking, getAndClearExecutionUsage } from '../core/ai/execution-usage-context';
 
 const EXECUTION_RUNTIME_MARKER = 'runtime-marker-2026-03-20-v1';
 
@@ -17324,7 +17323,6 @@ export default async function executeWorkflowHandler(req: Request, res: Response
       }
 
       executionId = existingExecution.id;
-      startExecutionTracking(executionId!);
 
       // ✅ CRITICAL: Type guard - ensure executionId and workflowId are defined
       if (!executionId || !workflowId) {
@@ -17407,7 +17405,6 @@ export default async function executeWorkflowHandler(req: Request, res: Response
       }
 
       executionId = newExecution.id;
-      startExecutionTracking(executionId!);
 
       // Invalidate executions list Redis cache so the sidebar reflects the new execution
       try {
@@ -19092,21 +19089,6 @@ export default async function executeWorkflowHandler(req: Request, res: Response
           ...(hasError ? { error: errorMessage } : {}),
         })
         .eq('id', executionId);
-    }
-
-    // Persist AI usage counters (best-effort; won't fail the execution response)
-    if (executionId) {
-      const aiUsage = getAndClearExecutionUsage(executionId);
-      if (aiUsage.calls > 0 || aiUsage.tokens > 0) {
-        try {
-          await supabase
-            .from('executions')
-            .update({ ai_calls: aiUsage.calls, ai_tokens: aiUsage.tokens, ai_usage: aiUsage.stages })
-            .eq('id', executionId);
-        } catch (aiUsageErr) {
-          console.error('[ExecuteWorkflow] Failed to persist AI usage:', aiUsageErr);
-        }
-      }
     }
 
     // Optional memory archive. Disabled by default because many environments do not install memory_* tables.

@@ -28,6 +28,45 @@ import type {
 const MODEL = 'gemini-2.5-flash';
 const TEMPERATURE = 0.1;
 
+// ─── Semantic Role → Category Filter ─────────────────────────────────────────
+
+/**
+ * Maps each semantic role to the registry categories that are valid candidates.
+ * This is a defense-in-depth guard: after the LLM returns candidates, we drop any
+ * node whose registry category doesn't match the unit's semantic role.
+ *
+ * Why: the LLM sometimes returns function/javascript nodes for communication use
+ * cases (e.g. "Send email via Gmail"), or If/Else for multi-case switch use cases.
+ * This filter makes the category constraint deterministic regardless of LLM output.
+ */
+const SEMANTIC_ROLE_ALLOWED_CATEGORIES: Record<string, string[]> = {
+  // Strict: only exact-category matches make sense for these roles
+  trigger: ['trigger'],
+  logic: ['logic'],
+  communication: ['communication'],
+  // Relaxed: output nodes can be CRM writes, DB writes, sheets, file storage, etc. — all 'data'
+  // also messaging services (communication) and AI-powered write nodes
+  output: ['communication', 'data', 'ai', 'transformation', 'utility'],
+  // Relaxed: data sources include CRM reads, DB reads, file reads, spreadsheet reads
+  data_source: ['data', 'communication', 'ai', 'transformation', 'utility'],
+  // Medium: transformation uses AI models, data processing, and some data nodes
+  transformation: ['transformation', 'ai', 'data'],
+};
+
+function filterBySemanticRole(nodeTypes: string[], semanticRole: UseCaseUnit['semanticRole']): string[] {
+  const allowed = SEMANTIC_ROLE_ALLOWED_CATEGORIES[semanticRole];
+  if (!allowed) return nodeTypes;
+  const filtered = nodeTypes.filter(nodeType => {
+    const def = unifiedNodeRegistry.get(nodeType);
+    const category = def?.category || 'utility';
+    return allowed.includes(category);
+  });
+  // Always return the filtered result, even if empty.
+  // An empty result triggers the retry-with-violation-context path, which tells the LLM
+  // exactly which category to look in. Returning wrong-category nodes bypasses that correction.
+  return filtered;
+}
+
 // ─── System Prompt ────────────────────────────────────────────────────────────
 
 function buildSystemPrompt(nodeCatalog: NodeCatalogText): string {
@@ -41,36 +80,59 @@ Return ONLY a valid JSON object. No markdown, no code fences, no explanation.
 
 The object must have exactly these fields:
 - "containerId": a unique UUID string (generate a new one)
-- "label": a short human-readable label for this capability group, e.g. "Send Email"
+- "label": a short human-readable label for this capability group that PRESERVES the branch context from the use-case unit label. If the unit label says "(shipped)" or "(processing)" or "(cancelled)", include that parenthetical in your label. Example: use-case label "Send Slack notification (processing)" → container label "Send Slack Notification (Processing)".
 - "candidates": an array of node type strings from the Node_Catalog that can fulfill this use-case
 
 RULES:
 1. "candidates" must contain only node type strings that appear in the NODE_CATALOG above.
-2. Group nodes by semantic equivalence — nodes that can accomplish the same job for this use-case.
+2. Group nodes by semantic equivalence — nodes that accomplish the EXACT same primary action for this use-case.
 3. Do NOT include node types that are not in the NODE_CATALOG.
 4. Do NOT pre-select or rank candidates — list all semantically equivalent options.
 5. Do NOT use hardcoded mappings — derive groupings from the node descriptions in the catalog.
-6. "candidates" should contain at least 1 and at most 10 node type strings.
+6. "candidates" should contain at least 1 and at most 5 node type strings.
 
-SEMANTIC RELEVANCE RULE:
-Only include candidates that DIRECTLY fulfill the use-case unit as described.
-Do NOT include nodes that are:
-- Tangentially related to the use-case but serve a different primary purpose
-- Theoretically usable in a different context but not for this specific task
-- Semantically distant from the unit's description
-- General-purpose nodes that happen to have some overlap (e.g., do not include video conferencing nodes for an email use-case)
+SEMANTIC RELEVANCE RULE — STRICT:
+Only include candidates whose PRIMARY PURPOSE directly matches the use-case unit.
+"Primary purpose" means: the main thing the node is designed to do, as described in its catalog entry.
 
-Example — Use-case: "Send email notification via Gmail":
-CORRECT: Include google_gmail, outlook, amazon_ses (all send email)
-WRONG: Include zoom_video, slack, webhook (these are not email services)
+Do NOT include a node merely because it is in a related category or could theoretically be used in a workaround.
 
-Example — Use-case: "Send Slack notification":
-CORRECT: Include slack (sends Slack messages)
-WRONG: Include google_gmail, zoom_video, amazon_ses (these are not Slack)
+MANDATORY EXCLUSIONS — never include these unless the use-case EXPLICITLY says so:
+- Aggregator / merge nodes (e.g., aggregate, merge_data): only when the use-case says "aggregate", "combine multiple streams", or "merge results"
+- Code / script nodes (e.g., code, function, function_item): only when the use-case says "run code", "execute script", or "custom logic"
+- HTTP request / generic API nodes (e.g., http_request, graphql): only when the use-case says "call a URL", "HTTP request", or "fetch from endpoint"
+- Generic utility nodes (e.g., wait, delay, set, edit_fields, rename_keys): only when the use-case explicitly describes waiting, delaying, or field manipulation
+- Do NOT include infrastructure/plumbing nodes that are not the user-facing service for this task
 
-Example — Use-case: "Trigger workflow when form is submitted":
-CORRECT: Include form_trigger (form submission trigger)
-WRONG: Include webhook, manual_trigger, schedule_trigger (different trigger types)
+EXAMPLES — correct vs wrong:
+
+Use-case: "Send email notification via Gmail":
+CORRECT: google_gmail, outlook, amazon_ses (all send email)
+WRONG: zoom_video, slack, webhook, aggregate, http_request
+
+Use-case: "Get data from Google Sheets":
+CORRECT: google_sheets, microsoft_excel, airtable (all read spreadsheet/table data)
+WRONG: http_request, csv, aggregate, code, google_drive
+
+Use-case: "Summarize text with AI":
+CORRECT: openai, anthropic, google_gemini (AI models that can summarize)
+WRONG: aggregate, code, edit_fields, http_request
+
+Use-case: "Send Slack notification":
+CORRECT: slack (sends Slack messages)
+WRONG: google_gmail, zoom_video, aggregate, webhook
+
+Use-case: "Trigger workflow when form is submitted":
+CORRECT: form_trigger (form submission trigger)
+WRONG: webhook, manual_trigger, schedule_trigger, http_request
+
+Use-case: "Route by multiple cases / switch on a field value (3 or more named cases)":
+CORRECT: switch (multi-case routing, one output per named case value)
+WRONG: if_else (if_else is ONLY for binary true/false — never use it for 3+ named cases)
+
+Use-case: "Route by true/false binary condition (if X then A else B)":
+CORRECT: if_else (binary branching)
+WRONG: switch (switch is for 3+ named cases, not binary conditions)
 
 Example output:
 {
@@ -323,10 +385,15 @@ async function groupSingleUnit(
   const rawCandidates = Array.isArray(parsed.candidates) ? parsed.candidates : [];
   let validNodeTypes = validateCandidates(rawCandidates, unit.unitId, correlationId);
 
+  // ── Semantic role filter: drop nodes whose category doesn't match the unit role ──
+  // This prevents e.g. Function/JavaScript appearing for communication use cases.
+  validNodeTypes = filterBySemanticRole(validNodeTypes, unit.semanticRole);
+
   // ── Empty container → re-prompt once (Req 2.6) ───────────────────────────
   if (validNodeTypes.length === 0) {
+    const allowedCategories = SEMANTIC_ROLE_ALLOWED_CATEGORIES[unit.semanticRole]?.join(', ') || 'any';
     const invalidList = rawCandidates.filter((c) => typeof c === 'string').join(', ') || '(none returned)';
-    const violationContext = `All candidate node types you returned were invalid (not found in the registry): [${invalidList}]. You must return node type strings that exist in the NODE_CATALOG. Check the catalog carefully and return only exact type strings from it.`;
+    const violationContext = `All candidate node types you returned were either invalid (not in registry) or wrong category for this use-case. This unit has semanticRole="${unit.semanticRole}", so candidates MUST come from registry categories: [${allowedCategories}]. The nodes you returned were: [${invalidList}]. Look for nodes in the NODE_CATALOG with category matching [${allowedCategories}].`;
 
     logger.warn({
       event: 'capability_grouper_retry',
@@ -368,7 +435,10 @@ async function groupSingleUnit(
     const parsed3 = tryParseContainer(rawText3);
     if (parsed3) {
       const rawCandidates3 = Array.isArray(parsed3.candidates) ? parsed3.candidates : [];
-      validNodeTypes = validateCandidates(rawCandidates3, unit.unitId, correlationId);
+      validNodeTypes = filterBySemanticRole(
+        validateCandidates(rawCandidates3, unit.unitId, correlationId),
+        unit.semanticRole,
+      );
       if (parsed3.label && typeof parsed3.label === 'string') {
         parsed.label = parsed3.label;
       }

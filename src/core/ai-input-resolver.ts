@@ -157,7 +157,22 @@ export class AIInputResolver {
     const schemaFields = Object.keys(inputSchema);
     const fieldTypes = schemaFields.map(field => inputSchema[field].type);
 
-    const hasMessageField = schemaFields.some(field => {
+    // If schema has BOTH a title/subject-like field AND a body/message-like field,
+    // always use json mode so both fields are filled independently with correct values.
+    // message mode can only populate a single primary field, causing the other to stay empty.
+    const hasTitleLikeField = schemaFields.some(field => {
+      const fl = field.toLowerCase();
+      return fl === 'subject' || fl === 'title' || fl === 'headline' || fl === 'name';
+    });
+    const hasBodyLikeField = schemaFields.some(field => {
+      const fl = field.toLowerCase();
+      return fl.includes('body') || fl.includes('message') || fl.includes('content') || fl.includes('text');
+    });
+    if (hasTitleLikeField && hasBodyLikeField) {
+      return 'json';
+    }
+
+    const hasMessageField = hasBodyLikeField || schemaFields.some(field => {
       const fl = field.toLowerCase();
       return fl.includes('message') || fl.includes('text') || fl.includes('content') || fl.includes('body');
     });
@@ -371,12 +386,11 @@ IMPORTANT:
       ];
       // TODO: when llmAdapter supports responseSchema/structuredOutput, pass _inputSchema for mode === 'json' to enforce schema
       const response = await this.llmAdapter.chat('gemini', messages, {
-        model: 'gemini-2.5-flash',
+        model: 'gemini-2.5-pro',
         apiKey: process.env.GEMINI_API_KEY,
         temperature: 0.3,
-        maxTokens: Number.parseInt(process.env.WORKFLOW_RUNTIME_AI_MAX_OUTPUT_TOKENS || '500', 10) || 500,
+        maxTokens: Number.parseInt(process.env.WORKFLOW_RUNTIME_AI_MAX_OUTPUT_TOKENS || '2000', 10) || 2000,
         usageStage: 'runtime_input_resolution',
-        enforceExecutionBudget: true,
       });
       
       // Parse response based on mode

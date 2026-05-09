@@ -41,15 +41,15 @@ export type NodeCatalogText = string;
 
 const DEFAULT_PRIORITY_ORDER: NodeCategory[] = [
   'trigger',
+  'communication', // moved up: Gmail/Slack must never be cut off by budget
   'logic',
   'data',
   'ai',
-  'communication',
   'transformation',
   'utility',
 ];
 
-const DEFAULT_TOKEN_BUDGET = 32000; // ~8k tokens
+const DEFAULT_TOKEN_BUDGET = 150000; // large enough to fit all registered nodes
 
 /**
  * Build a compact, token-budget-aware node catalog string for LLM system prompts.

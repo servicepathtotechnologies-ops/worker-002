@@ -2,7 +2,6 @@
 // Unified interface for LLM providers (OpenAI, Claude, Gemini). Ollama removed; use Gemini.
 
 import { recordLlmUsage } from '../core/ai/build-usage-context';
-import { canStartExecutionLlmCall, recordExecutionLlmUsage } from '../core/ai/execution-usage-context';
 
 export interface LLMMessage {
   role: 'system' | 'user' | 'assistant';
@@ -22,11 +21,6 @@ export interface LLMOptions {
   };
   /** When build-time tracking is active (`runWithBuildUsageTracking`), labels this call in snapshots. */
   usageStage?: string;
-  /**
-   * When true, budgeted runtime stages fail before the provider call if the execution
-   * has already spent its configured runtime-AI budget.
-   */
-  enforceExecutionBudget?: boolean;
 }
 
 export interface LLMResponse {
@@ -69,12 +63,6 @@ export class LLMAdapter {
     messages: LLMMessage[],
     options: LLMOptions
   ): Promise<LLMResponse> {
-    if (options.enforceExecutionBudget && !canStartExecutionLlmCall(options.usageStage)) {
-      const err = new Error(`Runtime AI budget exceeded for stage ${options.usageStage || 'runtime_llm'}`);
-      (err as any).code = 'RUNTIME_AI_BUDGET_EXCEEDED';
-      throw err;
-    }
-
     const effectiveProvider = provider === 'ollama' ? 'gemini' : provider;
     const apiKey = options.apiKey || (effectiveProvider === 'gemini' ? process.env.GEMINI_API_KEY : undefined);
     let result: LLMResponse;
@@ -99,7 +87,6 @@ export class LLMAdapter {
         stage: options.usageStage,
         source: 'LLMAdapter.chat',
       });
-      recordExecutionLlmUsage(result.usage.totalTokens, options.usageStage || 'runtime_llm');
     }
     return result;
   }

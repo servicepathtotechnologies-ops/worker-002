@@ -399,7 +399,9 @@ class UnifiedGraphOrchestratorImpl implements UnifiedGraphOrchestrator {
         target: targetNode.id,
         type: portLabel,
         sourceHandle: portLabel,
+        branchName: portLabel,
         targetHandle: 'default',
+        data: { branchName: portLabel },
       } as WorkflowEdge);
 
       console.log(

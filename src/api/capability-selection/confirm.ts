@@ -21,11 +21,31 @@ import { runPropertyPopulationStage } from '../../services/ai/stages/property-po
 import { runFieldOwnershipStage } from '../../services/ai/stages/field-ownership-stage';
 import { attachCanonicalPipelineMetadata } from '../../services/ai/ai-first-pipeline';
 import { generateComprehensiveNodeQuestions } from '../../services/ai/comprehensive-node-questions-generator';
+import { hydrateRequiredConfigFromRegistryDefaults } from '../../core/validation/workflow-config-hydrator';
 import type { Workflow, WorkflowNode } from '../../core/types/ai-types';
 import type { SwitchContext } from '../../core/orchestration/unified-graph-orchestrator';
 import type { CaseNodeMapping } from '../../core/types/unified-node-contract';
 import { compileSummaryV2FromWorkflow } from '../../services/ai/summary-v2-compiler';
 import { validateSummaryV2 } from '../../core/validation/summary-v2-validator';
+
+/**
+ * Stamp _fillMode.fields = 'buildtime_ai_once' on every form/form_trigger node
+ * that has a non-empty fields array. This signals attach-inputs to preserve
+ * the fields that were shown in the Field Ownership UI rather than re-deriving
+ * them from intent text (which can prune fields the user already reviewed).
+ */
+function stampFormFieldsAsBuilt(workflow: Workflow): Workflow {
+  const nodes = (workflow.nodes || []).map((node: any) => {
+    const nodeType = String(node?.data?.type || node?.type || '');
+    if (nodeType !== 'form' && nodeType !== 'form_trigger') return node;
+    const fields = node?.data?.config?.fields;
+    if (!Array.isArray(fields) || fields.length === 0) return node;
+    const config = { ...(node.data.config || {}) };
+    config._fillMode = { ...(config._fillMode || {}), fields: 'buildtime_ai_once' };
+    return { ...node, data: { ...node.data, config } };
+  });
+  return { ...workflow, nodes };
+}
 
 /**
  * Build a SwitchContext from populated workflow nodes.
@@ -264,6 +284,19 @@ export default async function confirmCapabilityWorkflow(req: AuthenticatedReques
       } catch (fallbackErr) {
         console.warn('[CapabilitySelection/confirm] Fallback reconcile also failed (non-fatal):', fallbackErr);
       }
+    }
+
+    // ── Stamp LLM-generated fields as built (no field pruning) ───────────────
+    // Field normalization (materializeStructuralFields + applyStructuralIntentAlignment)
+    // is intentionally skipped — it reduces LLM-generated fields to what the intent
+    // text mentions, which shrinks the form from 2-3 fields to 1 and hurts UX.
+    // We only apply registry defaults and stamp fields so attach-inputs preserves
+    // everything the LLM generated without re-deriving.
+    try {
+      const withDefaults = hydrateRequiredConfigFromRegistryDefaults(populatedWorkflow as any) as any;
+      populatedWorkflow = stampFormFieldsAsBuilt(withDefaults as Workflow);
+    } catch (stampErr) {
+      console.warn('[CapabilityConfirm] Field stamp failed (non-fatal):', stampErr);
     }
 
     // Stage: Credential Discovery (Req 6.3) — non-blocking

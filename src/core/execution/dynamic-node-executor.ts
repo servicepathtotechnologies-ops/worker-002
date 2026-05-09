@@ -65,12 +65,15 @@ function getUniversalInputContractFlags(): UniversalInputContractFlags {
   };
 }
 
-function looksPlaceholderLikeValue(value: unknown): boolean {
+export function looksPlaceholderLikeValue(value: unknown): boolean {
   if (typeof value !== 'string') return false;
   const t = value.trim().toLowerCase();
   if (!t) return true;
   // Bracket-style placeholders the AI sometimes generates for structured-data upstreams
   if (/\[insert\b|\[add\b|\[fill\b|\[enter\b|\[.*here\]|\[.*summary.*\]|\[.*data.*\]/i.test(value)) return true;
+  // Node ID accidentally injected by property population AI (e.g. "node_176fee7c-2227-495e-b91f-822b4332f068")
+  // This happens when PP AI confuses a workflow node ID with content for a text/message field.
+  if (/^node_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.trim())) return true;
   return (
     t.includes('process the workflow') ||
     t.includes('using the configured nodes') ||
@@ -713,12 +716,19 @@ export async function executeNodeDynamically(
     }
     const currentValue = mergedConfig[fieldName];
     // Only merge if current value is empty/undefined/null
-    if (!currentValue || 
+    if (!currentValue ||
         (typeof currentValue === 'string' && currentValue.trim() === '') ||
         (typeof currentValue === 'object' && Object.keys(currentValue).length === 0)) {
       mergedConfig[fieldName] = aiValue;
       const source = contractResult.inputSources[fieldName] || 'static_config';
       console.log(`[DynamicExecutor] Merged ${source} value for ${fieldName} into config`);
+    }
+  }
+  // Remove placeholder-like values (node IDs injected by PP AI) from mergedConfig
+  // for runtime_ai fields so the execute() call doesn't receive the artifact.
+  for (const fieldName of contractResult.runtimeFieldsAudit) {
+    if (looksPlaceholderLikeValue((mergedConfig as Record<string, any>)[fieldName])) {
+      delete (mergedConfig as Record<string, any>)[fieldName];
     }
   }
 
@@ -1057,6 +1067,18 @@ async function resolveNodeInputsUniversalContract(
       upstreamPayload,
       workflowIntent: rawWorkflowIntent,
     });
+
+    // Clear placeholder-like values (including node IDs injected by property population AI)
+    // from runtime_ai fields so the AI resolution step below generates real content for them.
+    for (const fieldName of allRuntimeFields) {
+      if (looksPlaceholderLikeValue((resolvedInputs as Record<string, any>)[fieldName])) {
+        delete (resolvedInputs as Record<string, any>)[fieldName];
+        console.warn(
+          `[DynamicExecutor] Cleared placeholder-like value on runtime_ai field '${fieldName}' for ${nodeType} — AI will generate real content.`
+        );
+      }
+    }
+
     for (const fieldName of allRuntimeFields) {
       if (isMeaningfulValueForResolution(resolvedInputs[fieldName]) && inputSources[fieldName] !== 'static_config' && inputSources[fieldName] !== 'template') {
         inputSources[fieldName] = 'deterministic_runtime';

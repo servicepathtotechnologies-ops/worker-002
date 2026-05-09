@@ -350,6 +350,151 @@ Rules: No technical jargon. Under 25 words per key. Do not repeat the field labe
   }
 });
 
+// ==================== FIELD WALK-THROUGH (single-field with DB cache) ====================
+router.post('/field-walk-step', async (req: Request, res: Response) => {
+  try {
+    const {
+      workflowId,
+      nodeId,
+      nodeType,
+      nodeLabel,
+      nodeNarrative,
+      workflowOverview,
+      userPrompt,
+      field,
+    } = req.body as {
+      workflowId?: string;
+      nodeId?: string;
+      nodeType?: string;
+      nodeLabel?: string;
+      nodeNarrative?: string;
+      workflowOverview?: string;
+      userPrompt?: string;
+      field?: {
+        fieldName: string;
+        label: string;
+        fieldType: string;
+        description?: string;
+        example?: string;
+        required?: boolean;
+        selectedMode?: string;
+        fieldEnabled?: boolean;
+        supportsRuntimeAI: boolean;
+        supportsBuildtimeAI: boolean;
+        fillModeDefault: string;
+        ownership?: string;
+      };
+    };
+
+    if (!nodeType || !nodeLabel || !field?.fieldName) {
+      return res.status(400).json({ success: false, error: 'nodeType, nodeLabel, and field.fieldName are required' });
+    }
+
+    // -- Check DB cache first --
+    if (workflowId && nodeId) {
+      try {
+        const db = getDbClient();
+        const { data: cached } = await db
+          .from('field_walk_cache')
+          .select('description, expires_at')
+          .eq('workflow_id', workflowId)
+          .eq('node_id', nodeId)
+          .eq('field_name', field.fieldName)
+          .gt('expires_at', new Date().toISOString())
+          .maybeSingle();
+
+        if (cached?.description) {
+          return res.json({ success: true, description: cached.description, fromCache: true });
+        }
+      } catch {
+        // DB cache miss or error — fall through to Gemini
+      }
+    }
+
+    if (!config.geminiApiKey) {
+      return res.json({ success: true, description: null });
+    }
+
+    const contextLines = [
+      workflowOverview ? `Workflow goal: ${workflowOverview}` : null,
+      userPrompt ? `User's original request: ${userPrompt}` : null,
+      nodeNarrative ? `This node's role: ${nodeNarrative}` : null,
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    const f = field;
+    const fieldLine = `- fieldName: "${f.fieldName}", label: "${f.label}", type: ${f.fieldType}, docs: "${f.description || ''}", example: "${f.example || ''}", required: ${f.required !== false}, enabledNow: ${f.fieldEnabled === true}, currentOwner: "${f.selectedMode || 'manual_static'}", supportsAIBuild: ${f.supportsBuildtimeAI}, supportsAIRun: ${f.supportsRuntimeAI}`;
+
+    const aiPrompt = `You explain workflow automation field settings to non-technical users (business owners, students, HR managers).
+
+${contextLines}
+Node: "${nodeLabel}" (type: ${nodeType})
+
+Important: do NOT summarize the whole node. Your answer must explain only the exact input field named by fieldName, using the workflow goal and user's request. Keep it simple enough for a beginner.
+
+For the field below, generate a JSON object with keys:
+- "what": 1 plain sentence explaining what this exact input field controls in this workflow use case.
+- "needed": 1 plain sentence saying whether this field is needed for this workflow intent, and why.
+- "bestOwner": 1 plain sentence recommending You, AI build, or AI runtime for this exact field.
+- "dataImpact": 1 plain sentence saying how enabling this field changes the data or result in later steps.
+- "you": What happens if the user picks "You" — they provide the value manually. Include a short realistic example.
+- "aiBuild": What "AI (build)" does — AI fills this value once during setup. 1 sentence.
+- "aiRun": What "AI (runtime)" does — AI decides fresh on every run. 1 sentence.
+- "example": A realistic example value for this field in this workflow, starting with 'e.g. '.
+
+Field:
+${fieldLine}
+
+Respond with ONLY valid JSON (no markdown, no code fences):
+{ "what": "...", "needed": "...", "bestOwner": "...", "dataImpact": "...", "you": "...", "aiBuild": "...", "aiRun": "...", "example": "..." }
+
+Rules: No technical jargon. Under 25 words per key. If a field does not support AI build or AI run, write "N/A" for that key.`;
+
+    const raw = await geminiOrchestrator.processRequest(
+      'chat-generation',
+      { system: '', message: aiPrompt },
+      { model: 'gemini-2.5-flash', temperature: 0.2, cache: false }
+    );
+
+    const text = (typeof raw === 'string' ? raw : (raw as any)?.content || '').trim();
+
+    let description: Record<string, string> | null = null;
+    try {
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (jsonMatch) description = JSON.parse(jsonMatch[0]);
+    } catch {
+      // fall through
+    }
+
+    // -- Write to DB cache --
+    if (description && workflowId && nodeId) {
+      try {
+        const db = getDbClient();
+        await db
+          .from('field_walk_cache')
+          .upsert(
+            {
+              workflow_id: workflowId,
+              node_id: nodeId,
+              field_name: field.fieldName,
+              description,
+              expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+            },
+            { onConflict: 'workflow_id,node_id,field_name', ignoreDuplicates: false }
+          );
+      } catch {
+        // cache write failure is non-fatal
+      }
+    }
+
+    res.json({ success: true, description, fromCache: false });
+  } catch (error) {
+    console.error('Field walk-step error:', error);
+    res.status(200).json({ success: true, description: null });
+  }
+});
+
 // ==================== TEXT (DISABLED) ====================
 router.post('/text/analyze', (req: Request, res: Response) => {
   res.status(501).json({ success: false, error: 'Text analysis has been removed.' });

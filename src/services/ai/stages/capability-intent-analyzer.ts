@@ -63,20 +63,22 @@ RULES:
 CRITICAL RULE — BRANCHING WORKFLOWS (switch / if-else):
 When the user's prompt describes conditional routing (e.g. "if X do A, if Y do B", "route by status", "switch on role"), you MUST:
 - Create ONE logic unit for each branching condition (the switch/if-else node itself).
-- Create ONE SEPARATE output unit for EACH branch case/path.
+- Create ONE SEPARATE output unit for EACH branch case/path, even when two cases use the same service.
 - NEVER collapse multiple branch outcomes into a single shared output unit.
 - Each branch case must have its own independent output unit with a description specific to that case.
 
 Example — "route by order status: if shipped send email, if processing send Slack, if cancelled send Slack":
-CORRECT (3 separate output units, one per case):
-  { "label": "Route by order status", "semanticRole": "logic", ... }
-  { "label": "Send shipping email (shipped)", "semanticRole": "communication", ... }
-  { "label": "Send processing Slack (processing)", "semanticRole": "communication", ... }
-  { "label": "Send cancellation Slack (cancelled)", "semanticRole": "communication", ... }
+CORRECT (3 separate output units — two Slack units because there are two Slack branches):
+  { "label": "Route by order status (shipped / processing / cancelled)", "semanticRole": "logic", "description": "Evaluate the order_status field and route: 'shipped' → email path, 'processing' → Slack path, 'cancelled' → Slack path" }
+  { "label": "Send shipping confirmation via email (shipped)", "semanticRole": "communication", "description": "Activated when order_status = 'shipped'. Send tracking details and shipping confirmation to the customer via email." }
+  { "label": "Send processing update via Slack (processing)", "semanticRole": "communication", "description": "Activated when order_status = 'processing'. Send an order processing status update to the Slack channel." }
+  { "label": "Send cancellation notice via Slack (cancelled)", "semanticRole": "communication", "description": "Activated when order_status = 'cancelled'. Send an order cancellation notification to the Slack channel." }
 
-WRONG (collapsed into one unit):
+WRONG (collapsed into one unit or sharing between branches):
   { "label": "Route by order status", "semanticRole": "logic", ... }
-  { "label": "Send notification", "semanticRole": "communication", ... }  ← WRONG: one unit for 3 cases
+  { "label": "Send Slack notification", "semanticRole": "communication", ... }  ← WRONG: one Slack unit covers two separate branch cases
+
+RULE: Two branches using the same service (e.g., both send Slack) → TWO SEPARATE units, one for each branch case.
 
 NESTED BRANCHING — if a branch case itself contains another condition:
 - Create a logic unit for the inner condition.
@@ -88,7 +90,7 @@ NESTED BRANCHING — if a branch case itself contains another condition:
   - 1 output unit for express Slack
   - 1 output unit for standard email
 
-COUNT CHECK: Before returning, verify that the number of output/communication units equals the total number of distinct branch outcomes across all conditions. If a switch has 3 cases, there must be 3 separate output units for that switch.
+COUNT CHECK: Before returning, count the total distinct branch cases across all switch/if-else nodes. There must be exactly one output/communication unit per branch case. If a switch has 3 cases, there must be 3 separate output units.
 
 STRICT SCOPE RULE — EXPLICIT USER INTENT ONLY:
 You MUST generate use-case units ONLY for tasks the user EXPLICITLY described in their prompt.
@@ -107,29 +109,50 @@ Example — User says "if age > 18 send confirmation email via Gmail, else send 
 CORRECT: Create units for the trigger, the if/else condition, Gmail (true branch), and Slack (false branch) — exactly 4 units
 WRONG: Create units for Gmail, Slack, Zoom Video, Amazon SES, webhook (user only mentioned Gmail and Slack)
 
-DEDUPLICATION RULE:
-If two branch cases would produce the same type of output (e.g., both send a Slack message), they may share the same use-case unit type but must have distinct labels describing each branch's specific purpose.
-Do NOT create separate units for the same service unless the user explicitly named multiple distinct instances.
+DESCRIPTION QUALITY RULES — descriptions must be user-facing and context-specific, never internal AI reasoning:
+- For "trigger" units: describe what event fires it and what data fields it captures (e.g., "Fires when user submits the form. Captures the 'order_status' field as the workflow input.")
+- For "logic" units (switch/if-else): name the routing field AND list ALL cases with their destinations (e.g., "Routes on the 'order_status' field: 'shipped' → email, 'processing' → Slack, 'cancelled' → Slack")
+- For "communication"/"output" units inside a branch: state the activating condition AND what is sent (e.g., "Activated when order_status = 'shipped'. Sends tracking details via email.")
+- For "data_source" units: describe what data is fetched and from where
+- For "transformation" units: describe what processing or transformation is applied
+- NEVER write internal reasoning like "destination coverage inferred from" or "use case implies" — write natural English a non-technical user can understand
 
-Example — User says "if condition A send Gmail, if condition B send Gmail":
-CORRECT: Create ONE Gmail unit with label "Send Gmail notification" (shared by both branches, or two with distinct labels if the content differs)
-WRONG: Create two identical Gmail units with no distinction
-
-Example output:
+Example output (form + switch + 3 branches):
 [
   {
     "unitId": "550e8400-e29b-41d4-a716-446655440000",
-    "label": "Trigger: new email received",
+    "label": "Collect order status via form",
     "semanticRole": "trigger",
-    "description": "Start the workflow when a new email arrives in the inbox",
+    "description": "Fires when a user submits the web form. Captures the 'order_status' field (values: shipped, processing, cancelled) as the input for the workflow.",
     "orderIndex": 0
   },
   {
     "unitId": "550e8400-e29b-41d4-a716-446655440001",
-    "label": "Send notification",
-    "semanticRole": "communication",
-    "description": "Send a Slack message with the email subject and sender",
+    "label": "Route by order status (shipped / processing / cancelled)",
+    "semanticRole": "logic",
+    "description": "Reads the 'order_status' field and routes to the correct path: 'shipped' → email notification, 'processing' → Slack update, 'cancelled' → Slack cancellation notice.",
     "orderIndex": 1
+  },
+  {
+    "unitId": "550e8400-e29b-41d4-a716-446655440002",
+    "label": "Send tracking details via email (shipped)",
+    "semanticRole": "communication",
+    "description": "Activated when order_status = 'shipped'. Sends tracking details and shipping confirmation to the customer via email.",
+    "orderIndex": 2
+  },
+  {
+    "unitId": "550e8400-e29b-41d4-a716-446655440003",
+    "label": "Send processing update via Slack (processing)",
+    "semanticRole": "communication",
+    "description": "Activated when order_status = 'processing'. Sends an order processing status update to the Slack channel.",
+    "orderIndex": 3
+  },
+  {
+    "unitId": "550e8400-e29b-41d4-a716-446655440004",
+    "label": "Send cancellation notice via Slack (cancelled)",
+    "semanticRole": "communication",
+    "description": "Activated when order_status = 'cancelled'. Sends an order cancellation notification to the Slack channel.",
+    "orderIndex": 4
   }
 ]`;
 }
