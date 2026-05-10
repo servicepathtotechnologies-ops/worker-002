@@ -13,6 +13,7 @@ const { signWebhookPayload, verifyWebhookSignature } = require('../webhook-signa
 
 const USER_A = '11111111-1111-4111-8111-111111111111';
 const USER_B = '22222222-2222-4222-8222-222222222222';
+const AWS_SHAPED_USER = 'e1031dfa-7031-703e-0004-80c6c3028371';
 
 interface StoredCredential {
   id: string;
@@ -82,6 +83,36 @@ beforeEach(() => {
 });
 
 describe('unified credential runtime', () => {
+  it('accepts existing AWS UUID-shaped user ids during OAuth callback', async () => {
+    await handleOAuthCallback({
+      provider: 'google',
+      userId: AWS_SHAPED_USER,
+      source: 'generic_oauth',
+      tokenResponse: {
+        access_token: 'aws-google-access',
+        refresh_token: 'aws-google-refresh',
+        expires_in: 3600,
+        scope: [
+          'openid',
+          'email',
+          'profile',
+          'https://www.googleapis.com/auth/gmail.send',
+          'https://www.googleapis.com/auth/gmail.readonly',
+          'https://www.googleapis.com/auth/spreadsheets',
+          'https://www.googleapis.com/auth/drive',
+          'https://www.googleapis.com/auth/documents',
+          'https://www.googleapis.com/auth/calendar.events',
+        ].join(' '),
+      },
+    });
+
+    await expect(resolveCredential({
+      userId: AWS_SHAPED_USER,
+      provider: 'google',
+      requiredScopes: ['https://www.googleapis.com/auth/gmail.send'],
+    })).resolves.toMatchObject({ accessToken: 'aws-google-access', userId: AWS_SHAPED_USER });
+  });
+
   it('new dashboard Google connection resolves for Gmail and Sheets runtime scopes', async () => {
     await handleOAuthCallback({
       provider: 'google',

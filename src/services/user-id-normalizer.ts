@@ -1,7 +1,9 @@
 import { queryAsService } from '../core/database/db-pool';
 import { CredentialUserIdError } from './credential-errors';
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+// Match Postgres' UUID input shape. Existing AWS/Cognito user IDs in this app
+// can be UUID-shaped without RFC version/variant bits, and Postgres accepts them.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function isUuid(value: string | undefined | null): value is string {
   return Boolean(value && UUID_RE.test(value));
