@@ -4,6 +4,7 @@
 import { Request, Response } from 'express';
 import { getDbClient } from '../core/database/supabase-compat';
 import { config } from '../core/config';
+import { verifyWebhookSignature } from '../services/webhook-signature';
 
 /**
  * Webhook trigger handler
@@ -70,6 +71,26 @@ export default async function webhookTriggerHandler(req: Request, res: Response)
     if (workflow.status !== 'active') {
       console.error('Workflow is not active:', workflow.status);
       return res.status(400).json({ error: 'Workflow is not active' });
+    }
+
+    if (!workflow.webhook_secret) {
+      console.error('Webhook secret missing for workflow:', workflowId);
+      return res.status(401).json({ error: 'Webhook signature required' });
+    }
+
+    const rawPayload = (req as any).rawBody
+      ? Buffer.isBuffer((req as any).rawBody)
+        ? (req as any).rawBody
+        : Buffer.from(String((req as any).rawBody))
+      : Buffer.from(JSON.stringify(req.body || {}));
+    const signatureValid = verifyWebhookSignature({
+      secret: workflow.webhook_secret,
+      payload: rawPayload,
+      signatureHeader: req.headers['x-webhook-signature'],
+    });
+    if (!signatureValid) {
+      console.error('Invalid webhook signature for workflow:', workflowId);
+      return res.status(401).json({ error: 'Invalid webhook signature' });
     }
 
     // Create execution record

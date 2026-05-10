@@ -2,9 +2,9 @@ import { Request, Response } from 'express';
 import crypto from 'crypto';
 import { queryAsService } from '../core/database/db-pool';
 import { config } from '../core/config';
-import { encryptToken } from '../core/utils/token-encryption';
 import { ensureUserRows } from '../core/database/ensure-user';
 import { resolveUserIdByEmail } from '../shared/credential-resolver';
+import { handleOAuthCallback } from '../services/oauth-callback-handler';
 
 function googleClientId() {
   return process.env.GOOGLE_OAUTH_CLIENT_ID || config.googleOAuthClientId || '';
@@ -30,12 +30,9 @@ const GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/spreadsheets',
   'https://www.googleapis.com/auth/documents',
   'https://www.googleapis.com/auth/drive',
-  'https://www.googleapis.com/auth/calendar',
+  'https://www.googleapis.com/auth/calendar.events',
   'https://www.googleapis.com/auth/gmail.send',
   'https://www.googleapis.com/auth/gmail.readonly',
-  'https://www.googleapis.com/auth/bigquery',
-  'https://www.googleapis.com/auth/tasks',
-  'https://www.googleapis.com/auth/contacts',
 ].join(' ');
 
 function requestBaseUrl(req: Request): string | null {
@@ -141,72 +138,15 @@ export async function googleOAuthCallback(req: Request, res: Response) {
     const profile: any = profileRes.ok ? await profileRes.json() : {};
     await ensureUserRows(userId, profile.email || null, profile.name || null);
 
-    const expiresAt = tokenData.expires_in
-      ? new Date(Date.now() + Number(tokenData.expires_in) * 1000).toISOString()
-      : null;
-    const encryptedAccessToken = encryptToken(tokenData.access_token);
-    const encryptedRefreshToken = tokenData.refresh_token ? encryptToken(tokenData.refresh_token) : null;
-
-    await queryAsService(
-      `INSERT INTO google_oauth_tokens (user_id, access_token, refresh_token, token_type, expires_at, scope, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, NOW())
-       ON CONFLICT (user_id)
-       DO UPDATE SET access_token = EXCLUDED.access_token,
-                     refresh_token = COALESCE(EXCLUDED.refresh_token, google_oauth_tokens.refresh_token),
-                     token_type = EXCLUDED.token_type,
-                     expires_at = EXCLUDED.expires_at,
-                     scope = EXCLUDED.scope,
-                     updated_at = NOW()`,
-      [
-        userId,
-        encryptedAccessToken,
-        encryptedRefreshToken,
-        tokenData.token_type || 'Bearer',
-        expiresAt,
-        tokenData.scope || GOOGLE_SCOPES,
-      ]
-    );
-
-    await queryAsService(
-      `INSERT INTO social_tokens (user_id, provider, access_token, refresh_token, provider_user_id, token_type, expires_at, scope, updated_at)
-       VALUES ($1, 'google', $2, $3, $4, $5, $6, $7, NOW())
-       ON CONFLICT (user_id, provider)
-       DO UPDATE SET access_token = EXCLUDED.access_token,
-                     refresh_token = COALESCE(EXCLUDED.refresh_token, social_tokens.refresh_token),
-                     provider_user_id = EXCLUDED.provider_user_id,
-                     token_type = EXCLUDED.token_type,
-                     expires_at = EXCLUDED.expires_at,
-                     scope = EXCLUDED.scope,
-                     updated_at = NOW()`,
-      [
-        userId,
-        encryptedAccessToken,
-        encryptedRefreshToken,
-        profile.sub || null,
-        tokenData.token_type || 'Bearer',
-        expiresAt,
-        tokenData.scope || GOOGLE_SCOPES,
-      ]
-    ).catch((err) => {
-      console.warn('[GoogleOAuth] social_tokens mirror failed:', err.message);
-    });
-
-    await queryAsService(
-      `INSERT INTO user_credentials (user_id, service, credentials, updated_at)
-       VALUES ($1, 'google', $2::jsonb, NOW())
-       ON CONFLICT (user_id, service)
-       DO UPDATE SET credentials = EXCLUDED.credentials, updated_at = NOW()`,
-      [
-        userId,
-        JSON.stringify({
-          connected: true,
-          email: profile.email || null,
-          expiresAt,
-          scope: tokenData.scope || GOOGLE_SCOPES,
-        }),
-      ]
-    ).catch((err) => {
-      console.warn('[GoogleOAuth] user_credentials mirror failed:', err.message);
+    await handleOAuthCallback({
+      provider: 'google',
+      userId,
+      email: profile.email || undefined,
+      tokenResponse: {
+        ...tokenData,
+        scope: tokenData.scope || GOOGLE_SCOPES,
+      },
+      source: 'legacy_google',
     });
 
     const returnUrl = encodeURIComponent(safeReturnTo(redirectTo));

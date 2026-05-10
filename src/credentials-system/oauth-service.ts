@@ -3,6 +3,7 @@ import { queryAsService } from '../core/database/db-pool';
 import { connectionService } from './connection-service';
 import { getCredentialType, getRedirectUri } from './credential-type-registry';
 import type { CredentialTypeDefinition } from './types';
+import { handleOAuthCallback } from '../services/oauth-callback-handler';
 
 function base64Url(bytes = 32): string {
   return crypto.randomBytes(bytes).toString('base64url');
@@ -90,29 +91,16 @@ export class OAuthService {
     const definition = getCredentialType(state.credential_type_id);
     if (!definition?.oauth2) throw new Error('OAuth state references an unknown credential type');
     const token = await this.exchangeCode(definition, input.code, state.code_verifier, state.redirect_uri);
-    const credentials = this.normalizeTokenPayload(token);
-    const expiresAt = typeof token.expires_in === 'number'
-      ? new Date(Date.now() + token.expires_in * 1000).toISOString()
-      : null;
-    const metadata = {
-      scopes: state.scopes || [],
-      tokenType: token.token_type,
+    const scopes = Array.isArray(state.scopes) ? state.scopes : JSON.parse(state.scopes || '[]');
+    const result = await handleOAuthCallback({
       provider: definition.provider,
-      oauthResponse: this.publicOAuthMetadata(token),
-    };
+      userId: state.user_id,
+      tokenResponse: { ...token, scopes },
+      requiredScopes: definition.requiredScopes || definition.oauth2.defaultScopes,
+      source: 'generic_oauth',
+    });
 
-    const connection = state.connection_id
-      ? await connectionService.updateConnection(state.user_id, state.connection_id, { credentials, metadata, status: 'active', expiresAt })
-      : await connectionService.createConnection({
-          userId: state.user_id,
-          name: `${definition.displayName} Connection`,
-          credentialTypeId: definition.id,
-          credentials,
-          metadata,
-          expiresAt,
-        });
-
-    return { connectionId: connection.id, returnTo: state.return_to };
+    return { connectionId: result.credentialId, returnTo: state.return_to };
   }
 
   async refreshConnection(userId: string, connectionId: string): Promise<void> {

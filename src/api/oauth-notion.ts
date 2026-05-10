@@ -7,6 +7,7 @@
  */
 
 import { Request, Response } from 'express';
+import { handleOAuthCallback } from '../services/oauth-callback-handler';
 import { getDbClient } from '../core/database/supabase-compat';
 import { config } from '../core/config';
 
@@ -207,7 +208,17 @@ export async function notionCallbackHandler(req: Request, res: Response) {
       console.warn('Failed to fetch workspace info (non-fatal):', workspaceError);
     }
 
-    // Return token data (frontend will save it to database)
+    const authenticatedUser = (req as any).user || user;
+    if (authenticatedUser?.id) {
+      await handleOAuthCallback({
+        provider: 'notion',
+        userId: authenticatedUser.id,
+        email: authenticatedUser.email,
+        tokenResponse: tokenData as any,
+        source: 'legacy_notion_callback',
+      });
+    }
+
     res.json({
       success: true,
       access_token: tokenData.access_token,

@@ -67,6 +67,7 @@
     "validate:registry-gates": "ts-node scripts/run-node-registry-gates.ts",
     "validate:quality-gates": "ts-node scripts/run-quality-gates.ts",
     "sync:credential-registry": "ts-node scripts/sync-credential-registry.ts",
+    "migrate:unified-credentials": "ts-node scripts/migrate-unified-credentials.ts",
     "test:intent-e2e": "jest src/core/utils/__tests__/intent-e2e-harness.test.ts --passWithNoTests",
     "validate:enhancements": "ts-node scripts/validate-enhancements.ts",
     "test:15-workflows": "ts-node scripts/test-15-workflows-execution.ts",

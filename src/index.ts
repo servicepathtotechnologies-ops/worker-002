@@ -196,6 +196,7 @@ import {
   singleConnectionStatusHandler,
   logConnectionConfigReadiness,
 } from './api/connections-catalog';
+import { credentialStatusHandler } from './api/credentials-status';
 import { authStatusHandler } from './api/auth-status';
 import { transferWorkflowOwnership, transferAllWorkflows } from './api/workflow-transfer';
 import saveSocialTokenRoute from './api/save-social-token';
@@ -263,7 +264,12 @@ app.use((req: Request, res: Response, next) => {
 
 // Middleware
 console.log('[ServerStartup] 🔵 Registering middleware...');
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({
+  limit: '50mb',
+  verify: (req: any, _res, buf) => {
+    req.rawBody = Buffer.from(buf);
+  },
+}));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(corsMiddleware);
 app.use(requestMetricsMiddleware);
@@ -875,6 +881,7 @@ app.post('/api/workflows/:workflowId/transfer-ownership', asyncHandler(authentic
 // LinkedIn connection DX/debugging endpoints
 app.get('/api/connections/catalog', asyncHandler(connectionsCatalogHandler));
 app.get('/api/connections/status', asyncHandler(authenticateUser), asyncHandler(connectionsStatusHandler));
+app.get('/api/credentials/status', asyncHandler(authenticateUser), asyncHandler(credentialStatusHandler));
 app.get('/api/connections/linkedin/status', asyncHandler(authenticateUser), asyncHandler(linkedinStatusHandler));
 app.post('/api/connections/linkedin/test', asyncHandler(authenticateUser), asyncHandler(linkedinTestHandler));
 
@@ -919,13 +926,13 @@ app.get('/api/connections/:provider/status', asyncHandler(authenticateUser), asy
 
 // Notion OAuth endpoints
 app.get('/api/oauth/notion/authorize', asyncHandler(notionAuthorizeHandler));
-app.post('/api/oauth/notion/callback', asyncHandler(notionCallbackHandler));
+app.post('/api/oauth/notion/callback', asyncHandler(authenticateUser), asyncHandler(notionCallbackHandler));
 app.delete('/api/connections/notion', asyncHandler(authenticateUser), asyncHandler(makeOAuthTableDisconnectHandler('notion')));
 app.post('/api/connections/notion/disconnect', asyncHandler(authenticateUser), asyncHandler(makeOAuthTableDisconnectHandler('notion')));
 
 // Twitter OAuth endpoints
 app.get('/api/oauth/twitter/authorize', asyncHandler(twitterAuthorizeHandler));
-app.post('/api/oauth/twitter/callback', asyncHandler(twitterCallbackHandler));
+app.post('/api/oauth/twitter/callback', asyncHandler(authenticateUser), asyncHandler(twitterCallbackHandler));
 app.delete('/api/connections/twitter', asyncHandler(authenticateUser), asyncHandler(makeOAuthTableDisconnectHandler('twitter')));
 app.post('/api/connections/twitter/disconnect', asyncHandler(authenticateUser), asyncHandler(makeOAuthTableDisconnectHandler('twitter')));
 app.post('/api/connections/linkedin/refresh-now', asyncHandler(authenticateUser), asyncHandler(linkedinRefreshNowHandler));

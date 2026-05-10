@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { handleOAuthCallback } from '../services/oauth-callback-handler';
 
 const META_APP_ID =
   process.env.META_APP_ID ||
@@ -116,7 +117,7 @@ export async function instagramCallbackHandler(req: Request, res: Response) {
         .find(Boolean);
     }
 
-    return res.json({
+    const responsePayload = {
       access_token: tokenData.access_token,
       expires_at: expiresAt,
       token_type: tokenData.token_type,
@@ -125,7 +126,18 @@ export async function instagramCallbackHandler(req: Request, res: Response) {
       username: igAccount?.username || null,
       name: igAccount?.name || null,
       profile_picture_url: igAccount?.profile_picture_url || null,
-    });
+    };
+    const user = (req as any).user;
+    if (user?.id) {
+      await handleOAuthCallback({
+        provider: 'instagram',
+        userId: user.id,
+        email: user.email,
+        tokenResponse: responsePayload,
+        source: 'legacy_instagram_callback',
+      });
+    }
+    return res.json(responsePayload);
   } catch (err: any) {
     console.error('[InstagramOAuth] Error:', err.message);
     return res.status(500).json({ error: err.message || 'Instagram OAuth failed' });
@@ -179,7 +191,7 @@ export async function whatsappCallbackHandler(req: Request, res: Response) {
       }
     }
 
-    return res.json({
+    const responsePayload = {
       access_token: tokenData.access_token,
       expires_at: expiresAt,
       token_type: tokenData.token_type,
@@ -187,7 +199,18 @@ export async function whatsappCallbackHandler(req: Request, res: Response) {
       phone_number_id: phone_number_id || null,
       business_account_id: resolvedWabaId,
       phone_number: phoneNumber,
-    });
+    };
+    const user = (req as any).user;
+    if (user?.id) {
+      await handleOAuthCallback({
+        provider: 'whatsapp',
+        userId: user.id,
+        email: user.email,
+        tokenResponse: responsePayload,
+        source: 'legacy_whatsapp_callback',
+      });
+    }
+    return res.json(responsePayload);
   } catch (err: any) {
     console.error('[WhatsAppOAuth] Error:', err.message);
     return res.status(500).json({ error: err.message || 'WhatsApp OAuth failed' });

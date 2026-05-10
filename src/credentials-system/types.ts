@@ -84,6 +84,7 @@ export interface CredentialTypeDefinition {
   provider: string;
   displayName: string;
   authType: AuthType;
+  requiredScopes?: string[];
   inputFields: CredentialFieldSchema[];
   guide: CredentialGuide;
   form: {

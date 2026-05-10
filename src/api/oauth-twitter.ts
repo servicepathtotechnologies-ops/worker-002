@@ -7,6 +7,7 @@
  */
 
 import { Request, Response } from 'express';
+import { handleOAuthCallback } from '../services/oauth-callback-handler';
 import { getDbClient } from '../core/database/supabase-compat';
 import crypto from 'crypto';
 
@@ -240,7 +241,17 @@ export async function twitterCallbackHandler(req: Request, res: Response) {
       ? new Date(Date.now() + tokenData.expires_in * 1000).toISOString()
       : null;
 
-    // Return token data (frontend will save it to database)
+    const authenticatedUser = (req as any).user || user;
+    if (authenticatedUser?.id) {
+      await handleOAuthCallback({
+        provider: 'twitter',
+        userId: authenticatedUser.id,
+        email: authenticatedUser.email,
+        tokenResponse: tokenData as any,
+        source: 'legacy_twitter_callback',
+      });
+    }
+
     res.json({
       success: true,
       access_token: tokenData.access_token,

@@ -16959,6 +16959,14 @@ export default async function executeWorkflowHandler(req: Request, res: Response
     const clonedWorkflow = cloneWorkflowDefinition(linearizedGraph.nodes, linearizedGraph.edges, workflowId);
     const nodes = clonedWorkflow.nodes;
     const edges = clonedWorkflow.edges;
+    const workflowOwnerId = workflow.user_id || currentUserId;
+    if (currentUserId && workflowOwnerId && currentUserId !== workflowOwnerId) {
+      console.info('[ExecuteWorkflow] Cross-user trigger uses workflow owner credentials only', {
+        workflowId,
+        workflowOwnerId,
+        currentUserId,
+      });
+    }
     
     console.log('[ExecuteWorkflow] ✅ Workflow normalized and cloned for immutable execution', {
       originalNodeCount: originalNodes.length,
@@ -16971,6 +16979,20 @@ export default async function executeWorkflowHandler(req: Request, res: Response
     // 🔒 STRUCTURAL FIX: Validate credentials are INJECTED into nodes BEFORE execution
     // Execution API must reject if credentials are not injected (not just in vault)
     const { workflowLifecycleManager } = await import('../services/workflow-lifecycle-manager');
+    const { executionPreflight } = await import('../services/execution-preflight');
+    const credentialPreflight = await executionPreflight({
+      workflowId,
+      ownerId: workflowOwnerId,
+      nodes,
+    });
+    if (!credentialPreflight.ok) {
+      return res.status(409).json({
+        error: 'CredentialPreflightFailed',
+        message: 'This workflow cannot run until the workflow owner reconnects the required accounts.',
+        workflowId,
+        failures: credentialPreflight.failures,
+      });
+    }
     
     // ✅ CRITICAL: Execution guard - validate workflow is ready
     // Use normalized/linearized nodes and edges for validation
@@ -16992,7 +17014,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
     
     const executionValidation = await workflowLifecycleManager.validateExecutionReady(
       workflowForValidation,
-      currentUserId
+      workflowOwnerId
     );
     (global as any).__expectedExecutionRuntimeMarker = EXECUTION_RUNTIME_MARKER;
     
@@ -17005,7 +17027,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
     // ✅ CRITICAL: Re-run credential discovery to get accurate counts
     const credentialDiscovery = await credentialDiscoveryPhase.discoverCredentials(
       { nodes, edges },
-      currentUserId
+      workflowOwnerId
     );
     const requiredCredentialsCount = credentialDiscovery.requiredCredentials?.length || 0;
     const missingCredentialsCount = credentialDiscovery.missingCredentials?.length || 0;

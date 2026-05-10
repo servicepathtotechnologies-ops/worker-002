@@ -2,6 +2,8 @@ import { Request, Response } from 'express';
 import { connectorRegistry, Connector } from '../services/connectors/connector-registry';
 import { queryAsService } from '../core/database/db-pool';
 import { getCredentialVault } from '../services/credential-vault';
+import { formatCredentialError, resolveCredentialDryRun } from '../services/credential-resolver';
+import { requiredScopesForProvider } from '../services/credential-scope-registry';
 
 export type CatalogAuthType =
   | 'oauth'
@@ -85,7 +87,7 @@ const DASHBOARD_OAUTH: Record<string, OAuthProviderMetadata> = {
       'https://www.googleapis.com/auth/drive',
       'https://www.googleapis.com/auth/documents',
       'https://www.googleapis.com/auth/spreadsheets',
-      'https://www.googleapis.com/auth/calendar',
+      'https://www.googleapis.com/auth/calendar.events',
     ],
     flow: 'backend_redirect',
   },
@@ -101,7 +103,7 @@ const DASHBOARD_OAUTH: Record<string, OAuthProviderMetadata> = {
     statusTable: 'linkedin_oauth_tokens',
     connectUrl: '/api/oauth/linkedin/start',
     disconnectUrl: '/api/connections/linkedin',
-    scopes: ['openid', 'profile', 'email', 'w_member_social'],
+    scopes: ['w_member_social', 'r_emailaddress', 'r_liteprofile'],
     flow: 'backend_redirect',
   },
   github: {
@@ -163,7 +165,7 @@ const DASHBOARD_OAUTH: Record<string, OAuthProviderMetadata> = {
     statusTable: 'twitter_oauth_tokens',
     connectUrl: '/api/oauth/twitter/authorize',
     disconnectUrl: '/api/connections/twitter',
-    scopes: ['users.read', 'offline.access'],
+    scopes: ['tweet.read', 'tweet.write', 'users.read', 'offline.access'],
     flow: 'frontend_code_exchange',
   },
   instagram: {
@@ -541,6 +543,32 @@ async function userCredentialStatus(entry: ConnectionCatalogEntry, userId: strin
   }
 }
 
+async function runtimeCredentialStatus(entry: ConnectionCatalogEntry, userId: string) {
+  try {
+    const requiredScopes = requiredScopesForProvider(entry.provider, entry.scopes || []);
+    const credential = await resolveCredentialDryRun({
+      userId,
+      provider: entry.provider,
+      requiredScopes,
+      action: `${entry.displayName} connection status`,
+    });
+
+    return {
+      connected: true,
+      source: 'unified_credentials',
+      expiresAt: credential.expiresAt ? credential.expiresAt.toISOString() : null,
+      updatedAt: null,
+      scope: credential.scopes.join(' '),
+    };
+  } catch (error) {
+    return {
+      connected: false,
+      source: 'unified_credentials',
+      error: formatCredentialError(error, `${entry.displayName} connection status`),
+    };
+  }
+}
+
 export async function connectionsCatalogHandler(_req: Request, res: Response) {
   res.json({ success: true, connections: getConnectionCatalog() });
 }
@@ -553,16 +581,16 @@ export async function connectionsStatusHandler(req: Request, res: Response) {
   const statuses: Record<string, any> = {};
 
   for (const entry of getConnectionCatalog()) {
-    let status: any = entry.oauthImplemented ? await tokenTableStatus(entry, userId) : null;
+    let status: any = entry.oauthImplemented ? await runtimeCredentialStatus(entry, userId) : null;
 
-    if (!status || !status.connected) {
+    if (!entry.oauthImplemented && (!status || !status.connected)) {
       const vaultExists = await vault.exists({ userId }, entry.vaultKey).catch(() => false);
       if (vaultExists) {
         status = { connected: true, source: 'credential_vault' };
       }
     }
 
-    if (!status || !status.connected) {
+    if (!entry.oauthImplemented && (!status || !status.connected)) {
       const legacy = await userCredentialStatus(entry, userId, entry.oauthImplemented);
       if (legacy.connected) status = { ...legacy, source: 'user_credentials' };
     }
@@ -581,6 +609,7 @@ export async function connectionsStatusHandler(req: Request, res: Response) {
       metadata: {
         providerUserId: status?.providerUserId || undefined,
         scope: status?.scope || undefined,
+        credentialError: status?.connected ? undefined : status?.error,
       },
     };
   }
