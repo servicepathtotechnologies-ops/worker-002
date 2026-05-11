@@ -4,6 +4,18 @@ import { decryptJson, encryptJson, maskSecrets } from './secret-crypto';
 import { credentialTypeDefinitions, getCredentialType } from './credential-type-registry';
 import type { ConnectionRecord, CredentialTypeDefinition, DecryptedConnection } from './types';
 
+export class ConnectionApiError extends Error {
+  statusCode: number;
+  code: string;
+
+  constructor(statusCode: number, code: string, message: string) {
+    super(message);
+    this.name = 'ConnectionApiError';
+    this.statusCode = statusCode;
+    this.code = code;
+  }
+}
+
 function mapConnection(row: any): ConnectionRecord {
   const storedStatus = row.status;
   const status = row.expires_at && new Date(row.expires_at).getTime() <= Date.now() && storedStatus === 'active'
@@ -20,6 +32,10 @@ function mapConnection(row: any): ConnectionRecord {
     status,
     metadata: row.metadata || {},
     expiresAt: row.expires_at,
+    revokedAt: row.revoked_at,
+    replacedByConnectionId: row.replaced_by_connection_id,
+    externalAccountId: row.external_account_id,
+    externalAccountEmail: row.external_account_email,
     lastTestedAt: row.last_tested_at,
     lastUsedAt: row.last_used_at,
     createdAt: row.created_at,
@@ -63,10 +79,36 @@ export class ConnectionService {
               expires_at, last_tested_at, last_used_at, created_at, updated_at
        FROM connections
        WHERE user_id = $1
+         AND status <> 'revoked'
        ORDER BY updated_at DESC`,
       [userId],
     );
     return rows.map(mapConnection);
+  }
+
+  async findCanonicalConnection(userId: string, credentialTypeId: string): Promise<ConnectionRecord | null> {
+    const rows = await queryAsService(
+      `SELECT id, user_id, name, credential_type_id, provider, auth_type, status, metadata,
+              expires_at, revoked_at, replaced_by_connection_id, external_account_id,
+              external_account_email, last_tested_at, last_used_at, created_at, updated_at
+       FROM connections
+       WHERE user_id = $1
+         AND credential_type_id = $2
+         AND status <> 'revoked'
+       ORDER BY
+         CASE
+           WHEN status = 'active' AND (expires_at IS NULL OR expires_at > NOW()) THEN 0
+           WHEN status = 'active' THEN 1
+           WHEN status = 'error' THEN 2
+           WHEN status = 'expired' THEN 3
+           ELSE 4
+         END,
+         last_used_at DESC NULLS LAST,
+         updated_at DESC NULLS LAST
+       LIMIT 1`,
+      [userId, credentialTypeId],
+    );
+    return rows[0] ? mapConnection(rows[0]) : null;
   }
 
   async createConnection(input: {
@@ -81,6 +123,15 @@ export class ConnectionService {
     if (!definition) throw new Error(`Unknown credential type: ${input.credentialTypeId}`);
     this.validateCredentials(definition, input.credentials);
 
+    const existing = await this.findCanonicalConnection(input.userId, definition.id);
+    if (existing) {
+      throw new ConnectionApiError(
+        409,
+        'CONNECTION_ALREADY_EXISTS',
+        'Already connected. Disconnect first to connect another account.',
+      );
+    }
+
     const id = randomUUID();
     const rows = await queryAsService(
       `INSERT INTO connections (
@@ -89,7 +140,8 @@ export class ConnectionService {
        )
        VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', $8::jsonb, $9, NOW(), NOW())
        RETURNING id, user_id, name, credential_type_id, provider, auth_type, status, metadata,
-                 expires_at, last_tested_at, last_used_at, created_at, updated_at`,
+                 expires_at, revoked_at, replaced_by_connection_id, external_account_id,
+                 external_account_email, last_tested_at, last_used_at, created_at, updated_at`,
       [
         id,
         input.userId,
@@ -112,8 +164,13 @@ export class ConnectionService {
     metadata?: Record<string, unknown>;
     status?: string;
     expiresAt?: string | null;
+    externalAccountId?: string | null;
+    externalAccountEmail?: string | null;
   }): Promise<ConnectionRecord> {
     const existing = await this.getDecryptedConnection(userId, id);
+    if (existing.status === 'revoked') {
+      throw new ConnectionApiError(410, 'CONNECTION_REVOKED', 'Connection has been disconnected.');
+    }
     const definition = getCredentialType(existing.credentialTypeId);
     if (!definition) throw new Error(`Unknown credential type: ${existing.credentialTypeId}`);
     const credentials = patch.credentials ? { ...existing.credentials, ...patch.credentials } : existing.credentials;
@@ -126,10 +183,13 @@ export class ConnectionService {
            metadata = COALESCE($5::jsonb, metadata),
            status = COALESCE($6, status),
            expires_at = $7,
+           external_account_id = COALESCE($8, external_account_id),
+           external_account_email = COALESCE($9, external_account_email),
            updated_at = NOW()
        WHERE user_id = $1 AND id = $2
        RETURNING id, user_id, name, credential_type_id, provider, auth_type, status, metadata,
-                 expires_at, last_tested_at, last_used_at, created_at, updated_at`,
+                 expires_at, revoked_at, replaced_by_connection_id, external_account_id,
+                 external_account_email, last_tested_at, last_used_at, created_at, updated_at`,
       [
         userId,
         id,
@@ -138,6 +198,8 @@ export class ConnectionService {
         patch.metadata ? JSON.stringify(patch.metadata) : null,
         patch.status || null,
         patch.expiresAt === undefined ? existing.expiresAt : patch.expiresAt,
+        patch.externalAccountId || null,
+        patch.externalAccountEmail || null,
       ],
     );
     if (!rows[0]) throw new Error('Connection not found');
@@ -146,21 +208,37 @@ export class ConnectionService {
   }
 
   async deleteConnection(userId: string, id: string): Promise<void> {
-    await queryAsService(`DELETE FROM connections WHERE user_id = $1 AND id = $2`, [userId, id]);
+    await queryAsService(
+      `UPDATE connections
+       SET status = 'revoked',
+           revoked_at = COALESCE(revoked_at, NOW()),
+           updated_at = NOW()
+       WHERE user_id = $1 AND id = $2`,
+      [userId, id],
+    );
     await this.audit(userId, id, 'connection.deleted', {});
   }
 
   async getDecryptedConnection(userId: string, id: string): Promise<DecryptedConnection> {
     const rows = await queryAsService(
       `SELECT id, user_id, name, credential_type_id, provider, auth_type, encrypted_credentials, status,
-              metadata, expires_at, last_tested_at, last_used_at, created_at, updated_at
+              metadata, expires_at, revoked_at, replaced_by_connection_id, external_account_id,
+              external_account_email, last_tested_at, last_used_at, created_at, updated_at
        FROM connections
        WHERE user_id = $1 AND id = $2
        LIMIT 1`,
       [userId, id],
     );
     if (!rows[0]) throw new Error('Connection not found');
-    return { ...mapConnection(rows[0]), credentials: decryptJson(rows[0].encrypted_credentials) };
+    const mapped = mapConnection(rows[0]);
+    if (mapped.status === 'revoked') {
+      throw new ConnectionApiError(410, 'CONNECTION_REVOKED', 'Connection has been disconnected.');
+    }
+    const connection = { ...mapped, credentials: decryptJson(rows[0].encrypted_credentials) };
+    if (connection.status === 'revoked') {
+      throw new ConnectionApiError(410, 'CONNECTION_REVOKED', 'Connection has been disconnected.');
+    }
+    return connection;
   }
 
   async markUsed(userId: string, id: string): Promise<void> {
@@ -169,6 +247,9 @@ export class ConnectionService {
 
   async testConnection(userId: string, id: string): Promise<{ ok: boolean; status: number; message: string }> {
     const connection = await this.getDecryptedConnection(userId, id);
+    if (connection.status === 'expired') {
+      throw new ConnectionApiError(409, 'CONNECTION_EXPIRED', 'Reconnect required.');
+    }
     const definition = getCredentialType(connection.credentialTypeId);
     if (!definition?.testRequest) return { ok: true, status: 200, message: 'No test request configured' };
 

@@ -63,6 +63,11 @@ export default async function webhookTriggerHandler(req: Request, res: Response)
       return res.status(404).json({ error: 'Workflow not found' });
     }
 
+    const { isSetupPending } = await import('./workflow-setup-lifecycle');
+    if (isSetupPending(workflow)) {
+      return res.status(404).json({ error: 'Workflow not found' });
+    }
+
     if (!workflow.webhook_url) {
       console.error('Webhook not enabled for workflow:', workflowId);
       return res.status(403).json({ error: 'Webhook not enabled for this workflow' });

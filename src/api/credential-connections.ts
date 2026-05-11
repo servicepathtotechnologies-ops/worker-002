@@ -11,6 +11,52 @@ function userId(req: Request): string {
   return id;
 }
 
+function frontendOrigin(returnTo?: string | null): string {
+  if (returnTo) {
+    try {
+      return new URL(returnTo).origin;
+    } catch {
+      // Fall back below.
+    }
+  }
+  return process.env.FRONTEND_URL || process.env.CORS_ORIGIN || 'http://localhost:8080';
+}
+
+function oauthCallbackHtml(input: {
+  type: 'oauth-success' | 'oauth-error';
+  connectionId?: string;
+  message?: string;
+  returnTo?: string | null;
+}) {
+  const origin = frontendOrigin(input.returnTo);
+  const fallbackPath = input.type === 'oauth-success' && input.connectionId
+    ? `/connections?connected=${encodeURIComponent(input.connectionId)}`
+    : '/connections?oauth=error';
+  const payload = JSON.stringify({
+    type: input.type,
+    connectionId: input.connectionId,
+    message: input.message,
+  });
+  const targetOrigin = JSON.stringify(origin);
+  const fallbackUrl = JSON.stringify(`${origin}${fallbackPath}`);
+
+  return `<!DOCTYPE html><html><head><title>${input.type === 'oauth-success' ? 'Connected' : 'Connection failed'}</title></head><body>
+<script>
+  try {
+    if (window.opener) {
+      window.opener.postMessage(${payload}, ${targetOrigin});
+      window.close();
+    } else {
+      window.location.href = ${fallbackUrl};
+    }
+  } catch(e) {
+    window.location.href = ${fallbackUrl};
+  }
+</script>
+<p>${input.type === 'oauth-success' ? 'Connected successfully.' : 'Connection failed.'} You can close this window.</p>
+</body></html>`;
+}
+
 export async function credentialTypesHandler(_req: Request, res: Response) {
   res.json({ credentialTypes: connectionService.listCredentialTypes() });
 }
@@ -58,7 +104,9 @@ export async function oauthStartHandler(req: Request, res: Response) {
     credentialTypeId: String(req.query.credentialTypeId || req.body.credentialTypeId),
     connectionId: typeof req.query.connectionId === 'string' ? req.query.connectionId : req.body.connectionId,
     scopes: typeof req.query.scopes === 'string' ? req.query.scopes.split(',') : req.body.scopes,
-    returnTo: typeof req.query.returnTo === 'string' ? req.query.returnTo : req.body.returnTo,
+    returnTo: typeof req.query.returnTo === 'string'
+      ? req.query.returnTo
+      : req.body.returnTo || req.headers.origin || process.env.FRONTEND_URL,
   });
   res.json(result);
 }
@@ -66,24 +114,22 @@ export async function oauthStartHandler(req: Request, res: Response) {
 export async function oauthCallbackHandler(req: Request, res: Response) {
   const code = String(req.query.code || req.body.code || '');
   const state = String(req.query.state || req.body.state || '');
-  const result = await oauthService.callback({ code, state });
-  if (req.method === 'GET') {
-    // Return an HTML page that notifies the opener popup and closes itself
-    return res.send(`<!DOCTYPE html><html><head><title>Connected</title></head><body>
-<script>
+  let result: Awaited<ReturnType<typeof oauthService.callback>>;
   try {
-    if (window.opener) {
-      window.opener.postMessage({ type: 'oauth-success', connectionId: '${result.connectionId}' }, '*');
-      window.close();
-    } else {
-      window.location.href = '${process.env.FRONTEND_URL || 'http://localhost:5173'}/connections?connected=${result.connectionId}';
+    result = await oauthService.callback({ code, state });
+  } catch (error) {
+    if (req.method === 'GET') {
+      const message = error instanceof Error ? error.message : 'OAuth connection failed';
+      return res.status(200).send(oauthCallbackHtml({ type: 'oauth-error', message }));
     }
-  } catch(e) {
-    window.location.href = '${process.env.FRONTEND_URL || 'http://localhost:5173'}/connections';
+    throw error;
   }
-</script>
-<p>Connected successfully! You can close this window.</p>
-</body></html>`);
+  if (req.method === 'GET') {
+    return res.send(oauthCallbackHtml({
+      type: 'oauth-success',
+      connectionId: result.connectionId,
+      returnTo: result.returnTo,
+    }));
   }
   return res.json(result);
 }
@@ -94,7 +140,7 @@ export async function oauthReconnectHandler(req: Request, res: Response) {
     userId: userId(req),
     credentialTypeId: connection.credentialTypeId,
     connectionId: connection.id,
-    returnTo: req.body.returnTo,
+    returnTo: req.body.returnTo || req.headers.origin || process.env.FRONTEND_URL,
   });
   res.json(result);
 }

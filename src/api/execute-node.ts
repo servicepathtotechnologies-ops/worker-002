@@ -64,6 +64,14 @@ export default async function executeNodeHandler(req: Request, res: Response) {
       });
     }
 
+    const { isSetupPending, setupPendingResponse } = await import('./workflow-setup-lifecycle');
+    if (isSetupPending(workflow)) {
+      return res.status(409).json({
+        success: false,
+        ...setupPendingResponse(workflowId),
+      });
+    }
+
     // Get user_id from workflow
     const userId = workflow.user_id;
     

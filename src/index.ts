@@ -158,6 +158,7 @@ import getCredentialsRoute from './api/get-credentials';
 import attachCredentialsRoute from './api/attach-credentials';
 import attachInputsRoute from './api/attach-inputs';
 import saveWorkflowRoute from './api/save-workflow';
+import { setupDraftWorkflowHandler, commitSetupWorkflowHandler } from './api/workflow-setup-lifecycle';
 import getMissingItemsRoute from './api/workflows-missing-items';
 import configureWorkflowRoute from './api/workflows-configure';
 import { confirmWorkflow, rejectWorkflow } from './api/workflow-confirm';
@@ -1058,6 +1059,11 @@ console.log('🔐 Attach Credentials API available at /api/workflows/:workflowId
 app.post('/api/workflows/:workflowId/attach-inputs', asyncHandler(attachInputsRoute));
 console.log('🔧 Attach Inputs API available at /api/workflows/:workflowId/attach-inputs');
 
+// Hidden AI setup draft lifecycle
+app.post('/api/workflows/setup-draft', asyncHandler(setupDraftWorkflowHandler));
+app.post('/api/workflows/:workflowId/commit-setup', asyncHandler(commitSetupWorkflowHandler));
+console.log('🧩 Workflow Setup Lifecycle API available at /api/workflows/setup-draft and /api/workflows/:workflowId/commit-setup');
+
 // Get Missing Items (Credentials + Sensitive Inputs)
 app.get('/api/workflows/:workflowId/missing-items', asyncHandler(getMissingItemsRoute));
 console.log('🔍 Missing Items API available at /api/workflows/:workflowId/missing-items');
@@ -1083,11 +1089,16 @@ app.get('/api/workflows/:workflowId/last-resolved-inputs', asyncHandler(async (r
   const userId = authData.user.id;
   const { data: workflow, error: workflowError } = await supabase
     .from('workflows')
-    .select('id, user_id')
+    .select('id, user_id, setup_completed, metadata')
     .eq('id', workflowId)
     .single();
   if (workflowError || !workflow || workflow.user_id !== userId) {
     return res.status(404).json({ error: 'Workflow not found' });
+  }
+
+  const { isSetupPending, setupPendingResponse } = await import('./api/workflow-setup-lifecycle');
+  if (isSetupPending(workflow)) {
+    return res.status(409).json(setupPendingResponse(workflowId));
   }
 
   const { data: executions, error: executionsError } = await supabase

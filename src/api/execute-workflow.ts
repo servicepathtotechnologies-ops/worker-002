@@ -16859,6 +16859,12 @@ export default async function executeWorkflowHandler(req: Request, res: Response
 
     // ✅ EXECUTION GUARD: Workflow must be confirmed before execution
     // Check both confirmed field and status field for backward compatibility
+    const { isSetupPending, setupPendingResponse } = await import('./workflow-setup-lifecycle');
+    if (isSetupPending(workflow)) {
+      console.warn(`[ExecuteWorkflow] Execution blocked - workflow ${workflowId} is still in hidden setup`);
+      return res.status(409).json(setupPendingResponse(workflowId));
+    }
+
     const isConfirmed = workflow.confirmed === true || workflow.status === 'active';
     if (!isConfirmed) {
       console.error(`[ExecuteWorkflow] ❌ Execution blocked - Workflow ${workflowId} is not confirmed`);
@@ -17171,6 +17177,24 @@ export default async function executeWorkflowHandler(req: Request, res: Response
       requiredCredentialsCount,
       missingCredentialsCount,
       missingInputsCount: allMissingInputs.length,
+      missingInputs: allMissingInputs.map((input: any) => ({
+        nodeId: input.nodeId,
+        nodeType: input.nodeType,
+        nodeLabel: input.nodeLabel,
+        fieldName: input.fieldName,
+        fieldType: input.fieldType,
+        description: input.description,
+        required: input.required,
+      })),
+      missingCredentials: (credentialDiscovery.missingCredentials || []).map((credential: any) => ({
+        nodeId: credential.nodeId,
+        nodeType: credential.nodeType,
+        nodeLabel: credential.nodeLabel,
+        provider: credential.provider,
+        displayName: credential.displayName,
+        vaultKey: credential.vaultKey,
+        credentialId: credential.credentialId,
+      })),
       discoveryMissingInputsCount: nodeInputs.inputs.length,
       discoveryManualRequiredMissingCount,
       blockingMissingCount,

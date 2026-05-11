@@ -60,6 +60,12 @@ export default async function distributedExecuteWorkflow(
 
     // ✅ EXECUTION GUARD: Workflow must be confirmed before execution
     // Check both confirmed field and status field for backward compatibility
+    const { isSetupPending, setupPendingResponse } = await import('./workflow-setup-lifecycle');
+    if (isSetupPending(workflow)) {
+      res.status(409).json(setupPendingResponse(workflowId));
+      return;
+    }
+
     const isConfirmed = workflow.confirmed === true || workflow.status === 'active';
     if (!isConfirmed) {
       console.error(`[DistributedExecuteWorkflow] ❌ Execution blocked - Workflow ${workflowId} is not confirmed`);
@@ -194,6 +200,32 @@ export default async function distributedExecuteWorkflow(
       requiredCredentialsCount,
       missingCredentialsCount,
       missingInputsCount: allMissingInputs.length,
+      missingInputs: allMissingInputs.map((input: any) => ({
+        nodeId: input.nodeId,
+        nodeType: input.nodeType,
+        nodeLabel: input.nodeLabel,
+        fieldName: input.fieldName,
+        fieldType: input.fieldType,
+        description: input.description,
+        required: input.required,
+      })),
+      missingCredentials: (credentialDiscovery.missingCredentials || []).map((credential: any) => {
+        const firstNodeId = Array.isArray(credential.nodeIds) ? credential.nodeIds[0] : credential.nodeId;
+        const firstNodeType = Array.isArray(credential.nodeTypes) ? credential.nodeTypes[0] : credential.nodeType;
+        const matchingNode = firstNodeId ? nodes.find((n: any) => n.id === firstNodeId) : null;
+        const derivedNodeLabel = matchingNode
+          ? (matchingNode.data?.label || matchingNode.data?.type || firstNodeType || '')
+          : (firstNodeType || '');
+        return {
+          nodeId: firstNodeId || '',
+          nodeType: firstNodeType || '',
+          nodeLabel: derivedNodeLabel,
+          provider: credential.provider,
+          displayName: credential.displayName,
+          vaultKey: credential.vaultKey,
+          credentialId: credential.credentialId,
+        };
+      }),
       executionValidationReady: executionValidation.ready,
       executionValidationErrors: executionValidation.errors,
       executionValidationMissingCredentials: executionValidation.missingCredentials,

@@ -23,7 +23,16 @@ export class AuthInjectionEngine {
     const definition = getCredentialType(connection.credentialTypeId);
     if (!definition) throw new Error(`Unknown credential type: ${connection.credentialTypeId}`);
 
-    const readyConnection = definition.authType === 'oauth2' && definition.refresh?.enabled && expiresSoon(connection.expiresAt, definition.refresh.refreshBeforeSeconds)
+    if (connection.status === 'expired' && !(definition.authType === 'oauth2' && definition.refresh?.enabled)) {
+      throw new Error('Reconnect required.');
+    }
+    if (connection.status !== 'active' && connection.status !== 'expired') {
+      throw new Error(`Connection is not ready: ${connection.status}`);
+    }
+
+    const readyConnection = definition.authType === 'oauth2' && definition.refresh?.enabled && (
+      connection.status === 'expired' || expiresSoon(connection.expiresAt, definition.refresh.refreshBeforeSeconds)
+    )
       ? await this.refreshOAuthConnection(context.userId, connection.id)
       : connection;
 

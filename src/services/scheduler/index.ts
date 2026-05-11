@@ -97,7 +97,8 @@ class SchedulerService {
       const queryPromise = this.supabase
         .from('workflows')
         .select('id, name, status')
-        .eq('status', 'active');
+        .eq('status', 'active')
+        .eq('setup_completed', true);
 
       const { data: workflows, error } = await Promise.race([queryPromise, timeoutPromise]) as any;
 
@@ -145,6 +146,7 @@ class SchedulerService {
         .from('workflows')
         .select('id, schedule')
         .eq('status', 'active')
+        .eq('setup_completed', true)
         .not('schedule', 'is', null);
 
       const scheduleTimeoutPromise = new Promise<never>((_, reject) => {

@@ -145,6 +145,10 @@ export interface ConnectionRecord {
   status: ConnectionStatus;
   metadata: Record<string, unknown>;
   expiresAt: string | null;
+  revokedAt?: string | null;
+  replacedByConnectionId?: string | null;
+  externalAccountId?: string | null;
+  externalAccountEmail?: string | null;
   lastTestedAt: string | null;
   lastUsedAt: string | null;
   createdAt: string;

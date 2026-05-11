@@ -68,6 +68,12 @@ export async function enhancedExecuteWorkflow(
 
     // ✅ EXECUTION GUARD: Workflow must be confirmed before execution
     // Check both confirmed field and status field for backward compatibility
+    const { isSetupPending, setupPendingResponse } = await import('../../api/workflow-setup-lifecycle');
+    if (isSetupPending(workflow)) {
+      res.status(409).json(setupPendingResponse(workflowId));
+      return;
+    }
+
     const isConfirmed = workflow.confirmed === true || workflow.status === 'active';
     if (!isConfirmed) {
       console.error(`[EnhancedExecuteWorkflow] ❌ Execution blocked - Workflow ${workflowId} is not confirmed`);

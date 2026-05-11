@@ -201,6 +201,8 @@ async function updateWorkflowStateInDatabase(
       // Update existing workflow
       const updateData: any = {
         status: dbStatus,
+        setup_completed: false,
+        setup_stage: state === WorkflowState.STATE_CONFIRMED ? 'ai_setup_pending' : 'confirmation_pending',
         updated_at: new Date().toISOString(),
       };
 
@@ -248,6 +250,8 @@ async function updateWorkflowStateInDatabase(
           graph: buildSyncedGraphPayload(workflow.nodes, workflow.edges),
           status: dbStatus,
           confirmed: state === WorkflowState.STATE_CONFIRMED ? true : false,
+          setup_completed: false,
+          setup_stage: state === WorkflowState.STATE_CONFIRMED ? 'ai_setup_pending' : 'confirmation_pending',
         });
 
       if (createError) {

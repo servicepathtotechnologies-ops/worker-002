@@ -138,6 +138,11 @@ export async function getFormConfig(req: Request, res: Response) {
       return res.status(404).json({ error: "Workflow not found", message: "The requested workflow could not be found." });
     }
 
+    const { isSetupPending } = await import('./workflow-setup-lifecycle');
+    if (isSetupPending(workflow)) {
+      return res.status(404).json({ error: "Workflow not found", message: "The requested workflow could not be found." });
+    }
+
     if (workflow.status !== "active") {
       return res.status(400).json({ error: "Form expired", message: "This form is no longer active. The workflow has been deactivated." });
     }
@@ -219,6 +224,11 @@ export async function submitForm(req: Request, res: Response) {
       .single();
 
     if (workflowError || !workflow) {
+      return res.status(404).json({ error: "Workflow not found", message: "The requested workflow could not be found." });
+    }
+
+    const { isSetupPending } = await import('./workflow-setup-lifecycle');
+    if (isSetupPending(workflow)) {
       return res.status(404).json({ error: "Workflow not found", message: "The requested workflow could not be found." });
     }
 

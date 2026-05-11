@@ -22,11 +22,23 @@ export async function serveChatbotChat(req: Request, res: Response) {
     // Fetch workflow
     const { data: workflow, error } = await supabase
       .from('workflows')
-      .select('id, name, nodes, edges, is_public, auth_required')
+      .select('id, name, nodes, edges, is_public, auth_required, setup_completed, metadata')
       .eq('id', workflowId)
       .single();
 
     if (error || !workflow) {
+      return res.status(404).send(`
+        <html>
+          <body style="font-family: sans-serif; padding: 40px; text-align: center;">
+            <h1>Workflow Not Found</h1>
+            <p>The requested chatbot workflow does not exist.</p>
+          </body>
+        </html>
+      `);
+    }
+
+    const { isSetupPending } = await import('./workflow-setup-lifecycle');
+    if (isSetupPending(workflow)) {
       return res.status(404).send(`
         <html>
           <body style="font-family: sans-serif; padding: 40px; text-align: center;">

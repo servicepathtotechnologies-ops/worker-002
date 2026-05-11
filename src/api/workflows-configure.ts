@@ -12,6 +12,7 @@ import { workflowLifecycleManager } from '../services/workflow-lifecycle-manager
 import { workflowValidator } from '../services/ai/workflow-validator';
 import { Workflow } from '../core/types/ai-types';
 import { credentialDiscoveryPhase } from '../services/ai/credential-discovery-phase';
+import { ErrorCode } from '../core/utils/error-codes';
 
 function asArray(value: any): any[] {
   if (Array.isArray(value)) return value;
@@ -110,6 +111,7 @@ export default async function configureWorkflowHandler(req: Request, res: Respon
 
     if (missingCreds.length > 0) {
       return res.status(400).json({
+        code: ErrorCode.EXECUTION_MISSING_CREDENTIALS,
         error: 'Missing required credentials',
         missingCredentials: missingCreds,
         details: `The following credentials are required but not provided: ${missingCreds.join(', ')}`,
@@ -125,11 +127,15 @@ export default async function configureWorkflowHandler(req: Request, res: Respon
 
     if (missingInputs.length > 0) {
       return res.status(400).json({
+        code: ErrorCode.EXECUTION_MISSING_INPUTS,
         error: 'Missing required inputs',
         missingInputs: missingInputs.map(input => ({
           nodeId: input.nodeId,
           nodeType: input.nodeType,
+          nodeLabel: (input as any).nodeLabel || input.nodeType || '',
           fieldName: input.fieldName,
+          description: (input as any).description || '',
+          required: true,
         })),
         details: `The following inputs are required but not provided: ${missingInputs.map(i => `${i.nodeId}.${i.fieldName}`).join(', ')}`,
       });
@@ -184,6 +190,7 @@ export default async function configureWorkflowHandler(req: Request, res: Respon
       
       if (!credentialInjectionResult.success) {
         return res.status(400).json({
+          code: ErrorCode.CREDENTIAL_INJECTION_FAILED,
           error: 'Credential injection failed',
           details: credentialInjectionResult.errors || ['Unknown error'],
         });
@@ -275,6 +282,7 @@ export default async function configureWorkflowHandler(req: Request, res: Respon
     
     if (!validation.valid) {
       return res.status(400).json({
+        code: ErrorCode.WORKFLOW_VALIDATION_FAILED,
         error: 'Workflow validation failed',
         validationErrors: validation.errors || [],
         warnings: validation.warnings || [],
@@ -313,6 +321,7 @@ export default async function configureWorkflowHandler(req: Request, res: Respon
     if (updateError) {
       console.error('[ConfigureWorkflow] Failed to save workflow:', updateError);
       return res.status(500).json({
+        code: ErrorCode.INTERNAL_ERROR,
         error: 'Failed to save workflow',
         details: updateError.message,
       });
@@ -334,6 +343,7 @@ export default async function configureWorkflowHandler(req: Request, res: Respon
   } catch (error: any) {
     console.error('[ConfigureWorkflow] Error:', error);
     return res.status(500).json({
+      code: ErrorCode.INTERNAL_ERROR,
       error: 'Failed to configure workflow',
       message: error.message || 'Unknown error',
     });

@@ -30,6 +30,23 @@ export class OAuthService {
   }): Promise<{ authorizationUrl: string; state: string }> {
     const definition = getCredentialType(input.credentialTypeId);
     if (!definition?.oauth2) throw new Error(`OAuth2 credential type not found: ${input.credentialTypeId}`);
+    if (input.connectionId) {
+      const existing = await connectionService.getDecryptedConnection(input.userId, input.connectionId);
+      if (existing.credentialTypeId !== definition.id) {
+        const error = new Error('Connection does not match requested credential type') as Error & { statusCode?: number; code?: string };
+        error.statusCode = 400;
+        error.code = 'CONNECTION_TYPE_MISMATCH';
+        throw error;
+      }
+    } else {
+      const existing = await connectionService.findCanonicalConnection(input.userId, definition.id);
+      if (existing) {
+        const error = new Error('Already connected. Disconnect first to connect another account.') as Error & { statusCode?: number; code?: string };
+        error.statusCode = 409;
+        error.code = 'CONNECTION_ALREADY_EXISTS';
+        throw error;
+      }
+    }
     const { clientId, redirectUri } = oauthClient(definition);
     const state = base64Url(24);
     const verifier = base64Url(48);
@@ -99,8 +116,16 @@ export class OAuthService {
       requiredScopes: definition.requiredScopes || definition.oauth2.defaultScopes,
       source: 'generic_oauth',
     });
+    const connection = await this.persistConnectionFromCallback({
+      userId: state.user_id,
+      connectionId: state.connection_id,
+      definition,
+      token,
+      scopes: result.scopes,
+      unifiedCredentialId: result.credentialId,
+    });
 
-    return { connectionId: result.credentialId, returnTo: state.return_to };
+    return { connectionId: connection.id, returnTo: state.return_to };
   }
 
   async refreshConnection(userId: string, connectionId: string): Promise<void> {
@@ -164,21 +189,106 @@ export class OAuthService {
   }
 
   private normalizeTokenPayload(payload: Record<string, unknown>): Record<string, unknown> {
-    return {
-      ...payload,
-      access_token: payload.access_token,
-      refresh_token: payload.refresh_token,
-      token_type: payload.token_type || 'Bearer',
-      obtained_at: new Date().toISOString(),
-    };
+    return Object.fromEntries(
+      Object.entries({
+        ...payload,
+        access_token: payload.access_token,
+        refresh_token: payload.refresh_token,
+        token_type: payload.token_type || 'Bearer',
+        obtained_at: new Date().toISOString(),
+      }).filter(([, value]) => value !== undefined),
+    );
   }
 
-  private publicOAuthMetadata(payload: Record<string, unknown>): Record<string, unknown> {
-    const clone = { ...payload };
-    delete clone.access_token;
-    delete clone.refresh_token;
-    delete clone.id_token;
-    return clone;
+  private expiresAtFromToken(payload: Record<string, unknown>): string | null {
+    if (typeof payload.expires_at === 'string') return payload.expires_at;
+    const seconds = Number(payload.expires_in);
+    return Number.isFinite(seconds) && seconds > 0
+      ? new Date(Date.now() + seconds * 1000).toISOString()
+      : null;
+  }
+
+  private extractExternalAccount(payload: Record<string, unknown>): { id?: string; email?: string } {
+    const explicitId = payload.account_id || payload.user_id || payload.sub;
+    const explicitEmail = payload.email;
+    if (typeof explicitId === 'string' || typeof explicitEmail === 'string') {
+      return {
+        id: typeof explicitId === 'string' ? explicitId : undefined,
+        email: typeof explicitEmail === 'string' ? explicitEmail : undefined,
+      };
+    }
+
+    const idToken = typeof payload.id_token === 'string' ? payload.id_token : '';
+    const parts = idToken.split('.');
+    if (parts.length < 2) return {};
+    try {
+      const claims = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')) as Record<string, unknown>;
+      return {
+        id: typeof claims.sub === 'string' ? claims.sub : undefined,
+        email: typeof claims.email === 'string' ? claims.email : undefined,
+      };
+    } catch {
+      return {};
+    }
+  }
+
+  private async persistConnectionFromCallback(input: {
+    userId: string;
+    connectionId?: string | null;
+    definition: CredentialTypeDefinition;
+    token: Record<string, unknown>;
+    scopes: string[];
+    unifiedCredentialId: string;
+  }) {
+    const credentials = this.normalizeTokenPayload(input.token);
+    const expiresAt = this.expiresAtFromToken(input.token);
+    const external = this.extractExternalAccount(input.token);
+    const metadata = {
+      oauth: {
+        scopes: input.scopes,
+        unifiedCredentialId: input.unifiedCredentialId,
+        connectedAt: new Date().toISOString(),
+      },
+    };
+
+    if (input.connectionId) {
+      const existing = await connectionService.getDecryptedConnection(input.userId, input.connectionId);
+      if (existing.credentialTypeId !== input.definition.id) {
+        const error = new Error('OAuth state does not match the target connection') as Error & { statusCode?: number; code?: string };
+        error.statusCode = 400;
+        error.code = 'CONNECTION_TYPE_MISMATCH';
+        throw error;
+      }
+      return connectionService.updateConnection(input.userId, input.connectionId, {
+        credentials,
+        status: 'active',
+        expiresAt,
+        metadata: { ...existing.metadata, ...metadata },
+        externalAccountId: external.id,
+        externalAccountEmail: external.email,
+      });
+    }
+
+    const existing = await connectionService.findCanonicalConnection(input.userId, input.definition.id);
+    if (existing) {
+      return connectionService.updateConnection(input.userId, existing.id, {
+        credentials,
+        status: 'active',
+        expiresAt,
+        metadata: { ...existing.metadata, ...metadata },
+        externalAccountId: external.id,
+        externalAccountEmail: external.email,
+      });
+    }
+
+    return connectionService.createConnection({
+      userId: input.userId,
+      name: `${input.definition.displayName} Connection`,
+      credentialTypeId: input.definition.id,
+      credentials,
+      expiresAt,
+      metadata,
+    });
   }
 }
 

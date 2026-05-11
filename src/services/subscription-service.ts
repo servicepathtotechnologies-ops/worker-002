@@ -81,7 +81,7 @@ export class SubscriptionService {
     const client = await getDbPool().connect();
     try {
       const result = await client.query(
-        `SELECT COUNT(*)::int AS count FROM public.workflows WHERE user_id = $1`,
+        `SELECT COUNT(*)::int AS count FROM public.workflows WHERE user_id = $1 AND COALESCE(setup_completed, true) = true`,
         [userId]
       );
       return Number(result.rows[0]?.count || 0);

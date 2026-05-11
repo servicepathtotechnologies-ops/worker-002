@@ -46,6 +46,11 @@ export default async function chatApiHandler(req: Request, res: Response) {
       return res.status(404).json({ error: 'Workflow not found' });
     }
 
+    const { isSetupPending, setupPendingResponse } = await import('./workflow-setup-lifecycle');
+    if (isSetupPending(workflow)) {
+      return res.status(409).json(setupPendingResponse(workflowId));
+    }
+
     // Check if workflow is chatbot or agent type
     if (workflow.workflow_type !== 'chatbot' && workflow.workflow_type !== 'agent') {
       return res.status(400).json({ error: 'Workflow is not a chatbot or agent type' });

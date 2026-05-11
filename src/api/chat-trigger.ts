@@ -30,6 +30,14 @@ export async function getChatConfig(req: Request, res: Response) {
       });
     }
 
+    const { isSetupPending } = await import('./workflow-setup-lifecycle');
+    if (isSetupPending(workflow)) {
+      return res.status(404).json({
+        error: "Workflow not found",
+        message: "The requested workflow could not be found."
+      });
+    }
+
     if (workflow.status !== "active") {
       return res.status(400).json({ 
         error: "Chat expired", 
@@ -136,6 +144,14 @@ export async function submitChatMessage(req: Request, res: Response) {
       return res.status(404).json({ 
         error: "Workflow not found", 
         message: "The requested workflow could not be found." 
+      });
+    }
+
+    const { isSetupPending } = await import('./workflow-setup-lifecycle');
+    if (isSetupPending(workflow)) {
+      return res.status(404).json({
+        error: "Workflow not found",
+        message: "The requested workflow could not be found."
       });
     }
 

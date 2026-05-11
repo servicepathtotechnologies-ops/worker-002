@@ -185,6 +185,9 @@ export default async function saveWorkflowHandler(req: Request, res: Response) {
       settings: (req.body.settings || {}),
       graph: buildSyncedGraphPayload(normalized.nodes, normalized.edges, mergedMetadata),
       metadata: mergedMetadata,
+      setup_completed: true,
+      setup_stage: 'complete',
+      setup_completed_at: new Date().toISOString(),
     };
 
     workflowData.user_id = authenticatedUserId;

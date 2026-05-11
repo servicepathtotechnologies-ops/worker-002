@@ -40,11 +40,16 @@ export async function handleChatbotMessage(req: Request, res: Response) {
     // Fetch workflow
     const { data: workflow, error } = await supabase
       .from('workflows')
-      .select('id, name, nodes, edges, user_id')
+      .select('id, name, nodes, edges, user_id, setup_completed, metadata')
       .eq('id', workflowId)
       .single();
 
     if (error || !workflow) {
+      return res.status(404).json({ error: 'Workflow not found' });
+    }
+
+    const { isSetupPending } = await import('./workflow-setup-lifecycle');
+    if (isSetupPending(workflow)) {
       return res.status(404).json({ error: 'Workflow not found' });
     }
 
