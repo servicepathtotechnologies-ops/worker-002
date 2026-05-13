@@ -104,7 +104,7 @@ export function isDataSourceNode(node: WorkflowNode | string): boolean {
 export function isOutputNode(node: WorkflowNode | string): boolean {
   const nodeType = typeof node === 'string'
     ? unifiedNormalizeNodeTypeString(node)
-    : unifiedNormalizeNodeTypeString(node.type || (node as WorkflowNode).data?.type || '');
+    : unifiedNormalizeNodeType(node as WorkflowNode);
   
   // ✅ PRIMARY: Check capability registry (most authoritative)
   if (nodeCapabilityRegistryDSL.isOutput(nodeType) || nodeCapabilityRegistryDSL.canWriteData(nodeType)) {

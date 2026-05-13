@@ -297,12 +297,11 @@ Important: do NOT summarize the whole node. Each answer must explain only the ex
 
 For each field below, generate a JSON object. Each field needs:
 - "what": 1 plain sentence explaining what this exact input field controls in this workflow use case. Use the docs text only to stay accurate.
-- "needed": 1 plain sentence saying whether this field is needed for this workflow intent, and why.
-- "bestOwner": 1 plain sentence recommending You, AI build, or AI runtime for this exact field based on currentOwner, enabledNow, and the workflow intent.
+- "needed": A direct action instruction — tell the user WHAT TO DO. If the field is needed for the workflow goal: say exactly what to toggle on and enter (e.g. 'Toggle this on and enter your Sheet ID like 1BxiMVz...'). If not needed: say what to leave alone and why (e.g. 'Leave this off — it is only used when writing data, not reading'). Max 2 short sentences.
 - "dataImpact": 1 plain sentence saying how enabling this field changes the data or result in later steps.
-- "you": What happens if the user picks "You" for this exact field (they provide the value manually). Include a short realistic example like 'e.g. "..."'.
-- "aiBuild": What "AI (build)" does — AI fills this value once during setup. 1 sentence describing what it would produce for this workflow.
-- "aiRun": What "AI (runtime)" does — AI decides fresh on every run. 1 sentence.
+- "you": If the user picks YOU — what exactly must they type or paste, where do they get it, and when should they use this mode? Include a realistic example like 'e.g. "..."'. Specific to this workflow's goal.
+- "aiBuild": If AI BUILD owns this — what exactly will AI do once during workflow setup to determine this value? Name what it will infer or look up. If supportsAIBuild is false, write 'Not available for this field.'
+- "aiRun": If AI RUN owns this — what exactly will AI determine at runtime, and from what live data or context? If supportsAIRun is false, write 'Not available for this field.'
 - "example": A realistic example value for this field in this workflow, starting with 'e.g. '.
 
 Fields:
@@ -310,11 +309,11 @@ ${fieldsText}
 
 Respond with ONLY valid JSON (no markdown, no code fences):
 {
-  "fieldName1": { "what": "...", "needed": "...", "bestOwner": "...", "dataImpact": "...", "you": "...", "aiBuild": "...", "aiRun": "...", "example": "..." },
+  "fieldName1": { "what": "...", "needed": "...", "dataImpact": "...", "you": "...", "aiBuild": "...", "aiRun": "...", "example": "..." },
   "fieldName2": { ... }
 }
 
-Rules: No technical jargon. Under 25 words per key. Do not repeat the field label at the start. If a field does not support AI build or AI run, write "N/A" for that key.`;
+Rules: No technical jargon. Under 35 words per key (needed may use up to 2 sentences). Do not repeat the field label at the start. Use "you" to address the user directly.`;
 
     const raw = await geminiOrchestrator.processRequest(
       'chat-generation',
@@ -327,7 +326,6 @@ Rules: No technical jargon. Under 25 words per key. Do not repeat the field labe
     let descriptions: Record<string, {
       what: string;
       needed?: string;
-      bestOwner?: string;
       dataImpact?: string;
       you: string;
       aiBuild: string;
@@ -435,21 +433,20 @@ Important: do NOT summarize the whole node. Your answer must explain only the ex
 
 For the field below, generate a JSON object with keys:
 - "what": 1 plain sentence explaining what this exact input field controls in this workflow use case.
-- "needed": 1 plain sentence saying whether this field is needed for this workflow intent, and why.
-- "bestOwner": 1 plain sentence recommending You, AI build, or AI runtime for this exact field.
+- "needed": A direct action instruction — tell the user WHAT TO DO. If the field is needed for the workflow goal: say exactly what to toggle on and enter (e.g. 'Toggle this on and enter your Sheet ID like 1BxiMVz...'). If not needed: say what to leave alone and why (e.g. 'Leave this off — it is only used when writing data, not reading'). Max 2 short sentences.
 - "dataImpact": 1 plain sentence saying how enabling this field changes the data or result in later steps.
-- "you": What happens if the user picks "You" — they provide the value manually. Include a short realistic example.
-- "aiBuild": What "AI (build)" does — AI fills this value once during setup. 1 sentence.
-- "aiRun": What "AI (runtime)" does — AI decides fresh on every run. 1 sentence.
+- "you": If the user picks YOU — what exactly must they type or paste, where do they get it, and when should they use this mode? Include a realistic example like 'e.g. "..."'. Specific to this workflow's goal.
+- "aiBuild": If AI BUILD owns this — what exactly will AI do once during workflow setup to determine this value? Name what it will infer or look up. If supportsAIBuild is false, write 'Not available for this field.'
+- "aiRun": If AI RUN owns this — what exactly will AI determine at runtime, and from what live data or context? If supportsAIRun is false, write 'Not available for this field.'
 - "example": A realistic example value for this field in this workflow, starting with 'e.g. '.
 
 Field:
 ${fieldLine}
 
 Respond with ONLY valid JSON (no markdown, no code fences):
-{ "what": "...", "needed": "...", "bestOwner": "...", "dataImpact": "...", "you": "...", "aiBuild": "...", "aiRun": "...", "example": "..." }
+{ "what": "...", "needed": "...", "dataImpact": "...", "you": "...", "aiBuild": "...", "aiRun": "...", "example": "..." }
 
-Rules: No technical jargon. Under 25 words per key. If a field does not support AI build or AI run, write "N/A" for that key.`;
+Rules: No technical jargon. Under 35 words per key (needed may use up to 2 sentences). Do not repeat the field label at the start. Use "you" to address the user directly.`;
 
     const raw = await geminiOrchestrator.processRequest(
       'chat-generation',

@@ -1023,8 +1023,8 @@ export class FinalIntegrityValidationLayer extends ValidationLayer {
     // ✅ FIX: Check for ANY output node in workflow, not just terminal ones
     // If no output nodes exist at all, that's an error (workflow has no way to output results)
     if (allOutputNodes.length === 0) {
-      errors.push('No output nodes found in workflow');
-      details.disconnectedNodes = nodes.filter(n => !isTriggerNode(n)).map(n => n.id);
+      warnings.push('No output nodes found — workflow may be read-only or data-fetch only');
+      // Skip disconnected-node BFS: with no output nodes, every node would appear disconnected
     } else if (terminalOutputNodes.length === 0 && allOutputNodes.length > 0) {
       // Output nodes exist but none are terminal - they need to be connected
       warnings.push(`Found ${allOutputNodes.length} output node(s) but none are terminal (may need connection)`);
@@ -1060,7 +1060,7 @@ export class FinalIntegrityValidationLayer extends ValidationLayer {
     
     const disconnectedNodes = nodes.filter(node => !visited.has(node.id)).map(n => n.id);
     if (disconnectedNodes.length > 0) {
-      errors.push(`Found ${disconnectedNodes.length} node(s) not connected to any output`);
+      warnings.push(`Found ${disconnectedNodes.length} node(s) not connected to any output`);
       details.disconnectedNodes = disconnectedNodes;
     }
     

@@ -82,6 +82,38 @@ export async function invalidateExecutionStatusCache(executionId: string, client
 }
 
 /**
+ * Invalidates all Redis cache keys for the /api/db/workflows path.
+ *
+ * The workflowId lives in query params (not the path), so the cache key hash
+ * is not predictable from the workflowId alone. Scanning and deleting all
+ * /api/db/workflows:* entries is safe — the TTL is short (60 s) and commit is
+ * a rare user-triggered operation, so the cache rebuilds quickly on next read.
+ */
+export async function invalidateWorkflowDbCache(client: RedisClientType): Promise<void> {
+  const pattern = `/api/db/workflows:*`;
+  const keysToDelete: string[] = [];
+
+  if (typeof (client as any).scanIterator === 'function') {
+    for await (const key of (client as any).scanIterator({ MATCH: pattern })) {
+      keysToDelete.push(key);
+    }
+  } else {
+    let cursor = 0;
+    do {
+      const result: { cursor: number; keys: string[] } = await (client as any).scan(cursor, { MATCH: pattern, COUNT: 100 });
+      cursor = result.cursor;
+      keysToDelete.push(...result.keys);
+    } while (cursor !== 0);
+  }
+
+  for (const key of keysToDelete) {
+    await client.del(key);
+  }
+
+  console.log(`[RedisGetCache] invalidated ${keysToDelete.length} workflow cache key(s)`);
+}
+
+/**
  * Caches successful JSON GET responses with a cache-aside Redis pattern.
  */
 export function redisGetCache(options: CacheOptions = {}) {

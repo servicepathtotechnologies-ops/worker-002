@@ -4,6 +4,7 @@ import { normalizeWorkflowForSave, validateWorkflowForSave } from '../core/valid
 import { buildSyncedGraphPayload, resolveWorkflowGraphState } from './workflow-graph-state';
 import { workflowLifecycleManager } from '../services/workflow-lifecycle-manager';
 import { subscriptionService } from '../services/subscription-service';
+import { getCacheRedisClient, invalidateWorkflowDbCache } from '../middleware/redisGetCache';
 
 export function isSetupPending(workflow: any): boolean {
   if (!workflow) return false;
@@ -191,10 +192,13 @@ export async function commitSetupWorkflowHandler(req: Request, res: Response) {
   const readiness = await workflowLifecycleManager.validateExecutionReady(candidate as any, userId);
 
   if (!readiness.ready) {
+    const errorSummary = readiness.errors?.length
+      ? readiness.errors.join(' | ')
+      : 'Workflow setup is incomplete';
     return res.status(409).json({
       code: 'WORKFLOW_SETUP_INCOMPLETE',
       error: 'Workflow setup is incomplete',
-      message: 'Required inputs or credentials are still missing.',
+      message: errorSummary,
       workflowId,
       details: readiness,
     });
@@ -238,6 +242,14 @@ export async function commitSetupWorkflowHandler(req: Request, res: Response) {
 
   if (updateError) {
     return res.status(500).json({ error: 'Failed to commit workflow setup', message: updateError.message });
+  }
+
+  // Bust Redis cache so the next workflow fetch gets fresh data with setup_completed = true.
+  // The workflowId lives in query params so we can't predict the cache key hash — we clear
+  // all /api/db/workflows:* entries. Safe: TTL is short and commit is a rare operation.
+  const cacheClient = await getCacheRedisClient(process.env.REDIS_URL || 'redis://redis:6379');
+  if (cacheClient) {
+    await invalidateWorkflowDbCache(cacheClient).catch(() => {});
   }
 
   if (wasSetupPending) {
