@@ -156,6 +156,23 @@ export class CredentialResolver {
         let configResolved = false;
         if (!vaultResolved) {
           configResolved = isCredentialSatisfiedByNodeConfig(node, contract);
+          // Validate the credentialId actually exists in DB — prevents ghost UUIDs from deleted connections
+          if (configResolved && userId) {
+            const nodeConfig = (node.data?.config || {}) as Record<string, unknown>;
+            const credentialId = String(nodeConfig.credentialId || nodeConfig.credentialRef || '').trim();
+            if (credentialId) {
+              const db = getDbClient();
+              const { data } = await db
+                .from('connections')
+                .select('id')
+                .eq('user_id', userId)
+                .eq('id', credentialId)
+                .limit(1);
+              if (!data?.length) {
+                configResolved = false;
+              }
+            }
+          }
         }
         const resolved = vaultResolved || configResolved;
         const source: 'vault' | 'user_input' | undefined = resolved

@@ -152,6 +152,7 @@ import analyzeWorkflowRequirementsRoute from './api/analyze-workflow-requirement
 import processRoute from './api/process';
 import executeNodeRoute from './api/execute-node';
 import aiGateway from './api/ai-gateway';
+import aiErrorGuidanceHandler from './api/ai-error-guidance';
 import { generateHandler as smartPlannerGenerate, answerHandler as smartPlannerAnswer, getWorkflowHandler as smartPlannerGetWorkflow } from './api/smart-planner';
 import * as trainingStats from './api/training-stats';
 import getCredentialsRoute from './api/get-credentials';
@@ -1428,6 +1429,9 @@ app.use(
   aiGateway
 );
 console.log('🤖 AI Gateway available at /api/ai');
+
+// AI Error Guidance endpoint (no auth required — guidance is not sensitive)
+app.post('/api/ai/error-guidance', asyncHandler(aiErrorGuidanceHandler));
 
 // Training Statistics API
 app.get('/api/training/stats', asyncHandler(trainingStats.getTrainingStats));

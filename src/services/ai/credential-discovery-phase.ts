@@ -15,6 +15,7 @@ import { CredentialResolver } from './credential-resolver';
 import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 import { isCredentialSatisfiedByNodeConfig } from './credential-config-satisfaction';
 import { geminiOrchestrator } from './gemini-orchestrator';
+import { queryAsService } from '../../core/database/db-pool';
 
 export interface CredentialRequirement {
   provider: string;
@@ -300,6 +301,21 @@ export class CredentialDiscoveryPhase {
           });
           if (satisfied) {
             console.log(`[CredentialDiscovery] ✅ Credential satisfied from node config for ${nodeId} (${nodeType})`);
+            // Validate the credentialId actually exists in DB — prevents ghost UUIDs from deleted connections
+            if (userId) {
+              const nodeConfig = (node.data?.config || {}) as Record<string, unknown>;
+              const credentialId = String(nodeConfig.credentialId || nodeConfig.credentialRef || '').trim();
+              if (credentialId) {
+                const rows = await queryAsService(
+                  `SELECT 1 FROM connections WHERE user_id = $1 AND id = $2 LIMIT 1`,
+                  [userId, credentialId]
+                );
+                if (!rows.length) {
+                  satisfied = false;
+                  console.log(`[CredentialDiscovery] ❌ credentialId "${credentialId}" not found in DB — treating as missing`);
+                }
+              }
+            }
           }
           // Fallback: SMTP and similar — multi-field or no credentialFieldName on connector
           if (!satisfied && schema && schema.configSchema) {

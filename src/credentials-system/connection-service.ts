@@ -208,15 +208,91 @@ export class ConnectionService {
   }
 
   async deleteConnection(userId: string, id: string): Promise<void> {
-    await queryAsService(
-      `UPDATE connections
-       SET status = 'revoked',
-           revoked_at = COALESCE(revoked_at, NOW()),
-           updated_at = NOW()
-       WHERE user_id = $1 AND id = $2`,
+    // Fetch provider before deleting so we know what to clean up
+    const rows = await queryAsService(
+      `SELECT provider FROM connections WHERE user_id = $1 AND id = $2 LIMIT 1`,
       [userId, id],
     );
-    await this.audit(userId, id, 'connection.deleted', {});
+    const provider: string | undefined = rows[0]?.provider;
+
+    await queryAsService(
+      `DELETE FROM connections WHERE user_id = $1 AND id = $2`,
+      [userId, id],
+    );
+
+    if (provider) {
+      await Promise.allSettled([
+        // unified_credentials (primary credential store for new OAuth flow)
+        queryAsService(
+          `DELETE FROM unified_credentials WHERE user_id = $1 AND provider = $2`,
+          [userId, provider],
+        ),
+        // credential_vault (used by workflow execution via credential-retriever)
+        queryAsService(
+          `DELETE FROM credential_vault WHERE user_id = $1 AND key = $2`,
+          [userId, provider],
+        ),
+        // user_credentials (legacy key-value store)
+        queryAsService(
+          `DELETE FROM user_credentials WHERE user_id = $1 AND service = $2`,
+          [userId, provider],
+        ),
+        // provider-specific legacy token tables
+        ...this.legacyTokenCleanup(userId, provider),
+      ]);
+    }
+
+    await this.audit(userId, id, 'connection.deleted', { provider });
+  }
+
+  private legacyTokenCleanup(userId: string, provider: string): Promise<unknown>[] {
+    const noop = () => Promise.resolve();
+    const del = (sql: string, params: unknown[]) =>
+      queryAsService(sql, params).catch(noop);
+
+    const cleanups: Promise<unknown>[] = [];
+
+    if (provider === 'google') {
+      cleanups.push(
+        del(`DELETE FROM google_oauth_tokens WHERE user_id = $1`, [userId]),
+        del(`DELETE FROM social_tokens WHERE user_id = $1 AND provider = 'google'`, [userId]),
+      );
+    }
+    if (provider === 'linkedin') {
+      cleanups.push(del(`DELETE FROM linkedin_oauth_tokens WHERE user_id = $1`, [userId]));
+    }
+    if (provider === 'notion') {
+      cleanups.push(del(`DELETE FROM notion_oauth_tokens WHERE user_id = $1`, [userId]));
+    }
+    if (provider === 'twitter') {
+      cleanups.push(del(`DELETE FROM twitter_oauth_tokens WHERE user_id = $1`, [userId]));
+    }
+    if (provider === 'instagram') {
+      cleanups.push(
+        del(`DELETE FROM instagram_oauth_tokens WHERE user_id = $1`, [userId]),
+        del(`DELETE FROM facebook_oauth_tokens WHERE user_id = $1`, [userId]),
+      );
+    }
+    if (provider === 'salesforce') {
+      cleanups.push(del(`DELETE FROM salesforce_oauth_tokens WHERE user_id = $1`, [userId]));
+    }
+    if (provider === 'facebook') {
+      cleanups.push(
+        del(`DELETE FROM facebook_oauth_tokens WHERE user_id = $1`, [userId]),
+        del(`DELETE FROM social_tokens WHERE user_id = $1 AND provider = 'facebook'`, [userId]),
+      );
+    }
+    if (provider === 'whatsapp') {
+      cleanups.push(
+        del(`DELETE FROM whatsapp_oauth_tokens WHERE user_id = $1`, [userId]),
+        del(`DELETE FROM facebook_oauth_tokens WHERE user_id = $1`, [userId]),
+      );
+    }
+    if (provider === 'zoho') {
+      cleanups.push(del(`DELETE FROM zoho_oauth_tokens WHERE user_id = $1`, [userId]));
+    }
+
+    return cleanups;
   }
 
   async getDecryptedConnection(userId: string, id: string): Promise<DecryptedConnection> {

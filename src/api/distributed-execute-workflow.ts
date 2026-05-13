@@ -312,17 +312,51 @@ export default async function distributedExecuteWorkflow(
       return;
     }
 
-    if (!executionValidation.ready && !credentialsAttached) {
-      const missingCreds = executionValidation.missingCredentials.join(', ');
+    if (!credentialsAttached) {
+      const missingCreds = credentialDiscovery.missingCredentials?.map((c: any) => c.displayName || c.provider).join(', ') || 'unknown credentials';
       res.status(400).json({
         code: ErrorCode.EXECUTION_MISSING_CREDENTIALS,
         error: 'Workflow not ready for execution',
-        message: `Workflow requires credentials that are not injected: ${missingCreds}`,
+        message: `Workflow requires credentials that are not connected: ${missingCreds}`,
         phase: workflowStatus,
         details: readinessCheck,
-        hint: 'Please attach credentials to this workflow using /api/workflows/:id/attach-credentials before executing.',
+        hint: 'Please connect the required accounts in the Connections page before executing.',
       });
       return;
+    }
+
+    // ✅ PREFLIGHT: Run executionPreflight to catch missing OAuth credentials (e.g. google_sheets,
+    // google_gmail) that credentialDiscoveryPhase may not detect due to vault/schema mismatches.
+    // This mirrors the same check inside execute-workflow.ts and is authoritative for OAuth providers.
+    {
+      const { executionPreflight } = await import('../services/execution-preflight');
+      const workflowOwnerId = (workflow as any).user_id || currentUserId;
+      const preflightResult = await executionPreflight({
+        workflowId,
+        ownerId: workflowOwnerId || '',
+        nodes,
+      });
+      if (!preflightResult.ok) {
+        const missingProviders = [...new Set(preflightResult.failures.map((f: any) => f.provider))];
+        res.status(400).json({
+          code: ErrorCode.EXECUTION_MISSING_CREDENTIALS,
+          error: 'Workflow not ready for execution',
+          message: `Workflow requires accounts that are not connected: ${missingProviders.join(', ')}`,
+          phase: workflowStatus,
+          details: {
+            ...readinessCheck,
+            missingCredentials: preflightResult.failures.map((f: any) => ({
+              nodeId: f.nodeId,
+              nodeType: f.nodeType,
+              nodeLabel: f.nodeName,
+              provider: f.provider,
+              displayName: f.provider,
+            })),
+          },
+          hint: 'Please connect the required accounts in the Connections page, then try again.',
+        });
+        return;
+      }
     }
 
     // ✅ PRE-FLIGHT: Check for existing active execution BEFORE creating any records.
@@ -469,6 +503,14 @@ export default async function distributedExecuteWorkflow(
     // so we fire the existing synchronous execute-workflow engine as a detached background task.
     // execute-workflow.ts detects the existing executionId via the resume path and runs all nodes.
     setImmediate(async () => {
+      const invalidateCache = async () => {
+        try {
+          const { getCacheRedisClient, invalidateExecutionStatusCache } = await import('../middleware/redisGetCache');
+          const cacheClient = await getCacheRedisClient(process.env.REDIS_URL || 'redis://redis:6379');
+          if (cacheClient) await invalidateExecutionStatusCache(executionId, cacheClient);
+        } catch (_) {}
+      };
+
       try {
         console.log(`[DistributedExecute] 🔵 Starting background execution for ${executionId}`);
         const { default: executeWorkflow } = await import('./execute-workflow');
@@ -485,6 +527,32 @@ export default async function distributedExecuteWorkflow(
           } as any
         );
         console.log(`[DistributedExecute] ✅ Background execution finished for ${executionId}`);
+
+        // Always invalidate Redis cache so the frontend sees the final status
+        await invalidateCache();
+
+        // If execute-workflow returned without updating DB (e.g. preflight rejection via fake res),
+        // the execution stays "running" forever. Detect this and mark it failed.
+        try {
+          const { data: currentExec } = await supabase
+            .from('executions')
+            .select('status')
+            .eq('id', executionId)
+            .single();
+          if (currentExec?.status === 'running') {
+            console.warn(`[DistributedExecute] ⚠️ Execution ${executionId} still "running" after execute-workflow returned — marking failed`);
+            await supabase
+              .from('executions')
+              .update({
+                status: 'failed',
+                error: 'Execution did not complete. Required account connections may be missing. Check the Connections page and try again.',
+                finished_at: new Date().toISOString(),
+              })
+              .eq('id', executionId)
+              .eq('status', 'running');
+            await invalidateCache();
+          }
+        } catch (_) {}
       } catch (bgErr: any) {
         console.error(`[DistributedExecute] ❌ Background execution failed for ${executionId}:`, bgErr?.message);
         try {
@@ -498,6 +566,7 @@ export default async function distributedExecuteWorkflow(
             .eq('id', executionId)
             .eq('status', 'running');
         } catch (_) {}
+        await invalidateCache();
       }
     });
   } catch (error: any) {

@@ -614,6 +614,15 @@ export class DistributedOrchestrator {
         })
         .eq('id', executionId);
 
+      // Bust Redis cache so the polling endpoint returns the real "failed" status immediately
+      try {
+        const { getCacheRedisClient, invalidateExecutionStatusCache } = await import('../../../middleware/redisGetCache');
+        const client = await getCacheRedisClient(process.env.REDIS_URL || 'redis://localhost:6379');
+        if (client) await invalidateExecutionStatusCache(executionId, client);
+      } catch {
+        // non-fatal — polling will eventually see the DB update
+      }
+
       // ✅ CRITICAL: Release execution lock on failure
       if (execution?.workflow_id) {
         try {

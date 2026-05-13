@@ -95,11 +95,8 @@ export class ChatServer extends EventEmitter {
               }
             }
           } else {
-            // Not our path, destroy the socket
-            console.log(`[ChatServer] Ignoring upgrade request for path: ${url.pathname}`);
-            if (!socket.destroyed) {
-              socket.destroy();
-            }
+            // Not our path — let other handlers (e.g. VisualizationService) process it
+            return;
           }
         } catch (error: any) {
           console.error('[ChatServer] ❌ Error processing upgrade request:', error);
