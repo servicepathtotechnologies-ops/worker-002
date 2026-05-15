@@ -8,8 +8,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import type { SupabaseClient } from '@supabase/supabase-js';
-import { getDbClient } from '../../../../core/database/supabase-compat';
+import type { DbClient } from '@db/db-js';
+import { getDbClient } from '../../../../core/database/aws-db-client';
 import { QueueClient, createQueueClient, NodeJob } from '../queue-client';
 import { DistributedOrchestrator } from '../distributed-orchestrator';
 import { StorageManager } from '../storage-manager';
@@ -18,7 +18,7 @@ import { WorkerService } from '../worker-service';
 import { createObjectStorageService } from '../../object-storage-service';
 
 describe('Durable Execution Integration Tests', () => {
-  let supabase: SupabaseClient;
+  let db: DbClient;
   let queue: QueueClient;
   let orchestrator: DistributedOrchestrator;
   let storage: StorageManager;
@@ -26,13 +26,13 @@ describe('Durable Execution Integration Tests', () => {
   let executionId: string;
 
   beforeEach(async () => {
-    supabase = getDbClient();
+    db = getDbClient();
     queue = createQueueClient();
     await queue.connect();
 
-    storage = new StorageManager(supabase, createObjectStorageService());
-    orchestrator = new DistributedOrchestrator(supabase, queue, storage);
-    recoveryManager = new RecoveryManager(supabase, queue, orchestrator, {
+    storage = new StorageManager(db, createObjectStorageService());
+    orchestrator = new DistributedOrchestrator(db, queue, storage);
+    recoveryManager = new RecoveryManager(db, queue, orchestrator, {
       stuckExecutionThresholdMs: 1000, // 1 second for tests
       stuckStepThresholdMs: 500, // 500ms for tests
       maxRetries: 3,
@@ -52,7 +52,7 @@ describe('Durable Execution Integration Tests', () => {
       executionId = await orchestrator.startExecution(workflowId, inputData);
 
       // 2. Simulate crash: Mark a step as running but don't complete it
-      const { data: steps } = await supabase
+      const { data: steps } = await db
         .from('execution_steps')
         .select('id, node_id')
         .eq('execution_id', executionId)
@@ -62,7 +62,7 @@ describe('Durable Execution Integration Tests', () => {
       if (steps && steps.length > 0) {
         const step = steps[0];
         // Mark as running (simulating crash mid-execution)
-        await supabase
+        await db
           .from('execution_steps')
           .update({
             status: 'running',
@@ -75,7 +75,7 @@ describe('Durable Execution Integration Tests', () => {
         await recoveryManager.scanAndRecover();
 
         // 4. Verify step was recovered (reset to pending and requeued)
-        const { data: recoveredStep } = await supabase
+        const { data: recoveredStep } = await db
           .from('execution_steps')
           .select('status, retry_count')
           .eq('id', step.id)
@@ -95,7 +95,7 @@ describe('Durable Execution Integration Tests', () => {
       executionId = await orchestrator.startExecution(workflowId, inputData);
 
       // 2. Get a step
-      const { data: steps } = await supabase
+      const { data: steps } = await db
         .from('execution_steps')
         .select('id, node_id, node_type')
         .eq('execution_id', executionId)
@@ -106,7 +106,7 @@ describe('Durable Execution Integration Tests', () => {
         const step = steps[0];
 
         // 3. Mark step as completed
-        await supabase
+        await db
           .from('execution_steps')
           .update({
             status: 'completed',
@@ -129,7 +129,7 @@ describe('Durable Execution Integration Tests', () => {
         await workerService.processJob(job);
 
         // 6. Verify step is still completed (not re-executed)
-        const { data: finalStep } = await supabase
+        const { data: finalStep } = await db
           .from('execution_steps')
           .select('status, output_refs')
           .eq('id', step.id)
@@ -150,7 +150,7 @@ describe('Durable Execution Integration Tests', () => {
       executionId = await orchestrator.startExecution(workflowId, inputData);
 
       // 2. Get a step and mark it as failed
-      const { data: steps } = await supabase
+      const { data: steps } = await db
         .from('execution_steps')
         .select('id, node_id, node_type, retry_count')
         .eq('execution_id', executionId)
@@ -170,7 +170,7 @@ describe('Durable Execution Integration Tests', () => {
         );
 
         // 4. Check that step was retried
-        const { data: retriedStep } = await supabase
+        const { data: retriedStep } = await db
           .from('execution_steps')
           .select('status, retry_count')
           .eq('id', step.id)
@@ -190,7 +190,7 @@ describe('Durable Execution Integration Tests', () => {
       executionId = await orchestrator.startExecution(workflowId, inputData);
 
       // 2. Get a step
-      const { data: steps } = await supabase
+      const { data: steps } = await db
         .from('execution_steps')
         .select('id, node_id, node_type')
         .eq('execution_id', executionId)
@@ -201,7 +201,7 @@ describe('Durable Execution Integration Tests', () => {
         const step = steps[0];
 
         // 3. Set retry_count to max_retries
-        await supabase
+        await db
           .from('execution_steps')
           .update({
             retry_count: 3,
@@ -219,7 +219,7 @@ describe('Durable Execution Integration Tests', () => {
         );
 
         // 5. Check that execution is marked as failed
-        const { data: execution } = await supabase
+        const { data: execution } = await db
           .from('executions')
           .select('status, error_message')
           .eq('id', executionId)

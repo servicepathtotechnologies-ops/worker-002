@@ -5,7 +5,7 @@
  * Runs recovery operations to ensure no executions are left hanging.
  */
 
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { DbClient } from '@db/db-js';
 import { QueueClient } from './queue-client';
 import { DistributedOrchestrator } from './distributed-orchestrator';
 import { RecoveryManager } from './recovery-manager';
@@ -25,7 +25,7 @@ export interface SchedulerConfig {
  * Runs periodic recovery scans for stuck executions and steps.
  */
 export class SchedulerService {
-  private supabase: SupabaseClient;
+  private db: DbClient;
   private queue: QueueClient;
   private orchestrator: DistributedOrchestrator;
   private recoveryManager: RecoveryManager;
@@ -33,18 +33,18 @@ export class SchedulerService {
   private isRunning: boolean = false;
 
   constructor(
-    supabase: SupabaseClient,
+    db: DbClient,
     queue: QueueClient,
     orchestrator: DistributedOrchestrator,
     config?: SchedulerConfig
   ) {
-    this.supabase = supabase;
+    this.db = db;
     this.queue = queue;
     this.orchestrator = orchestrator;
     this.config = config || {};
     
     this.recoveryManager = new RecoveryManager(
-      supabase,
+      db,
       queue,
       orchestrator,
       config?.recoveryConfig

@@ -1,9 +1,9 @@
 // Execute Agent Route
-// Migrated from Supabase Edge Function
+// Worker API handler
 // Executes agent workflows with reasoning and action planning
 
 import { Request, Response } from 'express';
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 import { ReasoningEngine, ReasoningContext, Action } from '../shared/reasoning-engine';
 import { HybridMemoryService } from '../shared/memory';
 import { LLMAdapter } from '../shared/llm-adapter';
@@ -45,13 +45,13 @@ interface AgentState {
 }
 
 class AgentExecutor {
-  private supabase: any;
+  private db: any;
   private reasoningEngine: ReasoningEngine;
   private llmAdapter: LLMAdapter;
   private memoryService: HybridMemoryService | null = null;
 
-  constructor(supabase: any) {
-    this.supabase = supabase;
+  constructor(db: any) {
+    this.db = db;
     this.reasoningEngine = new ReasoningEngine();
     this.llmAdapter = new LLMAdapter();
   }
@@ -71,7 +71,7 @@ class AgentExecutor {
     iterations: number;
   }> {
     // Create execution record
-    const { data: execution, error: execError } = await this.supabase
+    const { data: execution, error: execError } = await this.db
       .from('agent_executions')
       .insert({
         workflow_id: workflowId,
@@ -115,7 +115,7 @@ class AgentExecutor {
         agentState.iteration = i + 1;
 
         // Update execution status
-        await this.supabase
+        await this.db
           .from('agent_executions')
           .update({
             iteration_count: agentState.iteration,
@@ -218,7 +218,7 @@ class AgentExecutor {
       // Finalize execution
       const finalStatus = agentState.goalAchieved ? 'completed' : 'stopped';
       
-      await this.supabase
+      await this.db
         .from('agent_executions')
         .update({
           status: finalStatus,
@@ -239,7 +239,7 @@ class AgentExecutor {
       };
     } catch (error) {
       // Update execution with error
-      await this.supabase
+      await this.db
         .from('agent_executions')
         .update({
           status: 'failed',
@@ -304,7 +304,7 @@ class AgentExecutor {
 }
 
 export default async function executeAgent(req: Request, res: Response) {
-  const supabase = getDbClient();
+  const db = getDbClient();
 
   try {
     const { workflowId, input = {}, config: agentConfig } = req.body;
@@ -314,7 +314,7 @@ export default async function executeAgent(req: Request, res: Response) {
     }
 
     // Fetch workflow
-    const { data: workflow, error: workflowError } = await supabase
+    const { data: workflow, error: workflowError } = await db
       .from("workflows")
       .select("*")
       .eq("id", workflowId)
@@ -350,7 +350,7 @@ export default async function executeAgent(req: Request, res: Response) {
     const edges = workflow.edges as WorkflowEdge[];
 
     // Create executor and run
-    const executor = new AgentExecutor(supabase);
+    const executor = new AgentExecutor(db);
     const result = await executor.execute(workflowId, input, config, nodes, edges);
 
     return res.json(result);

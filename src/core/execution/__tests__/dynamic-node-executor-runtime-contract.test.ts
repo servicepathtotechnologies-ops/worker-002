@@ -2,7 +2,7 @@ import { LRUNodeOutputsCache } from '../..//cache/lru-node-outputs-cache';
 import { executeNodeDynamically } from '../dynamic-node-executor';
 import { unifiedNodeRegistry } from '../../registry/unified-node-registry';
 
-// Minimal supabase client stub for tests that don't hit the network.
+// Minimal db client stub for tests that don't hit the network.
 const supabaseStub: any = {
   from: () => supabaseStub,
 };
@@ -44,7 +44,7 @@ test('dynamic executor resolves runtime_ai subject/body for google_gmail from up
     node,
     input: upstream,
     nodeOutputs: makeNodeOutputs({ previous: upstream }),
-    supabase: supabaseStub,
+    db: supabaseStub,
     workflowId: 'wf-test',
   });
 
@@ -84,7 +84,7 @@ test('dynamic executor resolves templates and does not leak config placeholders 
     node,
     input: upstream,
     nodeOutputs: makeNodeOutputs({ $json: upstream, json: upstream, input: upstream }),
-    supabase: supabaseStub,
+    db: supabaseStub,
     workflowId: 'wf-test',
   });
 

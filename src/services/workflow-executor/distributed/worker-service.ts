@@ -5,7 +5,7 @@
  * Consumes jobs from queue and processes them with appropriate workers.
  */
 
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { DbClient } from '@db/db-js';
 import { QueueClient, NodeJob, createQueueClient } from './queue-client';
 import { StorageManager } from './storage-manager';
 import { DistributedOrchestrator } from './distributed-orchestrator';
@@ -13,7 +13,7 @@ import { NodeWorker } from './node-worker';
 import { OllamaWorker } from './workers/ollama-worker';
 import { PassThroughWorker } from './workers/pass-through-worker';
 import { LightricksWorker } from './workers/lightricks-worker';
-import { getDbClient } from '../../../core/database/supabase-compat';
+import { getDbClient } from '../../../core/database/aws-db-client';
 import { createObjectStorageService } from '../object-storage-service';
 import { circuitBreakerManager } from './reliability/circuit-breaker';
 import { getProviderCircuitKeyFromNodeType } from '../../../core/reliability/provider-circuit-key';
@@ -30,7 +30,7 @@ export interface WorkerServiceConfig {
  * Main service that consumes jobs from queue and processes them.
  */
 export class WorkerService {
-  private supabase: SupabaseClient;
+  private db: DbClient;
   private queue: QueueClient;
   private storage: StorageManager;
   private orchestrator: DistributedOrchestrator;
@@ -40,14 +40,14 @@ export class WorkerService {
 
   constructor(config: WorkerServiceConfig = {}) {
     this.config = config;
-    this.supabase = getDbClient();
+    this.db = getDbClient();
     this.queue = createQueueClient();
     this.storage = new StorageManager(
-      this.supabase,
+      this.db,
       createObjectStorageService()
     );
     this.orchestrator = new DistributedOrchestrator(
-      this.supabase,
+      this.db,
       this.queue,
       this.storage
     );
@@ -61,7 +61,7 @@ export class WorkerService {
    */
   private registerWorkers(): void {
     const baseConfig = {
-      supabase: this.supabase,
+      db: this.db,
       storage: this.storage,
       orchestrator: this.orchestrator,
     };
@@ -139,7 +139,7 @@ export class WorkerService {
 
     // IDEMPOTENCY CHECK: Verify step is not already completed
     if (step_id) {
-      const { data: existingStep, error: stepError } = await this.supabase
+      const { data: existingStep, error: stepError } = await this.db
         .from('execution_steps')
         .select('id, status, output_refs')
         .eq('id', step_id)

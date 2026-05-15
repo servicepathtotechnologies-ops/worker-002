@@ -992,7 +992,7 @@ describe('Unit tests: firebaseNodeDefinition (Task 6.2)', () => {
 describe('Property 11: Unknown database node type returns error', () => {
   const KNOWN_TYPES = new Set([
     'sql_server', 'mssql', 'mongodb', 'mysql', 'postgres', 'postgresql',
-    'redis', 'snowflake', 'sqlite', 'supabase', 'timescaledb', 'timescale',
+    'redis', 'snowflake', 'sqlite', 'db', 'timescaledb', 'timescale',
     'intuit_smes', 'intuit', 'odoo', 'firebase',
   ]);
 

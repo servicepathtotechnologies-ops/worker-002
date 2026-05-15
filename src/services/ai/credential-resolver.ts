@@ -16,11 +16,12 @@
 
 import { WorkflowNode } from '../../core/types/ai-types';
 import { NodeLibrary } from '../nodes/node-library';
-import { getDbClient } from '../../core/database/supabase-compat';
+import { getDbClient } from '../../core/database/aws-db-client';
 import { connectorRegistry } from '../connectors/connector-registry';
 import { getCredentialVault, CredentialAccessContext } from '../credential-vault';
 import { unifiedNormalizeNodeType } from '../../core/utils/unified-node-type-normalizer';
 import { isCredentialSatisfiedByNodeConfig } from './credential-config-satisfaction';
+import { resolveCredentialDryRun } from '../credential-resolver';
 
 export interface CredentialRequirement {
   credentialId: string; // Unique identifier (e.g., "google_oauth_gmail", "google_oauth_sheets")
@@ -91,11 +92,11 @@ export function getCredentialContractsForNode(nodeType: string): Array<{
 
 export class CredentialResolver {
   private nodeLibrary: NodeLibrary;
-  private supabase: ReturnType<typeof getDbClient>;
+  private db: ReturnType<typeof getDbClient>;
 
   constructor(nodeLibrary: NodeLibrary) {
     this.nodeLibrary = nodeLibrary;
-    this.supabase = getDbClient();
+    this.db = getDbClient();
   }
 
   /**
@@ -152,7 +153,7 @@ export class CredentialResolver {
         // even though they all use Google OAuth
         const credentialId = this.generateCredentialId(contract);
         
-        const vaultResolved = userId ? await this.checkVault(contract.vaultKey, contract.type, userId) : false;
+        const vaultResolved = userId ? await this.checkVault(contract.vaultKey, contract.type, userId, contract.scopes) : false;
         let configResolved = false;
         if (!vaultResolved) {
           configResolved = isCredentialSatisfiedByNodeConfig(node, contract);
@@ -307,9 +308,10 @@ export class CredentialResolver {
   async checkVaultForCredential(
     vaultKey: string,
     credentialType: string,
-    userId: string
+    userId: string,
+    scopes?: string[],
   ): Promise<boolean> {
-    return this.checkVault(vaultKey, credentialType, userId);
+    return this.checkVault(vaultKey, credentialType, userId, scopes);
   }
 
   /**
@@ -318,10 +320,11 @@ export class CredentialResolver {
   private async checkVault(
     vaultKey: string,
     credentialType: string,
-    userId: string
+    userId: string,
+    scopes?: string[],
   ): Promise<boolean> {
     try {
-      // The worker uses a service-role Supabase client — auth.getUser() will not return a
+      // The worker uses a service-role DB client — auth.getUser() will not return a
       // user session here. Use the userId passed from the API request directly.
       if (!userId || userId === 'anonymous') {
         return false;
@@ -329,10 +332,27 @@ export class CredentialResolver {
 
       const effectiveUserId = userId;
 
+      if (credentialType === 'oauth') {
+        try {
+          await resolveCredentialDryRun({
+            userId: effectiveUserId,
+            provider: vaultKey,
+            requiredScopes: scopes || [],
+          });
+          console.log(`[CredentialResolution] ✅ ${vaultKey} OAuth found in unified_credentials`);
+          return true;
+        } catch (error: any) {
+          console.log(`[CredentialResolution] ⚠️ ${vaultKey} OAuth not satisfied in unified_credentials: ${error?.message || error}`);
+          if (vaultKey.toLowerCase() === 'google') {
+            return false;
+          }
+        }
+      }
+
       // 🔒 SPECIAL HANDLING: Google OAuth tokens are stored in google_oauth_tokens table
       // This is where the "Connect Google" button stores credentials
       if (vaultKey.toLowerCase() === 'google' && credentialType === 'oauth') {
-        const { data: tokenData, error: tokenError } = await this.supabase
+        const { data: tokenData, error: tokenError } = await this.db
           .from('google_oauth_tokens')
           .select('access_token, refresh_token, expires_at')
           .eq('user_id', effectiveUserId)
@@ -355,7 +375,7 @@ export class CredentialResolver {
       // 🔒 SPECIAL HANDLING: LinkedIn OAuth tokens are stored in linkedin_oauth_tokens table
       // This is where the "Connect LinkedIn" button stores credentials
       if (vaultKey.toLowerCase() === 'linkedin' && credentialType === 'oauth') {
-        const { data: tokenData, error: tokenError } = await this.supabase
+        const { data: tokenData, error: tokenError } = await this.db
           .from('linkedin_oauth_tokens')
           .select('access_token, refresh_token, expires_at')
           .eq('user_id', effectiveUserId)
@@ -378,7 +398,7 @@ export class CredentialResolver {
       // This keeps login providers separate from workflow connection providers.
       const socialProviders = new Set(['github', 'facebook']);
       if (credentialType === 'oauth' && socialProviders.has(vaultKey.toLowerCase())) {
-        const { data: tokenData, error: tokenError } = await this.supabase
+        const { data: tokenData, error: tokenError } = await this.db
           .from('social_tokens')
           .select('access_token, refresh_token, expires_at')
           .eq('user_id', effectiveUserId)
@@ -409,7 +429,7 @@ export class CredentialResolver {
       };
       const oauthTable = oauthTableByVaultKey[vaultKey.toLowerCase()];
       if (credentialType === 'oauth' && oauthTable) {
-        const { data: tokenData, error: tokenError } = await this.supabase
+        const { data: tokenData, error: tokenError } = await this.db
           .from(oauthTable)
           .select('access_token, refresh_token, expires_at')
           .eq('user_id', effectiveUserId)
@@ -434,7 +454,7 @@ export class CredentialResolver {
       // so a prefix match against vaultKey covers all providers universally.
       if (credentialType === 'oauth') {
         try {
-          const { data: connRows, error: connError } = await this.supabase
+          const { data: connRows, error: connError } = await this.db
             .from('connections')
             .select('id, credential_type_id')
             .eq('user_id', effectiveUserId)
@@ -474,7 +494,7 @@ export class CredentialResolver {
       }
 
       // Check user_credentials table (for other services - legacy)
-      const { data, error } = await this.supabase
+      const { data, error } = await this.db
         .from('user_credentials')
         .select('credentials')
         .eq('user_id', effectiveUserId)

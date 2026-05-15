@@ -11,7 +11,7 @@
  * - Prevent re-running completed nodes
  */
 
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 import { WorkflowNode, WorkflowEdge } from '../core/types/ai-types';
 import { LRUNodeOutputsCache } from '../core/cache/lru-node-outputs-cache';
 
@@ -87,7 +87,7 @@ export class WorkflowCheckpointManager {
     try {
       console.log(`[WorkflowCheckpoint] Saving checkpoint for execution ${executionId} after node ${completedNodeId}`);
       
-      const supabase = getDbClient();
+      const db = getDbClient();
       
       // Get existing checkpoint or create new
       const existing = await this.loadCheckpoint(executionId);
@@ -136,7 +136,7 @@ export class WorkflowCheckpointManager {
       };
       
       // Upsert checkpoint
-      const { error } = await supabase
+      const { error } = await db
         .from(this.tableName)
         .upsert({
           execution_id: executionId,
@@ -177,9 +177,9 @@ export class WorkflowCheckpointManager {
    */
   async loadCheckpoint(executionId: string): Promise<WorkflowCheckpoint | null> {
     try {
-      const supabase = getDbClient();
+      const db = getDbClient();
       
-      const { data, error } = await supabase
+      const { data, error } = await db
         .from(this.tableName)
         .select('checkpoint_data')
         .eq('execution_id', executionId)
@@ -294,9 +294,9 @@ export class WorkflowCheckpointManager {
         failedNodes.push(nodeId);
       }
       
-      const supabase = getDbClient();
+      const db = getDbClient();
       
-      const { error: updateError } = await supabase
+      const { error: updateError } = await db
         .from(this.tableName)
         .update({
           checkpoint_data: {
@@ -350,9 +350,9 @@ export class WorkflowCheckpointManager {
         };
       }
       
-      const supabase = getDbClient();
+      const db = getDbClient();
       
-      const { error } = await supabase
+      const { error } = await db
         .from(this.tableName)
         .update({
           checkpoint_data: {
@@ -397,9 +397,9 @@ export class WorkflowCheckpointManager {
    */
   async deleteCheckpoint(executionId: string): Promise<boolean> {
     try {
-      const supabase = getDbClient();
+      const db = getDbClient();
       
-      const { error } = await supabase
+      const { error } = await db
         .from(this.tableName)
         .delete()
         .eq('execution_id', executionId);

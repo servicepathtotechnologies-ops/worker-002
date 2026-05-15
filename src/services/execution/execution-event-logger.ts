@@ -4,7 +4,7 @@
  * Logs execution events to workflow_execution_events table for timeline/audit/debugging
  */
 
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { DbClient } from '@db/db-js';
 
 export type ExecutionEventType =
   | 'RUN_STARTED'
@@ -54,7 +54,7 @@ function fallbackEventTypeForConstraint(eventType: ExecutionEventType): Executio
 }
 
 async function insertExecutionEvent(
-  supabase: SupabaseClient,
+  db: DbClient,
   executionId: string,
   workflowId: string,
   eventType: ExecutionEventType,
@@ -63,7 +63,7 @@ async function insertExecutionEvent(
   nodeName: string | undefined,
   sequence: number
 ) {
-  return supabase
+  return db
     .from('workflow_execution_events')
     .insert({
       execution_id: executionId,
@@ -88,7 +88,7 @@ async function insertExecutionEvent(
  * to fail – it should only be surfaced via console logging.
  */
 export async function logExecutionEvent(
-  supabase: SupabaseClient,
+  db: DbClient,
   executionId: string,
   workflowId: string,
   eventType: ExecutionEventType,
@@ -99,7 +99,7 @@ export async function logExecutionEvent(
 ): Promise<void> {
   try {
     let { data, error } = await insertExecutionEvent(
-      supabase,
+      db,
       executionId,
       workflowId,
       eventType,
@@ -113,7 +113,7 @@ export async function logExecutionEvent(
       const fallbackEventType = fallbackEventTypeForConstraint(eventType);
       if (fallbackEventType) {
         const fallback = await insertExecutionEvent(
-          supabase,
+          db,
           executionId,
           workflowId,
           fallbackEventType,
@@ -177,11 +177,11 @@ export async function logExecutionEvent(
  * Get execution timeline (all events for an execution)
  */
 export async function getExecutionTimeline(
-  supabase: SupabaseClient,
+  db: DbClient,
   executionId: string
 ): Promise<any[]> {
   try {
-    const { data, error } = await supabase
+    const { data, error } = await db
       .from('workflow_execution_events')
       .select('*')
       .eq('execution_id', executionId)

@@ -9,6 +9,9 @@ export const PROVIDER_REQUIRED_SCOPES: Record<string, string[]> = {
     'https://www.googleapis.com/auth/drive',
     'https://www.googleapis.com/auth/documents',
     'https://www.googleapis.com/auth/calendar.events',
+    'https://www.googleapis.com/auth/contacts',
+    'https://www.googleapis.com/auth/tasks',
+    'https://www.googleapis.com/auth/bigquery',
   ],
   gmail: [
     'https://www.googleapis.com/auth/gmail.send',
@@ -43,6 +46,10 @@ const NODE_PROVIDER: Record<string, string> = {
   google_docs: 'google',
   google_calendar: 'google',
   google_drive: 'google',
+  google_contacts: 'google',
+  google_tasks: 'google',
+  google_bigquery: 'google',
+  google_big_query: 'google',
   notion: 'notion',
   twitter: 'twitter',
   instagram: 'instagram',
@@ -90,4 +97,3 @@ export function credentialRequirementForNode(nodeType: string): { provider: stri
   if (!provider) return null;
   return { provider, requiredScopes: requiredScopesForProvider(provider) };
 }
-

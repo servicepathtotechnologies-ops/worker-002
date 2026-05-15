@@ -276,7 +276,7 @@ export class NodeAutoConfigurator {
       // Database nodes
       database_write: () => 'insert',
       database_read: () => 'select',
-      supabase: (ctx) => {
+      db: (ctx) => {
         if (ctx.workflowIntent?.toLowerCase().includes('read') ||
             ctx.workflowIntent?.toLowerCase().includes('fetch')) {
           return 'select';

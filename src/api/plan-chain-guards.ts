@@ -83,7 +83,7 @@ function hasExplicitCue(promptLower: string, nodeType: string): boolean {
     email: /\bemail\b/,
     slack_message: /\bslack\b/,
     google_sheets: /\bgoogle\s*sheet|spreadsheet|sheet\b/,
-    supabase: /\bsupabase\b/,
+    db: /\bsupabase\b/,
     salesforce: /\bsalesforce\b/,
     delay: /\bdelay\b/,
     wait: /\bwait\b/,
@@ -290,14 +290,14 @@ export function validateCanonicalChainCompleteness(
     const simpleBranchIntent =
       signals.hasBranchingIntent &&
       signals.mentionedOutputNodeTypes.length > 0 &&
-      !/\bspreadsheet|sheet|supabase|salesforce|database|postgres|mysql|mongo|airtable|notion\b/.test(promptLower) &&
+      !/\bspreadsheet|sheet|db|salesforce|database|postgres|mysql|mongo|airtable|notion\b/.test(promptLower) &&
       !/\bdelay\b|\bwait\b/.test(promptLower) &&
       !/\bclassify|summari[sz]e|analy[sz]e|model|agent|ai\b/.test(promptLower);
     if (simpleBranchIntent) {
       const suspicious = canonical.filter((n) => {
         const nt = stripPlanTokenToType(n);
         return (
-          ['delay', 'wait', 'supabase', 'google_sheets', 'salesforce', 'ai_agent', 'ai_chat_model', 'ai_service'].includes(nt) &&
+          ['delay', 'wait', 'db', 'google_sheets', 'salesforce', 'ai_agent', 'ai_chat_model', 'ai_service'].includes(nt) &&
           !hasExplicitCue(promptLower, nt)
         );
       });

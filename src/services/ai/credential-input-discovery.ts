@@ -8,7 +8,7 @@
 import { Workflow } from '../../core/types/ai-types';
 import { CredentialDiscoveryPhase, CredentialRequirement } from './credential-discovery-phase';
 import { workflowLifecycleManager } from '../workflow-lifecycle-manager';
-import { getDbClient } from '../../core/database/supabase-compat';
+import { getDbClient } from '../../core/database/aws-db-client';
 import { isPlaceholderValue } from '../../core/utils/placeholder-filter';
 import { InputControlType } from '../../core/utils/schema-input-control';
 
@@ -35,7 +35,7 @@ export interface UnifiedMissingInput {
   inputType?: InputControlType;
   options?: Array<{ label: string; value: string }>;
   placeholder?: string;
-  uiWidget?: 'text' | 'textarea' | 'json' | 'multi_email';
+  uiWidget?: 'text' | 'textarea' | 'json' | 'multi_email' | 'date';
   required: boolean;
   examples?: any[];
   defaultValue?: any;
@@ -124,8 +124,8 @@ export async function getUnifiedMissingItems(
   console.log(`[UnifiedDiscovery] Starting unified discovery for workflow ${workflowId}`);
 
   // Load workflow from database
-  const supabase = getDbClient();
-  const { data: workflowData, error: workflowError } = await supabase
+  const db = getDbClient();
+  const { data: workflowData, error: workflowError } = await db
     .from('workflows')
     .select('*')
     .eq('id', workflowId)

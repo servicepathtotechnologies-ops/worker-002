@@ -1,4 +1,8 @@
-import { queryAsService as defaultQueryAsService } from '../core/database/db-pool';
+import {
+  DbUnavailableError,
+  isDatabaseReachable,
+  queryAsService as defaultQueryAsService,
+} from '../core/database/db-pool';
 import { config } from '../core/config';
 import { decryptToken, encryptToken } from '../core/utils/token-encryption';
 import {
@@ -57,6 +61,52 @@ export function __setCredentialQueryForTests(query?: QueryAsService): void {
   queryCredentials = query || defaultQueryAsService;
 }
 
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isDbUnavailableError(error: unknown): boolean {
+  return error instanceof DbUnavailableError || (error as any)?.code === 'DB_UNAVAILABLE';
+}
+
+async function canRecoverDbCircuit(error: unknown): Promise<boolean> {
+  if (!isDbUnavailableError(error)) return false;
+  if (queryCredentials !== defaultQueryAsService) return false;
+  return isDatabaseReachable().catch(() => false);
+}
+
+async function queryCredentialStore<T>(
+  sql: string,
+  params: any[],
+  context: {
+    userId: string;
+    provider: string;
+    requiredScopes: string[];
+    action?: string;
+    resolverStep?: string;
+  },
+): Promise<T[]> {
+  try {
+    return await queryCredentials<T>(sql, params);
+  } catch (error: any) {
+    if (await canRecoverDbCircuit(error)) {
+      try {
+        return await queryCredentials<T>(sql, params);
+      } catch (retryError: any) {
+        throw new CredentialStorageError({
+          ...context,
+          causeMessage: getErrorMessage(retryError),
+        });
+      }
+    }
+
+    throw new CredentialStorageError({
+      ...context,
+      causeMessage: getErrorMessage(error),
+    });
+  }
+}
+
 function safeDecryptToken(value: string | null): string | null {
   if (!value) return null;
   return decryptToken(value);
@@ -81,13 +131,13 @@ async function refreshCredential(row: CredentialRow, requiredScopes: string[], a
   const context = { userId: row.user_id, provider, requiredScopes, action, resolverStep: 'refresh' };
 
   if (!refreshToken) {
-    await markCredentialInactive(row.id);
+    await markCredentialInactive(row.id, context);
     throw new CredentialExpiredError(context);
   }
 
   const oauth = getOAuthDefinition(provider);
   if (!oauth) {
-    await markCredentialInactive(row.id);
+    await markCredentialInactive(row.id, context);
     throw new CredentialRefreshError({ ...context, causeMessage: 'No OAuth refresh configuration found' });
   }
 
@@ -112,14 +162,14 @@ async function refreshCredential(row: CredentialRow, requiredScopes: string[], a
 
   const response = await fetch(oauth.tokenUrl, { method: 'POST', headers, body });
   if (!response.ok) {
-    await markCredentialInactive(row.id);
+    await markCredentialInactive(row.id, context);
     throw new CredentialExpiredError({ ...context, causeMessage: await response.text().catch(() => response.statusText) });
   }
 
   const tokenResponse = await response.json() as Record<string, any>;
   const accessToken = String(tokenResponse.access_token || '');
   if (!accessToken) {
-    await markCredentialInactive(row.id);
+    await markCredentialInactive(row.id, context);
     throw new CredentialRefreshError({ ...context, causeMessage: 'Refresh response did not include access_token' });
   }
 
@@ -128,7 +178,7 @@ async function refreshCredential(row: CredentialRow, requiredScopes: string[], a
     : null;
   const nextRefreshToken = tokenResponse.refresh_token ? String(tokenResponse.refresh_token) : refreshToken;
 
-  await queryCredentials(
+  await queryCredentialStore(
     `UPDATE unified_credentials
         SET access_token = $1,
             refresh_token = $2,
@@ -144,6 +194,7 @@ async function refreshCredential(row: CredentialRow, requiredScopes: string[], a
       { encrypted: true, value: encryptToken(JSON.stringify(tokenResponse)) },
       row.id,
     ],
+    context,
   );
 
   return {
@@ -158,8 +209,21 @@ async function refreshCredential(row: CredentialRow, requiredScopes: string[], a
   };
 }
 
-async function markCredentialInactive(id: string): Promise<void> {
-  await queryCredentials(`UPDATE unified_credentials SET is_active = false, updated_at = NOW() WHERE id = $1`, [id]);
+async function markCredentialInactive(
+  id: string,
+  context: {
+    userId: string;
+    provider: string;
+    requiredScopes: string[];
+    action?: string;
+    resolverStep?: string;
+  },
+): Promise<void> {
+  await queryCredentialStore(
+    `UPDATE unified_credentials SET is_active = false, updated_at = NOW() WHERE id = $1`,
+    [id],
+    context,
+  );
 }
 
 export async function resolveCredential(input: ResolveCredentialInput): Promise<ResolvedCredential> {
@@ -168,21 +232,17 @@ export async function resolveCredential(input: ResolveCredentialInput): Promise<
   const requiredScopes = normalizeProviderScopes(provider, input.requiredScopes);
   const context = { userId, provider, requiredScopes, action: input.action, resolverStep: 'unified_credentials' };
 
-  let rows: CredentialRow[];
-  try {
-    rows = await queryCredentials<CredentialRow>(
-      `SELECT id, user_id, provider, scope_set, access_token, refresh_token, expires_at, source, updated_at
-         FROM unified_credentials
-        WHERE user_id = $1
-          AND provider = $2
-          AND is_active = true
-        ORDER BY cardinality(string_to_array(scope_set, '+')) DESC, updated_at DESC
-        LIMIT 20`,
-      [userId, provider],
-    );
-  } catch (error: any) {
-    throw new CredentialStorageError({ ...context, causeMessage: error?.message || String(error) });
-  }
+  const rows = await queryCredentialStore<CredentialRow>(
+    `SELECT id, user_id, provider, scope_set, access_token, refresh_token, expires_at, source, updated_at
+       FROM unified_credentials
+      WHERE user_id = $1
+        AND provider = $2
+        AND is_active = true
+      ORDER BY cardinality(string_to_array(scope_set, '+')) DESC, updated_at DESC
+      LIMIT 20`,
+    [userId, provider],
+    context,
+  );
 
   const availableScopes = Array.from(new Set(rows.flatMap((row) => splitScopeSet(row.scope_set))));
   const row = rows.find((candidate) => scopesCover(splitScopeSet(candidate.scope_set), requiredScopes));
@@ -243,8 +303,9 @@ export async function upsertUnifiedCredential(input: {
   const rawTokenBlob = input.rawTokenBlob
     ? { encrypted: true, value: encryptToken(JSON.stringify(input.rawTokenBlob)) }
     : null;
+  const context = { userId, provider, requiredScopes: scopes, resolverStep: 'upsertUnifiedCredential' };
 
-  const rows = await queryCredentials<{ id: string }>(
+  const rows = await queryCredentialStore<{ id: string }>(
     `INSERT INTO unified_credentials (
         user_id, provider, scope_set, access_token, refresh_token, expires_at, raw_token_blob, source, is_active
       )
@@ -269,11 +330,12 @@ export async function upsertUnifiedCredential(input: {
       rawTokenBlob,
       input.source,
     ],
+    context,
   );
 
   const id = rows[0]?.id;
   if (!id) {
-    throw new CredentialStorageError({ userId, provider, requiredScopes: scopes, resolverStep: 'upsertUnifiedCredential' });
+    throw new CredentialStorageError({ ...context, causeMessage: 'No credential id returned from upsert' });
   }
   return id;
 }

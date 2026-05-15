@@ -4,8 +4,8 @@
  * Detects and handles stuck executions that haven't sent heartbeats
  */
 
-import type { SupabaseClient } from '@supabase/supabase-js';
-import { getDbClient } from '../../core/database/supabase-compat';
+import type { DbClient } from '@db/db-js';
+import { getDbClient } from '../../core/database/aws-db-client';
 import { releaseExecutionLock } from './execution-lock';
 import { logExecutionEvent } from './execution-event-logger';
 import { ErrorCode } from '../../core/utils/error-codes';
@@ -16,12 +16,12 @@ const HEARTBEAT_TIMEOUT_SECONDS = 300; // 5 minutes - if no heartbeat for 5 min,
 /**
  * Check for stuck executions and mark them as failed
  * 
- * @param supabase - Supabase client
+ * @param db - AWS RDS database client
  * @param timeoutSeconds - Timeout in seconds (default: 1 hour)
  * @returns Number of stuck executions found and cleaned up
  */
 export async function checkStuckExecutions(
-  supabase: SupabaseClient = getDbClient(),
+  db: DbClient = getDbClient(),
   timeoutSeconds: number = DEFAULT_TIMEOUT_SECONDS
 ): Promise<number> {
   try {
@@ -34,7 +34,7 @@ export async function checkStuckExecutions(
     // 2. Either:
     //    - started_at is older than timeout_seconds, OR
     //    - last_heartbeat is older than HEARTBEAT_TIMEOUT_SECONDS (5 minutes)
-    const { data: stuckExecutions, error } = await supabase
+    const { data: stuckExecutions, error } = await db
       .from('executions')
       .select('id, workflow_id, started_at, last_heartbeat, timeout_seconds, status')
       .eq('status', 'running')
@@ -76,7 +76,7 @@ export async function checkStuckExecutions(
           console.log(`[TimeoutWatchdog] Marking execution ${execution.id} as failed (${reason})`);
 
           // Mark execution as failed
-          await supabase
+          await db
             .from('executions')
             .update({
               status: 'failed',
@@ -86,11 +86,11 @@ export async function checkStuckExecutions(
             .eq('id', execution.id);
 
           // Release execution lock
-          await releaseExecutionLock(supabase, execution.workflow_id, execution.id);
+          await releaseExecutionLock(db, execution.workflow_id, execution.id);
 
           // Log timeout event
           await logExecutionEvent(
-            supabase,
+            db,
             execution.id,
             execution.workflow_id,
             'RUN_FAILED',

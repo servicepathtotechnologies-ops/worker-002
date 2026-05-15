@@ -315,7 +315,7 @@ export interface AmazonSesExecutionContext {
   config: AmazonSesConfig;
   previousOutput: Record<string, any>;
   credentials: AWSCredentials;
-  supabase: any; // SupabaseClient type
+  db: any; // SupabaseClient type
 }
 
 /**

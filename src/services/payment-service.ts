@@ -1,5 +1,5 @@
 import * as crypto from 'crypto';
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 import { config } from '../core/config';
 import { subscriptionService } from './subscription-service';
 
@@ -241,8 +241,8 @@ export class PaymentService {
         };
       }
 
-      const supabase = getDbClient();
-      const { data: payment, error: paymentError } = await supabase
+      const db = getDbClient();
+      const { data: payment, error: paymentError } = await db
         .from('payments')
         .select('*')
         .eq('razorpay_order_id', orderId)
@@ -366,7 +366,7 @@ export class PaymentService {
         };
       }
 
-      const { error: updateError } = await supabase
+      const { error: updateError } = await db
         .from('payments')
         .update({
           razorpay_payment_id: paymentId,
@@ -479,10 +479,10 @@ export class PaymentService {
    */
   async retryFailedPayment(paymentId: string): Promise<PaymentResult> {
     try {
-      const supabase = getDbClient();
+      const db = getDbClient();
       
       // Get payment record
-      const { data: payment, error } = await supabase
+      const { data: payment, error } = await db
         .from('payments')
         .select('*')
         .eq('id', paymentId)
@@ -531,9 +531,9 @@ export class PaymentService {
    */
   async getPaymentHistory(userId: string, limit: number = 50): Promise<any[]> {
     try {
-      const supabase = getDbClient();
+      const db = getDbClient();
       
-      const { data: payments, error } = await supabase
+      const { data: payments, error } = await db
         .from('payments')
         .select(`
           id,
@@ -629,9 +629,9 @@ export class PaymentService {
     planName: string
   ): Promise<void> {
     try {
-      const supabase = getDbClient();
+      const db = getDbClient();
       
-      const { error } = await supabase
+      const { error } = await db
         .from('payments')
         .insert({
           user_id: userId,
@@ -657,8 +657,8 @@ export class PaymentService {
     signature: string,
     reason: string
   ): Promise<void> {
-    const supabase = getDbClient();
-    const { error } = await supabase
+    const db = getDbClient();
+    const { error } = await db
       .from('payments')
       .update({
         status: 'failed',
@@ -711,10 +711,10 @@ export class PaymentService {
     try {
       console.log(`[PaymentService] Payment captured: ${payment.id}`);
       
-      const supabase = getDbClient();
+      const db = getDbClient();
       
       // Update payment status
-      const { error } = await supabase
+      const { error } = await db
         .from('payments')
         .update({
           razorpay_payment_id: payment.id,
@@ -737,10 +737,10 @@ export class PaymentService {
     try {
       console.log(`[PaymentService] Payment failed: ${payment.id}`);
       
-      const supabase = getDbClient();
+      const db = getDbClient();
       
       // Update payment status
-      const { error } = await supabase
+      const { error } = await db
         .from('payments')
         .update({
           razorpay_payment_id: payment.id,

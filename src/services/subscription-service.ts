@@ -1,4 +1,4 @@
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 import { getDbPool } from '../core/database/db-pool';
 import { config } from '../core/config';
 import type { PoolClient } from 'pg';
@@ -150,8 +150,8 @@ export class SubscriptionService {
         return Array.from(this.planCache.values());
       }
 
-      const supabase = getDbClient();
-      const { data: plans, error } = await supabase
+      const db = getDbClient();
+      const { data: plans, error } = await db
         .from('subscription_plans')
         .select('*')
         .eq('is_active', true)
@@ -226,10 +226,10 @@ export class SubscriptionService {
    */
   async getUserSubscription(userId: string): Promise<UserSubscription | null> {
     try {
-      const supabase = getDbClient();
+      const db = getDbClient();
       
       // Use the database function to get subscription details
-      const { data, error } = await supabase
+      const { data, error } = await db
         .rpc('get_user_subscription_details', { p_uid: userId });
 
       if (error) {
@@ -244,7 +244,7 @@ export class SubscriptionService {
         await this.ensureFreeSubscription(userId);
         
         // Retry after creating Free subscription
-        const { data: retryData, error: retryError } = await supabase
+        const { data: retryData, error: retryError } = await db
           .rpc('get_user_subscription_details', { p_uid: userId });
 
         if (retryError) {
@@ -277,9 +277,9 @@ export class SubscriptionService {
    */
   async ensureFreeSubscription(userId: string): Promise<string> {
     try {
-      const supabase = getDbClient();
+      const db = getDbClient();
       
-      const { data, error } = await supabase
+      const { data, error } = await db
         .rpc('ensure_free_subscription', { p_uid: userId });
 
       if (error) {
@@ -475,7 +475,7 @@ export class SubscriptionService {
    */
   async cancelSubscription(userId: string, reason?: string): Promise<SubscriptionResult> {
     try {
-      const supabase = getDbClient();
+      const db = getDbClient();
       
       // Get current subscription
       const currentSubscription = await this.getUserSubscription(userId);
@@ -496,7 +496,7 @@ export class SubscriptionService {
       }
 
       // Update subscription status to cancelled
-      const { error: updateError } = await supabase
+      const { error: updateError } = await db
         .from('subscriptions')
         .update({
           status: 'cancelled',

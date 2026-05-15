@@ -3267,7 +3267,7 @@ export class DSLGenerator {
     // Common node prefixes to extract
     const nodePrefixes = [
       'notion', 'google_', 'slack_', 'linkedin', 'twitter', 'instagram',
-      'airtable', 'hubspot', 'zoho_', 'pipedrive', 'supabase', 'postgresql',
+      'airtable', 'hubspot', 'zoho_', 'pipedrive', 'db', 'postgresql',
       'mysql', 'mongodb', 'redis', 'snowflake', 'sqlite', 'timescale',
       'openai_', 'anthropic_', 'ollama_', 'ai_', 'chat_',
       'discord', 'telegram', 'whatsapp', 'email', 'gmail',

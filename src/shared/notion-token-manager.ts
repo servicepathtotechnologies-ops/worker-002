@@ -1,10 +1,10 @@
 /**
  * Notion Token Manager
  * 
- * Helper functions to retrieve and manage Notion OAuth tokens from Supabase.
+ * Helper functions to retrieve and manage Notion OAuth tokens from the database.
  */
 
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { DbClient } from '@db/db-js';
 import { resolveOAuthTokenString } from './credential-resolver';
 
 export interface NotionTokenData {
@@ -19,11 +19,11 @@ export interface NotionTokenData {
 }
 
 /**
- * Get Notion access token from Supabase
+ * Get Notion access token from DB
  * Tries multiple user IDs in order (workflow owner, then current user)
  */
 export async function getNotionAccessToken(
-  supabase: SupabaseClient,
+  db: DbClient,
   userId?: string | string[]
 ): Promise<string | null> {
   if (!userId) return null;
@@ -35,7 +35,7 @@ export async function getNotionAccessToken(
  * Get full Notion token data (including metadata)
  */
 export async function getNotionTokenData(
-  supabase: SupabaseClient,
+  db: DbClient,
   userId?: string | string[]
 ): Promise<NotionTokenData | null> {
   if (!userId) {
@@ -48,7 +48,7 @@ export async function getNotionTokenData(
     if (!uid) continue;
 
     try {
-      const { data: tokenData, error } = await supabase
+      const { data: tokenData, error } = await db
         .from('notion_oauth_tokens')
         .select('*')
         .eq('user_id', uid)

@@ -1,5 +1,5 @@
 import * as crypto from 'crypto';
-import { getDbClient } from '../../core/database/supabase-compat';
+import { getDbClient } from '../../core/database/aws-db-client';
 import { config } from '../../core/config';
 import { getSubscriptionService } from './subscription-service';
 
@@ -59,7 +59,7 @@ export interface RazorpayWebhook {
  * Implements retry logic for failed payments and secure signature validation
  */
 export class PaymentService {
-  private supabase = getDbClient();
+  private db = getDbClient();
   private subscriptionService = getSubscriptionService();
 
   private readonly PLAN_PRICING = {
@@ -96,7 +96,7 @@ export class PaymentService {
       }
 
       // Get plan details from database
-      const { data: plan, error: planError } = await this.supabase
+      const { data: plan, error: planError } = await this.db
         .from('subscription_plans')
         .select('*')
         .eq('id', planId)
@@ -112,7 +112,7 @@ export class PaymentService {
       }
 
       // Get user details
-      const { data: user, error: userError } = await this.supabase
+      const { data: user, error: userError } = await this.db
         .from('users')
         .select('id, email')
         .eq('id', userId)
@@ -166,7 +166,7 @@ export class PaymentService {
       };
 
       // Store payment intent in database
-      const { error: paymentError } = await this.supabase
+      const { error: paymentError } = await this.db
         .from('payments')
         .insert({
           user_id: userId,
@@ -236,7 +236,7 @@ export class PaymentService {
         });
 
         // Update payment status to failed
-        await this.supabase
+        await this.db
           .from('payments')
           .update({
             status: 'failed',
@@ -257,7 +257,7 @@ export class PaymentService {
       }
 
       // Get payment record
-      const { data: payment, error: paymentError } = await this.supabase
+      const { data: payment, error: paymentError } = await this.db
         .from('payments')
         .select('*')
         .eq('razorpay_order_id', razorpayOrderId)
@@ -269,7 +269,7 @@ export class PaymentService {
       }
 
       // Update payment status to paid
-      const { error: updateError } = await this.supabase
+      const { error: updateError } = await this.db
         .from('payments')
         .update({
           status: 'paid',
@@ -284,7 +284,7 @@ export class PaymentService {
       }
 
       // Get plan details from the order notes or fetch from database
-      const { data: plans, error: plansError } = await this.supabase
+      const { data: plans, error: plansError } = await this.db
         .from('subscription_plans')
         .select('*')
         .eq('is_active', true);
@@ -380,7 +380,7 @@ export class PaymentService {
    */
   async retryFailedPayment(paymentId: string): Promise<PaymentResult> {
     try {
-      const { data: payment, error } = await this.supabase
+      const { data: payment, error } = await this.db
         .from('payments')
         .select('*')
         .eq('id', paymentId)
@@ -436,7 +436,7 @@ export class PaymentService {
    */
   async getPaymentHistory(userId: string, limit: number = 50): Promise<any[]> {
     try {
-      const { data: payments, error } = await this.supabase
+      const { data: payments, error } = await this.db
         .from('payments')
         .select(`
           *,
@@ -471,7 +471,7 @@ export class PaymentService {
       const startDate = new Date();
       startDate.setDate(startDate.getDate() - days);
 
-      const { data: payments, error } = await this.supabase
+      const { data: payments, error } = await this.db
         .from('payments')
         .select('*')
         .gte('created_at', startDate.toISOString())
@@ -561,7 +561,7 @@ export class PaymentService {
       if (!payment) return;
 
       // Update payment status
-      await this.supabase
+      await this.db
         .from('payments')
         .update({
           status: 'paid',
@@ -584,7 +584,7 @@ export class PaymentService {
       if (!payment) return;
 
       // Update payment status
-      await this.supabase
+      await this.db
         .from('payments')
         .update({
           status: 'failed',

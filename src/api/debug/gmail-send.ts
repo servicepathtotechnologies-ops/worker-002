@@ -8,7 +8,7 @@
  */
 
 import { Request, Response } from 'express';
-import { getDbClient } from '../../core/database/supabase-compat';
+import { getDbClient } from '../../core/database/aws-db-client';
 import { resolveGmailCredentials, sendGmailEmail, REQUIRED_GMAIL_SCOPES } from '../../shared/gmail-executor';
 
 export default async function debugGmailSendHandler(req: Request, res: Response) {
@@ -30,7 +30,7 @@ export default async function debugGmailSendHandler(req: Request, res: Response)
     }
     
     // Get user from auth header
-    const supabase = getDbClient();
+    const db = getDbClient();
     const authHeader = req.headers.authorization;
     let userId: string | undefined;
     let currentUserId: string | undefined;
@@ -39,7 +39,7 @@ export default async function debugGmailSendHandler(req: Request, res: Response)
       const token = authHeader.replace('Bearer ', '').trim();
       if (token) {
         try {
-          const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+          const { data: { user }, error: authError } = await db.auth.getUser(token);
           if (!authError && user) {
             currentUserId = user.id;
           }
@@ -50,7 +50,7 @@ export default async function debugGmailSendHandler(req: Request, res: Response)
     }
     
     // Get workflow owner
-    const { data: workflow, error: workflowError } = await supabase
+    const { data: workflow, error: workflowError } = await db
       .from('workflows')
       .select('user_id')
       .eq('id', workflowId)
@@ -69,7 +69,7 @@ export default async function debugGmailSendHandler(req: Request, res: Response)
     
     // Resolve credentials
     const credential = await resolveGmailCredentials(
-      supabase,
+      db,
       workflowId,
       nodeId,
       userId,

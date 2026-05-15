@@ -13,7 +13,7 @@
  */
 
 import { Workflow } from '../../core/types/ai-types';
-import { getDbClient } from '../../core/database/supabase-compat';
+import { getDbClient } from '../../core/database/aws-db-client';
 import { config } from '../../core/config';
 // Dynamic import to avoid TypeScript rootDir restriction
 // import { OllamaModelTrainer } from '../../../scripts/train-ollama-model';
@@ -52,14 +52,14 @@ interface TrainingBatch {
 }
 
 export class ContinuousLearningService {
-  private supabase: any;
+  private db: any;
   private feedbackQueue: WorkflowFeedback[] = [];
   private minExamplesForTraining = 50; // Minimum examples for batch training
   private trainingInterval = 7 * 24 * 60 * 60 * 1000; // 7 days
   private trainingTimer: NodeJS.Timeout | null = null;
 
   constructor() {
-    this.supabase = getDbClient();
+    this.db = getDbClient();
   }
 
   /**
@@ -134,7 +134,7 @@ export class ContinuousLearningService {
     modifiedWorkflow: Workflow
   ): Promise<void> {
     // Find original feedback
-    const { data: feedbackData } = await this.supabase
+    const { data: feedbackData } = await this.db
       .from('workflow_feedback')
       .select('*')
       .eq('workflow_id', workflowId)
@@ -146,7 +146,7 @@ export class ContinuousLearningService {
       const modifications = this.detectChanges(originalWorkflow, modifiedWorkflow);
       
       // Update feedback
-      await this.supabase
+      await this.db
         .from('workflow_feedback')
         .update({
           user_actions: {
@@ -182,7 +182,7 @@ export class ContinuousLearningService {
   ): Promise<void> {
     // Store generation metadata (not full feedback yet)
     // Full feedback collected after execution
-    await this.supabase
+    await this.db
       .from('workflow_feedback')
       .insert({
         workflow_id: workflowId,
@@ -405,7 +405,7 @@ export class ContinuousLearningService {
    * Load pending feedback from database
    */
   private async loadPendingFeedback(): Promise<void> {
-    const { data } = await this.supabase
+    const { data } = await this.db
       .from('workflow_feedback')
       .select('*')
       .eq('used_for_training', false)
@@ -421,7 +421,7 @@ export class ContinuousLearningService {
    * Store feedback in database
    */
   private async storeFeedback(feedback: WorkflowFeedback): Promise<void> {
-    await this.supabase
+    await this.db
       .from('workflow_feedback')
       .insert({
         workflow_id: feedback.workflowId,
@@ -439,7 +439,7 @@ export class ContinuousLearningService {
    * Create training batch record
    */
   private async createTrainingBatch(exampleCount: number): Promise<string> {
-    const { data } = await this.supabase
+    const { data } = await this.db
       .from('training_batches')
       .insert({
         model_version: `ctrlchecks-workflow-builder-v${Date.now()}`,
@@ -462,7 +462,7 @@ export class ContinuousLearningService {
     const ids = examples.map(e => e.id).filter(Boolean);
     
     if (ids.length > 0) {
-      await this.supabase
+      await this.db
         .from('workflow_feedback')
         .update({
           used_for_training: true,
@@ -495,7 +495,7 @@ export class ContinuousLearningService {
     process.env.FINE_TUNED_MODEL = `ctrlchecks-workflow-builder-v${Date.now()}`;
     
     // Mark batch as deployed
-    await this.supabase
+    await this.db
       .from('training_batches')
       .update({ deployed: true })
       .eq('id', batchId);
@@ -507,7 +507,7 @@ export class ContinuousLearningService {
    * Mark batch as not deployed
    */
   private async markBatchNotDeployed(batchId: string): Promise<void> {
-    await this.supabase
+    await this.db
       .from('training_batches')
       .update({ deployed: false })
       .eq('id', batchId);

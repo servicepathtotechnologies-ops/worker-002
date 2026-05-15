@@ -231,8 +231,18 @@ export async function dbProxyGet(req: Request, res: Response) {
     const rows = headOnly ? [] : await queryAsService(sql, params);
     res.json({ data: rows, error: null });
   } catch (err: any) {
-    // 42P01 = undefined_table, DB_UNAVAILABLE = circuit open — both return empty array
-    if (err.code === '42P01' || isDbUnavailable(err)) return res.json({ data: [], error: null });
+    // 42P01 = undefined_table. Keep empty optional tables non-fatal, but never
+    // turn a database outage into an empty successful response.
+    if (isDbUnavailable(err)) {
+      return res.status(503).json({
+        data: null,
+        error: {
+          message: 'Database temporarily unavailable',
+          code: 'DB_UNAVAILABLE',
+        },
+      });
+    }
+    if (err.code === '42P01') return res.json({ data: [], error: null });
     res.status(500).json({ data: null, error: { message: err.message } });
   }
 }

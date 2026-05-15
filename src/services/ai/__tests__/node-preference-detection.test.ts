@@ -112,7 +112,7 @@ const testCases = [
     expected: {
       categories: ["database"],
       question: "Where should I save the data?",
-      options: ["postgresql", "supabase", "mongodb"]
+      options: ["postgresql", "db", "mongodb"]
     }
   },
   {

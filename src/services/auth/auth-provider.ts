@@ -1,7 +1,7 @@
 // Auth Provider Service
 // Checks for existing authentication methods (Google OAuth, etc.)
 
-import { getDbClient } from '../../core/database/supabase-compat';
+import { getDbClient } from '../../core/database/aws-db-client';
 
 export interface UserAuthState {
   googleOAuth: {
@@ -19,11 +19,11 @@ export interface UserAuthState {
  * Checks for existing OAuth tokens, environment variables, etc.
  */
 export class AuthProvider {
-  private supabase: any;
+  private db: any;
   private userId?: string;
 
   constructor(userId?: string) {
-    this.supabase = getDbClient();
+    this.db = getDbClient();
     this.userId = userId;
   }
 
@@ -41,7 +41,7 @@ export class AuthProvider {
     // Check Google OAuth
     if (this.userId) {
       try {
-        const { data: tokenData, error } = await this.supabase
+        const { data: tokenData, error } = await this.db
           .from('google_oauth_tokens')
           .select('expires_at, scope')
           .eq('user_id', this.userId)

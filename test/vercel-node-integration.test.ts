@@ -29,7 +29,7 @@ interface WorkflowNode {
 }
 
 /**
- * Mock Supabase client for testing
+ * Mock DB client for testing
  */
 const createMockSupabase = () => ({
   from: jest.fn().mockImplementation((table: string) => ({

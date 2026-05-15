@@ -25,7 +25,7 @@ import { unifiedNormalizeNodeType } from '../core/utils/unified-node-type-normal
 // resolveNodeType delegates to unified-node-registry.resolveAlias (single source of truth)
 import { resolveNodeType } from '../core/utils/node-type-resolver-util';
 import { NodeResolver } from './ai/node-resolver';
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 import { planWorkflowSpecFromPrompt } from './ai/smart-planner-adapter';
 import { mergePrimaryPlannerPrompt } from './ai/planner-prompt-merge';
 import type { WorkflowSpec } from '../planner/types';
@@ -145,7 +145,7 @@ export interface WorkflowGenerationResult {
       inputType: InputControlType;
       options?: Array<{ label: string; value: string }>;
       placeholder?: string;
-      uiWidget?: 'text' | 'textarea' | 'json' | 'multi_email';
+      uiWidget?: 'text' | 'textarea' | 'json' | 'multi_email' | 'date';
       description: string;
       required: boolean;
       defaultValue?: any;
@@ -1127,8 +1127,8 @@ export class WorkflowLifecycleManager {
     let userId: string | undefined = constraints?.vaultUserId;
     if (!userId && constraints?.authToken) {
       try {
-        const supabase = getDbClient();
-        const { data: { user }, error: authError } = await supabase.auth.getUser(constraints.authToken);
+        const db = getDbClient();
+        const { data: { user }, error: authError } = await db.auth.getUser(constraints.authToken);
         if (!authError && user) {
           userId = user.id;
         }
@@ -1137,7 +1137,7 @@ export class WorkflowLifecycleManager {
       }
     }
     if (!userId) {
-      // ✅ IMPORTANT: Never call tokenless supabase.auth.getUser() on backend; it can stall without a session.
+      // ✅ IMPORTANT: Never call tokenless db.auth.getUser() on backend; it can stall without a session.
       console.warn('[WorkflowLifecycle] No vaultUserId/authToken provided; credential vault checks will be skipped.');
     }
 
@@ -1550,7 +1550,7 @@ export class WorkflowLifecycleManager {
       inputType: InputControlType;
       options?: Array<{ label: string; value: string }>;
       placeholder?: string;
-      uiWidget?: 'text' | 'textarea' | 'json' | 'multi_email';
+      uiWidget?: 'text' | 'textarea' | 'json' | 'multi_email' | 'date';
       description: string;
       required: boolean;
       defaultValue?: any;
@@ -1574,7 +1574,7 @@ export class WorkflowLifecycleManager {
       inputType: InputControlType;
       options?: Array<{ label: string; value: string }>;
       placeholder?: string;
-      uiWidget?: 'text' | 'textarea' | 'json' | 'multi_email';
+      uiWidget?: 'text' | 'textarea' | 'json' | 'multi_email' | 'date';
       description: string;
       required: boolean;
       defaultValue?: any;
@@ -2544,6 +2544,7 @@ export class WorkflowLifecycleManager {
     ready: boolean;
     errors: string[];
     missingCredentials: string[];
+    validationIssues?: Array<Record<string, unknown>>;
   }> {
     console.log('[WorkflowLifecycle] Validating workflow execution readiness...');
 
@@ -2553,6 +2554,42 @@ export class WorkflowLifecycleManager {
     // Validate workflow structure
     // ✅ WORLD-CLASS: Use WorkflowValidationPipeline (SINGLE SOURCE OF TRUTH)
     const validation = workflowValidationPipeline.validateWorkflow(workflow);
+    const validationIssues: Array<Record<string, unknown>> = [];
+    for (const [layerName, layerResult] of validation.layerResults.entries()) {
+      const details = layerResult.details || {};
+      for (const violation of details.orderViolations || []) {
+        validationIssues.push({
+          type: 'linear_flow',
+          layer: layerName,
+          severity: violation.severity || (layerResult.valid ? 'warning' : 'error'),
+          ...violation,
+        });
+      }
+      for (const nodeId of details.orphanNodes || []) {
+        const node = workflow.nodes.find(n => n.id === nodeId);
+        validationIssues.push({
+          type: 'orphan_node',
+          layer: layerName,
+          severity: layerResult.valid ? 'warning' : 'error',
+          nodeId,
+          nodeType: node ? unifiedNormalizeNodeType(node) : '',
+          nodeLabel: node?.data?.label || nodeId,
+          issue: 'Node is not connected to the executable workflow path',
+        });
+      }
+      for (const nodeId of details.disconnectedNodes || []) {
+        const node = workflow.nodes.find(n => n.id === nodeId);
+        validationIssues.push({
+          type: 'disconnected_node',
+          layer: layerName,
+          severity: layerResult.valid ? 'warning' : 'error',
+          nodeId,
+          nodeType: node ? unifiedNormalizeNodeType(node) : '',
+          nodeLabel: node?.data?.label || nodeId,
+          issue: 'Node is disconnected from the workflow',
+        });
+      }
+    }
     if (!validation.valid) {
       errors.push(...validation.errors);
     }
@@ -2657,6 +2694,7 @@ export class WorkflowLifecycleManager {
       ready: errors.length === 0,
       errors,
       missingCredentials: missingCredentialMessages, // Return string array, not CredentialRequirement[]
+      validationIssues,
     };
   }
 

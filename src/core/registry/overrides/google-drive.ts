@@ -54,7 +54,7 @@ export function overrideGoogleDrive(
       const inputs = mergedInputs(context);
       const operation = String(inputs.operation || 'list');
       try {
-        const accessToken = await getGoogleTokenForContext(context);
+        const accessToken = await getGoogleTokenForContext(context, ['https://www.googleapis.com/auth/drive']);
         let output: any;
         if (operation === 'list') {
           const query = inputs.folderId ? `'${String(inputs.folderId).replace(/'/g, "\\'")}' in parents` : undefined;

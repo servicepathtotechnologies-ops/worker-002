@@ -1,8 +1,8 @@
 // Chat API Route
-// Migrated from Supabase Edge Function
+// Worker API handler
 
 import { Request, Response } from 'express';
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 import { config } from '../core/config';
 import { HybridMemoryService } from '../shared/memory';
 
@@ -22,7 +22,7 @@ interface ChatResponse {
 }
 
 export default async function chatApiHandler(req: Request, res: Response) {
-  const supabase = getDbClient();
+  const db = getDbClient();
 
   try {
     const { workflowId, message, sessionId, apiKey, metadata }: ChatRequest = req.body;
@@ -36,7 +36,7 @@ export default async function chatApiHandler(req: Request, res: Response) {
     }
 
     // Fetch workflow
-    const { data: workflow, error: workflowError } = await supabase
+    const { data: workflow, error: workflowError } = await db
       .from('workflows')
       .select('*')
       .eq('id', workflowId)

@@ -1,7 +1,7 @@
 // Hybrid Memory Service for CtrlChecks AI
 // Combines Redis (short-term, fast) + PostgreSQL (long-term, semantic search)
 
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 import { getRedisClient, isRedisAvailable } from './redis-client';
 
 export interface MemoryMessage {
@@ -18,7 +18,7 @@ export interface MemoryConfig {
 }
 
 export class HybridMemoryService {
-  private supabase: any;
+  private db: any;
   private config: MemoryConfig;
   private redisAvailable: boolean = false;
 
@@ -27,7 +27,7 @@ export class HybridMemoryService {
     supabaseKey: string,
     config: MemoryConfig = { type: 'hybrid', ttl: 3600, maxMessages: 100 }
   ) {
-    this.supabase = getDbClient();
+    this.db = getDbClient();
     this.config = config;
   }
 
@@ -75,7 +75,7 @@ export class HybridMemoryService {
       try {
         await this.ensureSession(sessionId);
 
-        const { error } = await this.supabase
+        const { error } = await this.db
           .from('memory_messages')
           .insert({
             session_id: sessionId,
@@ -127,7 +127,7 @@ export class HybridMemoryService {
     // Get from PostgreSQL if needed
     if (messages.length < maxLimit && (this.config.type === 'vector' || this.config.type === 'hybrid')) {
       try {
-        const { data, error } = await this.supabase
+        const { data, error } = await this.db
           .from('memory_messages')
           .select('role, content, created_at, metadata')
           .eq('session_id', sessionId)
@@ -183,7 +183,7 @@ export class HybridMemoryService {
 
     // Clear PostgreSQL
     try {
-      const { error } = await this.supabase
+      const { error } = await this.db
         .from('memory_messages')
         .delete()
         .eq('session_id', sessionId);
@@ -201,7 +201,7 @@ export class HybridMemoryService {
    */
   private async ensureSession(sessionId: string): Promise<void> {
     try {
-      const { data, error } = await this.supabase
+      const { data, error } = await this.db
         .from('memory_sessions')
         .select('id')
         .eq('session_id', sessionId)
@@ -224,7 +224,7 @@ export class HybridMemoryService {
     userId?: string
   ): Promise<string> {
     try {
-      const { data: existing } = await this.supabase
+      const { data: existing } = await this.db
         .from('memory_sessions')
         .select('session_id')
         .eq('session_id', sessionId)
@@ -235,7 +235,7 @@ export class HybridMemoryService {
         return sessionId;
       }
 
-      const { data, error } = await this.supabase
+      const { data, error } = await this.db
         .from('memory_sessions')
         .insert({
           workflow_id: workflowId,

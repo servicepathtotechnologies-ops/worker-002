@@ -112,7 +112,7 @@ describe('executeNodeDynamically — clears node ID and triggers AI for runtime_
       node,
       input: upstreamData,
       nodeOutputs: makeNodeOutputs({ $json: upstreamData, json: upstreamData, input: upstreamData }),
-      supabase: supabaseStub,
+      db: supabaseStub,
       workflowId: 'wf-test',
     });
 

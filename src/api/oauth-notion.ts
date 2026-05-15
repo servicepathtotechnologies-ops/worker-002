@@ -8,7 +8,7 @@
 
 import { Request, Response } from 'express';
 import { handleOAuthCallback } from '../services/oauth-callback-handler';
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 import { config } from '../core/config';
 
 /**
@@ -112,7 +112,7 @@ export async function notionAuthorizeHandler(req: Request, res: Response) {
  */
 export async function notionCallbackHandler(req: Request, res: Response) {
   try {
-    const supabase = getDbClient();
+    const db = getDbClient();
     
     // Get user from session
     const authHeader = req.headers.authorization;
@@ -124,7 +124,7 @@ export async function notionCallbackHandler(req: Request, res: Response) {
     }
 
     const token = authHeader.substring(7);
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    const { data: { user }, error: authError } = await db.auth.getUser(token);
     
     if (authError || !user) {
       return res.status(401).json({

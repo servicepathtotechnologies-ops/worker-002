@@ -141,8 +141,8 @@ describe('Pres-2 — Successful attach-inputs still advances phase and applies c
       })),
     };
 
-    jest.mock('../src/core/database/supabase-compat', () => ({
-      getSupabaseClient: () => mockSupabase,
+    jest.mock('../src/core/database/aws-db-client', () => ({
+      getDbClient: () => mockSupabase,
     }));
 
     const { default: attachInputsHandler } = await import('../src/api/attach-inputs');

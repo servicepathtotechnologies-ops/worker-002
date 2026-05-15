@@ -5016,7 +5016,7 @@ The "variations" array MUST contain exactly 4 items, each with a detailed prompt
         semanticGroupKey = 'ai_group';
       }
       // Database nodes: Check for 'database' tag or database-related node type patterns
-      else if (tags.includes('database') || tags.includes('db') || nodeType.includes('database') || nodeType.includes('postgresql') || nodeType.includes('supabase') || nodeType.includes('mysql') || nodeType.includes('mongodb') || nodeType.includes('sql')) {
+      else if (tags.includes('database') || tags.includes('db') || nodeType.includes('database') || nodeType.includes('postgresql') || nodeType.includes('db') || nodeType.includes('mysql') || nodeType.includes('mongodb') || nodeType.includes('sql')) {
         semanticGroupKey = 'database_group';
       }
       // Communication nodes: Check for 'communication' tag or category 'communication'
@@ -6845,7 +6845,7 @@ Rules:
     // Strong, explicit data-source cues.
     const dataCueMap: Array<{ nodeType: string; re: RegExp; reason: string }> = [
       { nodeType: 'google_sheets', re: /\bgoogle\s*sheet|spreadsheet|sheet\b/, reason: 'explicit sheet data source requested' },
-      { nodeType: 'supabase', re: /\bsupabase\b/, reason: 'explicit supabase data source requested' },
+      { nodeType: 'db', re: /\bsupabase\b/, reason: 'explicit db data source requested' },
       { nodeType: 'postgresql', re: /\bpostgres|postgresql\b/, reason: 'explicit postgresql data source requested' },
       { nodeType: 'mysql', re: /\bmysql\b/, reason: 'explicit mysql data source requested' },
       { nodeType: 'mongodb', re: /\bmongodb|mongo\b/, reason: 'explicit mongodb data source requested' },
@@ -6943,7 +6943,7 @@ Rules:
       const role = this.classifyNodeRole(nodeType);
       if (role === 'trigger') score += 0.35;
       if (role === 'branching' && /\bif\b|\belse\b|\bcondition\b|\bcase\b/.test(lower)) score += 0.35;
-      if (role === 'data_source' && /\bfetch|get|read|from|sheet|database|supabase\b/.test(lower)) score += 0.3;
+      if (role === 'data_source' && /\bfetch|get|read|from|sheet|database|db\b/.test(lower)) score += 0.3;
       if (role === 'transformation' && /\bsummari[sz]e|analy[sz]e|classif|transform\b/.test(lower)) score += 0.3;
       if (role === 'output' && /\bgmail|email|slack|discord|telegram|notify|send\b/.test(lower)) score += 0.3;
       if (nodeType === 'email' && /\bgmail\b/.test(lower)) score -= 0.25;

@@ -2,7 +2,7 @@ import { config } from '../core/config';
 import { circuitBreakerManager } from './workflow-executor/distributed/reliability/circuit-breaker';
 import { getDeadLetterQueue } from './workflow-executor/distributed/reliability/dead-letter-queue';
 import { createQueueClient } from './workflow-executor/distributed/queue-client';
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 import { logExecutionEvent } from './execution/execution-event-logger';
 
 type AutonomousOpsStatus = {
@@ -103,7 +103,7 @@ class AISREOrchestrator {
 
     const queue = createQueueClient();
     await queue.connect();
-    const supabase = getDbClient();
+    const db = getDbClient();
 
     try {
       for (const job of eligible.slice(0, replayBudget)) {
@@ -120,7 +120,7 @@ class AISREOrchestrator {
         this.status.remediationsApplied += 1;
 
         await logExecutionEvent(
-          supabase,
+          db,
           job.originalJob.executionId,
           job.originalJob.workflowId,
           'AUTONOMOUS_REMEDIATION',

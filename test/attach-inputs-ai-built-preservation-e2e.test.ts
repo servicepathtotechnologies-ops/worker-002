@@ -23,13 +23,13 @@
 
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import type { Request, Response } from 'express';
-import { getDbClient } from '../src/core/database/supabase-compat';
+import { getDbClient } from '../src/core/database/aws-db-client';
 import { unifiedNodeRegistry } from '../src/core/registry/unified-node-registry';
 import { geminiOrchestrator } from '../src/services/ai/gemini-orchestrator';
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
-jest.mock('../src/core/database/supabase-compat');
+jest.mock('../src/core/database/aws-db-client');
 jest.mock('../src/core/logger', () => ({
   logger: {
     info: jest.fn(),
@@ -220,7 +220,7 @@ describe('E2E: Attach-Inputs Preserves AI-Built Values', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
 
-    // Mock Supabase client
+    // Mock DB client
     mockSupabase = {
       from: jest.fn().mockReturnThis(),
       select: jest.fn().mockReturnThis(),

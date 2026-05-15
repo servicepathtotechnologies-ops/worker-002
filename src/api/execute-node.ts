@@ -3,7 +3,7 @@
 // Uses the same execution engine as full workflow execution
 
 import { Request, Response } from 'express';
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 import { executeNode } from './execute-workflow';
 import { LRUNodeOutputsCache } from '../core/cache/lru-node-outputs-cache';
 
@@ -24,7 +24,7 @@ interface WorkflowNode {
  * Uses the same execution engine as full workflow execution
  */
 export default async function executeNodeHandler(req: Request, res: Response) {
-  const supabase = getDbClient();
+  const db = getDbClient();
   const { runId, nodeId, nodeType, config: nodeConfig, input, workflowId } = req.body;
 
   console.log(`[DEBUG] Execute node request:`, {
@@ -50,7 +50,7 @@ export default async function executeNodeHandler(req: Request, res: Response) {
 
   try {
     // Fetch workflow to get full context (needed for template resolution)
-    const { data: workflow, error: workflowError } = await supabase
+    const { data: workflow, error: workflowError } = await db
       .from('workflows')
       .select('*')
       .eq('id', workflowId)
@@ -84,7 +84,7 @@ export default async function executeNodeHandler(req: Request, res: Response) {
         const token = authHeader.replace('Bearer ', '').trim();
         if (token) {
           try {
-            const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+            const { data: { user }, error: authError } = await db.auth.getUser(token);
             if (!authError && user) {
               currentUserId = user.id;
               console.log(`[DEBUG] Current user: ${currentUserId}`);
@@ -96,7 +96,7 @@ export default async function executeNodeHandler(req: Request, res: Response) {
             // Handle network/connection errors gracefully
             const errorMsg = authErr?.message || 'Unknown error';
             if (errorMsg.includes('ENOTFOUND') || errorMsg.includes('fetch failed')) {
-              console.log('[DEBUG] Supabase connection issue - continuing without current user ID');
+              console.log('[DEBUG] DB connection issue - continuing without current user ID');
             } else {
               console.log(`[DEBUG] Auth extraction error (non-fatal): ${errorMsg}`);
             }
@@ -140,6 +140,24 @@ export default async function executeNodeHandler(req: Request, res: Response) {
       node.data.config = nodeConfig;
     }
 
+    // ✅ PRE-EXECUTION: Validate this node's config before running
+    const { validateWorkflowConfig } = await import('../core/utils/pre-execution-validator');
+    const configCheck = validateWorkflowConfig([
+      { id: node.id, type: nodeType, data: { label: node.data.label, config: node.data.config as Record<string, any> } },
+    ]);
+    if (!configCheck.valid) {
+      return res.status(400).json({
+        code: 'MISSING_REQUIRED_INPUTS',
+        error: 'Node has missing required fields',
+        message: `This node needs configuration before it can run.`,
+        hint: "Open the Properties panel and fill in the missing fields.",
+        details: {
+          missingInputs: configCheck.missingInputs,
+          issues: configCheck.issues,
+        },
+      });
+    }
+
     // ✅ UNIFIED ENGINE: Use unified execution context
     const { createUnifiedExecutionContext } = await import('../core/execution/unified-execution-engine');
     const inputObj = input && typeof input === 'object' ? input as Record<string, unknown> : {};
@@ -166,7 +184,7 @@ export default async function executeNodeHandler(req: Request, res: Response) {
       node,
       input || {},
       nodeOutputs,
-      supabase,
+      db,
       workflowId,
       userId,
       currentUserId

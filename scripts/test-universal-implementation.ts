@@ -309,7 +309,7 @@ async function testNoHardcodedLogic() {
       description: 'Hardcoded AI node list',
     },
     {
-      pattern: /\[['"]postgresql['"],\s*['"]supabase['"],\s*['"]mysql['"]/i,
+      pattern: /\[['"]postgresql['"],\s*['"]db['"],\s*['"]mysql['"]/i,
       description: 'Hardcoded database node list',
     },
     {

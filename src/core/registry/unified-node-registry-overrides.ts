@@ -27,6 +27,9 @@ import { overrideWorkflowTrigger } from './overrides/workflow-trigger';
 import { overrideErrorTrigger } from './overrides/error-trigger';
 import { overrideSwitch } from './overrides/switch';
 import { overrideSetVariable } from './overrides/set-variable';
+import { overrideSet } from './overrides/set';
+import { overrideEditFields } from './overrides/edit-fields';
+import { overrideRenameKeys } from './overrides/rename-keys';
 import { overrideMath } from './overrides/math';
 import { overrideWait } from './overrides/wait';
 import { overrideDelay } from './overrides/delay';
@@ -171,6 +174,9 @@ const overridesByType: Record<string, OverrideFn> = {
   error_trigger: overrideErrorTrigger,
   switch: overrideSwitch,
   set_variable: overrideSetVariable,
+  set: overrideSet,
+  edit_fields: overrideEditFields,
+  rename_keys: overrideRenameKeys,
   math: overrideMath,
   wait: overrideWait,
   delay: overrideDelay,
@@ -240,7 +246,7 @@ const overridesByType: Record<string, OverrideFn> = {
   write_binary_file: overrideWriteBinaryFile,
   // ✅ BATCH 9: Database
   postgresql: overridePostgresql,
-  supabase: overrideSupabase,
+  db: overrideSupabase,
   mysql: overrideMysql,
   mongodb: overrideMongodb,
   firebase: overrideFirebase,

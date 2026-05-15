@@ -672,7 +672,7 @@ describe('Property 12: Unknown database node type returns error', () => {
 
     await fc.assert(
       fc.asyncProperty(
-        fc.string().filter((s) => !['google_cloud_storage', 'firebase', 'supabase', 'mongodb', 'postgres', 'mysql', 'redis', 'snowflake', 'sqlite', 'timescaledb', 'sql_server', 'intuit_smes', 'odoo'].includes(s)),
+        fc.string().filter((s) => !['google_cloud_storage', 'firebase', 'db', 'mongodb', 'postgres', 'mysql', 'redis', 'snowflake', 'sqlite', 'timescaledb', 'sql_server', 'intuit_smes', 'odoo'].includes(s)),
         async (unknownType) => {
           const context = makeContext({});
           const result = await executeDatabaseNode(unknownType, context);

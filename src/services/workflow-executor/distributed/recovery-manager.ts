@@ -6,7 +6,7 @@
  * Implements resume logic for crashed workers.
  */
 
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { DbClient } from '@db/db-js';
 import { QueueClient, NodeJob } from './queue-client';
 import { DistributedOrchestrator } from './distributed-orchestrator';
 
@@ -22,7 +22,7 @@ export interface RecoveryConfig {
  * Scans for and recovers stuck executions and steps.
  */
 export class RecoveryManager {
-  private supabase: SupabaseClient;
+  private db: DbClient;
   private queue: QueueClient;
   private orchestrator: DistributedOrchestrator;
   private config: RecoveryConfig;
@@ -30,12 +30,12 @@ export class RecoveryManager {
   private scanInterval?: NodeJS.Timeout;
 
   constructor(
-    supabase: SupabaseClient,
+    db: DbClient,
     queue: QueueClient,
     orchestrator: DistributedOrchestrator,
     config?: Partial<RecoveryConfig>
   ) {
-    this.supabase = supabase;
+    this.db = db;
     this.queue = queue;
     this.orchestrator = orchestrator;
     this.config = {
@@ -118,7 +118,7 @@ export class RecoveryManager {
    * Find stuck executions
    */
   private async findStuckExecutions(threshold: Date): Promise<Array<{ id: string; workflow_id: string }>> {
-    const { data, error } = await this.supabase
+    const { data, error } = await this.db
       .from('executions')
       .select('id, workflow_id')
       .eq('status', 'running')
@@ -136,7 +136,7 @@ export class RecoveryManager {
    * Find stuck steps
    */
   private async findStuckSteps(threshold: Date): Promise<Array<{ id: string; execution_id: string; node_id: string; node_type: string }>> {
-    const { data, error } = await this.supabase
+    const { data, error } = await this.db
       .from('execution_steps')
       .select('id, execution_id, node_id, node_type, retry_count')
       .eq('status', 'running')
@@ -158,7 +158,7 @@ export class RecoveryManager {
       console.log(`[RecoveryManager] 🔄 Recovering execution ${executionId}`);
 
       // Get execution details
-      const { data: execution, error: execError } = await this.supabase
+      const { data: execution, error: execError } = await this.db
         .from('executions')
         .select('workflow_id, status')
         .eq('id', executionId)
@@ -170,7 +170,7 @@ export class RecoveryManager {
       }
 
       // Find the last completed step
-      const { data: lastStep } = await this.supabase
+      const { data: lastStep } = await this.db
         .from('execution_steps')
         .select('node_id, output_refs')
         .eq('execution_id', executionId)
@@ -200,7 +200,7 @@ export class RecoveryManager {
 
       if (retryCount > this.config.maxRetries) {
         // Max retries exceeded - mark step as failed
-        await this.supabase
+        await this.db
           .from('execution_steps')
           .update({
             status: 'failed',
@@ -210,7 +210,7 @@ export class RecoveryManager {
           .eq('id', step.id);
 
         // Mark execution as failed if this was a critical step
-        await this.supabase
+        await this.db
           .from('executions')
           .update({
             status: 'failed',
@@ -224,7 +224,7 @@ export class RecoveryManager {
       }
 
       // Reset step to pending and requeue
-      await this.supabase
+      await this.db
         .from('execution_steps')
         .update({
           status: 'pending',
@@ -312,7 +312,7 @@ export class RecoveryManager {
     const initialNodes = this.orchestrator.getInitialNodes(workflowDef.definition);
 
     // Get execution input
-    const { data: execution } = await this.supabase
+    const { data: execution } = await this.db
       .from('executions')
       .select('input')
       .eq('id', executionId)

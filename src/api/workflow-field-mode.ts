@@ -9,7 +9,7 @@
  */
 
 import { Request, Response } from 'express';
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 import { unifiedNodeRegistry } from '../core/registry/unified-node-registry';
 import { unifiedNormalizeNodeType } from '../core/utils/unified-node-type-normalizer';
 import { shouldRequireCredential } from '../services/workflow-lifecycle-manager';
@@ -31,10 +31,10 @@ export async function patchWorkflowFieldMode(req: Request, res: Response): Promi
     return;
   }
 
-  const supabase = getDbClient();
+  const db = getDbClient();
 
   // Load workflow from database
-  const { data: workflowRow, error: loadError } = await supabase
+  const { data: workflowRow, error: loadError } = await db
     .from('workflows')
     .select('workflow_data')
     .eq('id', workflowId)
@@ -83,7 +83,7 @@ export async function patchWorkflowFieldMode(req: Request, res: Response): Promi
     data: { ...node.data, config: updatedConfig },
   };
 
-  const { error: saveError } = await supabase
+  const { error: saveError } = await db
     .from('workflows')
     .update({ workflow_data: { ...workflowData, nodes: updatedNodes } })
     .eq('id', workflowId);

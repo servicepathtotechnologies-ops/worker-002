@@ -15,7 +15,7 @@ import '../src/core/env-loader';
 import { DataFlowContractLayer } from '../src/services/data-flow-contract-layer';
 import { executeNodeDynamically } from '../src/core/execution/dynamic-node-executor';
 import { LRUNodeOutputsCache } from '../src/core/cache/lru-node-outputs-cache';
-import { getSupabaseClient } from '../src/core/database/supabase-compat';
+import { getDbClient } from '../src/core/database/aws-db-client';
 import { Workflow, WorkflowNode, WorkflowEdge } from '../src/core/types/ai-types';
 
 interface RouterMetrics {
@@ -242,7 +242,7 @@ async function executeWorkflowAndMeasure(
   };
 
   const latencies: number[] = [];
-  const supabase = getSupabaseClient();
+  const db = getDbClient();
   const nodeOutputs = new LRUNodeOutputsCache(100);
   
   // Set user intent for router
@@ -268,7 +268,7 @@ async function executeWorkflowAndMeasure(
         node,
         input,
         nodeOutputs,
-        supabase,
+        db,
         workflowId: 'test-workflow-id',
         userId: 'test-user-id',
       });

@@ -2,7 +2,10 @@ import type { NodeExecutionContext } from '../../types/unified-node-contract';
 import { getGoogleAccessToken } from '../../../shared/google-sheets';
 import { parseGoogleApiError } from '../../../shared/google-api-utils';
 
-export async function getGoogleTokenForContext(context: NodeExecutionContext): Promise<string> {
+export async function getGoogleTokenForContext(
+  context: NodeExecutionContext,
+  requiredScopes: string[],
+): Promise<string> {
   const directToken =
     String(context.inputs?.accessToken || context.config?.accessToken || '').trim();
   if (directToken) return directToken;
@@ -14,7 +17,7 @@ export async function getGoogleTokenForContext(context: NodeExecutionContext): P
   }
 
   const token = userIdsToTry.length > 0
-    ? await getGoogleAccessToken(context.supabase, userIdsToTry)
+    ? await getGoogleAccessToken(context.db, userIdsToTry, requiredScopes)
     : null;
   if (!token) {
     throw new Error('Google OAuth token not found. Connect a Google account before running this node.');

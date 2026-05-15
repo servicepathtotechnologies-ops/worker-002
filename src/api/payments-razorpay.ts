@@ -2,14 +2,14 @@ import { Request, Response } from 'express';
 import { paymentService } from '../services/payment-service';
 import { subscriptionService } from '../services/subscription-service';
 import { AuthenticatedRequest } from '../core/middleware/subscription-auth';
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 
 /**
  * Ensure user exists in public.users — auto-creates if missing
  */
 async function ensureUserExists(userId: string, email: string): Promise<void> {
-  const supabase = getDbClient();
-  await supabase
+  const db = getDbClient();
+  await db
     .from('users')
     .upsert({ id: userId, email, updated_at: new Date().toISOString() }, { onConflict: 'id' });
 }

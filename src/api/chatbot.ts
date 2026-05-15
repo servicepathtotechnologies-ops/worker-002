@@ -1,5 +1,5 @@
 // Chatbot Route
-// Migrated from Supabase Edge Function
+// Worker API handler
 // Now uses Ollama for AI responses
 
 import { Request, Response } from 'express';

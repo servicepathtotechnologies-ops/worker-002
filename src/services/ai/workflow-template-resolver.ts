@@ -169,7 +169,7 @@ export class WorkflowTemplateResolver {
           let score = 0;
           if (intent.trigger === 'form') score += 0.5;
           if (intent.action === 'write' || intent.action === 'save') score += 0.3;
-          if (intent.platform?.includes('database') || intent.platform?.includes('supabase')) score += 0.2;
+          if (intent.platform?.includes('database') || intent.platform?.includes('db')) score += 0.2;
           return score;
         }
       },

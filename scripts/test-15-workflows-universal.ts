@@ -64,7 +64,7 @@ const workflowTests: WorkflowTest[] = [
     id: 'wf-6',
     name: 'Enterprise Data Sync & Reporting',
     prompt: 'Sync CRM, DB, and spreadsheets daily and generate reports.',
-    expectedNodes: ['interval', 'database_read', 'supabase', 'mongodb', 'google_sheets', 'airtable'],
+    expectedNodes: ['interval', 'database_read', 'db', 'mongodb', 'google_sheets', 'airtable'],
     category: 'Data Sync',
   },
   {
@@ -106,7 +106,7 @@ const workflowTests: WorkflowTest[] = [
     id: 'wf-12',
     name: 'SaaS User Lifecycle Automation',
     prompt: 'Track new users, onboarding, churn risk and engagement.',
-    expectedNodes: ['form', 'database_write', 'supabase', 'ai_service', 'sentiment_analyzer'],
+    expectedNodes: ['form', 'database_write', 'db', 'ai_service', 'sentiment_analyzer'],
     category: 'SaaS Lifecycle',
   },
   {

@@ -88,13 +88,13 @@ export const facebookNodeDefinition: NodeDefinition = {
     },
     logToSupabase: {
       type: 'boolean',
-      description: 'Log operation result to Supabase',
+      description: 'Log operation result to database',
       required: false,
       default: false,
     },
     syncTableName: {
       type: 'string',
-      description: 'Supabase table for operation logs',
+      description: 'DB table for operation logs',
       required: false,
       default: 'facebook_operation_logs',
     },

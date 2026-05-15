@@ -12,7 +12,7 @@
 import { Request, Response } from 'express';
 import { workflowConfirmationManager, WorkflowState } from '../services/ai/workflow-confirmation-manager';
 import { toolSubstitutionEngine } from '../services/ai/tool-substitution-engine';
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 import { nodeLibrary } from '../services/nodes/node-library';
 import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../core/utils/unified-node-type-normalizer';
 import { pendingCredentialStore } from '../services/ai/pending-credential-store';
@@ -166,11 +166,11 @@ async function updateWorkflowStateInDatabase(
   workflow?: { nodes: any[]; edges: any[] },
   userId?: string
 ): Promise<void> {
-  const supabase = getDbClient();
+  const db = getDbClient();
 
   try {
     // Check if workflow exists in database
-    const { data: existingWorkflow, error: fetchError } = await supabase
+    const { data: existingWorkflow, error: fetchError } = await db
       .from('workflows')
       .select('id, status')
       .eq('id', workflowId)
@@ -213,7 +213,7 @@ async function updateWorkflowStateInDatabase(
         updateData.graph = buildSyncedGraphPayload(workflow.nodes, workflow.edges);
       }
 
-      const { error: updateError } = await supabase
+      const { error: updateError } = await db
         .from('workflows')
         .update(updateData)
         .eq('id', workflowId);
@@ -232,14 +232,14 @@ async function updateWorkflowStateInDatabase(
 
       if (!userId) {
         // Try to get user from auth
-        const { data: { user } } = await supabase.auth.getUser();
+        const { data: { user } } = await db.auth.getUser();
         if (!user) {
           throw new Error('User ID required to create workflow');
         }
         userId = user.id;
       }
 
-      const { error: createError } = await supabase
+      const { error: createError } = await db
         .from('workflows')
         .insert({
           id: workflowId,

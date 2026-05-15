@@ -234,7 +234,7 @@ export const NODE_OUTPUT_SCHEMAS: Record<string, NodeOutputSchema> = {
       }
     }
   },
-  supabase: {
+  db: {
     type: 'array',
     itemType: 'object',
     convertible: ['object', 'string'],

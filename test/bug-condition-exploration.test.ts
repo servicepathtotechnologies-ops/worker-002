@@ -64,7 +64,7 @@ describe('P2 — attach-inputs must not advance phase when normalization fails',
     phaseBeforeCall = 'draft';
     phaseAfterCall = 'draft'; // will be overwritten if phase mutation occurs
 
-    // Minimal supabase mock that tracks phase updates
+    // Minimal db mock that tracks phase updates
     mockSupabase = {
       auth: {
         getUser: jest.fn().mockResolvedValue({ data: { user: { id: 'user-1' } }, error: null }),
@@ -116,9 +116,9 @@ describe('P2 — attach-inputs must not advance phase when normalization fails',
       json: jest.fn().mockReturnThis(),
     };
 
-    // Inject mock supabase
-    jest.mock('../src/core/database/supabase-compat', () => ({
-      getSupabaseClient: () => mockSupabase,
+    // Inject mock db
+    jest.mock('../src/core/database/aws-db-client', () => ({
+      getDbClient: () => mockSupabase,
     }));
 
     await attachInputsHandler(req, res);
@@ -222,8 +222,8 @@ describe('P4 — attach-credentials must return 409 when phase is not inputs_app
         })),
       };
 
-      jest.mock('../src/core/database/supabase-compat', () => ({
-        getSupabaseClient: () => mockSupabase,
+      jest.mock('../src/core/database/aws-db-client', () => ({
+        getDbClient: () => mockSupabase,
       }));
 
       const { default: attachCredentialsHandler } = await import('../src/api/attach-credentials');
@@ -273,8 +273,8 @@ describe('P4 — attach-credentials must return 409 when phase is not inputs_app
       })),
     };
 
-    jest.mock('../src/core/database/supabase-compat', () => ({
-      getSupabaseClient: () => mockSupabase,
+    jest.mock('../src/core/database/aws-db-client', () => ({
+      getDbClient: () => mockSupabase,
     }));
 
     const { default: attachCredentialsHandler } = await import('../src/api/attach-credentials');

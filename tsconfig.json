@@ -20,7 +20,8 @@
     "emitDecoratorMetadata": true,
     "strictPropertyInitialization": false,
     "paths": {
-      "@supabase/supabase-js": ["./src/core/database/supabase-shim"]
+      "@supabase/supabase-js": ["./src/core/database/db-shim"],
+      "@db/db-js": ["./src/core/database/db-shim"]
     }
   },
   "include": ["src/**/*"],

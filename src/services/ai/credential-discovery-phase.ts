@@ -68,7 +68,7 @@ export class CredentialDiscoveryPhase {
    * 
    * @param workflowOrId - Complete workflow with nodes and edges, OR a workflowId string
    * @param userId - User ID for vault lookup (optional)
-   * @param supabaseClient - Supabase client (required when workflowOrId is a string)
+   * @param dbClient - AWS RDS database client (required when workflowOrId is a string)
    * @returns Credential discovery result with all required credentials (satisfied marked)
    */
   async discoverCredentials(
@@ -93,7 +93,7 @@ export class CredentialDiscoveryPhase {
       if (error || !data) {
         throw new Error(`[CredentialDiscovery] Failed to fetch workflow ${workflowId} from DB: ${error?.message}`);
       }
-      // Parse nodes/edges — Supabase may return JSON strings
+      // Parse nodes/edges — DB may return JSON strings
       let nodes = data.nodes;
       let edges = data.edges;
       if (data.graph && typeof data.graph === 'object' && Array.isArray(data.graph.nodes)) {

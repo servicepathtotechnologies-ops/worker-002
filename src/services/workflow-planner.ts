@@ -1168,7 +1168,7 @@ Return JSON only with node_type fields matching the exact node types from the li
     }
 
     if (promptLower.includes('database') || promptLower.includes('store') || promptLower.includes('save') || promptLower.includes('db')) {
-      const nodeType = availableNodeTypes.find(t => t === 'database_write' || t === 'supabase');
+      const nodeType = availableNodeTypes.find(t => t === 'database_write' || t === 'db');
       if (nodeType) steps.push({ node_type: nodeType, order: steps.length + 1 });
     }
 

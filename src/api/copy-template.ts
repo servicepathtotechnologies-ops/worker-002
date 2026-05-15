@@ -1,11 +1,11 @@
 // Copy Template API Route
-// Migrated from Supabase Edge Function
+// Worker API handler
 
 import { Request, Response } from 'express';
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 
 export default async function copyTemplateHandler(req: Request, res: Response) {
-  const supabase = getDbClient();
+  const db = getDbClient();
 
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
@@ -21,7 +21,7 @@ export default async function copyTemplateHandler(req: Request, res: Response) {
     const token = authHeader.replace('Bearer ', '');
     
     // Verify user
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    const { data: { user }, error: authError } = await db.auth.getUser(token);
     if (authError || !user) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
@@ -33,7 +33,7 @@ export default async function copyTemplateHandler(req: Request, res: Response) {
     }
 
     // Get template (only active templates for users)
-    const { data: template, error: templateError } = await supabase
+    const { data: template, error: templateError } = await db
       .from('templates')
       .select('*')
       .eq('id', templateId)
@@ -45,7 +45,7 @@ export default async function copyTemplateHandler(req: Request, res: Response) {
     }
 
     // Create workflow from template
-    const { data: workflow, error: workflowError } = await supabase
+    const { data: workflow, error: workflowError } = await db
       .from('workflows')
       .insert({
         name: workflowName || `${template.name} (Copy)`,
@@ -63,7 +63,7 @@ export default async function copyTemplateHandler(req: Request, res: Response) {
     if (workflowError) throw workflowError;
 
     // Increment template use count
-    await supabase
+    await db
       .from('templates')
       .update({ use_count: (template.use_count || 0) + 1 })
       .eq('id', templateId);

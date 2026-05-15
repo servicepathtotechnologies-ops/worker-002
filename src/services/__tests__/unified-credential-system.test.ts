@@ -14,6 +14,20 @@ const { signWebhookPayload, verifyWebhookSignature } = require('../webhook-signa
 const USER_A = '11111111-1111-4111-8111-111111111111';
 const USER_B = '22222222-2222-4222-8222-222222222222';
 const AWS_SHAPED_USER = 'e1031dfa-7031-703e-0004-80c6c3028371';
+const GOOGLE_WORKSPACE_SCOPES = [
+  'openid',
+  'email',
+  'profile',
+  'https://www.googleapis.com/auth/gmail.send',
+  'https://www.googleapis.com/auth/gmail.readonly',
+  'https://www.googleapis.com/auth/spreadsheets',
+  'https://www.googleapis.com/auth/drive',
+  'https://www.googleapis.com/auth/documents',
+  'https://www.googleapis.com/auth/calendar.events',
+  'https://www.googleapis.com/auth/contacts',
+  'https://www.googleapis.com/auth/tasks',
+  'https://www.googleapis.com/auth/bigquery',
+].join(' ');
 
 interface StoredCredential {
   id: string;
@@ -92,17 +106,7 @@ describe('unified credential runtime', () => {
         access_token: 'aws-google-access',
         refresh_token: 'aws-google-refresh',
         expires_in: 3600,
-        scope: [
-          'openid',
-          'email',
-          'profile',
-          'https://www.googleapis.com/auth/gmail.send',
-          'https://www.googleapis.com/auth/gmail.readonly',
-          'https://www.googleapis.com/auth/spreadsheets',
-          'https://www.googleapis.com/auth/drive',
-          'https://www.googleapis.com/auth/documents',
-          'https://www.googleapis.com/auth/calendar.events',
-        ].join(' '),
+        scope: GOOGLE_WORKSPACE_SCOPES,
       },
     });
 
@@ -122,17 +126,7 @@ describe('unified credential runtime', () => {
         access_token: 'google-access',
         refresh_token: 'google-refresh',
         expires_in: 3600,
-        scope: [
-          'openid',
-          'email',
-          'profile',
-          'https://www.googleapis.com/auth/gmail.send',
-          'https://www.googleapis.com/auth/gmail.readonly',
-          'https://www.googleapis.com/auth/spreadsheets',
-          'https://www.googleapis.com/auth/drive',
-          'https://www.googleapis.com/auth/documents',
-          'https://www.googleapis.com/auth/calendar.events',
-        ].join(' '),
+        scope: GOOGLE_WORKSPACE_SCOPES,
       },
     });
 
@@ -176,17 +170,7 @@ describe('unified credential runtime', () => {
       source: 'generic_oauth',
       tokenResponse: {
         access_token: 'owner-google',
-        scope: [
-          'openid',
-          'email',
-          'profile',
-          'https://www.googleapis.com/auth/gmail.send',
-          'https://www.googleapis.com/auth/gmail.readonly',
-          'https://www.googleapis.com/auth/spreadsheets',
-          'https://www.googleapis.com/auth/drive',
-          'https://www.googleapis.com/auth/documents',
-          'https://www.googleapis.com/auth/calendar.events',
-        ].join(' '),
+        scope: GOOGLE_WORKSPACE_SCOPES,
       },
     });
     await handleOAuthCallback({
@@ -195,17 +179,7 @@ describe('unified credential runtime', () => {
       source: 'generic_oauth',
       tokenResponse: {
         access_token: 'triggering-user-google',
-        scope: [
-          'openid',
-          'email',
-          'profile',
-          'https://www.googleapis.com/auth/gmail.send',
-          'https://www.googleapis.com/auth/gmail.readonly',
-          'https://www.googleapis.com/auth/spreadsheets',
-          'https://www.googleapis.com/auth/drive',
-          'https://www.googleapis.com/auth/documents',
-          'https://www.googleapis.com/auth/calendar.events',
-        ].join(' '),
+        scope: GOOGLE_WORKSPACE_SCOPES,
       },
     });
 

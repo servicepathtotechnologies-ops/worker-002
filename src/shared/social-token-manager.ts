@@ -7,7 +7,7 @@
  * Supports providers: github, facebook, twitter, linkedin, google
  */
 
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { DbClient } from '@db/db-js';
 import { encryptToken, decryptToken, encryptTokens, decryptTokens } from '../core/utils/token-encryption';
 import { resolveOAuthTokenString, OAuthProvider } from './credential-resolver';
 
@@ -34,13 +34,13 @@ export interface StoredSocialToken extends SocialTokenData {
  * Get provider token for a user
  * Automatically handles token refresh if expired
  * 
- * @param supabase - Supabase client
+ * @param db - AWS RDS database client
  * @param userId - User ID (or array of user IDs to try in order)
  * @param provider - Social media provider
  * @returns Access token or null if not found
  */
 export async function getProviderToken(
-  supabase: SupabaseClient,
+  db: DbClient,
   userId: string | string[],
   provider: SocialProvider
 ): Promise<string | null> {
@@ -52,13 +52,13 @@ export async function getProviderToken(
  * Save provider token for a user
  * Tokens are encrypted before storage
  * 
- * @param supabase - Supabase client
+ * @param db - AWS RDS database client
  * @param userId - User ID
  * @param provider - Social media provider
  * @param tokenData - Token data to save
  */
 export async function saveProviderToken(
-  supabase: SupabaseClient,
+  db: DbClient,
   userId: string,
   provider: SocialProvider,
   tokenData: SocialTokenData
@@ -70,7 +70,7 @@ export async function saveProviderToken(
       refresh_token: tokenData.refresh_token || null,
     });
     
-    const { error } = await supabase
+    const { error } = await db
       .from('social_tokens')
       .upsert({
         user_id: userId,
@@ -100,14 +100,14 @@ export async function saveProviderToken(
 /**
  * Refresh provider token
  * 
- * @param supabase - Supabase client
+ * @param db - AWS RDS database client
  * @param userId - User ID
  * @param provider - Social media provider
  * @param refreshToken - Refresh token (already decrypted)
  * @returns New access token or null if refresh failed
  */
 export async function refreshProviderToken(
-  supabase: SupabaseClient,
+  db: DbClient,
   userId: string,
   provider: SocialProvider,
   refreshToken: string
@@ -148,7 +148,7 @@ export async function refreshProviderToken(
     }
     
     // Save refreshed token
-    await saveProviderToken(supabase, userId, provider, newTokenData);
+    await saveProviderToken(db, userId, provider, newTokenData);
     
     return newTokenData.access_token;
   } catch (error) {
@@ -324,12 +324,12 @@ async function refreshGoogleToken(refreshToken: string): Promise<SocialTokenData
  * Delete provider token for a user
  */
 export async function deleteProviderToken(
-  supabase: SupabaseClient,
+  db: DbClient,
   userId: string,
   provider: SocialProvider
 ): Promise<void> {
   try {
-    const { error } = await supabase
+    const { error } = await db
       .from('social_tokens')
       .delete()
       .eq('user_id', userId)
@@ -350,12 +350,12 @@ export async function deleteProviderToken(
  * Check if user has a connected provider
  */
 export async function hasProviderToken(
-  supabase: SupabaseClient,
+  db: DbClient,
   userId: string,
   provider: SocialProvider
 ): Promise<boolean> {
   try {
-    const { data, error } = await supabase
+    const { data, error } = await db
       .from('social_tokens')
       .select('id')
       .eq('user_id', userId)

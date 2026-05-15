@@ -4,7 +4,7 @@
  */
 
 import { Request, Response } from 'express';
-import { getDbClient } from '../../core/database/supabase-compat';
+import { getDbClient } from '../../core/database/aws-db-client';
 import { getExecutionStateManager } from './execution-state-manager';
 import { VisualizationService } from './visualization-service';
 import { WorkflowOrchestrator } from './workflow-orchestrator';
@@ -41,7 +41,7 @@ export async function enhancedExecuteWorkflow(
   } = {}
 ): Promise<void> {
   const { useRealtime = true, useWorkerPool = false } = options;
-  const supabase = getDbClient();
+  const db = getDbClient();
   const { workflowId, executionId: providedExecutionId, input = {} } = req.body;
 
   if (!workflowId) {
@@ -55,7 +55,7 @@ export async function enhancedExecuteWorkflow(
 
   try {
     // Fetch workflow
-    const { data: workflow, error: workflowError } = await supabase
+    const { data: workflow, error: workflowError } = await db
       .from('workflows')
       .select('*')
       .eq('id', workflowId)
@@ -93,7 +93,7 @@ export async function enhancedExecuteWorkflow(
 
     // Handle execution ID (for resuming from webhook/form triggers)
     if (providedExecutionId) {
-      const { data: existingExecution, error: fetchError } = await supabase
+      const { data: existingExecution, error: fetchError } = await db
         .from('executions')
         .select('id, started_at, input')
         .eq('id', providedExecutionId)
@@ -107,20 +107,20 @@ export async function enhancedExecuteWorkflow(
       executionId = existingExecution.id;
 
       if (!existingExecution.started_at) {
-        await supabase
+        await db
           .from('executions')
           .update({ started_at: new Date().toISOString() })
           .eq('id', executionId);
       }
 
-      await supabase
+      await db
         .from('executions')
         .update({ status: 'running' })
         .eq('id', executionId);
     } else {
       // Create new execution
       const startedAt = new Date().toISOString();
-      const { data: newExecution, error: execError } = await supabase
+      const { data: newExecution, error: execError } = await db
         .from('executions')
         .insert({
           workflow_id: workflowId,
@@ -177,7 +177,7 @@ export async function enhancedExecuteWorkflow(
     const executionState = stateManager.getExecutionState(executionId);
     const durationMs = executionState?.duration || 0;
 
-    await supabase
+    await db
       .from('executions')
       .update({
         status: result.status,
@@ -217,7 +217,7 @@ export async function enhancedExecuteWorkflow(
     if (executionId) {
       stateManager.setExecutionError(executionId, errorMessage);
       
-      const { error: updateError } = await supabase
+      const { error: updateError } = await db
         .from('executions')
         .update({
           status: 'failed',

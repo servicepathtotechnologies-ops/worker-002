@@ -5,7 +5,7 @@
  * 1. Stage 1: Keyword extraction from user prompt
  * 2. Stage 2: Planner receives mandatory nodes
  * 
- * This test doesn't require Supabase or full workflow generation.
+ * This test doesn't require a DB connection or full workflow generation.
  */
 
 import { AIIntentClarifier } from '../src/services/ai/summarize-layer';

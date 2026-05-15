@@ -6,7 +6,7 @@
  */
 
 import { Request, Response } from 'express';
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 import { getUnifiedMissingItems } from '../services/ai/credential-input-discovery';
 import { workflowLifecycleManager } from '../services/workflow-lifecycle-manager';
 import { workflowValidator } from '../services/ai/workflow-validator';
@@ -80,7 +80,7 @@ export default async function configureWorkflowHandler(req: Request, res: Respon
     console.log(`[ConfigureWorkflow] Configuring workflow ${workflowId}`);
 
     // Get current missing items to validate against
-    const supabase = getDbClient();
+    const db = getDbClient();
     const authHeader = req.headers.authorization;
     let userId: string | undefined;
 
@@ -88,7 +88,7 @@ export default async function configureWorkflowHandler(req: Request, res: Respon
       const token = authHeader.replace('Bearer ', '').trim();
       if (token) {
         try {
-          const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+          const { data: { user }, error: authError } = await db.auth.getUser(token);
           if (!authError && user) {
             userId = user.id;
           }
@@ -142,7 +142,7 @@ export default async function configureWorkflowHandler(req: Request, res: Respon
     }
 
     // Load workflow from database
-    const { data: workflowData, error: workflowError } = await supabase
+    const { data: workflowData, error: workflowError } = await db
       .from('workflows')
       .select('*')
       .eq('id', workflowId)
@@ -300,7 +300,7 @@ export default async function configureWorkflowHandler(req: Request, res: Respon
       workflowId,
     };
     
-    const { error: updateError } = await supabase
+    const { error: updateError } = await db
       .from('workflows')
       .update({
         nodes: updatedWorkflow.nodes,

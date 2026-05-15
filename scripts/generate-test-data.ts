@@ -5,7 +5,7 @@
  * for testing persistence, resume, and state management.
  */
 
-import { SupabaseClient, createClient } from '@supabase/supabase-js';
+import { SupabaseClient, createClient } from '@db/db-js';
 import * as dotenv from 'dotenv';
 import { randomUUID } from 'crypto';
 
@@ -20,7 +20,7 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
   process.exit(1);
 }
 
-const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_KEY);
+const db: DbClient = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 /**
  * Generate sample node output data
@@ -114,7 +114,7 @@ function generateLargePayload(sequence: number): unknown {
 /**
  * Create sample workflow
  */
-async function createSampleWorkflow(supabase: SupabaseClient): Promise<string> {
+async function createSampleWorkflow(db: SupabaseClient): Promise<string> {
   const workflowId = randomUUID();
   
   const nodes = [
@@ -134,7 +134,7 @@ async function createSampleWorkflow(supabase: SupabaseClient): Promise<string> {
     { id: 'e5', source: 'node-4', target: 'node-5' },
   ];
 
-  const { error } = await supabase
+  const { error } = await db
     .from('workflows')
     .insert({
       id: workflowId,
@@ -154,7 +154,7 @@ async function createSampleWorkflow(supabase: SupabaseClient): Promise<string> {
  * Generate execution with node steps
  */
 async function generateExecution(
-  supabase: SupabaseClient,
+  db: DbClient,
   workflowId: string,
   executionNumber: number,
   options: {
@@ -168,7 +168,7 @@ async function generateExecution(
   const startedAt = new Date(Date.now() - Math.random() * 7 * 24 * 60 * 60 * 1000); // Random time in last 7 days
 
   // Create execution
-  const { error: execError } = await supabase
+  const { error: execError } = await db
     .from('executions')
     .insert({
       id: executionId,
@@ -226,7 +226,7 @@ async function generateExecution(
 
   // Insert all steps
   if (steps.length > 0) {
-    const { error: stepsError } = await supabase
+    const { error: stepsError } = await db
       .from('execution_steps')
       .insert(steps);
 
@@ -243,7 +243,7 @@ async function generateExecution(
     }
   });
 
-  await supabase
+  await db
     .from('executions')
     .update({
       step_outputs: stepOutputs,
@@ -263,7 +263,7 @@ async function generateTestData() {
   try {
     // Create sample workflow
     console.log('📝 Creating sample workflow...');
-    const workflowId = await createSampleWorkflow(supabase);
+    const workflowId = await createSampleWorkflow(db);
     console.log(`✅ Created workflow: ${workflowId}\n`);
 
     const totalExecutions = 300;
@@ -299,7 +299,7 @@ async function generateTestData() {
         }
 
         batchPromises.push(
-          generateExecution(supabase, workflowId, i + 1, options)
+          generateExecution(db, workflowId, i + 1, options)
             .then(id => {
               executions.push(id);
               return id;
@@ -325,7 +325,7 @@ async function generateTestData() {
 
     // Verify data
     console.log('\n🔍 Verifying data...');
-    const { data: steps, error: stepsError } = await supabase
+    const { data: steps, error: stepsError } = await db
       .from('execution_steps')
       .select('id')
       .eq('execution_id', executions[0]);

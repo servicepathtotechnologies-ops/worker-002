@@ -142,7 +142,7 @@ function docsForNodeField(nodeType: string, category: FieldHelpCategory): string
     [/shopify/, 'https://admin.shopify.com/'],
     [/slack/, 'https://api.slack.com/apps'],
     [/stripe/, 'https://dashboard.stripe.com/apikeys'],
-    [/supabase/, 'https://supabase.com/dashboard/project/_/settings/api'],
+    [/db/, 'https://db.com/dashboard/project/_/settings/api'],
     [/telegram/, 'https://core.telegram.org/bots/features#botfather'],
     [/twilio/, 'https://console.twilio.com/'],
     [/twitter|x_/, 'https://developer.x.com/en/portal/dashboard'],

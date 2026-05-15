@@ -47,7 +47,7 @@ export interface ConfigField {
   // UI hint: render as select/radio using stable label/value options
   options?: Array<{ label: string; value: string }>;
   // Generic conditional-required contract (schema-driven)
-  requiredIf?: { field: string; equals: any };
+  requiredIf?: { field: string; equals?: any; notEquals?: any };
   /** Show field when condition is met without implying required (unlike requiredIf). */
   visibleIf?: { field: string; equals: unknown };
   /** Properties panel: notes under selects when value matches (non-execution metadata) */
@@ -1977,7 +1977,7 @@ export class NodeLibrary {
 
   private createSupabaseSchema(): NodeSchema {
     return {
-      type: 'supabase',
+      type: 'db',
       label: 'Supabase',
       category: 'database',
       description: 'Interact with Supabase (PostgreSQL + realtime + storage)',
@@ -2014,14 +2014,14 @@ export class NodeLibrary {
           'Other database systems',
         ],
         keywords: [
-          'supabase', 'supabase database', 'supabase db', 'supabase table',
-          'supabase realtime', 'supabase storage', 'supabase api',
-          'supabase integration', 'supabase backend'
+          'db', 'db database', 'db db', 'db table',
+          'db realtime', 'db storage', 'db api',
+          'db integration', 'db backend'
         ],
         useCases: ['Modern web apps', 'Realtime data', 'File storage'],
         // ✅ ROOT-LEVEL: Semantic intent description for AI understanding
         intentDescription: 'Supabase integration node that interacts with Supabase (PostgreSQL + realtime + storage). Performs database operations (select, insert, update, delete) on Supabase tables, supports realtime subscriptions, and file storage. Used for modern web app backends, realtime data synchronization, and cloud database operations.',
-        intentCategories: ['database', 'supabase', 'realtime', 'cloud_database', 'modern_backend'],
+        intentCategories: ['database', 'db', 'realtime', 'cloud_database', 'modern_backend'],
       },
       commonPatterns: [
         {
@@ -2153,35 +2153,42 @@ export class NodeLibrary {
             description: 'Operation type: read, write, append, or update',
             examples: ['read', 'write', 'append', 'update'],
             default: 'read',
+            fillMode: { default: 'manual_static', supportsRuntimeAI: false, supportsBuildtimeAI: true },
           },
           spreadsheetId: {
             type: 'string',
             description: 'Google Sheets spreadsheet ID (from URL: /d/SPREADSHEET_ID/edit)',
             examples: ['1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms'],
+            fillMode: { default: 'manual_static', supportsRuntimeAI: false, supportsBuildtimeAI: false },
           },
           sheetName: {
             type: 'string',
             description: 'Sheet name/tab (leave empty for first sheet)',
             examples: ['Sheet1', 'Data', ''],
+            fillMode: { default: 'manual_static', supportsRuntimeAI: false, supportsBuildtimeAI: true },
           },
           range: {
             type: 'string',
             description: 'Cell range (e.g., A1:D100, leave empty for all used cells)',
             examples: ['A1:D100', 'A1:Z', ''],
+            fillMode: { default: 'manual_static', supportsRuntimeAI: false, supportsBuildtimeAI: true },
           },
           outputFormat: {
             type: 'string',
             description: 'Output format for read operations',
             examples: ['json', 'array', 'object'],
             default: 'json',
+            fillMode: { default: 'manual_static', supportsRuntimeAI: false, supportsBuildtimeAI: true },
           },
           values: {
             type: 'array',
             description: 'Data to write/append (for write/append operations)',
+            fillMode: { default: 'manual_static', supportsRuntimeAI: false, supportsBuildtimeAI: true },
           },
           data: {
             type: 'object',
             description: 'Data object to write/append (alternative to values array)',
+            fillMode: { default: 'manual_static', supportsRuntimeAI: false, supportsBuildtimeAI: true },
           },
         },
       },
@@ -2253,36 +2260,57 @@ export class NodeLibrary {
       type: 'google_doc',
       label: 'Google Docs',
       category: 'google',
-      description: 'Read or write content in Google Docs documents',
+      description: 'Read, write, create, or append content in Google Docs documents',
       configSchema: {
-        required: ['documentId', 'operation'],
+        required: ['operation'],
         optional: {
           operation: {
             type: 'string',
-            description: 'Operation type: read or write',
-            examples: ['read', 'write'],
+            description: 'Operation type: read, write, create, or append',
+            options: [
+              { label: 'Read', value: 'read' },
+              { label: 'Write (overwrite)', value: 'write' },
+              { label: 'Create new document', value: 'create' },
+              { label: 'Append', value: 'append' },
+            ],
+            examples: ['read', 'write', 'create', 'append'],
             default: 'read',
           },
           documentId: {
             type: 'string',
             description: 'Google Docs document ID (extract from URL: /d/DOCUMENT_ID/edit)',
             examples: ['1a2b3c4d5e6f7g8h9i0j'],
+            visibleIf: { field: 'operation', equals: 'read' },
+            requiredIf: { field: 'operation', notEquals: 'create' },
           },
           documentUrl: {
             type: 'string',
-            description: 'Full Google Docs URL (alternative to documentId)',
+            description: 'Full Google Docs URL — paste the URL from your browser (alternative to Document ID)',
             examples: ['https://docs.google.com/document/d/DOCUMENT_ID/edit'],
+            requiredIf: { field: 'operation', notEquals: 'create' },
+          },
+          title: {
+            type: 'string',
+            description: 'Document title for the new document',
+            examples: ['My Document', 'Report {{$json.date}}'],
+            visibleIf: { field: 'operation', equals: 'create' },
           },
           content: {
             type: 'string',
-            description: 'Content to write (for write operations)',
+            description: 'Content to write into the document (for write, create, append)',
             examples: ['{{$json.content}}', 'Hello World'],
+            requiredIf: { field: 'operation', notEquals: 'read' },
           },
           format: {
             type: 'string',
             description: 'Output format for read operations',
-            examples: ['text', 'html', 'markdown'],
+            options: [
+              { label: 'Plain text', value: 'text' },
+              { label: 'Markdown', value: 'markdown' },
+            ],
+            examples: ['text', 'markdown'],
             default: 'text',
+            visibleIf: { field: 'operation', equals: 'read' },
           },
         },
       },
@@ -2319,9 +2347,27 @@ export class NodeLibrary {
         },
         {
           name: 'write_document',
-          description: 'Write content to Google Docs',
+          description: 'Overwrite document content in Google Docs',
           config: {
             operation: 'write',
+            documentId: '{{$json.documentId}}',
+            content: '{{$json.content}}',
+          },
+        },
+        {
+          name: 'create_document',
+          description: 'Create a new Google Docs document',
+          config: {
+            operation: 'create',
+            title: 'New Document',
+            content: '{{$json.content}}',
+          },
+        },
+        {
+          name: 'append_document',
+          description: 'Append content to an existing Google Docs document',
+          config: {
+            operation: 'append',
             documentId: '{{$json.documentId}}',
             content: '{{$json.content}}',
           },
@@ -2329,14 +2375,9 @@ export class NodeLibrary {
       ],
       validationRules: [
         {
-          field: 'documentId',
-          validator: (value) => typeof value === 'string' && value.length > 0,
-          errorMessage: 'Document ID is required (or provide documentUrl)',
-        },
-        {
           field: 'operation',
-          validator: (value) => ['read', 'write'].includes(value),
-          errorMessage: 'Operation must be one of: read, write',
+          validator: (value) => ['read', 'write', 'create', 'append'].includes(value),
+          errorMessage: 'Operation must be one of: read, write, create, append',
         },
       ],
     };

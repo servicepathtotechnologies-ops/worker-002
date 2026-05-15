@@ -123,7 +123,7 @@ export class WorkflowIntentParser {
       'slack', 'email', 'gmail', 'discord', 'telegram',
       'linkedin', 'twitter', 'instagram', 'facebook',
       'google_sheets', 'google_doc', 'google_drive',
-      'database', 'supabase', 'postgresql', 'mysql'
+      'database', 'db', 'postgresql', 'mysql'
     ];
 
     for (const platform of platforms) {

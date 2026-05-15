@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 import { getDbPool } from '../core/database/db-pool';
 import { config } from '../core/config';
 import * as jwtLib from 'jsonwebtoken';
@@ -17,8 +17,8 @@ export default async function deleteAccountHandler(req: Request, res: Response) 
   const token = authHeader.replace('Bearer ', '').trim();
 
   // Verify the token and resolve the user ID
-  const supabase = getDbClient();
-  const { data: authData, error: authError } = await supabase.auth.getUser(token);
+  const db = getDbClient();
+  const { data: authData, error: authError } = await db.auth.getUser(token);
   if (authError || !authData?.user) {
     return res.status(401).json({ error: 'Unauthorized' });
   }

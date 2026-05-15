@@ -2,7 +2,7 @@
 // Handles chat messages and workflow resumption for chat trigger nodes
 
 import { Request, Response } from 'express';
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 import { config } from '../core/config';
 import { getChatServer } from '../services/chat/chat-server';
 import { v4 as uuidv4 } from 'uuid';
@@ -12,12 +12,12 @@ import { v4 as uuidv4 } from 'uuid';
  * Get chat configuration and serve chat interface
  */
 export async function getChatConfig(req: Request, res: Response) {
-  const supabase = getDbClient();
+  const db = getDbClient();
   const { workflowId, nodeId } = req.params;
 
   try {
     // Verify workflow exists and is active
-    const { data: workflow, error: workflowError } = await supabase
+    const { data: workflow, error: workflowError } = await db
       .from("workflows")
       .select("*")
       .eq("id", workflowId)
@@ -121,7 +121,7 @@ export async function getChatConfig(req: Request, res: Response) {
  * Submit chat message and trigger NEW workflow execution (like webhook)
  */
 export async function submitChatMessage(req: Request, res: Response) {
-  const supabase = getDbClient();
+  const db = getDbClient();
   const { workflowId, nodeId } = req.params;
   const { message, sessionId } = req.body;
 
@@ -134,7 +134,7 @@ export async function submitChatMessage(req: Request, res: Response) {
     }
 
     // Verify workflow exists and is active
-    const { data: workflow, error: workflowError } = await supabase
+    const { data: workflow, error: workflowError } = await db
       .from("workflows")
       .select("*")
       .eq("id", workflowId)
@@ -246,7 +246,7 @@ export async function submitChatMessage(req: Request, res: Response) {
 
     // Create NEW execution record (like webhook trigger does)
     const startedAt = new Date().toISOString();
-    const { data: execution, error: execError } = await supabase
+    const { data: execution, error: execError } = await db
       .from('executions')
       .insert({
         workflow_id: workflowId,

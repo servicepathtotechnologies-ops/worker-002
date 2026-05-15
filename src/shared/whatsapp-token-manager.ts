@@ -1,11 +1,11 @@
 ﻿/**
  * WhatsApp Token Manager
  * 
- * Helper functions to retrieve and manage WhatsApp/Facebook OAuth tokens from Supabase.
+ * Helper functions to retrieve and manage WhatsApp/Facebook OAuth tokens from the database.
  * WhatsApp uses Facebook OAuth tokens with WhatsApp Business API permissions.
  */
 
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { DbClient } from '@db/db-js';
 import { decryptToken, encryptToken } from '../core/utils/token-encryption';
 import { resolveOAuthTokenString } from './credential-resolver';
 
@@ -21,7 +21,7 @@ export interface WhatsAppTokenData {
 }
 
 /**
- * Get WhatsApp/Facebook access token from Supabase
+ * Get WhatsApp/Facebook access token from DB
  * Tries multiple user IDs in order (workflow owner, then current user)
  * 
  * Note: WhatsApp uses Facebook OAuth tokens with WhatsApp permissions.
@@ -29,7 +29,7 @@ export interface WhatsAppTokenData {
  * whatsapp_business_management, whatsapp_business_profile
  */
 export async function getWhatsAppAccessToken(
-  supabase: SupabaseClient,
+  db: DbClient,
   userId?: string | string[]
 ): Promise<string | null> {
   if (!userId) return null;
@@ -74,7 +74,7 @@ export async function getWhatsAppBusinessAccountId(
  * Get full WhatsApp token data (including metadata)
  */
 export async function getWhatsAppTokenData(
-  supabase: SupabaseClient,
+  db: DbClient,
   userId?: string | string[]
 ): Promise<WhatsAppTokenData | null> {
   if (!userId) {
@@ -88,7 +88,7 @@ export async function getWhatsAppTokenData(
 
     try {
       // Try whatsapp_oauth_tokens first
-      const { data: whatsappTokenData, error: whatsappError } = await supabase
+      const { data: whatsappTokenData, error: whatsappError } = await db
         .from('whatsapp_oauth_tokens')
         .select('*')
         .eq('user_id', uid)
@@ -99,7 +99,7 @@ export async function getWhatsAppTokenData(
       }
 
       // Fall back to facebook_oauth_tokens
-      const { data: facebookTokenData, error: facebookError } = await supabase
+      const { data: facebookTokenData, error: facebookError } = await db
         .from('facebook_oauth_tokens')
         .select('*')
         .eq('user_id', uid)

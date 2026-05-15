@@ -7,7 +7,7 @@ import { EventEmitter } from 'events';
 import { ExecutionStateManager, NodeStatus } from './execution-state-manager';
 import { VisualizationService } from './visualization-service';
 import { executeNode } from '../../api/execute-workflow';
-import { getDbClient } from '../../core/database/supabase-compat';
+import { getDbClient } from '../../core/database/aws-db-client';
 import { LRUNodeOutputsCache } from '../../core/cache/lru-node-outputs-cache';
 import { executionReliability, RetryConfig } from '../execution-reliability';
 import { workflowCheckpoint } from '../workflow-checkpoint';
@@ -52,7 +52,7 @@ export interface ExecutionContext {
 export class WorkflowOrchestrator extends EventEmitter {
   private stateManager: ExecutionStateManager;
   private visualizationService: VisualizationService;
-  private supabase: any;
+  private db: any;
   private logger = getWorkflowLogger();
 
   constructor(
@@ -62,7 +62,7 @@ export class WorkflowOrchestrator extends EventEmitter {
     super();
     this.stateManager = stateManager;
     this.visualizationService = visualizationService;
-    this.supabase = getDbClient();
+    this.db = getDbClient();
   }
 
   /**
@@ -209,7 +209,7 @@ export class WorkflowOrchestrator extends EventEmitter {
             node,
             nodeInput,
             context.nodeOutputs,
-            this.supabase,
+            this.db,
             workflowId,
             userId
           ),

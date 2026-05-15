@@ -63,7 +63,7 @@ const WORKFLOWS: WorkflowTest[] = [
     id: 6,
     name: 'Enterprise Data Sync & Reporting Engine',
     prompt: 'Sync CRM, DB, and spreadsheets daily and generate reports.',
-    expectedNodes: ['interval', 'database_read', 'supabase', 'mongodb', 'redis', 'merge_data', 'sort', 'limit', 'google_sheets', 'google_doc', 'google_big_query', 'airtable', 'notion', 'csv'],
+    expectedNodes: ['interval', 'database_read', 'db', 'mongodb', 'redis', 'merge_data', 'sort', 'limit', 'google_sheets', 'google_doc', 'google_big_query', 'airtable', 'notion', 'csv'],
     useCase: 'Enterprise reporting with Google & Airtable.'
   },
   {
@@ -105,7 +105,7 @@ const WORKFLOWS: WorkflowTest[] = [
     id: 12,
     name: 'SaaS User Lifecycle Automation',
     prompt: 'Track new users, onboarding, churn risk and engagement.',
-    expectedNodes: ['form', 'database_write', 'supabase', 'ai_service', 'sentiment_analyzer', 'slack_webhook', 'merge'],
+    expectedNodes: ['form', 'database_write', 'db', 'ai_service', 'sentiment_analyzer', 'slack_webhook', 'merge'],
     useCase: 'User lifecycle automation for SaaS startup.'
   },
   {
@@ -151,15 +151,15 @@ interface TestResult {
 
 class ComprehensiveWorkflowTester {
   private workflowBuilder: AgenticWorkflowBuilder;
-  private supabase: any;
+  private db: any;
   private results: TestResult[] = [];
 
   constructor() {
     this.workflowBuilder = new AgenticWorkflowBuilder();
-    // For offline tests, use a lightweight mock Supabase client.
+    // For offline tests, use a lightweight mock DB client.
     // Dynamic executor passes this to node definitions, but tests
-    // should not depend on real Supabase credentials.
-    this.supabase = {} as any;
+    // should not depend on real DB credentials.
+    this.db = {} as any;
   }
 
   /**
@@ -324,7 +324,7 @@ class ComprehensiveWorkflowTester {
                 node,
                 input,
                 nodeOutputs,
-                supabase: this.supabase,
+                db: this.db,
                 workflowId: `test-${workflow.id}`,
                 userId: 'test-user',
               });

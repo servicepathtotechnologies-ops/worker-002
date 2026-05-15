@@ -1,6 +1,6 @@
 /**
  * Main Express.js Server for CtrlChecks Worker
- * Migrated from Supabase Edge Functions
+ * Worker API — Node + Express backend
  * Gemini AI (GEMINI_API_KEY)
  * 
  * 🚨 CRITICAL: Environment variables MUST be loaded FIRST
@@ -151,6 +151,8 @@ import chatbotRoute from './api/chatbot';
 import analyzeWorkflowRequirementsRoute from './api/analyze-workflow-requirements';
 import processRoute from './api/process';
 import executeNodeRoute from './api/execute-node';
+import testType1NodeHandler from './api/test-type1-node';
+import testAllType1NodesHandler from './api/test-all-type1-nodes';
 import aiGateway from './api/ai-gateway';
 import aiErrorGuidanceHandler from './api/ai-error-guidance';
 import { generateHandler as smartPlannerGenerate, answerHandler as smartPlannerAnswer, getWorkflowHandler as smartPlannerGetWorkflow } from './api/smart-planner';
@@ -282,8 +284,17 @@ app.use(tokenBucketRateLimiter({
 }));
 app.use(redisGetCache({
   ttlSeconds: Number(process.env.GET_CACHE_TTL_SECONDS || 60),
-  // Connections change on every reconnect/OAuth callback — must always be fresh
-  skipPaths: ['/health', '/metrics', '/api/credential-connections/connections', '/api/execution-status'],
+  // User-facing DB reads must reflect the live database. Caching these paths
+  // can turn a transient DB outage into a stale "empty dashboard" response.
+  skipPaths: [
+    '/health',
+    '/metrics',
+    '/api/credential-connections/connections',
+    '/api/execution-status',
+    '/api/db/workflows',
+    '/api/db/executions',
+    '/api/db/user_roles',
+  ],
 }));
 
 // Security middleware for subscription system
@@ -1044,6 +1055,11 @@ app.post('/api/analyze-workflow-requirements', asyncHandler(analyzeWorkflowRequi
 app.post('/execute-node', asyncHandler(executeNodeRoute));
 app.post('/api/execute-node', asyncHandler(executeNodeRoute)); // Also support /api prefix
 
+// Type 1 Node Testing — automated fixture-based tests (no credentials required)
+app.post('/api/test-type1-node', asyncHandler(testType1NodeHandler));
+app.post('/api/test-all-type1-nodes', asyncHandler(testAllType1NodesHandler));
+console.log('[ServerStartup] ✅ Type 1 node test endpoints registered: /api/test-type1-node, /api/test-all-type1-nodes');
+
 // Debug Gmail Send (for testing Gmail credential resolution)
 import debugGmailSendRoute from './api/debug/gmail-send';
 app.post('/api/debug/gmail-send', asyncHandler(debugGmailSendRoute));
@@ -1080,15 +1096,15 @@ app.get('/api/workflows/:workflowId/last-resolved-inputs', asyncHandler(async (r
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
-  const { getDbClient } = await import('./core/database/supabase-compat');
-  const supabase = getDbClient();
-  const { data: authData, error: authError } = await supabase.auth.getUser(token);
+  const { getDbClient } = await import('./core/database/aws-db-client');
+  const db = getDbClient();
+  const { data: authData, error: authError } = await db.auth.getUser(token);
   if (authError || !authData?.user?.id) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
   const userId = authData.user.id;
-  const { data: workflow, error: workflowError } = await supabase
+  const { data: workflow, error: workflowError } = await db
     .from('workflows')
     .select('id, user_id, setup_completed, metadata')
     .eq('id', workflowId)
@@ -1102,7 +1118,7 @@ app.get('/api/workflows/:workflowId/last-resolved-inputs', asyncHandler(async (r
     return res.status(409).json(setupPendingResponse(workflowId));
   }
 
-  const { data: executions, error: executionsError } = await supabase
+  const { data: executions, error: executionsError } = await db
     .from('executions')
     .select('id, started_at, status')
     .eq('workflow_id', workflowId)
@@ -1128,7 +1144,7 @@ app.get('/api/workflows/:workflowId/last-resolved-inputs', asyncHandler(async (r
   const executionIds = Array.from(executionStartedAt.keys());
 
   if (executionIds.length > 0) {
-    const { data: steps, error: stepsError } = await supabase
+    const { data: steps, error: stepsError } = await db
       .from('execution_steps')
       .select('execution_id, node_id, input_json, sequence')
       .in('execution_id', executionIds)
@@ -1161,7 +1177,7 @@ app.get('/api/workflows/:workflowId/last-resolved-inputs', asyncHandler(async (r
    * Keep this bounded to the already-selected 10 execution ids.
    */
   if (Object.keys(values).length === 0 && executionIds.length > 0) {
-    const { data: executionLogs, error: logsError } = await supabase
+    const { data: executionLogs, error: logsError } = await db
       .from('executions')
       .select('id, started_at, logs')
       .in('id', executionIds);
@@ -1340,9 +1356,9 @@ app.post('/api/workflows/:workflowId/versions/:version/rollback', asyncHandler(a
     const authHeader = req.headers.authorization;
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const token = authHeader.replace('Bearer ', '').trim();
-      const { getDbClient } = await import('./core/database/supabase-compat');
-      const supabase = getDbClient();
-      const { data: { user } } = await supabase.auth.getUser(token);
+      const { getDbClient } = await import('./core/database/aws-db-client');
+      const db = getDbClient();
+      const { data: { user } } = await db.auth.getUser(token);
       if (user) {
         userId = user.id;
       }

@@ -56,4 +56,56 @@ describe('data → communication → terminal (linear class)', () => {
       }
     });
   }
+
+  it('allows sequential Gmail send, log, then list without blocking execution', () => {
+    const wf = {
+      nodes: [
+        {
+          id: 'manual-1',
+          type: 'custom',
+          position: { x: 0, y: 0 },
+          data: { type: 'manual_trigger', label: 'Manual Test', config: {} },
+        },
+        {
+          id: 'send-1',
+          type: 'custom',
+          position: { x: 200, y: 0 },
+          data: { type: 'google_gmail', label: 'Gmail - Send Email', config: { operation: 'send' } },
+        },
+        {
+          id: 'log-1',
+          type: 'custom',
+          position: { x: 400, y: 0 },
+          data: { type: 'log_output', label: 'Log: Send Result', config: {} },
+        },
+        {
+          id: 'list-1',
+          type: 'custom',
+          position: { x: 600, y: 0 },
+          data: { type: 'google_gmail', label: 'Gmail - List Inbox', config: { operation: 'list', query: 'in:inbox' } },
+        },
+        {
+          id: 'log-2',
+          type: 'custom',
+          position: { x: 800, y: 0 },
+          data: { type: 'log_output', label: 'Log: List Result', config: {} },
+        },
+      ],
+      edges: [
+        { id: 'e1', source: 'manual-1', target: 'send-1' },
+        { id: 'e2', source: 'send-1', target: 'log-1' },
+        { id: 'e3', source: 'log-1', target: 'list-1' },
+        { id: 'e4', source: 'list-1', target: 'log-2' },
+      ],
+    };
+
+    const pipe = workflowValidationPipeline.validateWorkflow(wf as any);
+
+    expect(pipe.valid).toBe(true);
+    expect(pipe.errors).toHaveLength(0);
+
+    const linearLayer = pipe.layerResults.get('linear-flow');
+    expect(linearLayer?.valid).toBe(true);
+    expect(linearLayer?.details?.orderViolations || []).toHaveLength(0);
+  });
 });

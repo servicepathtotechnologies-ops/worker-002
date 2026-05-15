@@ -1,5 +1,5 @@
 // Google API Utilities
-// Migrated from Supabase Edge Functions
+// Worker API handlers
 
 export interface RetryOptions {
   maxRetries?: number;

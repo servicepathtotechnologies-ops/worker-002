@@ -25,6 +25,26 @@ export function resolveEffectiveFieldFillMode(
     }
   }
 
+  const hasExplicitUserChoice =
+    explicitMode === 'manual_static' ||
+    explicitMode === 'runtime_ai' ||
+    explicitMode === 'buildtime_ai_once';
+
+  // When the user has explicitly chosen a fill mode, honor it unconditionally
+  // except for true credential-locked fields. supportsRuntimeAI/supportsBuildtimeAI
+  // are advisory schema defaults, not user-facing restrictions.
+  if (hasExplicitUserChoice) {
+    const fieldDef = inputSchema?.[fieldName];
+    if (fieldDef && isCredentialOwnership(fieldName, fieldDef)) {
+      const policy = fieldDef.credentialTogglePolicy ?? 'locked';
+      const unlocked = policy === 'unlockable' && config?._ownershipUnlock?.[fieldName] === true;
+      if (!unlocked && (candidate === 'runtime_ai' || candidate === 'buildtime_ai_once')) {
+        return (fieldDef.fillMode?.default as FieldFillMode | undefined) ?? 'manual_static';
+      }
+    }
+    return candidate;
+  }
+
   return coerceFieldFillModeByPolicy(fieldName, candidate, inputSchema, config).mode;
 }
 

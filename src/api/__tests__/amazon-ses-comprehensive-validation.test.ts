@@ -10,7 +10,7 @@
  * Requirements: 1.1, 2.1, 3.1, 4.1, 5.3, 7.4
  */
 
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { DbClient } from '@db/db-js';
 
 describe('Amazon SES Comprehensive Validation and Logging', () => {
   describe('validateAmazonSesConfig()', () => {

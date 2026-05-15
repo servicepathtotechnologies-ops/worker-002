@@ -190,7 +190,7 @@ export class ExecutionPlanBuilder {
    */
   private getNodePriority(nodeType: string): number {
     // Priority 1: Data sources (read)
-    if (['google_sheets', 'postgresql', 'supabase', 'database_read', 'http_request'].includes(nodeType)) {
+    if (['google_sheets', 'postgresql', 'db', 'database_read', 'http_request'].includes(nodeType)) {
       return 1;
     }
     

@@ -1,8 +1,8 @@
 // Admin Templates API Route
-// Migrated from Supabase Edge Function
+// Worker API handler
 
 import { Request, Response } from 'express';
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 import { corsHeaders } from '../shared/cors';
 
 interface TemplateInput {
@@ -19,7 +19,7 @@ interface TemplateInput {
 }
 
 export default async function adminTemplatesHandler(req: Request, res: Response) {
-  const supabase = getDbClient();
+  const db = getDbClient();
 
   try {
     // Get auth token
@@ -31,13 +31,13 @@ export default async function adminTemplatesHandler(req: Request, res: Response)
     const token = authHeader.replace('Bearer ', '');
     
     // Verify user and get user ID
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    const { data: { user }, error: authError } = await db.auth.getUser(token);
     if (authError || !user) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
     // Check if user is admin
-    const { data: roleData, error: roleError } = await supabase
+    const { data: roleData, error: roleError } = await db
       .from('user_roles')
       .select('role')
       .eq('user_id', user.id)
@@ -54,7 +54,7 @@ export default async function adminTemplatesHandler(req: Request, res: Response)
     // Route handling
     if (method === 'GET' && !templateId) {
       // List all templates
-      const { data, error } = await supabase
+      const { data, error } = await db
         .from('templates')
         .select('*')
         .order('created_at', { ascending: false });
@@ -66,7 +66,7 @@ export default async function adminTemplatesHandler(req: Request, res: Response)
 
     if (method === 'GET' && templateId) {
       // Get single template
-      const { data, error } = await supabase
+      const { data, error } = await db
         .from('templates')
         .select('*')
         .eq('id', templateId)
@@ -85,7 +85,7 @@ export default async function adminTemplatesHandler(req: Request, res: Response)
         return res.status(400).json({ error: 'name and category are required' });
       }
 
-      const { data, error } = await supabase
+      const { data, error } = await db
         .from('templates')
         .insert({
           ...templateData,
@@ -103,7 +103,7 @@ export default async function adminTemplatesHandler(req: Request, res: Response)
       // Update template
       const templateData: Partial<TemplateInput> = req.body;
 
-      const { data, error } = await supabase
+      const { data, error } = await db
         .from('templates')
         .update(templateData)
         .eq('id', templateId)
@@ -117,7 +117,7 @@ export default async function adminTemplatesHandler(req: Request, res: Response)
 
     if (method === 'DELETE' && templateId) {
       // Delete template
-      const { error } = await supabase
+      const { error } = await db
         .from('templates')
         .delete()
         .eq('id', templateId);

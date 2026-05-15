@@ -143,7 +143,7 @@ export class WorkflowStructureBuilder {
     const dataSourceNodeTypes = [
       'google_sheets', 'sheets',
       'database_read', 'database_write', 'database',
-      'supabase', 'postgresql', 'mysql', 'mongodb', 'redis',
+      'db', 'postgresql', 'mysql', 'mongodb', 'redis',
       'aws_s3', 's3',
       'dropbox', 'onedrive',
       'storage',
@@ -1539,7 +1539,7 @@ Return ONLY valid JSON, no markdown, no explanations.`;
     // ============================================
     // DATA SOURCE NODES - Source Output Fields
     // ============================================
-    if (['google_sheets', 'database_read', 'supabase'].includes(sourceType)) {
+    if (['google_sheets', 'database_read', 'db'].includes(sourceType)) {
       // Array-returning nodes output 'rows' or 'data'
       outputField = 'rows';
     } else if (sourceType === 'database_write') {
@@ -1595,7 +1595,7 @@ Return ONLY valid JSON, no markdown, no explanations.`;
     }
     
     // Database nodes expect 'data' or 'query'
-    else if (['database_write', 'supabase', 'postgresql', 'mysql', 'mongodb'].includes(targetType)) {
+    else if (['database_write', 'db', 'postgresql', 'mysql', 'mongodb'].includes(targetType)) {
       inputField = 'data';
     }
     

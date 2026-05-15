@@ -23,6 +23,10 @@ export function executeLogOutputWithCache(
   Object.entries(nodeOutputs.getAll()).forEach(([nodeId, output]) => {
     setNodeOutput(execContext, nodeId, output);
   });
+  // Restore lastOutput to current node's input so {{$json.field}} resolves correctly.
+  // The setNodeOutput loop overwrites lastOutput with each previous node's output in
+  // LRU iteration order, which is not guaranteed to be the immediate upstream node.
+  execContext.lastOutput = input;
 
   const resolvedValue = resolveTypedValue(message, execContext);
 

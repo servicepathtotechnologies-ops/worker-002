@@ -62,7 +62,7 @@ export class InstagramNode {
 
   constructor(
     private readonly accessToken: string,
-    private readonly supabase: any,
+    private readonly db: any,
   ) {}
 
   // ── Public entry point ────────────────────────────────────────────────────

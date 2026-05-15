@@ -18,7 +18,7 @@ import { Workflow, WorkflowNode, WorkflowEdge } from '../../../core/types/ai-typ
 import { executeNode } from '../../../api/execute-workflow';
 import { LRUNodeOutputsCache } from '../../../core/cache/lru-node-outputs-cache';
 
-// Mock Supabase client for testing
+// Mock DB client for testing
 const createMockSupabaseClient = () => {
   return {
     from: () => ({

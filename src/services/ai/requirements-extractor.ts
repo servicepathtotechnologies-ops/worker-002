@@ -631,7 +631,7 @@ Return JSON in this exact format:
       // Do NOT add Google OAuth credentials here; connection status is checked later.
       platforms.push('Google');
     }
-    if (lowerPrompt.includes('database') || lowerPrompt.includes('postgres') || lowerPrompt.includes('supabase')) {
+    if (lowerPrompt.includes('database') || lowerPrompt.includes('postgres') || lowerPrompt.includes('db')) {
       credentials.push('Database Credentials');
       platforms.push('Database');
     }

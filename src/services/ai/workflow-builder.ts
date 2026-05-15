@@ -6648,7 +6648,7 @@ Return JSON:
         stepLower.includes('database') ||
         step.type === 'database_read' ||
         step.type === 'database_write' ||
-        step.type === 'supabase'
+        step.type === 'db'
       )) {
         const preference = nodeEquivalenceMapper.getNodeOption('database', nodePreferences.database);
         if (preference && nodeLibrary.getSchema(preference.nodeType)) {
@@ -8904,7 +8904,7 @@ Return JSON:
     if (typeLower.includes('database_write')) {
       return ['affectedRows', 'insertId', 'result', 'rowsAffected'];
     }
-    if (typeLower === 'supabase') {
+    if (typeLower === 'db') {
       return ['data', 'error', 'rows'];
     }
     if (typeLower.includes('postgres') || typeLower.includes('mysql') || 
@@ -9707,7 +9707,7 @@ return {
       // ============================================
       'database_read': ['rows', 'data', 'result'],
       'database_write': ['affectedRows', 'insertId', 'result', 'rowsAffected'],
-      'supabase': ['data', 'error', 'rows'],
+      'db': ['data', 'error', 'rows'],
       'postgresql': ['rows', 'data', 'result'],
       'mysql': ['rows', 'data', 'result'],
       'mongodb': ['documents', 'data', 'result'],
@@ -9790,7 +9790,7 @@ return {
         'google_drive': ['operation', 'fileId', 'fileName'],
         'google_gmail': ['credentialId', 'operation', 'to', 'subject', 'body', 'from', 'messageId', 'query', 'maxResults'],
         'google_calendar': ['resource', 'operation', 'credentialId', 'calendarId', 'eventId', 'summary', 'start', 'end', 'eventData', 'description', 'timeMin', 'timeMax', 'maxResults', 'q'],
-        'google_tasks': ['operation', 'taskId', 'title', 'notes'],
+        'google_tasks': ['operation', 'taskId', 'title', 'notes', 'due'],
         'google_contacts': ['operation', 'contactId', 'name', 'email'],
         'google_bigquery': ['query', 'projectId', 'datasetId'],
         
@@ -9850,7 +9850,7 @@ return {
         // Database
         'database_read': ['query', 'connectionString', 'host', 'port', 'database', 'username', 'password'],
         'database_write': ['query', 'connectionString', 'host', 'port', 'database', 'username', 'password'],
-        'supabase': ['operation', 'table', 'select', 'filter', 'data'],
+        'db': ['operation', 'table', 'select', 'filter', 'data'],
         'postgresql': ['query', 'host', 'port', 'database', 'username', 'password'],
         'mysql': ['query', 'host', 'port', 'database', 'username', 'password'],
         'mongodb': ['operation', 'collection', 'query', 'data', 'connectionString'],
@@ -10020,7 +10020,7 @@ return {
       // Database
       'database_read': 'rows',
       'database_write': 'affectedRows',
-      'supabase': 'data',
+      'db': 'data',
       'postgresql': 'rows',
       'mysql': 'rows',
       'mongodb': 'documents',
@@ -10153,7 +10153,7 @@ return {
       // Database
       'database_read': 'query', // ✅ CRITICAL: database_read receives SQL query via 'query'
       'database_write': 'query', // ✅ CRITICAL: database_write receives SQL query via 'query'
-      'supabase': 'data', // ✅ CRITICAL: supabase receives record data via 'data' field (for insert/update)
+      'db': 'data', // ✅ CRITICAL: db receives record data via 'data' field (for insert/update)
       'postgresql': 'query', // ✅ CRITICAL: postgresql receives SQL query via 'query'
       'mysql': 'query', // ✅ CRITICAL: mysql receives SQL query via 'query'
       'mongodb': 'data', // ✅ CRITICAL: mongodb receives document data via 'data' field (for insert/update)
@@ -10465,7 +10465,7 @@ return {
         // ============================================
         'database_read': ['rows', 'data', 'result'],
         'database_write': ['affectedRows', 'insertId', 'result', 'rowsAffected'],
-        'supabase': ['data', 'error', 'rows'],
+        'db': ['data', 'error', 'rows'],
         'postgresql': ['rows', 'data', 'result'],
         'mysql': ['rows', 'data', 'result'],
         'mongodb': ['documents', 'data', 'result'],

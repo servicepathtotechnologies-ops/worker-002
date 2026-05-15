@@ -43,6 +43,7 @@ function ownerOnly(userIds: Array<string | undefined | null>): string | null {
 export async function resolveOAuthToken(
   provider: OAuthProvider,
   userIds: Array<string | undefined | null>,
+  requiredScopes?: string[],
 ): Promise<ResolvedToken> {
   const userId = ownerOnly(userIds);
   if (!userId) {
@@ -52,6 +53,7 @@ export async function resolveOAuthToken(
   const credential = await resolveCredential({
     userId,
     provider: normalizeProvider(provider),
+    requiredScopes: requiredScopes || [],
   });
 
   return {
@@ -64,8 +66,9 @@ export async function resolveOAuthToken(
 export async function resolveOAuthTokenString(
   provider: OAuthProvider,
   userIds: Array<string | undefined | null>,
+  requiredScopes?: string[],
 ): Promise<string> {
-  const result = await resolveOAuthToken(provider, userIds);
+  const result = await resolveOAuthToken(provider, userIds, requiredScopes);
   return result.token;
 }
 
@@ -82,4 +85,3 @@ export async function resolveUserIdByEmail(email: string): Promise<string | null
   );
   return rows[0]?.id || null;
 }
-

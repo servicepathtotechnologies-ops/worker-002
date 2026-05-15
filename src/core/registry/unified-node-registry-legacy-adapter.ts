@@ -200,7 +200,7 @@ export async function executeViaLegacyExecutor(args: {
       node as any,
       prepared.executionInput,
       nodeOutputs,
-      context.supabase,
+      context.db,
       context.workflowId,
       context.userId,
       context.currentUserId

@@ -165,7 +165,7 @@ export class IntentCompletenessValidator {
     const dataSourceNodeTypes = [
       'google_sheets', 'sheets',
       'database_read', 'database_write', 'database',
-      'supabase', 'postgresql', 'mysql', 'mongodb', 'redis',
+      'db', 'postgresql', 'mysql', 'mongodb', 'redis',
       'aws_s3', 's3',
       'dropbox', 'onedrive',
       'airtable',

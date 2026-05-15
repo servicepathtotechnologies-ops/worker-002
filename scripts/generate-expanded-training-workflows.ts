@@ -596,7 +596,7 @@ function getStaticNodeTypes(): string[] {
     // HTTP
     'http_request', 'respond_to_webhook',
     // Database
-    'database_read', 'database_write', 'supabase', 'postgresql',
+    'database_read', 'database_write', 'db', 'postgresql',
     // Google
     'google_sheets', 'google_doc', 'google_drive', 'google_gmail',
     // Transformation
@@ -691,7 +691,7 @@ function getNodePurpose(nodeType: string): string {
     google_drive: 'access files in Google Drive',
     database_read: 'read data from database',
     database_write: 'write data to database',
-    supabase: 'interact with Supabase database',
+    db: 'interact with Supabase database',
     postgresql: 'query PostgreSQL database',
     http_request: 'make an HTTP API call',
     respond_to_webhook: 'respond to a webhook request',

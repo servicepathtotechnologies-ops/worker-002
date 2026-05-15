@@ -264,7 +264,7 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     'mongodb': 'mongodb',
     'mongo': 'mongodb',
     'mongo_db': 'mongodb',
-    'supabase': 'supabase',
+    'db': 'db',
     'redis': 'redis',
     'firebase': 'firebase',
     'firestore': 'firebase',
@@ -997,7 +997,7 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     const isCrm = crmTypes.some(crm => nodeType.includes(crm));
     
     // Database nodes
-    const databaseTypes = ['database', 'postgres', 'mysql', 'mongodb', 'supabase', 'sql', 'redis', 'bigquery'];
+    const databaseTypes = ['database', 'postgres', 'mysql', 'mongodb', 'db', 'sql', 'redis', 'bigquery'];
     const isDatabase = databaseTypes.some(db => nodeType.includes(db));
     
     // AI nodes
@@ -1453,7 +1453,7 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     if (fromBase) return fromBase;
     if (t === 'http_request' || t === 'http_post' || t === 'graphql' || t === 'webhook_response') return 'http';
     if (t === 'email') return 'email';
-    if (t.includes('database_') || t === 'postgresql' || t === 'supabase' || t === 'mysql' || t === 'mongodb' || t === 'redis')
+    if (t.includes('database_') || t === 'postgresql' || t === 'db' || t === 'mysql' || t === 'mongodb' || t === 'redis')
       return 'database';
     if (t === 'linkedin' || t === 'twitter' || t === 'instagram' || t === 'facebook') return t.split('_')[0];
     if (t === 'vercel') return 'vercel';

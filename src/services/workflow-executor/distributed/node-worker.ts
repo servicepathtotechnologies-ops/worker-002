@@ -6,14 +6,14 @@
  * Can crash/restart anytime - system will recover.
  */
 
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { DbClient } from '@db/db-js';
 import { StorageManager } from './storage-manager';
 import { DistributedOrchestrator } from './distributed-orchestrator';
 import { NodeJob } from './queue-client';
 
 export interface NodeWorkerConfig {
   nodeType: string;
-  supabase: SupabaseClient;
+  db: DbClient;
   storage: StorageManager;
   orchestrator: DistributedOrchestrator;
 }
@@ -26,13 +26,13 @@ export interface NodeWorkerConfig {
  */
 export abstract class NodeWorker {
   protected nodeType: string;
-  protected supabase: SupabaseClient;
+  protected db: DbClient;
   protected storage: StorageManager;
   protected orchestrator: DistributedOrchestrator;
 
   constructor(config: NodeWorkerConfig) {
     this.nodeType = config.nodeType;
-    this.supabase = config.supabase;
+    this.db = config.db;
     this.storage = config.storage;
     this.orchestrator = config.orchestrator;
   }
@@ -49,7 +49,7 @@ export abstract class NodeWorker {
       // 1. IDEMPOTENCY: Try to acquire lock by updating status atomically
       // Only proceed if step is in 'pending' state
       if (step_id) {
-        const { data: step, error: updateError } = await this.supabase
+        const { data: step, error: updateError } = await this.db
           .from('execution_steps')
           .update({
             status: 'running',
@@ -176,7 +176,7 @@ export abstract class NodeWorker {
     nodeId: string
   ): Promise<Record<string, unknown>> {
     // Get step to find input_refs
-    const { data: step, error: stepError } = await this.supabase
+    const { data: step, error: stepError } = await this.db
       .from('execution_steps')
       .select('input_refs')
       .eq('execution_id', executionId)
@@ -206,7 +206,7 @@ export abstract class NodeWorker {
       return;
     }
 
-    await this.supabase
+    await this.db
       .from('execution_steps')
       .update({
         status,

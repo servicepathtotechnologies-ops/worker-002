@@ -117,7 +117,7 @@ describe('Bug 1 — Stale Redis cache after execution completion', () => {
       };
     });
 
-    // Mock Supabase: updateExecutionStatus writes 'success' to DB
+    // Mock DB: updateExecutionStatus writes 'success' to DB
     const mockSupabase = {
       from: jest.fn().mockImplementation(() => ({
         update: jest.fn().mockReturnThis(),
@@ -127,7 +127,7 @@ describe('Bug 1 — Stale Redis cache after execution completion', () => {
       })),
     };
 
-    jest.mock('../src/core/database/supabase-compat', () => ({
+    jest.mock('../src/core/database/aws-db-client', () => ({
       getDbClient: () => mockSupabase,
     }));
 
@@ -195,7 +195,7 @@ describe('Bug 1 — Stale Redis cache after execution completion', () => {
         getCacheRedisClient: jest.fn().mockResolvedValue(redisMock),
       };
     });
-    jest.mock('../src/core/database/supabase-compat', () => ({
+    jest.mock('../src/core/database/aws-db-client', () => ({
       getDbClient: () => mockSupabase,
     }));
 
@@ -259,7 +259,7 @@ describe('Bug 1 — Stale Redis cache after execution completion', () => {
         single: jest.fn().mockResolvedValue({ data: { id: executionId, status: 'success' }, error: null }),
       })),
     };
-    jest.mock('../src/core/database/supabase-compat', () => ({
+    jest.mock('../src/core/database/aws-db-client', () => ({
       getDbClient: () => mockSupabase,
     }));
 
@@ -348,7 +348,7 @@ describe('Bug 2 — Concurrent attach-inputs pipeline duplication', () => {
 
     const workflow = buildMinimalWorkflow(workflowId);
 
-    // Mock Supabase to return the workflow for all fetches
+    // Mock DB to return the workflow for all fetches
     const mockSupabase = {
       auth: {
         getUser: jest.fn().mockResolvedValue({ data: { user: { id: 'user-1' } }, error: null }),
@@ -372,7 +372,7 @@ describe('Bug 2 — Concurrent attach-inputs pipeline duplication', () => {
       }),
     };
 
-    jest.mock('../src/core/database/supabase-compat', () => ({
+    jest.mock('../src/core/database/aws-db-client', () => ({
       getDbClient: () => mockSupabase,
     }));
 
@@ -468,7 +468,7 @@ describe('Bug 2 — Concurrent attach-inputs pipeline duplication', () => {
       }),
     };
 
-    jest.mock('../src/core/database/supabase-compat', () => ({
+    jest.mock('../src/core/database/aws-db-client', () => ({
       getDbClient: () => mockSupabase,
     }));
 

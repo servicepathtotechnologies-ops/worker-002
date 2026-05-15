@@ -50,6 +50,19 @@ export function getNestedValue(obj: unknown, path: string): unknown {
     return getNestedValue(inputData, inputPath);
   }
 
+  // Many executor contracts normalize a single object result as [result].
+  // Let templates like {{updatedRange}} keep working for that common shape.
+  if (
+    Array.isArray(obj) &&
+    obj.length === 1 &&
+    typeof obj[0] === 'object' &&
+    obj[0] !== null &&
+    path !== 'length' &&
+    !/^\d+(\.|$)/.test(path)
+  ) {
+    return getNestedValue(obj[0], path);
+  }
+
   // Direct access (if path is a direct property)
   if (typeof obj === 'object' && obj !== null && !Array.isArray(obj)) {
     if (path in (obj as Record<string, unknown>)) {

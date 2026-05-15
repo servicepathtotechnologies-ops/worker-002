@@ -217,7 +217,7 @@ export class NodeCapabilityRegistryDSL {
     this.setCapabilities('postgresql', ['read_data', 'write_data', 'data_source', 'output']);
     this.setCapabilities('mysql', ['read_data', 'write_data', 'data_source', 'output']);
     this.setCapabilities('mongodb', ['read_data', 'write_data', 'data_source', 'output']);
-    this.setCapabilities('supabase', ['read_data', 'write_data', 'data_source', 'output']);
+    this.setCapabilities('db', ['read_data', 'write_data', 'data_source', 'output']);
     
     // Data source capabilities (read/fetch operations)
     this.setCapabilities('database', ['read_data', 'data_source', 'database']);

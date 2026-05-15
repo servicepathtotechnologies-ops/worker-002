@@ -1,4 +1,4 @@
-import { getDbClient } from '../../core/database/supabase-compat';
+import { getDbClient } from '../../core/database/aws-db-client';
 import { getRedisClient } from '../../shared/redis-client';
 import { getSubscriptionService, LimitCheckResult, EnforcementResult, UsageStats } from './subscription-service';
 
@@ -16,7 +16,7 @@ export interface WorkflowLimitConfig {
  * Provides atomic workflow count increment operations
  */
 export class WorkflowLimitService {
-  private supabase = getDbClient();
+  private db = getDbClient();
   private subscriptionService = getSubscriptionService();
   private readonly CACHE_TTL = 300; // 5 minutes
   private readonly LIMIT_CACHE_PREFIX = 'workflow:limit:';
@@ -155,7 +155,7 @@ export class WorkflowLimitService {
    */
   async decrementWorkflowCount(userId: string): Promise<boolean> {
     try {
-      const { data: success, error } = await this.supabase
+      const { data: success, error } = await this.db
         .rpc('decrement_workflow_count', { target_user_id: userId });
 
       if (error) {
@@ -189,7 +189,7 @@ export class WorkflowLimitService {
       }
 
       // Fallback to database
-      const { data, error } = await this.supabase
+      const { data, error } = await this.db
         .from('users')
         .select('workflow_count')
         .eq('id', userId)
@@ -233,12 +233,12 @@ export class WorkflowLimitService {
           if (increment > 0) {
             // Increment
             for (let i = 0; i < increment; i++) {
-              await this.supabase.rpc('increment_workflow_count', { target_user_id: userId });
+              await this.db.rpc('increment_workflow_count', { target_user_id: userId });
             }
           } else if (increment < 0) {
             // Decrement
             for (let i = 0; i < Math.abs(increment); i++) {
-              await this.supabase.rpc('decrement_workflow_count', { target_user_id: userId });
+              await this.db.rpc('decrement_workflow_count', { target_user_id: userId });
             }
           }
           
@@ -297,7 +297,7 @@ export class WorkflowLimitService {
 
     for (let attempt = 1; attempt <= this.config.maxRetries; attempt++) {
       try {
-        const { data: success, error } = await this.supabase
+        const { data: success, error } = await this.db
           .rpc('increment_workflow_count', { target_user_id: userId });
 
         if (error) {
@@ -415,7 +415,7 @@ export class WorkflowLimitService {
 
       // Test database connection
       try {
-        const { error } = await this.supabase.from('subscription_plans').select('id').limit(1);
+        const { error } = await this.db.from('subscription_plans').select('id').limit(1);
         details.database = !error;
       } catch (error) {
         details.database = false;

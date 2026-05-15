@@ -59,7 +59,7 @@ export const NODE_CREDENTIAL_REQUIREMENTS: Map<string, NodeCredentialRequirement
       displayName: 'LinkedIn OAuth',
       type: 'oauth',
       description: 'Connect your LinkedIn account via OAuth to allow posting to your profile.',
-      helpText: 'Click \"Connect LinkedIn\" to authorize this workspace with your LinkedIn account. Tokens are stored securely in Supabase (linkedin_oauth_tokens) and used automatically by LinkedIn nodes.',
+      helpText: 'Click \"Connect LinkedIn\" to authorize this workspace with your LinkedIn account. Tokens are stored securely in the database (linkedin_oauth_tokens) and used automatically by LinkedIn nodes.',
     }],
     authMethod: 'oauth',
     oauthProvider: 'linkedin',

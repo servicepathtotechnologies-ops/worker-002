@@ -126,7 +126,7 @@ describe('Task 14: Final checkpoint — full integration verification', () => {
         operation: 'list',
         bucket: 'my-bucket',
       },
-      supabase: null,
+      db: null,
       previousNodeOutput: {},
       workflowId: 'test-workflow',
       executionId: 'test-execution',

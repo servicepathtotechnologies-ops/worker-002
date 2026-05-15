@@ -155,7 +155,7 @@ export class LinearWorkflowConnector {
     }
     
     // Database nodes
-    if (['database_read', 'database_write', 'supabase', 'postgresql', 'mysql', 'mongodb'].includes(nodeType)) {
+    if (['database_read', 'database_write', 'db', 'postgresql', 'mysql', 'mongodb'].includes(nodeType)) {
       return 'database';
     }
     

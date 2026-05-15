@@ -1,13 +1,15 @@
 // Execute Workflow API Route
-// Migrated from Supabase Edge Function with correct state propagation
+// Worker API handler with correct state propagation
 
 import { Request, Response } from 'express';
-import { getDbClient } from '../core/database/supabase-compat';
-import type { SupabaseClient } from '@supabase/supabase-js';
+import { getDbClient } from '../core/database/aws-db-client';
+import type { DbClient } from '@db/db-js';
 import { config } from '../core/config';
 import { LLMAdapter } from '../shared/llm-adapter';
 import { HuggingFaceRouterClient } from '../shared/huggingface-client';
 import { getGoogleAccessToken } from '../shared/google-sheets';
+import { buildGoogleSheetsRange, resolveGoogleSheetsConfigString } from '../shared/google-sheets-range';
+import { normalizeGoogleSheetsWriteValues } from '../shared/google-sheets-write-values';
 import { REQUIRED_GMAIL_SCOPES } from '../shared/gmail-executor';
 import { LRUNodeOutputsCache } from '../core/cache/lru-node-outputs-cache';
 import { validationMiddleware } from '../core/validation/validation-middleware';
@@ -518,7 +520,7 @@ interface AWSCredentials {
  * 
  * Queries the credential vault for AWS credentials by workflow_id, node_id, and provider='aws'
  * 
- * @param supabase - Supabase client
+ * @param db - AWS RDS database client
  * @param workflowId - Workflow ID
  * @param nodeId - Node ID
  * @returns AWS credentials or throws descriptive error
@@ -526,7 +528,7 @@ interface AWSCredentials {
  * Requirements: 4.1, 4.3
  */
 async function getAWSCredentials(
-  supabase: SupabaseClient,
+  db: DbClient,
   workflowId: string,
   nodeId: string,
   userId?: string,
@@ -1920,7 +1922,7 @@ export function validateConfigAgainstSchema(
  * Requirements: 5.3
  */
 export async function logEmailAttempt(
-  supabase: SupabaseClient,
+  db: DbClient,
   logData: {
     workflowId: string;
     nodeId: string;
@@ -1936,7 +1938,7 @@ export async function logEmailAttempt(
 ): Promise<void> {
   try {
     // Log to database for audit trail
-    const { error } = await supabase.from('workflow_email_logs').insert({
+    const { error } = await db.from('workflow_email_logs').insert({
       workflow_id: logData.workflowId,
       node_id: logData.nodeId,
       recipients_to: logData.recipients.to,
@@ -1971,7 +1973,7 @@ export async function logEmailAttempt(
  * Requirements: 5.3, 7.4
  */
 export async function logDetailedError(
-  supabase: SupabaseClient,
+  db: DbClient,
   errorData: {
     workflowId: string;
     nodeId: string;
@@ -1986,7 +1988,7 @@ export async function logDetailedError(
 ): Promise<void> {
   try {
     // Log to database for audit trail
-    const { error } = await supabase.from('workflow_error_logs').insert({
+    const { error } = await db.from('workflow_error_logs').insert({
       workflow_id: errorData.workflowId,
       node_id: errorData.nodeId,
       error_type: errorData.errorType,
@@ -2016,7 +2018,7 @@ export async function executeNode(
   node: WorkflowNode,
   input: unknown,
   nodeOutputs: LRUNodeOutputsCache,
-  supabase: SupabaseClient,
+  db: DbClient,
   workflowId: string,
   userId?: string,
   currentUserId?: string
@@ -2035,7 +2037,7 @@ export async function executeNode(
       node,
       input,
       nodeOutputs,
-      supabase,
+      db,
       workflowId,
       userId,
       currentUserId,
@@ -2333,7 +2335,7 @@ export async function executeNodeLegacy(
   node: WorkflowNode,
   input: unknown,
   nodeOutputs: LRUNodeOutputsCache,
-  supabase: SupabaseClient,
+  db: DbClient,
   workflowId: string,
   userId?: string,
   currentUserId?: string
@@ -3026,7 +3028,7 @@ export async function executeNodeLegacy(
         const waitForCompletion = config.waitForCompletion !== false; // Default to true
 
         // Fetch the sub-workflow from database
-        const { data: subWorkflow, error: workflowError } = await supabase
+        const { data: subWorkflow, error: workflowError } = await db
           .from('workflows')
           .select('*')
           .eq('id', subWorkflowId)
@@ -3113,7 +3115,7 @@ export async function executeNodeLegacy(
             subNode,
             subNodeInput,
             subNodeOutputs,
-            supabase,
+            db,
             subWorkflowId,
             userId,
             currentUserId
@@ -3675,7 +3677,7 @@ export async function executeNodeLegacy(
 
         // If still not found, try workflow-level credential_vault
         if (!apiKey && effectiveUserId) {
-          const { data: workflowVaultCredential } = await supabase
+          const { data: workflowVaultCredential } = await db
             .from('credential_vault')
             .select('encrypted_value, metadata')
             .eq('user_id', effectiveUserId)
@@ -5418,7 +5420,7 @@ export async function executeNodeLegacy(
         nextNode,
         input,
         nodeOutputs,
-        supabase,
+        db,
         workflowId,
         userId,
         currentUserId
@@ -5445,7 +5447,7 @@ export async function executeNodeLegacy(
         nextNode,
         input,
         nodeOutputs,
-        supabase,
+        db,
         workflowId,
         userId,
         currentUserId
@@ -5472,7 +5474,7 @@ export async function executeNodeLegacy(
         nextNode,
         input,
         nodeOutputs,
-        supabase,
+        db,
         workflowId,
         userId,
         currentUserId
@@ -5505,7 +5507,7 @@ export async function executeNodeLegacy(
         nextNode,
         input,
         nodeOutputs,
-        supabase,
+        db,
         workflowId,
         userId,
         currentUserId
@@ -5842,7 +5844,7 @@ export async function executeNodeLegacy(
       // Get all nodes from the workflow to check if there's a chat_trigger
       let isChatbotWorkflow = false;
       try {
-        const { data: workflowData } = await supabase
+        const { data: workflowData } = await db
           .from('workflows')
           .select('nodes')
           .eq('id', workflowId)
@@ -6511,7 +6513,7 @@ export async function executeNodeLegacy(
         nextNode,
         input,
         nodeOutputs,
-        supabase,
+        db,
         workflowId,
         userId,
         currentUserId
@@ -6553,7 +6555,7 @@ export async function executeNodeLegacy(
         nextNode,
         input,
         nodeOutputs,
-        supabase,
+        db,
         workflowId,
         userId,
         currentUserId
@@ -7003,9 +7005,9 @@ export async function executeNodeLegacy(
     case 'google_sheets': {
       // Google Sheets node
       const spreadsheetId = getStringProperty(config, 'spreadsheetId', '');
-      const sheetName = getStringProperty(config, 'sheetName', 'Sheet1');
+      const sheetName = getStringProperty(config, 'sheetName', '');
       const range = getStringProperty(config, 'range', '');
-      const operation = getStringProperty(config, 'operation', 'read');
+      const operation = getStringProperty(config, 'operation', 'read').trim().toLowerCase();
       const dataJson = getStringProperty(config, 'data', '[]');
 
       if (!spreadsheetId) {
@@ -7029,22 +7031,11 @@ export async function executeNodeLegacy(
       // ✅ CRITICAL FIX: Only resolve spreadsheet ID if it contains template syntax
       // If it's already a valid spreadsheet ID (no {{ }}), use it as-is
       // This prevents template resolution from changing valid IDs
-      let resolvedSpreadsheetId: string;
-      if (spreadsheetId.includes('{{') || spreadsheetId.includes('$json') || spreadsheetId.includes('json.')) {
-        // Contains template syntax - resolve it
-        resolvedSpreadsheetId = typeof resolveWithSchema(spreadsheetId, execContext, 'string') === 'string'
-        ? resolveWithSchema(spreadsheetId, execContext, 'string') as string
-        : String(resolveTypedValue(spreadsheetId, execContext));
-      } else {
-        // No template syntax - use as-is (trim whitespace)
-        resolvedSpreadsheetId = spreadsheetId.trim();
-      }
-      const resolvedSheetName = typeof resolveWithSchema(sheetName, execContext, 'string') === 'string'
-        ? resolveWithSchema(sheetName, execContext, 'string') as string
-        : String(resolveTypedValue(sheetName, execContext));
-      const resolvedRange = range ? (typeof resolveWithSchema(range, execContext, 'string') === 'string'
-        ? resolveWithSchema(range, execContext, 'string') as string
-        : String(resolveTypedValue(range, execContext))) : undefined;
+      const resolveConfigString = (value: string) =>
+        resolveGoogleSheetsConfigString(value, (template) => resolveTypedValue(template, execContext));
+      const resolvedSpreadsheetId = resolveConfigString(spreadsheetId);
+      let resolvedSheetName = resolveConfigString(sheetName);
+      const resolvedRange = range ? resolveConfigString(range) : '';
       
       // ✅ DEBUG: Log resolved values AFTER resolution
       console.log(`[Google Sheets] Resolved config (after resolution):`, {
@@ -7070,7 +7061,7 @@ export async function executeNodeLegacy(
         if (currentUserId && currentUserId !== userId) userIdsToTry.push(currentUserId);
         
         const accessToken = userIdsToTry.length > 0 
-          ? await getGoogleAccessToken(supabase, userIdsToTry) 
+          ? await getGoogleAccessToken(db, userIdsToTry) 
           : null;
         
         if (!accessToken) {
@@ -7095,13 +7086,32 @@ export async function executeNodeLegacy(
         // Build the API URL
         // ✅ CRITICAL: Google Sheets API requires URL-encoded range parameter
         // Format: SheetName!A1:B10 (exclamation mark separates sheet name from range)
-        let rangeParam: string;
-        if (resolvedRange) {
-          rangeParam = `${resolvedSheetName}!${resolvedRange}`;
-        } else {
-          // If no range specified, use just the sheet name (gets all data)
-          rangeParam = resolvedSheetName;
+        if (!resolvedSheetName) {
+          const metadataResponse = await fetch(
+            `https://sheets.googleapis.com/v4/spreadsheets/${resolvedSpreadsheetId}?fields=sheets.properties.title`,
+            {
+              headers: {
+                'Authorization': `Bearer ${accessToken}`,
+              },
+            }
+          );
+
+          if (!metadataResponse.ok) {
+            const errorText = await metadataResponse.text();
+            throw new Error(`Google Sheets metadata API error: ${errorText}`);
+          }
+
+          const metadata = await metadataResponse.json() as {
+            sheets?: Array<{ properties?: { title?: string } }>;
+          };
+          resolvedSheetName = metadata.sheets?.[0]?.properties?.title || '';
         }
+
+        const rangeParam = buildGoogleSheetsRange({
+          sheetName: resolvedSheetName,
+          range: resolvedRange,
+          operation,
+        });
         
         // URL encode the range parameter (required by Google Sheets API)
         // encodeURIComponent properly encodes special characters like !, :, etc.
@@ -7117,7 +7127,14 @@ export async function executeNodeLegacy(
         console.log(`[Google Sheets] API URL: ${apiUrl}`);
 
         if (operation === 'read') {
-          const response = await fetch(`${apiUrl}?valueRenderOption=UNFORMATTED_VALUE`, {
+          const readDirection = getStringProperty(config, 'readDirection', 'rows').toLowerCase() === 'columns'
+            ? 'COLUMNS'
+            : 'ROWS';
+          const readParams = new URLSearchParams({
+            valueRenderOption: 'UNFORMATTED_VALUE',
+            majorDimension: readDirection,
+          });
+          const response = await fetch(`${apiUrl}?${readParams.toString()}`, {
             headers: {
               'Authorization': `Bearer ${accessToken}`,
             },
@@ -7192,6 +7209,9 @@ export async function executeNodeLegacy(
 
           // ✅ Compatibility: Keep raw `values` (array-of-arrays) AND provide `items` (array-of-objects)
           // so UI + logic nodes can render cleanly like n8n.
+          const outputFormat = getStringProperty(config, 'outputFormat', 'json').toLowerCase();
+          const text = values.map((row) => (Array.isArray(row) ? row.join('\t') : String(row ?? ''))).join('\n');
+
           return {
             ...inputObj,
             items: itemsObjects,
@@ -7204,27 +7224,37 @@ export async function executeNodeLegacy(
               values,
             },
             range: result.range,
+            outputFormat,
+            ...(outputFormat === 'text' ? { text } : {}),
+            ...(outputFormat === 'keyvalue' ? { keyValue: itemsObjects } : {}),
           };
-        } else if (operation === 'write' || operation === 'append') {
+        } else if (operation === 'write' || operation === 'append' || operation === 'update') {
           // ✅ REFACTORED: Preserve data types - parse only when needed
-          let data: unknown[][];
-          try {
-            const resolvedDataRaw = resolveTypedValue(dataJson, execContext);
-            // If it's already an array of arrays, use it
-            if (Array.isArray(resolvedDataRaw) && Array.isArray(resolvedDataRaw[0])) {
-              data = resolvedDataRaw as unknown[][];
-            } else {
-              // Otherwise parse as JSON string
-              const resolvedDataStr = String(resolvedDataRaw);
-              data = JSON.parse(resolvedDataStr);
-            }
-          } catch {
-            // Try to extract data from input
-            data = Array.isArray(inputObj.data) ? inputObj.data : [[inputObj]];
+          const rawValues = (config as Record<string, unknown>).values;
+          const rawData = (config as Record<string, unknown>).data ?? dataJson;
+          const data = normalizeGoogleSheetsWriteValues({
+            values: rawValues,
+            data: rawData,
+            fallbackInput: inputObj,
+            resolveTemplate: (template) => resolveTypedValue(template, execContext),
+          });
+
+          if (data.length === 0) {
+            return {
+              ...inputObj,
+              _error: 'Google Sheets node: No values provided for write/append/update operation',
+            };
           }
 
           const method = operation === 'append' ? 'POST' : 'PUT';
-          const url = operation === 'append' ? `${apiUrl}:append?valueInputOption=RAW` : `${apiUrl}?valueInputOption=RAW`;
+          const writeParams = new URLSearchParams({ valueInputOption: 'RAW' });
+          if (operation === 'append') {
+            writeParams.set('insertDataOption', 'INSERT_ROWS');
+            writeParams.set('includeValuesInResponse', 'true');
+          }
+          const url = operation === 'append'
+            ? `${apiUrl}:append?${writeParams.toString()}`
+            : `${apiUrl}?${writeParams.toString()}`;
 
           const response = await fetch(url, {
             method,
@@ -7243,16 +7273,31 @@ export async function executeNodeLegacy(
           }
 
           const result = await response.json() as {
-            updates?: { updatedRange?: string; updatedRows?: number; updatedColumns?: number };
+            spreadsheetId?: string;
+            tableRange?: string;
+            updates?: {
+              updatedRange?: string;
+              updatedRows?: number;
+              updatedColumns?: number;
+              updatedCells?: number;
+              updatedData?: { values?: unknown[][] };
+            };
             updatedRange?: string;
             updatedRows?: number;
             updatedColumns?: number;
+            updatedCells?: number;
           };
           return {
             ...inputObj,
+            success: true,
+            spreadsheetId: result.spreadsheetId || resolvedSpreadsheetId,
+            tableRange: result.tableRange,
             updatedRange: result.updates?.updatedRange || result.updatedRange,
             updatedRows: result.updates?.updatedRows || result.updatedRows,
             updatedColumns: result.updates?.updatedColumns || result.updatedColumns,
+            updatedCells: result.updates?.updatedCells || result.updatedCells,
+            values: data,
+            appendedValues: result.updates?.updatedData?.values,
           };
         } else {
           return {
@@ -7288,7 +7333,7 @@ export async function executeNodeLegacy(
       const content = getStringProperty(config, 'content', '');
       const format = getStringProperty(config, 'format', 'text');
 
-      // Extract document ID from URL if provided
+      // Extract document ID from URL if provided (not needed for 'create')
       let resolvedDocumentId = documentId;
       if (!resolvedDocumentId && documentUrl) {
         const urlMatch = documentUrl.match(/\/d\/([a-zA-Z0-9-_]+)/);
@@ -7297,10 +7342,11 @@ export async function executeNodeLegacy(
         }
       }
 
-      if (!resolvedDocumentId) {
+      // Guard only for operations that require an existing document
+      if (operation !== 'create' && !resolvedDocumentId) {
         return {
           ...inputObj,
-          _error: 'Google Docs node: Document ID or Document URL is required',
+          _error: `Google Docs node: Document ID or Document URL is required for the '${operation}' operation`,
         };
       }
 
@@ -7330,7 +7376,7 @@ export async function executeNodeLegacy(
         if (currentUserId && currentUserId !== userId) userIdsToTry.push(currentUserId);
         
         const accessToken = userIdsToTry.length > 0 
-          ? await getGoogleAccessToken(supabase, userIdsToTry) 
+          ? await getGoogleAccessToken(db, userIdsToTry) 
           : null;
         
         if (!accessToken) {
@@ -7399,39 +7445,147 @@ export async function executeNodeLegacy(
             };
           }
 
-          // Use Google Docs API to write/update document content
-          // Note: This is a simplified implementation - full implementation would use batchUpdate
-          const apiUrl = `https://docs.googleapis.com/v1/documents/${resolvedDocumentIdFinal}:batchUpdate`;
-          
-          // Clear existing content and insert new content
-          const response = await fetch(apiUrl, {
+          // Step 1: Read document to get actual content length
+          const getDocUrl = `https://docs.googleapis.com/v1/documents/${resolvedDocumentIdFinal}`;
+          const getDocResponse = await fetch(getDocUrl, {
+            headers: { 'Authorization': `Bearer ${accessToken}` },
+          });
+          if (!getDocResponse.ok) {
+            const errorText = await getDocResponse.text();
+            throw new Error(`Google Docs API error: ${errorText}`);
+          }
+          const docData = await getDocResponse.json() as {
+            body?: { content?: Array<{ endIndex?: number }> };
+          };
+
+          // Find the last element's endIndex — every doc has a mandatory trailing
+          // newline, so the writable range is [1, lastEndIndex - 1].
+          const bodyContent = docData.body?.content ?? [];
+          const lastElement = bodyContent[bodyContent.length - 1];
+          const docEndIndex = typeof lastElement?.endIndex === 'number' ? lastElement.endIndex : 1;
+
+          // Step 2: Build batchUpdate — delete existing content only if non-empty
+          const batchRequests: unknown[] = [];
+          if (docEndIndex > 1) {
+            batchRequests.push({
+              deleteContentRange: {
+                range: { startIndex: 1, endIndex: docEndIndex - 1 },
+              },
+            });
+          }
+          batchRequests.push({
+            insertText: { location: { index: 1 }, text: resolvedContent },
+          });
+
+          const writeUrl = `https://docs.googleapis.com/v1/documents/${resolvedDocumentIdFinal}:batchUpdate`;
+          const writeResponse = await fetch(writeUrl, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${accessToken}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ requests: batchRequests }),
+          });
+
+          if (!writeResponse.ok) {
+            const errorText = await writeResponse.text();
+            throw new Error(`Google Docs API error: ${errorText}`);
+          }
+
+          return {
+            ...inputObj,
+            success: true,
+            documentId: resolvedDocumentIdFinal,
+            content: resolvedContent,
+          };
+        } else if (operation === 'create') {
+          // Create a new Google Doc, then optionally insert content
+          const title = getStringProperty(config, 'title', 'Untitled Document');
+          const createUrl = `https://docs.googleapis.com/v1/documents`;
+          const createResponse = await fetch(createUrl, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${accessToken}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ title }),
+          });
+
+          if (!createResponse.ok) {
+            const errorText = await createResponse.text();
+            throw new Error(`Google Docs API error: ${errorText}`);
+          }
+
+          const newDoc = await createResponse.json() as { documentId?: string; title?: string };
+          const newDocId = newDoc.documentId ?? '';
+
+          // If content was provided, insert it into the new document
+          if (resolvedContent && newDocId) {
+            const insertUrl = `https://docs.googleapis.com/v1/documents/${newDocId}:batchUpdate`;
+            const insertResponse = await fetch(insertUrl, {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                requests: [{ insertText: { location: { index: 1 }, text: resolvedContent } }],
+              }),
+            });
+            if (!insertResponse.ok) {
+              const errorText = await insertResponse.text();
+              throw new Error(`Google Docs API error inserting content: ${errorText}`);
+            }
+          }
+
+          return {
+            ...inputObj,
+            success: true,
+            documentId: newDocId,
+            title: newDoc.title ?? title,
+            documentUrl: `https://docs.google.com/document/d/${newDocId}/edit`,
+            content: resolvedContent,
+          };
+        } else if (operation === 'append') {
+          if (!resolvedContent) {
+            return {
+              ...inputObj,
+              _error: 'Google Docs node: Content is required for append operation',
+            };
+          }
+
+          // Read document to find where to append (before the trailing newline)
+          const getDocUrl2 = `https://docs.googleapis.com/v1/documents/${resolvedDocumentIdFinal}`;
+          const getDocResponse2 = await fetch(getDocUrl2, {
+            headers: { 'Authorization': `Bearer ${accessToken}` },
+          });
+          if (!getDocResponse2.ok) {
+            const errorText = await getDocResponse2.text();
+            throw new Error(`Google Docs API error: ${errorText}`);
+          }
+          const docData2 = await getDocResponse2.json() as {
+            body?: { content?: Array<{ endIndex?: number }> };
+          };
+          const bodyContent2 = docData2.body?.content ?? [];
+          const lastElement2 = bodyContent2[bodyContent2.length - 1];
+          const appendIndex = typeof lastElement2?.endIndex === 'number'
+            ? lastElement2.endIndex - 1  // insert before mandatory trailing newline
+            : 1;
+
+          const appendUrl = `https://docs.googleapis.com/v1/documents/${resolvedDocumentIdFinal}:batchUpdate`;
+          const appendResponse = await fetch(appendUrl, {
             method: 'POST',
             headers: {
               'Authorization': `Bearer ${accessToken}`,
               'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-              requests: [
-                {
-                  deleteContentRange: {
-                    range: {
-                      startIndex: 1,
-                      endIndex: 1, // Will be updated after reading document length
-                    },
-                  },
-                },
-                {
-                  insertText: {
-                    location: { index: 1 },
-                    text: resolvedContent,
-                  },
-                },
-              ],
+              requests: [{ insertText: { location: { index: Math.max(1, appendIndex) }, text: resolvedContent } }],
             }),
           });
 
-          if (!response.ok) {
-            const errorText = await response.text();
+          if (!appendResponse.ok) {
+            const errorText = await appendResponse.text();
             throw new Error(`Google Docs API error: ${errorText}`);
           }
 
@@ -7444,7 +7598,7 @@ export async function executeNodeLegacy(
         } else {
           return {
             ...inputObj,
-            _error: `Google Docs node: Unsupported operation: ${operation}`,
+            _error: `Google Docs node: Unsupported operation: ${operation}. Supported: read, write, create, append`,
           };
         }
       } catch (error) {
@@ -8891,20 +9045,20 @@ export async function executeNodeLegacy(
     case 'notion': {
       // ✅ Notion node with comprehensive resource and operation support
       // Supports: page, database, block, user, comment, search
-      // Uses OAuth token from header (via Supabase)
+      // Uses OAuth token from header (via AWS RDS token storage)
       const resource = getStringProperty(config, 'resource', 'page');
       const operation = getStringProperty(config, 'operation', 'get');
 
       // Use typed execution context
       const execContext = createTypedContext();
       
-      // Get OAuth token from Supabase
+      // Get OAuth token from DB token storage
       const userIdsToTry: string[] = [];
       if (userId) userIdsToTry.push(userId);
       if (currentUserId && currentUserId !== userId) userIdsToTry.push(currentUserId);
 
       const resolvedApiToken = userIdsToTry.length > 0 
-        ? await getNotionAccessToken(supabase, userIdsToTry)
+        ? await getNotionAccessToken(db, userIdsToTry)
         : null;
 
       if (!resolvedApiToken) {
@@ -9400,20 +9554,20 @@ export async function executeNodeLegacy(
     case 'twitter': {
       // ✅ Twitter/X node with comprehensive resource and operation support
       // Supports: tweet, user, timeline, search, list, media, directMessage, space
-      // Uses OAuth token from header (via Supabase)
+      // Uses OAuth token from header (via AWS RDS token storage)
       const resource = getStringProperty(config, 'resource', 'tweet');
       const operation = getStringProperty(config, 'operation', 'create');
 
       // Use typed execution context
       const execContext = createTypedContext();
       
-      // Get OAuth token from Supabase
+      // Get OAuth token from DB token storage
       const userIdsToTry: string[] = [];
       if (userId) userIdsToTry.push(userId);
       if (currentUserId && currentUserId !== userId) userIdsToTry.push(currentUserId);
 
       const resolvedAccessToken = userIdsToTry.length > 0 
-        ? await getTwitterAccessToken(supabase, userIdsToTry)
+        ? await getTwitterAccessToken(db, userIdsToTry)
         : null;
 
       if (!resolvedAccessToken) {
@@ -10262,20 +10416,20 @@ export async function executeNodeLegacy(
     case 'instagram': {
       // ✅ Instagram node with comprehensive resource and operation support
       // Supports: user, media, comment, hashtag, story, insights
-      // Uses Facebook OAuth token with Instagram permissions (via Supabase)
+      // Uses Facebook OAuth token with Instagram permissions (via AWS RDS token storage)
       const resource = getStringProperty(config, 'resource', 'user');
       const operation = getStringProperty(config, 'operation', 'get');
 
       // Use typed execution context
       const execContext = createTypedContext();
       
-      // Get OAuth token from Supabase
+      // Get OAuth token from DB token storage
       const userIdsToTry: string[] = [];
       if (userId) userIdsToTry.push(userId);
       if (currentUserId && currentUserId !== userId) userIdsToTry.push(currentUserId);
 
       const resolvedAccessToken = userIdsToTry.length > 0 
-        ? await getInstagramAccessToken(supabase, userIdsToTry)
+        ? await getInstagramAccessToken(db, userIdsToTry)
         : null;
 
       if (!resolvedAccessToken) {
@@ -10999,20 +11153,20 @@ export async function executeNodeLegacy(
     case 'whatsapp_cloud': {
       // ✅ WhatsApp node with comprehensive resource and operation support
       // Supports: message, media, template, businessProfile, phoneNumber, webhook
-      // Uses Facebook OAuth token with WhatsApp permissions (via Supabase)
+      // Uses Facebook OAuth token with WhatsApp permissions (via AWS RDS token storage)
       const resource = getStringProperty(config, 'resource', 'message');
       const operation = getStringProperty(config, 'operation', 'sendText');
 
       // Use typed execution context
       const execContext = createTypedContext();
       
-      // Get OAuth token from Supabase
+      // Get OAuth token from DB token storage
       const userIdsToTry: string[] = [];
       if (userId) userIdsToTry.push(userId);
       if (currentUserId && currentUserId !== userId) userIdsToTry.push(currentUserId);
 
       const resolvedAccessToken = userIdsToTry.length > 0 
-        ? await getWhatsAppAccessToken(supabase, userIdsToTry)
+        ? await getWhatsAppAccessToken(db, userIdsToTry)
         : null;
 
       if (!resolvedAccessToken) {
@@ -11746,14 +11900,14 @@ export async function executeNodeLegacy(
     case 'google_calendar': {
       // ✅ Google Calendar node with comprehensive resource and operation support
       // Supports: calendar, event, calendarList, acl, settings, colors, freebusy, watch
-      // Uses OAuth token from header (via Supabase)
+      // Uses OAuth token from header (via AWS RDS token storage)
       const resource = getStringProperty(config, 'resource', 'event');
       const operation = getStringProperty(config, 'operation', 'list');
 
       // Use typed execution context
       const execContext = createTypedContext();
       
-      // Get OAuth token from Supabase
+      // Get OAuth token from DB token storage
       const userIdsToTry: string[] = [];
       if (userId) userIdsToTry.push(userId);
       if (currentUserId && currentUserId !== userId) userIdsToTry.push(currentUserId);
@@ -11856,7 +12010,7 @@ export async function executeNodeLegacy(
         };
 
         // Execute the operation
-        const result = await executeGoogleCalendarOperation(supabase, userIdsToTry, params);
+        const result = await executeGoogleCalendarOperation(db, userIdsToTry, params);
 
         // Return result
         return {
@@ -11911,7 +12065,7 @@ export async function executeNodeLegacy(
         // Import and use centralized dispatcher
         const { executeSocialNode } = await import('../services/social/social-dispatcher');
         const result = await executeSocialNode(
-          supabase,
+          db,
           resolvedConfig as { provider: 'github' | 'facebook'; operation: string; [key: string]: any },
           userId,
           currentUserId
@@ -11988,7 +12142,7 @@ export async function executeNodeLegacy(
         if (currentUserId && currentUserId !== userId) userIdsToTry.push(currentUserId);
         
         accessToken = userIdsToTry.length > 0 
-          ? await getLinkedInAccessToken(supabase, userIdsToTry) || ''
+          ? await getLinkedInAccessToken(db, userIdsToTry) || ''
           : '';
       }
       
@@ -12857,7 +13011,7 @@ export async function executeNodeLegacy(
         const { resolveGmailCredentials, sendGmailEmail, listGmailMessages, getGmailMessage } = await import('../shared/gmail-executor');
         
         const credential = await resolveGmailCredentials(
-          supabase,
+          db,
           workflowId,
           node.id,
           userId,
@@ -12962,6 +13116,7 @@ export async function executeNodeLegacy(
           return {
             ...inputObj,
             messages: listResult.messages || [],
+            resultSizeEstimate: listResult.resultSizeEstimate ?? (listResult.messages || []).length,
             count: (listResult.messages || []).length,
           };
         } else if (operation === 'get') {
@@ -13005,6 +13160,7 @@ export async function executeNodeLegacy(
           return {
             ...inputObj,
             messages: searchResult.messages || [],
+            resultSizeEstimate: searchResult.resultSizeEstimate ?? (searchResult.messages || []).length,
             query: resolvedQuery,
             count: (searchResult.messages || []).length,
           };
@@ -13889,7 +14045,7 @@ export async function executeNodeLegacy(
       if (!accessToken || !clientId || !clientSecret) {
         const { getZohoCredentials } = await import('../shared/zoho-oauth');
         const credentials = await getZohoCredentials(
-          supabase,
+          db,
           config,
           userId,
           currentUserId
@@ -14273,7 +14429,7 @@ export async function executeNodeLegacy(
     case 'redis':
     case 'snowflake':
     case 'sqlite':
-    case 'supabase':
+    case 'db':
     case 'firebase':
     case 'google_cloud_storage':
     case 'timescaledb':
@@ -15542,7 +15698,7 @@ export async function executeNodeLegacy(
       // Uses new Task 4, 5, 6 functions for recipient processing, attachment handling, and email sending
       try {
         // Phase 1: Get AWS credentials
-        const credentials = await getAWSCredentials(supabase, workflowId, node.id, userId, currentUserId);
+        const credentials = await getAWSCredentials(db, workflowId, node.id, userId, currentUserId);
         if (!credentials) {
           return {
             ...inputObj,
@@ -15794,7 +15950,7 @@ export async function executeNodeLegacy(
         // Requirement 8.5: Support credential preflight checks before execution
         
         // If token is not provided in config, try to resolve from credentials
-        if (!token && supabase && workflowId) {
+        if (!token && db && workflowId) {
           try {
             console.log('[Vercel] 🔐 Attempting to resolve credentials from credential store');
             
@@ -16637,13 +16793,13 @@ export async function executeNodeLegacy(
  * Why: Users edit node configs and save → execution must reflect latest saved state.
  * 
  * Enforcement:
- * - Always call supabase.from('workflows').select().eq('id', workflowId).single()
+ * - Always call db.from('workflows').select().eq('id', workflowId).single()
  * - Never use workflowCache, Map<workflowId>, or any in-memory storage
  * - Normalization happens AFTER DB fetch, not before
  * - Log graph hash to verify fresh data
  */
 export default async function executeWorkflowHandler(req: Request, res: Response) {
-  const supabase = getDbClient();
+  const db = getDbClient();
   const { workflowId, executionId: providedExecutionId, input = {}, useQueue } = req.body;
 
   // ✅ TEMP: Structured logging at endpoint start
@@ -16678,7 +16834,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
           const token = authHeader.replace('Bearer ', '').trim();
           if (token) {
             authToken = token;
-            const { data: { user } } = await supabase.auth.getUser(token);
+            const { data: { user } } = await db.auth.getUser(token);
             if (user) {
               userId = user.id;
             }
@@ -16761,7 +16917,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
       const token = authHeader.replace('Bearer ', '').trim();
       if (token) {
         try {
-          const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+          const { data: { user }, error: authError } = await db.auth.getUser(token);
           if (!authError && user) {
             currentUserId = user.id;
             console.log(`[Execute Workflow] Current user: ${currentUserId}`);
@@ -16770,7 +16926,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
             // JWT access tokens often lack the email claim, so fall back to a DB lookup.
             let emailForResolution = user.email || '';
             if (!emailForResolution) {
-              const { data: emailRow } = await supabase
+              const { data: emailRow } = await db
                 .from('users').select('email').eq('id', currentUserId).single()
                 .catch(() => ({ data: null }));
               emailForResolution = (emailRow as any)?.email || '';
@@ -16791,7 +16947,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
           // Handle network/connection errors gracefully
           const errorMsg = authErr?.message || 'Unknown error';
           if (errorMsg.includes('ENOTFOUND') || errorMsg.includes('fetch failed')) {
-            console.log('[Execute Workflow] Supabase connection issue - continuing without current user ID');
+            console.log('[Execute Workflow] DB connection issue - continuing without current user ID');
           } else {
             console.log(`[Execute Workflow] Auth extraction error (non-fatal): ${errorMsg}`);
           }
@@ -16812,7 +16968,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
     // ✅ CRITICAL: ALWAYS fetch fresh workflow from DB - NEVER use cache
     // This ensures execution always uses the latest saved configuration
     // ⚠️ DO NOT use any in-memory cache or cached workflow objects here
-    const { data: workflow, error: workflowError } = await supabase
+    const { data: workflow, error: workflowError } = await db
       .from('workflows')
       .select('*')
       .eq('id', workflowId)
@@ -16837,15 +16993,15 @@ export default async function executeWorkflowHandler(req: Request, res: Response
     if (workflowError || !workflow) {
       console.error('Workflow fetch error:', workflowError);
       
-      // Check if it's a Supabase connection error
+      // Check if it's a DB connection error
       const errorMessage = workflowError?.message || String(workflowError || '');
       if (errorMessage.includes('ENOTFOUND') || 
           errorMessage.includes('fetch failed') || 
           errorMessage.includes('your-project-id')) {
         return res.status(500).json({ 
           error: 'Database configuration error',
-          message: 'Supabase URL is not configured correctly. Please update SUPABASE_URL in your .env file with your actual Supabase project URL.',
-          hint: 'Current URL appears to be a placeholder: your-project-id.supabase.co',
+          message: 'DATABASE_URL is not configured correctly. Please update DATABASE_URL in your .env file with your actual AWS RDS connection string.',
+          hint: 'Current URL appears to be a placeholder: your-project-id.db.co',
           details: 'The workflow cannot be fetched because the database connection is misconfigured.'
         });
       }
@@ -17200,6 +17356,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
       blockingMissingCount,
       executionValidationReady: executionValidation.ready,
       executionValidationErrors: executionValidation.errors,
+      executionValidationIssues: executionValidation.validationIssues || [],
       executionValidationMissingCredentials: executionValidation.missingCredentials,
     };
     
@@ -17223,7 +17380,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
         console.log(`[ExecuteWorkflow] ✅ Workflow has all inputs and credentials - auto-updating status to active, phase to ready_for_execution`);
         
         // Auto-update status to 'active' (valid enum) and phase to 'ready_for_execution' (TEXT)
-        const { data: statusUpdateData, error: statusUpdateError } = await supabase
+        const { data: statusUpdateData, error: statusUpdateError } = await db
           .from('workflows')
           .update({
             status: 'active', // Use valid enum value
@@ -17358,7 +17515,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
 
     // Handle execution ID (for resuming from webhook/form triggers)
     if (providedExecutionId) {
-      const { data: existingExecution, error: fetchError } = await supabase
+      const { data: existingExecution, error: fetchError } = await db
         .from('executions')
         .select('id, started_at, input, status')
         .eq('id', providedExecutionId)
@@ -17380,7 +17537,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
       }
 
       // Try to acquire lock for resume
-      const lockResult = await acquireExecutionLock(supabase, workflowId, executionId);
+      const lockResult = await acquireExecutionLock(db, workflowId, executionId);
       if (!lockResult.acquired) {
         return res.status(409).json({
           code: ErrorCode.RUN_ALREADY_ACTIVE,
@@ -17397,13 +17554,13 @@ export default async function executeWorkflowHandler(req: Request, res: Response
 
       try {
         if (!existingExecution.started_at) {
-          await supabase
+          await db
             .from('executions')
             .update({ started_at: new Date().toISOString() })
             .eq('id', executionId);
         }
 
-        await supabase
+        await db
           .from('executions')
           .update({
             status: 'running',
@@ -17411,18 +17568,18 @@ export default async function executeWorkflowHandler(req: Request, res: Response
           })
           .eq('id', executionId);
 
-        await logExecutionEvent(supabase, executionId!, workflowId!, 'RESUME_STARTED', {
+        await logExecutionEvent(db, executionId!, workflowId!, 'RESUME_STARTED', {
           providedExecutionId,
           previousStatus: existingExecution.status,
         });
       } catch (resumeSetupErr: any) {
-        await releaseExecutionLock(supabase, workflowId, executionId);
+        await releaseExecutionLock(db, workflowId, executionId);
         throw resumeSetupErr;
       }
     } else {
       // Create new execution
       const startedAt = new Date().toISOString();
-      const { data: newExecution, error: execError } = await supabase
+      const { data: newExecution, error: execError } = await db
         .from('executions')
         .insert({
           workflow_id: workflowId,
@@ -17488,7 +17645,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
         timestamp: new Date().toISOString(),
       }, null, 2));
 
-      const lockResult = await acquireExecutionLock(supabase, workflowId, executionId);
+      const lockResult = await acquireExecutionLock(db, workflowId, executionId);
       
       // ✅ TEMP: Structured logging after lock acquisition
       console.log('[ExecuteWorkflow] 🟡 LOCK_ACQUIRE_RESULT', JSON.stringify({
@@ -17502,7 +17659,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
 
       if (!lockResult.acquired) {
         // Clean up execution record
-        await supabase.from('executions').delete().eq('id', executionId);
+        await db.from('executions').delete().eq('id', executionId);
         
         return res.status(409).json({
           code: ErrorCode.RUN_ALREADY_ACTIVE,
@@ -17527,7 +17684,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
 
       // Log lock acquired and run started events (executionId and workflowId are guaranteed to be defined above)
       try {
-        await logExecutionEvent(supabase, executionId!, workflowId!, 'LOCK_ACQUIRED', {
+        await logExecutionEvent(db, executionId!, workflowId!, 'LOCK_ACQUIRED', {
           workflowId,
           executionId,
         });
@@ -17542,7 +17699,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
       }
 
       try {
-        await logExecutionEvent(supabase, executionId!, workflowId!, 'RUN_STARTED', {
+        await logExecutionEvent(db, executionId!, workflowId!, 'RUN_STARTED', {
           workflowId,
           executionId,
           input,
@@ -17553,7 +17710,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
         if (warnings.length > 0) {
           for (const warning of warnings) {
             try {
-              await logExecutionEvent(supabase, executionId!, workflowId!, 'WARNING', {
+              await logExecutionEvent(db, executionId!, workflowId!, 'WARNING', {
                 message: warning,
                 severity: 'warning',
               });
@@ -17598,7 +17755,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
     // Architecture: Memory (Hot) → Database (Warm, ACID) → Object Storage (Cold)
     
     // Initialize persistent layer (ACID-compliant database persistence)
-    const persistentLayer = new PersistentLayer(supabase);
+    const persistentLayer = new PersistentLayer(db);
     
     // Initialize object storage service (optional, for large payloads >1MB)
     const objectStorage = createObjectStorageService();
@@ -17693,6 +17850,28 @@ export default async function executeWorkflowHandler(req: Request, res: Response
       });
     }
     
+    // ✅ PRE-EXECUTION: Validate all node configs before any node runs
+    const { validateWorkflowConfig } = await import('../core/utils/pre-execution-validator');
+    const configCheck = validateWorkflowConfig(
+      nodes.map((n) => ({
+        id: n.id,
+        type: String(n.data?.type || n.type || ''),
+        data: { label: n.data?.label, config: n.data?.config },
+      })),
+    );
+    if (!configCheck.valid) {
+      return res.status(400).json({
+        code: 'MISSING_REQUIRED_INPUTS',
+        error: 'Some nodes have missing required fields',
+        message: `${configCheck.issues.length} node(s) need configuration before running.`,
+        hint: "Open each highlighted node's Properties panel and fill in the missing fields.",
+        details: {
+          missingInputs: configCheck.missingInputs,
+          issues: configCheck.issues,
+        },
+      });
+    }
+
     const executionOrder = executionPlan.executionOrder.filter(n => n.data.type !== 'error_trigger');
     const errorTriggerNodes = executionPlan.executionOrder.filter(n => n.data.type === 'error_trigger');
 
@@ -17724,7 +17903,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
     // ✅ FIX: Use execution input when resuming (contains form submission data)
     let executionInput = input; // Default to request body input
     if (providedExecutionId) {
-      const { data: execData } = await supabase
+      const { data: execData } = await db
         .from('executions')
         .select('waiting_for_node_id, logs, input, trigger, status')
         .eq('id', executionId)
@@ -18203,7 +18382,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
         if (executionId) {
           try {
             const runningLogs = [...logs, log];
-            const { error: runningLogsError } = await supabase
+            const { error: runningLogsError } = await db
               .from('executions')
               .update({ logs: runningLogs })
               .eq('id', executionId);
@@ -18250,7 +18429,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
             
             console.log(`[Form Node] Updating execution with:`, updateData);
             
-            const { data: updatedExecution, error: updateError } = await supabase
+            const { data: updatedExecution, error: updateError } = await db
               .from('executions')
               .update(updateData)
               .eq('id', executionId)
@@ -18273,7 +18452,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
                   error: 'Database migration required',
                   message: 'The database schema needs to be updated for form triggers to work.',
                   details: errorMessage,
-                  migrationHint: 'Please run the form_trigger_setup.sql migration in your Supabase SQL Editor. This adds the "waiting" status, "form" trigger, and "waiting_for_node_id" column.',
+                  migrationHint: 'Please run the form_trigger_setup.sql migration in your database SQL editor. This adds the "waiting" status, "form" trigger, and "waiting_for_node_id" column.',
                 });
               }
               
@@ -18307,7 +18486,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
           
           // Update execution with logs before returning
           if (executionId) {
-            const { error: logError } = await supabase
+            const { error: logError } = await db
               .from('executions')
               .update({ logs })
               .eq('id', executionId);
@@ -18323,7 +18502,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
           if (executionId && workflowId) {
             try {
               const { releaseExecutionLock } = await import('../services/execution/execution-lock');
-              await releaseExecutionLock(supabase, workflowId, executionId);
+              await releaseExecutionLock(db, workflowId, executionId);
               console.log(`[Form Node] ✅ Released execution lock for execution ${executionId} (workflow paused waiting for form)`);
             } catch (lockError) {
               console.error('[Form Node] Failed to release execution lock:', lockError);
@@ -18364,7 +18543,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
         try {
           // ✅ CRITICAL: Log node started event
           try {
-            await logExecutionEvent(supabase, executionId, workflowId, 'NODE_STARTED', {
+            await logExecutionEvent(db, executionId, workflowId, 'NODE_STARTED', {
               nodeId: node.id,
               nodeName: node.data?.label || node.id,
               nodeType,
@@ -18376,7 +18555,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
           }
 
           // ✅ CRITICAL: Check if node was already completed (resume logic)
-          const { data: existingStep } = await supabase
+          const { data: existingStep } = await db
             .from('execution_steps')
             .select('*')
             .eq('execution_id', executionId)
@@ -18389,7 +18568,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
             output = existingStep.output_json;
             
             // Log resume event
-            await logExecutionEvent(supabase, executionId, workflowId, 'NODE_FINISHED', {
+            await logExecutionEvent(db, executionId, workflowId, 'NODE_FINISHED', {
               nodeId: node.id,
               nodeName: node.data?.label || node.id,
               nodeType,
@@ -18423,7 +18602,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
           // manual_trigger which is the very first node polled by the UI).
           // Placed AFTER resume check so we never overwrite a completed step.
           try {
-            await supabase
+            await db
               .from('execution_steps')
               .upsert({
                 execution_id: executionId,
@@ -18442,7 +18621,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
           // polling /api/execution-status sees which node is actively running.
           // Also invalidate the Redis cache so the next poll gets fresh data immediately.
           try {
-            await supabase
+            await db
               .from('executions')
               .update({ current_node: node.id })
               .eq('id', executionId);
@@ -18472,8 +18651,8 @@ export default async function executeWorkflowHandler(req: Request, res: Response
               const heartbeatIntervalMs = 60_000;
               const heartbeatTimer = setInterval(() => {
                 // Best-effort, fire-and-forget. Avoid chaining .catch() here because
-                // supabase typings can surface as PromiseLike in ts-jest transforms.
-                void supabase
+                // db typings can surface as PromiseLike in ts-jest transforms.
+                void db
                   .from('executions')
                   .update({ last_heartbeat: new Date().toISOString() })
                   .eq('id', executionId);
@@ -18489,7 +18668,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
                     node,
                     nodeInput,
                     nodeOutputs, // Keep for backward compatibility, but also use centralState
-                    supabase,
+                    db,
                     workflowId,
                     workflow.user_id,
                     currentUserId
@@ -18508,7 +18687,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
               // Success - break retry loop
               if (retryAttempt > 0) {
                 // Log successful retry
-                await logExecutionEvent(supabase, executionId, workflowId, 'NODE_FINISHED', {
+                await logExecutionEvent(db, executionId, workflowId, 'NODE_FINISHED', {
                   nodeId: node.id,
                   nodeName: node.data?.label || node.id,
                   retryAttempt,
@@ -18533,7 +18712,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
                 const backoffMs = calculateBackoff(retryAttempt - 1, retryConfig);
                 
                 // Log retry event
-                await logExecutionEvent(supabase, executionId, workflowId, 'NODE_RETRY', {
+                await logExecutionEvent(db, executionId, workflowId, 'NODE_RETRY', {
                   nodeId: node.id,
                   nodeName: node.data?.label || node.id,
                   retryAttempt,
@@ -18543,7 +18722,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
 
                 // Update execution_steps with retry info
                 try {
-                  const { data: existingStep } = await supabase
+                  const { data: existingStep } = await db
                     .from('execution_steps')
                     .select('id')
                     .eq('execution_id', executionId)
@@ -18551,7 +18730,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
                     .single();
 
                   if (existingStep) {
-                    await supabase
+                    await db
                       .from('execution_steps')
                       .update({
                         retry_count: retryAttempt,
@@ -18595,7 +18774,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
           // ✅ CRITICAL: Persist node-level execution state for resume
           try {
             // Persist to execution_steps table (for resume)
-            const { data: stepData, error: stepError } = await supabase
+            const { data: stepData, error: stepError } = await db
               .from('execution_steps')
             .upsert({
               execution_id: executionId,
@@ -18786,7 +18965,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
 
               // 3. Persist step as 'error'
               try {
-                await supabase
+                await db
                   .from('execution_steps')
                   .update({ status: 'error', last_error: softErrorMsg })
                   .eq('execution_id', executionId)
@@ -18801,7 +18980,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
               logs.push(log);
               try { wsStateManager.updateNodeState(executionId, node.id, node.data?.label || node.id, 'error', { error: softErrorMsg, output }); } catch (_e) { /* non-fatal */ }
 
-              await logExecutionEvent(supabase, executionId, workflowId, 'NODE_FAILED', {
+              await logExecutionEvent(db, executionId, workflowId, 'NODE_FAILED', {
                 nodeId: node.id,
                 nodeName: node.data.label,
                 nodeType,
@@ -18813,7 +18992,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
               // 5. Update incremental logs for real-time frontend progress
               if (executionId) {
                 try {
-                  await supabase.from('executions').update({ logs }).eq('id', executionId);
+                  await db.from('executions').update({ logs }).eq('id', executionId);
                 } catch (_e) { /* best-effort */ }
               }
 
@@ -18833,7 +19012,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
             );
             if (selfValidationAudit) {
               await logExecutionEvent(
-                supabase,
+                db,
                 executionId,
                 workflowId,
                 'NODE_SELF_VALIDATION',
@@ -18857,7 +19036,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
           }
 
           // ✅ CRITICAL: Log node finished event
-          await logExecutionEvent(supabase, executionId, workflowId, 'NODE_FINISHED', {
+          await logExecutionEvent(db, executionId, workflowId, 'NODE_FINISHED', {
             nodeId: node.id,
             nodeName: node.data.label,
             nodeType,
@@ -18877,7 +19056,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
           try { wsStateManager.updateNodeState(executionId, node.id, node.data?.label || node.id, 'error', { error: errorObj.message }); } catch (_e) { /* non-fatal */ }
 
           // ✅ CRITICAL: Log node failed event
-          await logExecutionEvent(supabase, executionId, workflowId, 'NODE_FAILED', {
+          await logExecutionEvent(db, executionId, workflowId, 'NODE_FAILED', {
             nodeId: node.id,
             nodeName: node.data.label,
             nodeType,
@@ -18902,7 +19081,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
                   errorTriggerNode,
                   errorInput,
                   nodeOutputs,
-                  supabase,
+                  db,
                   workflowId,
                   workflow.user_id
                 );
@@ -18929,7 +19108,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
         try { wsStateManager.updateNodeState(executionId, node.id, node.data?.label || node.id, 'error', { error: errorObj.message }); } catch (_e) { /* non-fatal */ }
 
         // Log node failed event
-        await logExecutionEvent(supabase, executionId, workflowId, 'NODE_FAILED', {
+        await logExecutionEvent(db, executionId, workflowId, 'NODE_FAILED', {
           nodeId: node.id,
           nodeName: node.data.label,
           nodeType,
@@ -18954,7 +19133,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
                 errorTriggerNode,
                 errorInput,
                 nodeOutputs,
-                supabase,
+                db,
                 workflowId,
                 workflow.user_id
               );
@@ -18973,7 +19152,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
       // Update execution logs incrementally so frontend can see progress in real-time
       if (executionId) {
         try {
-          const { error: incrementalLogsError } = await supabase
+          const { error: incrementalLogsError } = await db
             .from('executions')
             .update({ logs })
             .eq('id', executionId);
@@ -19035,7 +19214,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
     // Calculate duration if started_at exists
     let durationMs: number | null = null;
     if (executionId) {
-      const { data: execData } = await supabase
+      const { data: execData } = await db
         .from('executions')
         .select('started_at')
         .eq('id', executionId)
@@ -19052,7 +19231,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
     
     // ✅ CRITICAL: Log run finished/failed event
     if (hasError) {
-      await logExecutionEvent(supabase, executionId, workflowId, 'RUN_FAILED', {
+      await logExecutionEvent(db, executionId, workflowId, 'RUN_FAILED', {
         error: errorMessage,
         durationMs,
         nodesExecuted: logs.length,
@@ -19093,7 +19272,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
         }
       }
     } else {
-      await logExecutionEvent(supabase, executionId, workflowId, 'RUN_FINISHED', {
+      await logExecutionEvent(db, executionId, workflowId, 'RUN_FINISHED', {
         durationMs,
         nodesExecuted: logs.length,
         success: true,
@@ -19101,8 +19280,8 @@ export default async function executeWorkflowHandler(req: Request, res: Response
     }
 
     // ✅ CRITICAL: Release execution lock
-    await releaseExecutionLock(supabase, workflowId, executionId);
-    await logExecutionEvent(supabase, executionId, workflowId, 'LOCK_RELEASED', {
+    await releaseExecutionLock(db, workflowId, executionId);
+    await logExecutionEvent(db, executionId, workflowId, 'LOCK_RELEASED', {
       workflowId,
       executionId,
     });
@@ -19123,7 +19302,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
     } catch (updateError) {
       console.error(`[EnterpriseState] ❌ Failed to update final status, falling back to direct update:`, updateError);
       // Fallback to direct database update
-      await supabase
+      await db
         .from('executions')
         .update({
           status: finalStatus,
@@ -19144,7 +19323,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
       // Get started_at for execution tracking
       let startedAtDate: Date;
       if (executionId) {
-        const { data: execData } = await supabase
+        const { data: execData } = await db
           .from('executions')
           .select('started_at')
           .eq('id', executionId)
@@ -19226,12 +19405,12 @@ export default async function executeWorkflowHandler(req: Request, res: Response
         const { releaseExecutionLock } = await import('../services/execution/execution-lock');
         const { logExecutionEvent } = await import('../services/execution/execution-event-logger');
         
-        await releaseExecutionLock(supabase, workflowId, executionId);
-        await logExecutionEvent(supabase, executionId, workflowId, 'RUN_FAILED', {
+        await releaseExecutionLock(db, workflowId, executionId);
+        await logExecutionEvent(db, executionId, workflowId, 'RUN_FAILED', {
           error: errorMessage,
           fatal: true,
         });
-        await logExecutionEvent(supabase, executionId, workflowId, 'LOCK_RELEASED', {
+        await logExecutionEvent(db, executionId, workflowId, 'LOCK_RELEASED', {
           workflowId,
           executionId,
           reason: 'error',

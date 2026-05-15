@@ -59,7 +59,7 @@ const NODE_TYPES = {
   triggers: ['schedule', 'webhook', 'manual_trigger', 'interval', 'chat_trigger', 'form'],
   social: ['linkedin', 'twitter', 'instagram', 'facebook'],
   notification: ['slack_message', 'discord', 'email', 'google_gmail', 'telegram', 'microsoft_teams'],
-  database: ['google_sheets', 'google_doc', 'database_read', 'database_write', 'supabase', 'postgresql'],
+  database: ['google_sheets', 'google_doc', 'database_read', 'database_write', 'db', 'postgresql'],
   transformation: ['javascript', 'text_formatter', 'set_variable', 'json_parser', 'merge_data'],
   logic: ['if_else', 'switch', 'wait', 'loop', 'filter'],
   ai: ['ai_agent'],
@@ -516,9 +516,9 @@ function generateWorkflowExamples(): WorkflowExample[] {
     credentials: ['DATABASE_URL'],
   }));
 
-  examples.push(createExample(id++, 'Form Processing', 'form to supabase', {
+  examples.push(createExample(id++, 'Form Processing', 'form to db', {
     trigger: 'form',
-    nodes: ['form', 'supabase'],
+    nodes: ['form', 'db'],
     credentials: ['SUPABASE_URL', 'SUPABASE_KEY'],
   }));
 
@@ -622,9 +622,9 @@ function generateWorkflowExamples(): WorkflowExample[] {
     credentials: ['SMTP_HOST'],
   }));
 
-  examples.push(createExample(id++, 'Webhook', 'webhook to supabase', {
+  examples.push(createExample(id++, 'Webhook', 'webhook to db', {
     trigger: 'webhook',
-    nodes: ['webhook', 'supabase'],
+    nodes: ['webhook', 'db'],
     credentials: ['SUPABASE_URL', 'SUPABASE_KEY'],
   }));
 
@@ -672,7 +672,7 @@ function generateWorkflowExamples(): WorkflowExample[] {
 
   examples.push(createExample(id++, 'Webhook', 'webhook to multiple databases', {
     trigger: 'webhook',
-    nodes: ['webhook', 'database_write', 'supabase'],
+    nodes: ['webhook', 'database_write', 'db'],
     credentials: ['DATABASE_URL', 'SUPABASE_URL'],
   }));
 
@@ -842,9 +842,9 @@ function generateWorkflowExamples(): WorkflowExample[] {
     credentials: ['DATABASE_URL', 'SMTP_HOST'],
   }));
 
-  examples.push(createExample(id++, 'Data Processing', 'supabase data processing', {
+  examples.push(createExample(id++, 'Data Processing', 'db data processing', {
     trigger: 'webhook',
-    nodes: ['webhook', 'supabase', 'slack_message'],
+    nodes: ['webhook', 'db', 'slack_message'],
     credentials: ['SUPABASE_URL', 'SLACK_WEBHOOK_URL'],
   }));
 

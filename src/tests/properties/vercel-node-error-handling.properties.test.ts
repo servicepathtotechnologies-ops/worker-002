@@ -24,7 +24,7 @@ async function executeVercelNode(
   node: any,
   input: unknown,
   nodeOutputs: any,
-  supabase: any,
+  db: any,
   workflowId: string,
   userId?: string,
   currentUserId?: string

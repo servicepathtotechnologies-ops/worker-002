@@ -466,7 +466,7 @@ export class EnhancedWorkflowAnalyzer {
           category: 'preferences' as QuestionCategory
         }
       ],
-      supabase: [
+      db: [
         {
           id: 'supabase_setup',
           text: 'Do you have a Supabase project set up?',
@@ -524,7 +524,7 @@ export class EnhancedWorkflowAnalyzer {
       'gmail': 'gmail',
       'postgresql': 'postgresql',
       'postgres': 'postgresql',
-      'supabase': 'supabase',
+      'db': 'db',
       'mysql': 'mysql',
       's3': 's3',
       'aws s3': 's3',

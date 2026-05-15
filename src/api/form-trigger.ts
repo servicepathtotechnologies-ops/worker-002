@@ -1,9 +1,9 @@
 // Form Trigger Route
-// Migrated from Supabase Edge Function
+// Worker API handler
 // Handles form submissions and workflow resumption
 
 import { Request, Response } from 'express';
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 import { config } from '../core/config';
 import multer from 'multer';
 import { coerceFormFields } from './form-field-coercion';
@@ -123,12 +123,12 @@ function validateFormData(formData: Record<string, any>, fields: any[]): { valid
 
 // GET /api/form-trigger/:workflowId/:nodeId - Get form config
 export async function getFormConfig(req: Request, res: Response) {
-  const supabase = getDbClient();
+  const db = getDbClient();
   const { workflowId, nodeId } = req.params;
 
   try {
     // Verify workflow exists and is active
-    const { data: workflow, error: workflowError } = await supabase
+    const { data: workflow, error: workflowError } = await db
       .from("workflows")
       .select("*")
       .eq("id", workflowId)
@@ -212,12 +212,12 @@ export async function getFormConfig(req: Request, res: Response) {
 
 // POST /api/form-trigger/:workflowId/:nodeId/submit - Submit form
 export async function submitForm(req: Request, res: Response) {
-  const supabase = getDbClient();
+  const db = getDbClient();
   const { workflowId, nodeId } = req.params;
 
   try {
     // Verify workflow exists and is active
-    const { data: workflow, error: workflowError } = await supabase
+    const { data: workflow, error: workflowError } = await db
       .from("workflows")
       .select("*")
       .eq("id", workflowId)
@@ -277,7 +277,7 @@ export async function submitForm(req: Request, res: Response) {
                           `form_${workflowId}_${effectiveNodeId}_${Date.now()}_${Math.random().toString(36).substring(7)}`;
 
     // Check for duplicate submission (idempotency)
-    const { data: existingSubmission } = await supabase
+    const { data: existingSubmission } = await db
       .from("form_submissions")
       .select("execution_id")
       .eq("idempotency_key", idempotencyKey)
@@ -337,7 +337,7 @@ export async function submitForm(req: Request, res: Response) {
 
     // Find waiting execution for this form node
     // First, let's check what executions exist for debugging
-    const { data: allExecutions, error: allExecError } = await supabase
+    const { data: allExecutions, error: allExecError } = await db
       .from("executions")
       .select("*")
       .eq("workflow_id", workflowId)
@@ -353,7 +353,7 @@ export async function submitForm(req: Request, res: Response) {
       started_at: e.started_at
     })));
 
-    const { data: waitingExecution, error: waitError } = await supabase
+    const { data: waitingExecution, error: waitError } = await db
       .from("executions")
       .select("*")
       .eq("workflow_id", workflowId)
@@ -372,7 +372,7 @@ export async function submitForm(req: Request, res: Response) {
       console.log("[Form Submit] No waiting execution found, but workflow is active. Creating waiting execution...");
       
       const startedAt = new Date().toISOString();
-      const { data: newExecution, error: createError } = await supabase
+      const { data: newExecution, error: createError } = await db
         .from("executions")
         .insert({
           workflow_id: workflowId,
@@ -429,7 +429,7 @@ export async function submitForm(req: Request, res: Response) {
     };
 
     // Store submission record (for idempotency and audit)
-    await supabase
+    await db
       .from("form_submissions")
       .insert({
         workflow_id: workflowId,
@@ -455,7 +455,7 @@ export async function submitForm(req: Request, res: Response) {
       meta: submissionData.meta,
     };
 
-    const { error: updateError } = await supabase
+    const { error: updateError } = await db
       .from("executions")
       .update({
         status: "running",

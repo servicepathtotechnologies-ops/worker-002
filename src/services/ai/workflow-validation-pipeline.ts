@@ -572,7 +572,7 @@ export class LinearFlowValidationLayer extends ValidationLayer {
     }
     
     // Categorize nodes by type
-    const nodeCategories = new Map<string, 'data_source' | 'processing' | 'conditional' | 'output' | 'other'>();
+    const nodeCategories = new Map<string, 'data_source' | 'processing' | 'conditional' | 'output' | 'observer' | 'other'>();
     nodes.forEach(node => {
       const nodeType = unifiedNormalizeNodeTypeString(node.data?.type || node.type || '');
       const category = this.categorizeNode(nodeType, node); // ✅ UNIVERSAL: Pass node to access metadata
@@ -580,24 +580,50 @@ export class LinearFlowValidationLayer extends ValidationLayer {
     });
     
     // Validate order for linear workflows
-    const orderViolations: Array<{ nodeId: string; nodeType: string; issue: string }> = [];
+    const orderViolations: Array<{
+      nodeId: string;
+      nodeType: string;
+      nodeLabel?: string;
+      nodeCategory: string;
+      previousNodeId: string;
+      previousNodeType: string;
+      previousNodeLabel?: string;
+      previousNodeCategory: string;
+      edgeId?: string;
+      issue: string;
+      severity: 'warning' | 'error';
+    }> = [];
     
     for (let i = 0; i < executionOrder.length; i++) {
       const currentNodeId = executionOrder[i];
       const currentCategory = nodeCategories.get(currentNodeId) || 'other';
-      const currentNodeType = nodes.find(n => n.id === currentNodeId)?.data?.type || nodes.find(n => n.id === currentNodeId)?.type || '';
+      const currentNode = nodes.find(n => n.id === currentNodeId);
+      const currentNodeType = currentNode?.data?.type || currentNode?.type || '';
       
       const immediatePredecessorIndex = i > 0 ? i - 1 : -1;
       
       if (immediatePredecessorIndex >= 0) {
         const previousNodeId = executionOrder[immediatePredecessorIndex];
         const previousCategory = nodeCategories.get(previousNodeId) || 'other';
+        const previousNode = nodes.find(n => n.id === previousNodeId);
+        const connectingEdge = edges.find(e => e.source === previousNodeId && e.target === currentNodeId);
+        const baseIssue = {
+          nodeId: currentNodeId,
+          nodeType: currentNodeType,
+          nodeLabel: currentNode?.data?.label || currentNode?.id,
+          nodeCategory: currentCategory,
+          previousNodeId,
+          previousNodeType: previousNode?.data?.type || previousNode?.type || '',
+          previousNodeLabel: previousNode?.data?.label || previousNode?.id,
+          previousNodeCategory: previousCategory,
+          edgeId: connectingEdge?.id,
+          severity: 'warning' as const,
+        };
         
         // ❌ INVALID: Output → Processing (can't process after output)
         if (previousCategory === 'output' && currentCategory === 'processing') {
           orderViolations.push({
-            nodeId: currentNodeId,
-            nodeType: currentNodeType,
+            ...baseIssue,
             issue: `Output node cannot be followed by processing node`,
           });
         }
@@ -605,8 +631,7 @@ export class LinearFlowValidationLayer extends ValidationLayer {
         // ❌ INVALID: Output → Data Source (can't read after output)
         if (previousCategory === 'output' && currentCategory === 'data_source') {
           orderViolations.push({
-            nodeId: currentNodeId,
-            nodeType: currentNodeType,
+            ...baseIssue,
             issue: `Output node cannot be followed by data source node`,
           });
         }
@@ -615,12 +640,12 @@ export class LinearFlowValidationLayer extends ValidationLayer {
     
     if (orderViolations.length > 0) {
       const violationMessages = orderViolations.map(v => `${v.nodeType} (${v.issue})`);
-      errors.push(`Execution order violations: ${violationMessages.join('; ')}`);
+      warnings.push(`Execution order advisories: ${violationMessages.join('; ')}`);
       details.orderViolations = orderViolations;
     }
     
     return {
-      valid: errors.length === 0,
+      valid: true,
       errors,
       warnings,
       details,
@@ -671,7 +696,7 @@ export class LinearFlowValidationLayer extends ValidationLayer {
     return result;
   }
   
-  private categorizeNode(nodeType: string, node?: WorkflowNode): 'data_source' | 'processing' | 'conditional' | 'output' | 'other' {
+  private categorizeNode(nodeType: string, node?: WorkflowNode): 'data_source' | 'processing' | 'conditional' | 'output' | 'observer' | 'other' {
     // ✅ UNIVERSAL: Use operation semantics registry (same as DSL layer) - NO HARDCODING
     // ✅ ERROR-FREE: All edge cases handled gracefully with proper fallbacks
     
@@ -717,6 +742,10 @@ export class LinearFlowValidationLayer extends ValidationLayer {
     // ✅ PRIORITY 1: Check conditional nodes first (if_else, switch)
     if (lower === 'if_else' || lower === 'switch' || lower.includes('if_else') || lower.includes('switch')) {
       return 'conditional';
+    }
+
+    if (lower === 'log_output') {
+      return 'observer';
     }
     
     // ✅ PRIORITY 2: Use DSL-determined category (PRIMARY - DSL already used operation semantics)

@@ -7,7 +7,7 @@
 import { resolveFacebookOperationHandler } from './facebook/actions';
 import { FacebookApiClient } from './facebook/shared/FacebookApi.client';
 import { toFacebookErrorPayload } from './facebook/shared/ErrorHandler.helper';
-import { SupabaseLogger } from './facebook/shared/SupabaseLogger.helper';
+import { DBLogger } from './facebook/shared/DBLogger.helper';
 import { isOperationAllowed } from './facebook/types/operations.types';
 import {
   FacebookNodeParams,
@@ -55,7 +55,7 @@ export class FacebookNode {
   async execute(input: FacebookNodeParams): Promise<FacebookNodeResult> {
     const startedAt = Date.now();
     const params = normalizeLegacyParams(input);
-    const logger = new SupabaseLogger({
+    const logger = new DBLogger({
       enabled: Boolean(params.logToSupabase),
       tableName: String(params.syncTableName || 'facebook_operation_logs'),
     });

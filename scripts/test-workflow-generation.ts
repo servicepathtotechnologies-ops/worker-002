@@ -308,8 +308,8 @@ class WorkflowTestRunner {
   private results: TestResult[] = [];
 
   constructor() {
-    // Use AgenticWorkflowBuilder directly - it doesn't require Supabase
-    // WorkflowLifecycleManager requires Supabase for credential discovery,
+    // Use AgenticWorkflowBuilder directly - it doesn't require a DB connection
+    // WorkflowLifecycleManager requires a DB connection for credential discovery,
     // but for testing workflow generation, we only need the builder
     this.workflowBuilder = new AgenticWorkflowBuilder();
   }

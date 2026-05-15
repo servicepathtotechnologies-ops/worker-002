@@ -3,10 +3,10 @@ import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../cor
 import { workflowValidator, ValidationResult as WorkflowValidationResult } from './ai/workflow-validator';
 import { credentialDiscoveryPhase, CredentialDiscoveryResult } from './ai/credential-discovery-phase';
 import { LRUNodeOutputsCache } from '../core/cache/lru-node-outputs-cache';
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 import { executeNodeDynamically } from '../core/execution/dynamic-node-executor';
 import { resolveConfigTemplates } from '../core/utils/universal-template-resolver';
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { DbClient } from '@db/db-js';
 import { normalizeIfElseConfig } from '../core/utils/if-else-conditions';
 
 export type FixAgentStatus = 'skipped' | 'processing' | 'completed' | 'failed';
@@ -187,7 +187,7 @@ export class FixAgent {
     const outputs: Record<string, any> = {};
 
     try {
-      const supabase: SupabaseClient = getDbClient();
+      const db: DbClient = getDbClient();
       const cache = new LRUNodeOutputsCache(50);
 
       // Very simple topological-ish order: use original node array order,
@@ -197,7 +197,7 @@ export class FixAgent {
           node,
           input: {},
           nodeOutputs: cache,
-          supabase,
+          db,
           workflowId: workflow.metadata?.id || 'dry-run',
           userId,
           currentUserId: userId,

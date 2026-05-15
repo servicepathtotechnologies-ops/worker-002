@@ -36,7 +36,7 @@ export const PLATFORM_GROUPS: PlatformGroup[] = [
   {
     category: 'Database',
     platforms: ['PostgreSQL', 'MySQL', 'MongoDB', 'Supabase'],
-    nodeTypes: ['postgresql', 'mysql', 'mongodb', 'supabase'],
+    nodeTypes: ['postgresql', 'mysql', 'mongodb', 'db'],
   },
   {
     category: 'Sheets',

@@ -1,7 +1,7 @@
 // Scheduler Service
 // Basic cron job execution for scheduled workflows
 
-import { getDbClient } from '../../core/database/supabase-compat';
+import { getDbClient } from '../../core/database/aws-db-client';
 import cron from 'node-cron';
 
 interface ScheduledWorkflow {
@@ -14,7 +14,7 @@ interface ScheduledWorkflow {
 }
 
 class SchedulerService {
-  private supabase: any;
+  private db: any;
   private jobs: Map<string, cron.ScheduledTask> = new Map();
   private initialized: boolean = false;
   private lastNetworkError: number = 0; // Track last network error to avoid log spam
@@ -22,20 +22,20 @@ class SchedulerService {
   private lastSuccessfulLoad: number = 0; // Track last successful load
 
   constructor() {
-    // Don't initialize Supabase client in constructor
+    // Don't initialize DB client in constructor
     // Initialize lazily when start() is called
   }
 
   /**
-   * Initialize Supabase client (lazy initialization)
+   * Initialize DB client (lazy initialization)
    */
   private initializeSupabase() {
     if (!this.initialized) {
       try {
-        this.supabase = getDbClient();
+        this.db = getDbClient();
         this.initialized = true;
       } catch (error) {
-        console.warn('⚠️  Scheduler: Supabase not configured. Scheduler will not start.');
+        console.warn('⚠️  Scheduler: DB (DATABASE_URL) not configured. Scheduler will not start.');
         console.warn('   Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to enable scheduler.');
         return false;
       }
@@ -47,9 +47,9 @@ class SchedulerService {
    * Start scheduler service
    */
   async start() {
-    // Check if Supabase is configured
+    // Check if DATABASE_URL is configured
     if (!this.initializeSupabase()) {
-      console.log('⏭️  Scheduler service skipped (Supabase not configured)');
+      console.log('⏭️  Scheduler service skipped (DATABASE_URL not configured)');
       return;
     }
 
@@ -82,19 +82,19 @@ class SchedulerService {
    * Load and schedule all active workflows
    */
   private async loadScheduledWorkflows() {
-    if (!this.initialized || !this.supabase) {
+    if (!this.initialized || !this.db) {
       return;
     }
 
     try {
-      // Add timeout wrapper for Supabase requests
+      // Add timeout wrapper for DB requests
       const timeoutPromise = new Promise<never>((_, reject) => {
         setTimeout(() => reject(new Error('Request timeout')), 10000); // 10 second timeout
       });
 
       // First, try to check if schedule column exists by querying workflow metadata
       // If schedule column doesn't exist, gracefully skip scheduled workflows
-      const queryPromise = this.supabase
+      const queryPromise = this.db
         .from('workflows')
         .select('id, name, status')
         .eq('status', 'active')
@@ -142,7 +142,7 @@ class SchedulerService {
 
       // Try to get schedule column if it exists (optional)
       // Query workflows with schedule column separately to avoid errors
-      const scheduleQueryPromise = this.supabase
+      const scheduleQueryPromise = this.db
         .from('workflows')
         .select('id, schedule')
         .eq('status', 'active')

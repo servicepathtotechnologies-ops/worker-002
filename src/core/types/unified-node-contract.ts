@@ -85,7 +85,7 @@ export interface NodeInputField {
     requiredIf?: { field: string; equals: unknown };
     /** Visibility only (field optional when shown). Prefer over requiredIf when fields must not be marked required. */
     visibleIf?: { field: string; equals: unknown };
-    widget?: 'text' | 'textarea' | 'json' | 'multi_email';
+    widget?: 'text' | 'textarea' | 'json' | 'multi_email' | 'date';
     /** Shown under selects when config value matches whenValue (schema-driven UX). */
     contextHints?: Array<{ whenValue: string; message: string }>;
   };
@@ -154,7 +154,7 @@ export interface NodeExecutionContext {
   workflowId: string;
   userId?: string;
   currentUserId?: string;
-  supabase: any; // Supabase client
+  db: any; // AWS RDS DB client
   [key: string]: any; // Additional context
 }
 

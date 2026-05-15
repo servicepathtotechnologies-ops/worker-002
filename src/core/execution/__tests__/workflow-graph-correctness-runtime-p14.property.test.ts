@@ -111,7 +111,7 @@ describe('P14 — AI Resolver Receives Actual Upstream Payload', () => {
             node,
             input: null,
             nodeOutputs,
-            supabase: {} as any,
+            db: {} as any,
             workflowId: 'wf_p14',
             userId: 'u_test',
             currentUserId: 'u_test',

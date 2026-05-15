@@ -6,7 +6,7 @@
  * Automatically cleans up stale locks from crashed/stuck executions.
  */
 
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { DbClient } from '@db/db-js';
 
 export interface ExecutionLockResult {
   acquired: boolean;
@@ -22,16 +22,16 @@ const MAX_EXECUTION_TIME_MS = 60 * 60 * 1000; // 1 hour - max execution time
 /**
  * Check if an execution is stale (crashed or stuck)
  * 
- * @param supabase - Supabase client
+ * @param db - AWS RDS database client
  * @param executionId - Execution ID to check
  * @returns true if execution is stale, false otherwise
  */
 async function isExecutionStale(
-  supabase: SupabaseClient,
+  db: DbClient,
   executionId: string
 ): Promise<boolean> {
   try {
-    const { data: execution, error } = await supabase
+    const { data: execution, error } = await db
       .from('executions')
       .select('id, status, started_at, last_heartbeat, timeout_seconds')
       .eq('id', executionId)
@@ -100,18 +100,18 @@ async function isExecutionStale(
 /**
  * Release execution lock for a workflow
  * 
- * @param supabase - Supabase client
+ * @param db - AWS RDS database client
  * @param workflowId - Workflow ID
  * @param executionId - Execution ID to release
  */
 export async function releaseExecutionLock(
-  supabase: SupabaseClient,
+  db: DbClient,
   workflowId: string,
   executionId: string
 ): Promise<void> {
   try {
     // Only release if this execution holds the lock
-    await supabase
+    await db
       .from('workflows')
       .update({
         active_execution_id: null,
@@ -128,12 +128,12 @@ export async function releaseExecutionLock(
 /**
  * Force release a stale execution lock
  * 
- * @param supabase - Supabase client
+ * @param db - AWS RDS database client
  * @param workflowId - Workflow ID
  * @param executionId - Stale execution ID to clean up
  */
 async function cleanupStaleLock(
-  supabase: SupabaseClient,
+  db: DbClient,
   workflowId: string,
   executionId: string
 ): Promise<void> {
@@ -141,7 +141,7 @@ async function cleanupStaleLock(
     console.log(`[ExecutionLock] Cleaning up stale lock for execution ${executionId} on workflow ${workflowId}`);
     
     // Mark execution as failed if it's still running
-    await supabase
+    await db
       .from('executions')
       .update({
         status: 'failed',
@@ -152,12 +152,12 @@ async function cleanupStaleLock(
       .eq('status', 'running');
 
     // Release the lock
-    await releaseExecutionLock(supabase, workflowId, executionId);
+    await releaseExecutionLock(db, workflowId, executionId);
 
     // Log cleanup event
     try {
       const { logExecutionEvent } = await import('./execution-event-logger');
-      await logExecutionEvent(supabase, executionId, workflowId, 'LOCK_RELEASED', {
+      await logExecutionEvent(db, executionId, workflowId, 'LOCK_RELEASED', {
         reason: 'stale_execution_cleanup',
         workflowId,
         executionId,
@@ -178,19 +178,19 @@ async function cleanupStaleLock(
  * Uses atomic UPDATE to prevent race conditions
  * Automatically cleans up stale locks before acquiring
  * 
- * @param supabase - Supabase client
+ * @param db - AWS RDS database client
  * @param workflowId - Workflow ID
  * @param executionId - New execution ID to lock
  * @returns Lock acquisition result
  */
 export async function acquireExecutionLock(
-  supabase: SupabaseClient,
+  db: DbClient,
   workflowId: string,
   executionId: string
 ): Promise<ExecutionLockResult> {
   try {
     // ✅ STEP 1: Check if there's an existing lock and if it's stale
-    const { data: workflow } = await supabase
+    const { data: workflow } = await db
       .from('workflows')
       .select('active_execution_id')
       .eq('id', workflowId)
@@ -207,12 +207,12 @@ export async function acquireExecutionLock(
       }
 
       // Check if existing execution is stale
-      const isStale = await isExecutionStale(supabase, existingExecutionId);
+      const isStale = await isExecutionStale(db, existingExecutionId);
       
       if (isStale) {
         console.log(`[ExecutionLock] Existing execution ${existingExecutionId} is stale, cleaning up...`);
         try {
-          await cleanupStaleLock(supabase, workflowId, existingExecutionId);
+          await cleanupStaleLock(db, workflowId, existingExecutionId);
           console.log(`[ExecutionLock] ✅ Successfully cleaned up stale lock for execution ${existingExecutionId}`);
         } catch (cleanupError) {
           console.error(`[ExecutionLock] ❌ Failed to cleanup stale lock:`, cleanupError);
@@ -230,7 +230,7 @@ export async function acquireExecutionLock(
 
     // ✅ STEP 2: Atomic update - only set active_execution_id if it's NULL
     // This prevents double runs even with concurrent requests
-    const { data, error } = await supabase
+    const { data, error } = await db
       .from('workflows')
       .update({
         active_execution_id: executionId,
@@ -245,7 +245,7 @@ export async function acquireExecutionLock(
       // Check if error is because active_execution_id is not null (lock already held)
       if (error.code === 'PGRST116' || error.message?.includes('0 rows')) {
         // Lock is still held (race condition - another request acquired it)
-        const { data: workflowCheck } = await supabase
+        const { data: workflowCheck } = await db
           .from('workflows')
           .select('active_execution_id')
           .eq('id', workflowId)
@@ -266,7 +266,7 @@ export async function acquireExecutionLock(
 
     if (!data || data.active_execution_id !== executionId) {
       // Lock was not acquired (another execution is active - race condition)
-      const { data: workflowCheck } = await supabase
+      const { data: workflowCheck } = await db
         .from('workflows')
         .select('active_execution_id')
         .eq('id', workflowId)
@@ -281,7 +281,7 @@ export async function acquireExecutionLock(
 
     // ✅ STEP 3: Lock acquired successfully
     // Update execution with lock timestamp
-    await supabase
+    await db
       .from('executions')
       .update({
         lock_acquired_at: new Date().toISOString(),
@@ -305,16 +305,16 @@ export async function acquireExecutionLock(
 /**
  * Check if workflow has active execution
  * 
- * @param supabase - Supabase client
+ * @param db - AWS RDS database client
  * @param workflowId - Workflow ID
  * @returns Active execution ID or null
  */
 export async function getActiveExecution(
-  supabase: SupabaseClient,
+  db: DbClient,
   workflowId: string
 ): Promise<string | null> {
   try {
-    const { data, error } = await supabase
+    const { data, error } = await db
       .from('workflows')
       .select('active_execution_id')
       .eq('id', workflowId)

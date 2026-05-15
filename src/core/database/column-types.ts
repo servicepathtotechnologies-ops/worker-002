@@ -46,7 +46,15 @@ export function isJsonColumn(table: string, column: string): boolean {
 export function prepareDbValue(table: string, column: string, value: any): any {
   if (value === undefined) return null;
   if (!isJsonColumn(table, column)) return value;
-  if (value === null || typeof value === 'string') return value;
+  if (value === null) return value;
+  if (typeof value === 'string') {
+    try {
+      JSON.parse(value);
+      return value;
+    } catch {
+      return JSON.stringify(value);
+    }
+  }
   return JSON.stringify(value);
 }
 

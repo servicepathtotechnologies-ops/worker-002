@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import { Request, Response } from 'express';
 import workflowFieldOwnershipCatalogHandler from '../workflow-field-ownership-catalog';
-import { getDbClient } from '../../core/database/supabase-compat';
+import { getDbClient } from '../../core/database/aws-db-client';
 
-jest.mock('../../core/database/supabase-compat');
+jest.mock('../../core/database/aws-db-client');
 
 describe('workflow-field-ownership-catalog', () => {
   let mockRequest: Partial<Request>;

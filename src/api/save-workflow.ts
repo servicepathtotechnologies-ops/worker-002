@@ -6,7 +6,7 @@
  */
 
 import { Request, Response } from 'express';
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 import { validateWorkflowForSave, normalizeWorkflowForSave } from '../core/validation/workflow-save-validator';
 import { ErrorCode } from '../core/utils/error-codes';
 import type { WorkflowBuildManifestV1 } from '../core/types/workflow-build-manifest';
@@ -37,7 +37,7 @@ interface WorkflowEdge {
  * POST /api/save-workflow
  */
 export default async function saveWorkflowHandler(req: Request, res: Response) {
-  const supabase = getDbClient();
+  const db = getDbClient();
   
   // Require authenticated user for workflow creation/updates.
   // Do NOT require global Google OAuth at save-time; credentials are node/provider-specific.
@@ -153,7 +153,7 @@ export default async function saveWorkflowHandler(req: Request, res: Response) {
     let previousWorkflow: Record<string, unknown> | null = null;
     if (workflowId) {
       try {
-        const { data } = await supabase
+        const { data } = await db
           .from('workflows')
           .select('*')
           .eq('id', workflowId)
@@ -211,7 +211,7 @@ export default async function saveWorkflowHandler(req: Request, res: Response) {
       }
 
       // Update existing workflow
-      const { data, error } = await supabase
+      const { data, error } = await db
         .from('workflows')
         .update(workflowData)
         .eq('id', workflowId)
@@ -247,7 +247,7 @@ export default async function saveWorkflowHandler(req: Request, res: Response) {
       }
 
       // Create new workflow
-      const { data, error } = await supabase
+      const { data, error } = await db
         .from('workflows')
         .insert(workflowData)
         .select()
@@ -277,7 +277,7 @@ export default async function saveWorkflowHandler(req: Request, res: Response) {
         const authHeader = req.headers.authorization;
         if (authHeader && authHeader.startsWith('Bearer ')) {
           const token = authHeader.replace('Bearer ', '').trim();
-          const { data: { user } } = await supabase.auth.getUser(token);
+          const { data: { user } } = await db.auth.getUser(token);
           if (user) {
             createdBy = user.id;
           }

@@ -6,7 +6,7 @@
  */
 
 import { Request, Response } from 'express';
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 import { DistributedOrchestrator } from '../services/workflow-executor/distributed/distributed-orchestrator';
 import { QueueClient, createQueueClient } from '../services/workflow-executor/distributed/queue-client';
 import { StorageManager } from '../services/workflow-executor/distributed/storage-manager';
@@ -32,7 +32,7 @@ export default async function distributedExecuteWorkflow(
   req: Request,
   res: Response
 ): Promise<void> {
-  const supabase = getDbClient();
+  const db = getDbClient();
   const { workflowId, input = {} } = req.body;
 
   if (!workflowId) {
@@ -42,7 +42,7 @@ export default async function distributedExecuteWorkflow(
 
   try {
     // ✅ CRITICAL: Re-fetch workflow from DB and validate readiness (same as execute-workflow)
-    const { data: workflow, error: workflowError } = await supabase
+    const { data: workflow, error: workflowError } = await db
       .from('workflows')
       .select('*')
       .eq('id', workflowId)
@@ -94,7 +94,7 @@ export default async function distributedExecuteWorkflow(
       if (authHeader && authHeader.startsWith('Bearer ')) {
         const token = authHeader.replace('Bearer ', '').trim();
         if (token) {
-          const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+          const { data: { user }, error: authError } = await db.auth.getUser(token);
           if (!authError && user) {
             currentUserId = user.id;
           }
@@ -111,7 +111,12 @@ export default async function distributedExecuteWorkflow(
     // ✅ FAST PATH: Workflow already confirmed ready — skip the expensive 5-layer validation pipeline.
     // The pipeline checks graph structure which doesn't change at runtime; only re-run it for
     // un-confirmed workflows (draft/built) where the structure may not have been validated yet.
-    let executionValidation: { ready: boolean; errors: string[]; missingCredentials: string[] };
+    let executionValidation: {
+      ready: boolean;
+      errors: string[];
+      missingCredentials: string[];
+      validationIssues?: Array<Record<string, unknown>>;
+    };
     let credentialDiscovery: Awaited<ReturnType<typeof credentialDiscoveryPhase.discoverCredentials>>;
     let allMissingInputs: ReturnType<typeof workflowLifecycleManager.discoverNodeInputs>['inputs'];
 
@@ -228,6 +233,7 @@ export default async function distributedExecuteWorkflow(
       }),
       executionValidationReady: executionValidation.ready,
       executionValidationErrors: executionValidation.errors,
+      executionValidationIssues: executionValidation.validationIssues || [],
       executionValidationMissingCredentials: executionValidation.missingCredentials,
     };
 
@@ -241,7 +247,7 @@ export default async function distributedExecuteWorkflow(
         console.log(`[DistributedExecuteWorkflow] Validation passes but phase is "${workflowPhase}" - updating to active, phase to ready_for_execution`);
         
         // ✅ CRITICAL: Update status to 'active' (valid enum) and phase to 'ready_for_execution' (TEXT)
-        const { data: statusUpdateData, error: statusUpdateError } = await supabase
+        const { data: statusUpdateData, error: statusUpdateError } = await db
           .from('workflows')
           .update({
             status: 'active', // Use valid enum value
@@ -369,18 +375,18 @@ export default async function distributedExecuteWorkflow(
     await queue.connect();
 
     const storage = new StorageManager(
-      supabase,
+      db,
       createObjectStorageService()
     );
 
     const orchestrator = new DistributedOrchestrator(
-      supabase,
+      db,
       queue,
       storage
     );
 
     // ✅ PRE-FLIGHT: Read current lock state on the workflow row
-    const { data: wfLockCheck } = await supabase
+    const { data: wfLockCheck } = await db
       .from('workflows')
       .select('active_execution_id')
       .eq('id', workflowId)
@@ -388,7 +394,7 @@ export default async function distributedExecuteWorkflow(
 
     const existingActiveId = wfLockCheck?.active_execution_id as string | null;
     if (existingActiveId) {
-      const { data: existingExec } = await supabase
+      const { data: existingExec } = await db
         .from('executions')
         .select('id, status, last_heartbeat, started_at')
         .eq('id', existingActiveId)
@@ -416,14 +422,14 @@ export default async function distributedExecuteWorkflow(
 
       // Stale or missing execution — clear the lock before starting
       console.log(`[DistributedExecuteWorkflow] Clearing stale lock for execution ${existingActiveId}`);
-      await supabase
+      await db
         .from('workflows')
         .update({ active_execution_id: null, updated_at: new Date().toISOString() })
         .eq('id', workflowId)
         .eq('active_execution_id', existingActiveId);
 
       if (existingExec?.status === 'running') {
-        await supabase
+        await db
           .from('executions')
           .update({ status: 'failed', error: 'Cleaned up stale execution', finished_at: new Date().toISOString() })
           .eq('id', existingActiveId);
@@ -451,10 +457,10 @@ export default async function distributedExecuteWorkflow(
     } catch (_) {}
 
     // ✅ Acquire distributed execution lock (atomic — should always succeed after pre-flight)
-    const lockResult = await acquireExecutionLock(supabase, workflowId, executionId);
+    const lockResult = await acquireExecutionLock(db, workflowId, executionId);
     if (!lockResult.acquired) {
       // Rare race condition — clean up and return 409
-      await supabase.from('executions').delete().eq('id', executionId);
+      await db.from('executions').delete().eq('id', executionId);
       await queue.close();
 
       res.status(409).json({
@@ -472,11 +478,11 @@ export default async function distributedExecuteWorkflow(
     }
 
     // Log lock acquired and run started events
-    await logExecutionEvent(supabase, executionId, workflowId, 'LOCK_ACQUIRED', {
+    await logExecutionEvent(db, executionId, workflowId, 'LOCK_ACQUIRED', {
       workflowId,
       executionId,
     });
-    await logExecutionEvent(supabase, executionId, workflowId, 'RUN_STARTED', {
+    await logExecutionEvent(db, executionId, workflowId, 'RUN_STARTED', {
       workflowId,
       executionId,
       input,
@@ -534,14 +540,14 @@ export default async function distributedExecuteWorkflow(
         // If execute-workflow returned without updating DB (e.g. preflight rejection via fake res),
         // the execution stays "running" forever. Detect this and mark it failed.
         try {
-          const { data: currentExec } = await supabase
+          const { data: currentExec } = await db
             .from('executions')
             .select('status')
             .eq('id', executionId)
             .single();
           if (currentExec?.status === 'running') {
             console.warn(`[DistributedExecute] ⚠️ Execution ${executionId} still "running" after execute-workflow returned — marking failed`);
-            await supabase
+            await db
               .from('executions')
               .update({
                 status: 'failed',
@@ -556,7 +562,7 @@ export default async function distributedExecuteWorkflow(
       } catch (bgErr: any) {
         console.error(`[DistributedExecute] ❌ Background execution failed for ${executionId}:`, bgErr?.message);
         try {
-          await supabase
+          await db
             .from('executions')
             .update({
               status: 'failed',
@@ -575,7 +581,7 @@ export default async function distributedExecuteWorkflow(
     // ✅ CRITICAL: Release lock on error if execution was created
     if (workflowId) {
       try {
-        const { data: workflow } = await supabase
+        const { data: workflow } = await db
           .from('workflows')
           .select('active_execution_id')
           .eq('id', workflowId)
@@ -583,7 +589,7 @@ export default async function distributedExecuteWorkflow(
         
         if (workflow?.active_execution_id) {
           const { releaseExecutionLock } = await import('../services/execution/execution-lock');
-          await releaseExecutionLock(supabase, workflowId, workflow.active_execution_id);
+          await releaseExecutionLock(db, workflowId, workflow.active_execution_id);
         }
       } catch (cleanupError) {
         console.error('[DistributedExecuteWorkflow] Failed to cleanup on error:', cleanupError);
@@ -606,13 +612,13 @@ export async function getExecutionStatus(
   req: Request,
   res: Response
 ): Promise<void> {
-  const supabase = getDbClient();
+  const db = getDbClient();
   const { executionId } = req.params;
   const lite = String(req.query.lite || '').toLowerCase() === '1' || String(req.query.lite || '').toLowerCase() === 'true';
 
   try {
     // Get execution
-    const { data: execution, error: execError } = await supabase
+    const { data: execution, error: execError } = await db
       .from('executions')
       .select(lite
         // Bug 2 fix: use the actual column names written by execute-workflow.ts.
@@ -628,7 +634,7 @@ export async function getExecutionStatus(
     }
 
     // Get execution steps
-    const { data: steps, error: stepsError } = await supabase
+    const { data: steps, error: stepsError } = await db
       .from('execution_steps')
       .select(lite
         // Include input_json and output_json even in lite mode so the frontend can

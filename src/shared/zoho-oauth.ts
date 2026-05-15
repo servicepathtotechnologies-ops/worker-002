@@ -1,7 +1,7 @@
 // Zoho OAuth 2.0 Token Manager
 // Handles token retrieval, refresh, and region-specific endpoints
 
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { DbClient } from '@db/db-js';
 import { config } from '../core/config';
 import { resolveOAuthTokenString } from './credential-resolver';
 
@@ -54,13 +54,13 @@ export function getZohoApiBaseUrl(region: ZohoRegion): string {
 
 /**
  * Get Zoho access token for a user
- * @param supabase - Supabase client
+ * @param db - AWS RDS database client
  * @param userId - User ID or array of user IDs to try (in order)
  * @param region - Zoho region (defaults to US)
  * @returns Access token or null if not found
  */
 export async function getZohoAccessToken(
-  supabase: SupabaseClient,
+  db: DbClient,
   userId: string | string[],
   region: ZohoRegion = 'US'
 ): Promise<string | null> {
@@ -70,14 +70,14 @@ export async function getZohoAccessToken(
 
 /**
  * Refresh Zoho OAuth token
- * @param supabase - Supabase client
+ * @param db - AWS RDS database client
  * @param userId - User ID
  * @param refreshToken - Refresh token
  * @param region - Zoho region
  * @returns New access token or null if refresh failed
  */
 export async function refreshZohoToken(
-  supabase: SupabaseClient,
+  db: DbClient,
   userId: string,
   refreshToken: string,
   region: ZohoRegion = 'US'
@@ -136,7 +136,7 @@ export async function refreshZohoToken(
       updateData.refresh_token = tokenData.refresh_token;
     }
 
-    const { error: updateError } = await supabase
+    const { error: updateError } = await db
       .from('zoho_oauth_tokens')
       .update(updateData)
       .eq('user_id', userId)
@@ -161,7 +161,7 @@ export async function refreshZohoToken(
  * or retrieved from the database
  */
 export async function getZohoCredentials(
-  supabase: SupabaseClient,
+  db: DbClient,
   nodeConfig: Record<string, unknown>,
   userId?: string | string[],
   currentUserId?: string
@@ -195,7 +195,7 @@ export async function getZohoCredentials(
     }
 
     for (const uid of userIdsToTry) {
-      const { data: tokenData } = await supabase
+      const { data: tokenData } = await db
         .from('zoho_oauth_tokens')
         .select('access_token, refresh_token, region')
         .eq('user_id', uid)
@@ -208,7 +208,7 @@ export async function getZohoCredentials(
 
         if (clientId && clientSecret && tokenData.access_token && tokenData.refresh_token) {
           // Try to get a fresh token
-          const freshToken = await getZohoAccessToken(supabase, uid, (tokenData.region as ZohoRegion) || configRegion);
+          const freshToken = await getZohoAccessToken(db, uid, (tokenData.region as ZohoRegion) || configRegion);
           if (freshToken) {
             return {
               accessToken: freshToken,

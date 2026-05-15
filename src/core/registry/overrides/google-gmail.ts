@@ -151,7 +151,7 @@ async function executeGmailSend(context: NodeExecutionContext, schema: NodeSchem
         userIdsToTry.push(context.currentUserId);
       }
       const accessToken =
-        userIdsToTry.length > 0 ? await getGoogleAccessToken(context.supabase, userIdsToTry) : null;
+        userIdsToTry.length > 0 ? await getGoogleAccessToken(context.db, userIdsToTry) : null;
       if (!accessToken) {
         return {
           success: true,
@@ -312,7 +312,7 @@ async function executeGmailSend(context: NodeExecutionContext, schema: NodeSchem
 
   const { resolveGmailCredentials, sendGmailEmail } = await import('../../../shared/gmail-executor');
   const credential = await resolveGmailCredentials(
-    context.supabase,
+    context.db,
     context.workflowId,
     context.nodeId,
     context.userId,

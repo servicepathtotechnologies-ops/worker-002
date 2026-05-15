@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 import { releaseExecutionLock } from '../services/execution/execution-lock';
 
 export async function cancelExecutionRoute(req: Request, res: Response) {
@@ -10,9 +10,9 @@ export async function cancelExecutionRoute(req: Request, res: Response) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
-  const supabase = getDbClient();
+  const db = getDbClient();
 
-  const { data: execution, error: fetchError } = await supabase
+  const { data: execution, error: fetchError } = await db
     .from('executions')
     .select('id, status, workflow_id')
     .eq('id', executionId)
@@ -22,7 +22,7 @@ export async function cancelExecutionRoute(req: Request, res: Response) {
     return res.status(404).json({ error: 'Execution not found' });
   }
 
-  const { data: workflow } = await supabase
+  const { data: workflow } = await db
     .from('workflows')
     .select('user_id')
     .eq('id', execution.workflow_id)
@@ -42,7 +42,7 @@ export async function cancelExecutionRoute(req: Request, res: Response) {
 
   const workflowId = execution.workflow_id;
 
-  await supabase
+  await db
     .from('executions')
     .update({
       status: 'failed',
@@ -52,7 +52,7 @@ export async function cancelExecutionRoute(req: Request, res: Response) {
     .eq('id', executionId);
 
   if (workflowId) {
-    await releaseExecutionLock(supabase, workflowId, executionId);
+    await releaseExecutionLock(db, workflowId, executionId);
   }
 
   console.log(`[CancelExecution] Execution ${executionId} cancelled by user ${userId}`);

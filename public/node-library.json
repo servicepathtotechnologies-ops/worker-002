@@ -172,7 +172,7 @@
     ]
   },
   {
-    "type": "supabase",
+    "type": "db",
     "category": "database",
     "inputs": [
       "input",
@@ -275,13 +275,13 @@
       "result"
     ],
     "requiredConfig": [
-      "documentId",
       "operation"
     ],
     "optionalConfig": [
       "operation",
       "documentId",
       "documentUrl",
+      "title",
       "content",
       "format"
     ]

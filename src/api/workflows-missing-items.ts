@@ -11,7 +11,7 @@
 import { Request, Response } from 'express';
 import { getUnifiedMissingItems } from '../services/ai/credential-input-discovery';
 import { executionPreflight } from '../services/execution-preflight';
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 import { credentialRequirementForNode } from '../services/credential-scope-registry';
 
 /** Human-readable provider display names */
@@ -44,7 +44,7 @@ export default async function getMissingItemsHandler(req: Request, res: Response
     }
 
     // Extract user ID from auth header (optional — preflight needs it for vault lookup)
-    const supabase = getDbClient();
+    const db = getDbClient();
     const authHeader = req.headers.authorization;
     let userId: string | undefined;
 
@@ -52,7 +52,7 @@ export default async function getMissingItemsHandler(req: Request, res: Response
       const token = authHeader.replace('Bearer ', '').trim();
       if (token) {
         try {
-          const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+          const { data: { user }, error: authError } = await db.auth.getUser(token);
           if (!authError && user) userId = user.id;
         } catch {
           // non-fatal
@@ -74,7 +74,7 @@ export default async function getMissingItemsHandler(req: Request, res: Response
     if (userId) {
       try {
         // Load the workflow nodes so we can run preflight
-        const { data: workflowRow } = await supabase
+        const { data: workflowRow } = await db
           .from('workflows')
           .select('nodes, graph')
           .eq('id', workflowId)

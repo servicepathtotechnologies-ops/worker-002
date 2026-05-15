@@ -7,7 +7,7 @@
  */
 
 import '../src/core/env-loader';
-import { getSupabaseClient } from '../src/core/database/supabase-compat';
+import { getDbClient } from '../src/core/database/aws-db-client';
 import { createQueueClient } from '../src/services/workflow-executor/distributed/queue-client';
 
 const executionId = process.argv[2];
@@ -18,14 +18,14 @@ if (!executionId) {
 }
 
 async function retryStuckExecution() {
-  const supabase = getSupabaseClient();
+  const db = getDbClient();
   const queue = createQueueClient();
   
   await queue.connect();
 
   try {
     // Find pending steps
-    const { data: steps, error } = await supabase
+    const { data: steps, error } = await db
       .from('execution_steps')
       .select('*')
       .eq('execution_id', executionId)
@@ -44,7 +44,7 @@ async function retryStuckExecution() {
 
     for (const step of steps) {
       // Reset step status
-      await supabase
+      await db
         .from('execution_steps')
         .update({
           status: 'pending',

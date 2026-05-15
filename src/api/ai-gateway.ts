@@ -11,7 +11,7 @@ import { unifiedGraphOrchestrator } from '../core/orchestration/unified-graph-or
 import type { AiEditorRequest, AiEditorResponse } from '../core/types/ai-editor-contracts';
 import type { Workflow } from '../core/types/ai-types';
 import { WorkflowVersioning } from '../services/ai/workflow-versioning';
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 import {
   buildFieldOwnershipGuidancePrompt,
   buildDeterministicFieldOwnershipGuidance,
@@ -99,19 +99,19 @@ router.post('/field-ownership-guide', async (req: Request, res: Response) => {
     const deterministicGuidance = buildDeterministicFieldOwnershipGuidance(question.trim(), context || {});
 
     const authHeader = req.headers.authorization;
-    const supabase = getDbClient();
+    const db = getDbClient();
     let userId: string | null = null;
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const token = authHeader.replace('Bearer ', '').trim();
       if (token) {
-        const { data: authData, error: authError } = await supabase.auth.getUser(token);
+        const { data: authData, error: authError } = await db.auth.getUser(token);
         if (!authError && authData?.user?.id) userId = authData.user.id;
       }
     }
 
     const workflowId = typeof context?.workflowId === 'string' ? context.workflowId.trim() : '';
     if (workflowId && userId) {
-      const { data: wf } = await supabase
+      const { data: wf } = await db
         .from('workflows')
         .select('id,user_id')
         .eq('id', workflowId)

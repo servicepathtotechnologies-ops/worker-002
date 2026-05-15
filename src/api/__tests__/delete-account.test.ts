@@ -13,11 +13,11 @@ import * as fc from 'fast-check';
 import { Request, Response } from 'express';
 import deleteAccountHandler from '../delete-account';
 
-// Mock the supabase-compat module
+// Mock the aws-db-client module
 const mockGetUser = jest.fn();
 const mockDeleteUser = jest.fn();
 
-jest.mock('../../core/database/supabase-compat', () => ({
+jest.mock('../../core/database/aws-db-client', () => ({
   getDbClient: () => ({
     auth: {
       getUser: mockGetUser,
@@ -183,7 +183,7 @@ describe('deleteAccountHandler', () => {
  * Feature: ui-ux-and-auth-improvements
  * Property 2: Delete endpoint removes both auth record and profile data
  *
- * The handler delegates profile deletion to Supabase's cascade mechanism via
+ * The handler delegates profile deletion to DB cascade mechanism via
  * admin.deleteUser. This property verifies the handler correctly invokes that
  * mechanism — calling deleteUser with the correct userId — which triggers the
  * cascade that removes both the auth record and all associated profile data.
@@ -243,7 +243,7 @@ describe('Property 2: Delete endpoint removes both auth record and profile data'
   });
 
   /**
-   * When deleteUser fails (Supabase error), the handler returns 500 and does NOT
+   * When deleteUser fails (DB error), the handler returns 500 and does NOT
    * report success — ensuring partial deletion is never silently swallowed.
    */
   it('Property 2 (negative): returns 500 and does not report success when deleteUser fails', async () => {

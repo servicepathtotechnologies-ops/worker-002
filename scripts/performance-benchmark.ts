@@ -10,7 +10,7 @@
  */
 
 import { performance } from 'perf_hooks';
-import { getSupabaseClient } from '../src/core/database/supabase-compat';
+import { getDbClient } from '../src/core/database/aws-db-client';
 
 interface BenchmarkResult {
   operation: string;
@@ -62,7 +62,7 @@ const results: BenchmarkResult[] = [];
  * Benchmark workflow save operation
  */
 async function benchmarkSave(workflowId: string): Promise<BenchmarkResult> {
-  const supabase = getSupabaseClient();
+  const db = getDbClient();
   
   const testWorkflow = {
     id: workflowId,
@@ -98,7 +98,7 @@ async function benchmarkSave(workflowId: string): Promise<BenchmarkResult> {
   const start = performance.now();
   
   try {
-    const { error } = await supabase
+    const { error } = await db
       .from('workflows')
       .update({
         nodes: testWorkflow.nodes as any,
@@ -315,12 +315,12 @@ async function runBenchmarks() {
   console.log('');
 
   // Get or create test workflow
-  const supabase = getSupabaseClient();
+  const db = getDbClient();
   let workflowId: string;
 
   try {
     // Try to find existing test workflow
-    const { data: existing } = await supabase
+    const { data: existing } = await db
       .from('workflows')
       .select('id')
       .eq('name', 'Performance Test Workflow')
@@ -332,7 +332,7 @@ async function runBenchmarks() {
       console.log(`✅ Using existing test workflow: ${workflowId}`);
     } else {
       // Create test workflow
-      const { data: newWorkflow, error } = await supabase
+      const { data: newWorkflow, error } = await db
         .from('workflows')
         .insert({
           name: 'Performance Test Workflow',

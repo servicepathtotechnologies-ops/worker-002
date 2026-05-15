@@ -18,9 +18,9 @@ export interface NodeInputSchema {
     validation?: (value: any) => boolean | string; // Return true if valid, or error message
     ui?: {
       options?: Array<{ label: string; value: string }>;
-      requiredIf?: { field: string; equals: any };
+      requiredIf?: { field: string; equals?: any; notEquals?: any };
       visibleIf?: { field: string; equals: unknown };
-      widget?: 'text' | 'textarea' | 'json' | 'multi_email';
+      widget?: 'text' | 'textarea' | 'json' | 'multi_email' | 'date';
       contextHints?: Array<{ whenValue: string; message: string }>;
     };
     /** Serialized from UnifiedNodeRegistry for "how to get it" UX */
@@ -98,7 +98,7 @@ export interface NodeExecutionContext {
   // Runtime-only fields (execution engine supplies these)
   input?: any;
   nodeOutputs?: Record<string, any>;
-  supabase?: any;
+  db?: any;
 }
 
 /**

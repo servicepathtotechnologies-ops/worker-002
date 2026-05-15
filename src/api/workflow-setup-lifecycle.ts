@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 import { normalizeWorkflowForSave, validateWorkflowForSave } from '../core/validation/workflow-save-validator';
 import { buildSyncedGraphPayload, resolveWorkflowGraphState } from './workflow-graph-state';
 import { workflowLifecycleManager } from '../services/workflow-lifecycle-manager';
@@ -53,7 +53,7 @@ function metadataWithPendingMarker(metadata: unknown, pending: boolean): Record<
 }
 
 export async function setupDraftWorkflowHandler(req: Request, res: Response) {
-  const supabase = getDbClient();
+  const db = getDbClient();
   let userId: string;
   try {
     userId = await requireUserId(req);
@@ -103,14 +103,14 @@ export async function setupDraftWorkflowHandler(req: Request, res: Response) {
   };
 
   if (workflowId) {
-    const { data: existing, error: existingError } = await supabase
+    const { data: existing, error: existingError } = await db
       .from('workflows')
       .select('*')
       .eq('id', workflowId)
       .single();
 
     if (existingError || !existing) {
-      const { data, error } = await supabase
+      const { data, error } = await db
         .from('workflows')
         .insert({ id: workflowId, ...workflowData } as any)
         .select()
@@ -133,7 +133,7 @@ export async function setupDraftWorkflowHandler(req: Request, res: Response) {
       });
     }
 
-    const { data, error } = await supabase
+    const { data, error } = await db
       .from('workflows')
       .update(workflowData as any)
       .eq('id', workflowId)
@@ -147,7 +147,7 @@ export async function setupDraftWorkflowHandler(req: Request, res: Response) {
     return res.json({ success: true, workflowId: data.id, workflow: data, validation });
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('workflows')
     .insert(workflowData as any)
     .select()
@@ -161,7 +161,7 @@ export async function setupDraftWorkflowHandler(req: Request, res: Response) {
 }
 
 export async function commitSetupWorkflowHandler(req: Request, res: Response) {
-  const supabase = getDbClient();
+  const db = getDbClient();
   let userId: string;
   try {
     userId = await requireUserId(req);
@@ -170,7 +170,7 @@ export async function commitSetupWorkflowHandler(req: Request, res: Response) {
   }
 
   const { workflowId } = req.params;
-  const { data: workflow, error } = await supabase
+  const { data: workflow, error } = await db
     .from('workflows')
     .select('*')
     .eq('id', workflowId)
@@ -221,7 +221,7 @@ export async function commitSetupWorkflowHandler(req: Request, res: Response) {
   }
 
   const metadata = metadataWithPendingMarker((workflow as any).metadata, false);
-  const { data: updated, error: updateError } = await supabase
+  const { data: updated, error: updateError } = await db
     .from('workflows')
     .update({
       status: 'active',

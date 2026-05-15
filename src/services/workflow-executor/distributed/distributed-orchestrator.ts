@@ -7,7 +7,7 @@
  * Jobs are distributed via queue system (RabbitMQ/Redis).
  */
 
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { DbClient } from '@db/db-js';
 import type { WorkflowEdge } from '../../../core/types/ai-types';
 import { resolveWinningSwitchEdgeId } from '../../../core/execution/switch-branch-router';
 import { QueueClient, NodeJob } from './queue-client';
@@ -48,16 +48,16 @@ export interface ExecutionInput {
  * NEVER stores state in memory between steps.
  */
 export class DistributedOrchestrator {
-  private supabase: SupabaseClient;
+  private db: DbClient;
   private queue: QueueClient;
   private storage: StorageManager;
 
   constructor(
-    supabase: SupabaseClient,
+    db: DbClient,
     queue: QueueClient,
     storage: StorageManager
   ) {
-    this.supabase = supabase;
+    this.db = db;
     this.queue = queue;
     this.storage = storage;
   }
@@ -86,7 +86,7 @@ export class DistributedOrchestrator {
       // workflows.id that the rest of the system (lock, event logger, frontend) uses.
       const workflowIdForExecution = workflowId;
       
-      const { data: execution, error: execError } = await this.supabase
+      const { data: execution, error: execError } = await this.db
         .from('executions')
         .insert({
           workflow_id: workflowIdForExecution,
@@ -120,7 +120,7 @@ export class DistributedOrchestrator {
       );
 
       // 4. Update execution with input references
-      await this.supabase
+      await this.db
         .from('executions')
         .update({ input: inputRefs })
         .eq('id', executionId);
@@ -149,7 +149,7 @@ export class DistributedOrchestrator {
       }
 
       // 7. Update execution status to running
-      await this.supabase
+      await this.db
         .from('executions')
         .update({
           status: 'running',
@@ -180,7 +180,7 @@ export class DistributedOrchestrator {
   ): Promise<void> {
     try {
       // 1. Get execution step
-      const { data: step, error: stepError } = await this.supabase
+      const { data: step, error: stepError } = await this.db
         .from('execution_steps')
         .select('*')
         .eq('execution_id', executionId)
@@ -204,7 +204,7 @@ export class DistributedOrchestrator {
         updateData.error = error;
       }
 
-      await this.supabase
+      await this.db
         .from('execution_steps')
         .update(updateData)
         .eq('id', step.id);
@@ -216,7 +216,7 @@ export class DistributedOrchestrator {
       }
 
       // 3. Get workflow definition
-      const { data: execution } = await this.supabase
+      const { data: execution } = await this.db
         .from('executions')
         .select('workflow_id')
         .eq('id', executionId)
@@ -243,23 +243,23 @@ export class DistributedOrchestrator {
         const { releaseExecutionLock } = await import('../../execution/execution-lock');
         const { logExecutionEvent } = await import('../../execution/execution-event-logger');
         
-        const { data: execution } = await this.supabase
+        const { data: execution } = await this.db
           .from('executions')
           .select('workflow_id')
           .eq('id', executionId)
           .single();
         
         if (execution?.workflow_id) {
-          await releaseExecutionLock(this.supabase, execution.workflow_id, executionId);
+          await releaseExecutionLock(this.db, execution.workflow_id, executionId);
           await logExecutionEvent(
-            this.supabase,
+            this.db,
             executionId,
             execution.workflow_id,
             'LOCK_RELEASED',
             { workflowId: execution.workflow_id, executionId }
           );
           await logExecutionEvent(
-            this.supabase,
+            this.db,
             executionId,
             execution.workflow_id,
             'RUN_FINISHED',
@@ -316,7 +316,7 @@ export class DistributedOrchestrator {
 
     if (isUUID) {
       // Try workflow_definitions by ID first (if it's a UUID)
-      const { data: defById, error: defByIdError } = await this.supabase
+      const { data: defById, error: defByIdError } = await this.db
         .from('workflow_definitions')
         .select('*')
         .eq('id', workflowId)
@@ -335,7 +335,7 @@ export class DistributedOrchestrator {
       }
 
       // Try workflows table by ID
-      const { data: workflow, error: workflowError } = await this.supabase
+      const { data: workflow, error: workflowError } = await this.db
         .from('workflows')
         .select('*')
         .eq('id', workflowId)
@@ -354,7 +354,7 @@ export class DistributedOrchestrator {
       }
     } else {
       // Not a UUID, try by name in workflow_definitions
-      const { data: def, error: defError } = await this.supabase
+      const { data: def, error: defError } = await this.db
         .from('workflow_definitions')
         .select('*')
         .eq('name', workflowId)
@@ -488,14 +488,14 @@ export class DistributedOrchestrator {
     status: string
   ): Promise<string> {
     // Get sequence number (count of existing steps)
-    const { count } = await this.supabase
+    const { count } = await this.db
       .from('execution_steps')
       .select('*', { count: 'exact', head: true })
       .eq('execution_id', executionId);
 
     const sequence = (count || 0) + 1;
 
-    const { data: step, error: stepError } = await this.supabase
+    const { data: step, error: stepError } = await this.db
       .from('execution_steps')
       .insert({
         execution_id: executionId,
@@ -534,7 +534,7 @@ export class DistributedOrchestrator {
 
     for (const edge of incomingEdges) {
       // Get output from source node
-      const { data: sourceStep } = await this.supabase
+      const { data: sourceStep } = await this.db
         .from('execution_steps')
         .select('output_refs')
         .eq('execution_id', executionId)
@@ -561,7 +561,7 @@ export class DistributedOrchestrator {
     error: string
   ): Promise<void> {
     // Get step to check retry count and node_type
-    const { data: step } = await this.supabase
+    const { data: step } = await this.db
       .from('execution_steps')
       .select('retry_count, max_retries, node_type')
       .eq('id', stepId)
@@ -575,7 +575,7 @@ export class DistributedOrchestrator {
 
     if (retryCount < maxRetries) {
       // Retry the node
-      await this.supabase
+      await this.db
         .from('execution_steps')
         .update({
           retry_count: retryCount,
@@ -598,13 +598,13 @@ export class DistributedOrchestrator {
       console.log(`[DistributedOrchestrator] 🔄 Retrying node ${nodeId} (attempt ${retryCount}/${maxRetries})`);
     } else {
       // Max retries exceeded - mark execution as failed
-      const { data: execution } = await this.supabase
+      const { data: execution } = await this.db
         .from('executions')
         .select('workflow_id')
         .eq('id', executionId)
         .single();
 
-      await this.supabase
+      await this.db
         .from('executions')
         .update({
           status: 'failed',
@@ -629,16 +629,16 @@ export class DistributedOrchestrator {
           const { releaseExecutionLock } = await import('../../execution/execution-lock');
           const { logExecutionEvent } = await import('../../execution/execution-event-logger');
           
-          await releaseExecutionLock(this.supabase, execution.workflow_id, executionId);
+          await releaseExecutionLock(this.db, execution.workflow_id, executionId);
           await logExecutionEvent(
-            this.supabase,
+            this.db,
             executionId,
             execution.workflow_id,
             'RUN_FAILED',
             { error: `Node ${nodeId} failed after ${maxRetries} retries: ${error}` }
           );
           await logExecutionEvent(
-            this.supabase,
+            this.db,
             executionId,
             execution.workflow_id,
             'LOCK_RELEASED',
@@ -664,13 +664,13 @@ export class DistributedOrchestrator {
     const outputRefs = await this.storage.storeExecutionOutput(executionId, finalOutput);
 
     // Get workflow_id for lock release
-    const { data: execution } = await this.supabase
+    const { data: execution } = await this.db
       .from('executions')
       .select('workflow_id')
       .eq('id', executionId)
       .single();
 
-    await this.supabase
+    await this.db
       .from('executions')
       .update({
         status: 'completed',
@@ -687,16 +687,16 @@ export class DistributedOrchestrator {
         const { releaseExecutionLock } = await import('../../execution/execution-lock');
         const { logExecutionEvent } = await import('../../execution/execution-event-logger');
         
-        await releaseExecutionLock(this.supabase, execution.workflow_id, executionId);
+        await releaseExecutionLock(this.db, execution.workflow_id, executionId);
         await logExecutionEvent(
-          this.supabase,
+          this.db,
           executionId,
           execution.workflow_id,
           'LOCK_RELEASED',
           { workflowId: execution.workflow_id, executionId }
         );
         await logExecutionEvent(
-          this.supabase,
+          this.db,
           executionId,
           execution.workflow_id,
           'RUN_FINISHED',

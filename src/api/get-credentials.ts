@@ -2,10 +2,10 @@
 // Returns stored credentials for LinkedIn/Google integrations
 
 import { Request, Response } from 'express';
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 
 export default async function getCredentialsHandler(req: Request, res: Response) {
-  const supabase = getDbClient();
+  const db = getDbClient();
 
   try {
     const { service } = req.query;
@@ -17,7 +17,7 @@ export default async function getCredentialsHandler(req: Request, res: Response)
     }
 
     // Get current user from session
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    const { data: { user }, error: authError } = await db.auth.getUser();
 
     if (authError || !user) {
       return res.status(401).json({
@@ -26,7 +26,7 @@ export default async function getCredentialsHandler(req: Request, res: Response)
     }
 
     // Fetch credentials from database
-    const { data, error } = await supabase
+    const { data, error } = await db
       .from('user_credentials')
       .select('credentials')
       .eq('user_id', user.id)

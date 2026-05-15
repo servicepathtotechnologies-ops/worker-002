@@ -11,7 +11,7 @@
  * - Support for send/list/get/search operations
  */
 
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { DbClient } from '@db/db-js';
 import { resolveOAuthToken } from './credential-resolver';
 import { fetchWithRetry, parseGoogleApiError, validateEmail } from './google-api-utils';
 
@@ -57,7 +57,7 @@ export const REQUIRED_GMAIL_SCOPES = [
  * 4. Refresh token if expired
  */
 export async function resolveGmailCredentials(
-  supabase: SupabaseClient,
+  db: DbClient,
   workflowId: string,
   nodeId: string,
   userId?: string,
@@ -193,7 +193,7 @@ export async function sendGmailEmail(
 export async function listGmailMessages(
   credential: GmailCredential,
   config: GmailListConfig
-): Promise<{ success: boolean; messages?: any[]; error?: string }> {
+): Promise<{ success: boolean; messages?: any[]; resultSizeEstimate?: number; error?: string }> {
   try {
     const maxResults = config.maxResults || 10;
     const query = config.query || '';
@@ -221,10 +221,13 @@ export async function listGmailMessages(
       return { success: false, error: `Gmail API error: ${errorMessage}` };
     }
     
-    const result = await response.json() as { messages?: any[] };
+    const result = await response.json() as { messages?: any[]; resultSizeEstimate?: number };
     return {
       success: true,
       messages: result.messages || [],
+      resultSizeEstimate: typeof result.resultSizeEstimate === 'number'
+        ? result.resultSizeEstimate
+        : result.messages?.length || 0,
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);

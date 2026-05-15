@@ -14,6 +14,16 @@ interface ErrorGuidanceRequest {
     nodeType?: string;
     missingInputs?: Array<{ fieldName: string; nodeLabel: string; description?: string }>;
     missingCredentials?: Array<{ provider: string; displayName: string }>;
+    executionValidationErrors?: string[];
+    executionValidationIssues?: Array<{
+      type?: string;
+      severity?: string;
+      issue?: string;
+      nodeLabel?: string;
+      nodeType?: string;
+      previousNodeLabel?: string;
+      previousNodeType?: string;
+    }>;
     phase?: string;
     provider?: string;
     operation?: string;
@@ -77,6 +87,27 @@ function deterministicGuidance(req: ErrorGuidanceRequest): ErrorGuidanceResponse
         nodeNames.length > 0 ? `Click the ${nodeNames.join(' or ')} node on the canvas` : 'Click the node that needs attention',
         `Fill in: ${fieldList}`,
         'Save and run the workflow again',
+      ],
+      tone: 'configuration',
+    };
+  }
+
+  if (ctx.executionValidationIssues?.length || ctx.executionValidationErrors?.length) {
+    const firstIssue = ctx.executionValidationIssues?.[0];
+    const issueText =
+      firstIssue?.previousNodeLabel && firstIssue?.nodeLabel
+        ? `${firstIssue.previousNodeLabel} -> ${firstIssue.nodeLabel}: ${firstIssue.issue || 'check this connection'}`
+        : firstIssue?.nodeLabel
+          ? `${firstIssue.nodeLabel}: ${firstIssue.issue || 'check this node'}`
+          : ctx.executionValidationErrors?.[0] || 'The workflow structure needs attention.';
+    return {
+      title: 'Check this workflow connection',
+      description: issueText,
+      resolution: 'Open the named node or connection and adjust the order only if this does not match your intended flow.',
+      nextSteps: [
+        firstIssue?.previousNodeLabel ? `Review ${firstIssue.previousNodeLabel}` : 'Review the previous node',
+        firstIssue?.nodeLabel ? `Review ${firstIssue.nodeLabel}` : 'Review the highlighted node',
+        'Save and run again',
       ],
       tone: 'configuration',
     };
@@ -180,6 +211,18 @@ function buildAIPrompt(req: ErrorGuidanceRequest): string {
   }
   if (ctx.missingInputs?.length) {
     lines.push(`  Missing inputs: ${ctx.missingInputs.map((f) => f.nodeLabel ? `${f.nodeLabel} → ${f.fieldName}` : f.fieldName).join(', ')}`);
+  }
+
+  if (ctx.executionValidationIssues?.length) {
+    lines.push(`  Validation issues: ${ctx.executionValidationIssues.map((issue) => {
+      const current = issue.nodeLabel || issue.nodeType || 'node';
+      const previous = issue.previousNodeLabel || issue.previousNodeType || '';
+      return previous
+        ? `${previous} -> ${current}: ${issue.issue || 'check connection'}`
+        : `${current}: ${issue.issue || 'check node'}`;
+    }).join(', ')}`);
+  } else if (ctx.executionValidationErrors?.length) {
+    lines.push(`  Validation issues: ${ctx.executionValidationErrors.join(', ')}`);
   }
 
   lines.push('');

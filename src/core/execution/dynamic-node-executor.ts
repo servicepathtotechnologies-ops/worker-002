@@ -21,14 +21,14 @@ import type { UnifiedNodeDefinition } from '../types/unified-node-contract';
 import { NodeExecutionContext, NodeExecutionResult, FieldFillMode, NodeInputField } from '../types/unified-node-contract';
 import { WorkflowNode, Workflow } from '../../core/types/ai-types';
 import { LRUNodeOutputsCache } from '../cache/lru-node-outputs-cache';
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { DbClient } from '@db/db-js';
 // âœ… PRODUCTION-GRADE: Removed normalizeNodeType - node types must be canonical before reaching executor
 import { IntentDrivenJsonRouter, shouldActivateRouter } from '../intent-driven-json-router';
 import { universalNodeAIContext } from '../../services/ai/universal-node-ai-context';
 import { aiFieldDetector } from '../../services/ai/ai-field-detector';
 import { normalizeRuntimePayload } from '../runtime/runtime-input-adapter';
 import { validateResolvedInput, guaranteeInputForSchema } from './input-guarantee';
-import { buildEffectiveFillModes, isMeaningfulStaticValue, coerceFieldFillModeByPolicy } from '../utils/fill-mode-resolver';
+import { buildEffectiveFillModes, isMeaningfulStaticValue } from '../utils/fill-mode-resolver';
 import {
   isEffectivelyEmptyUpstreamPayload,
   isUpstreamNarrativelyThinForRuntimeAi,
@@ -146,7 +146,7 @@ export interface DynamicExecutionContext {
   node: WorkflowNode;
   input: unknown;
   nodeOutputs: LRUNodeOutputsCache;
-  supabase: SupabaseClient;
+  db: DbClient;
   workflowId: string;
   userId?: string;
   currentUserId?: string;
@@ -213,6 +213,25 @@ function sanitizeResolvedInputsForPersistence(inputs: Record<string, any>): Reco
     sanitized[fieldName] = value;
   }
   return sanitized;
+}
+
+function createTemplateResolutionCache(
+  source: LRUNodeOutputsCache,
+  upstreamPayload: unknown
+): LRUNodeOutputsCache {
+  const cache = new LRUNodeOutputsCache(100, false);
+  const allOutputs = source.getAll();
+  for (const [nodeId, output] of Object.entries(allOutputs)) {
+    cache.set(nodeId, output, true);
+  }
+
+  if (upstreamPayload !== undefined && upstreamPayload !== null) {
+    cache.set('input', upstreamPayload, true);
+    cache.set('$json', upstreamPayload, true);
+    cache.set('json', upstreamPayload, true);
+  }
+
+  return cache;
 }
 
 function isMeaningfulValueForResolution(value: unknown): boolean {
@@ -338,7 +357,7 @@ function applyCostFirstRuntimeFallbacks(params: {
 export async function executeNodeDynamically(
   context: DynamicExecutionContext
 ): Promise<unknown> {
-  const { node, input, nodeOutputs, supabase, workflowId, userId, currentUserId } = context;
+  const { node, input, nodeOutputs, db, workflowId, userId, currentUserId } = context;
   const runtimeMarker = 'runtime-marker-2026-03-20-v1';
   const expectedRuntimeMarker = (global as any).__expectedExecutionRuntimeMarker;
   if (expectedRuntimeMarker && expectedRuntimeMarker !== runtimeMarker) {
@@ -551,6 +570,7 @@ export async function executeNodeDynamically(
   // Step 5.5: Raw upstream payload â€“ AI will analyze its keys and produce JSON for this node.
   // Empty-until-runtime: config input fields are left empty at build time; we fill them here from actual previous output.
   const upstreamPayload = input !== undefined && input !== null ? input : getPreviousNodeOutput(nodeOutputs);
+  const templateResolutionNodeOutputs = createTemplateResolutionCache(nodeOutputs, upstreamPayload);
 
   const universalFlags = getUniversalInputContractFlags();
   // Step 6: Universal node input contract orchestration (intent + previous output + AI + deterministic fallback).
@@ -559,7 +579,7 @@ export async function executeNodeDynamically(
     node,
     nodeType,
     migratedConfig,
-    nodeOutputs,
+    nodeOutputs: templateResolutionNodeOutputs,
     upstreamPayload,
   });
   let resolvedInputs = contractResult.resolvedInputs;
@@ -695,7 +715,8 @@ export async function executeNodeDynamically(
     if (normalized) effectiveInput = normalizedPayload;
   }
 
-  // Store effective input as 'input'/$json for template resolution and execution (node sees the structure it needs)
+  // Store effective input as input/json for execution conveniences. Template resolution
+  // still uses templateResolutionNodeOutputs so $json remains the immediate upstream payload.
   if (effectiveInput !== undefined && effectiveInput !== null) {
     nodeOutputs.set('input', effectiveInput, true);
     nodeOutputs.set('$json', effectiveInput, true);
@@ -740,7 +761,7 @@ export async function executeNodeDynamically(
   const templateResolvedConfig: Record<string, any> = {};
   for (const [key, value] of Object.entries(mergedConfig)) {
     if (typeof value === 'string' && (value.includes('{{') || value.includes('$json'))) {
-      templateResolvedConfig[key] = resolveUniversalTemplate(value, nodeOutputs);
+      templateResolvedConfig[key] = resolveUniversalTemplate(value, templateResolutionNodeOutputs);
     } else {
       templateResolvedConfig[key] = value;
     }
@@ -753,12 +774,12 @@ export async function executeNodeDynamically(
     nodeType,
     config: templateResolvedConfig, // Use template-resolved config (spec task 9)
     inputs: resolvedInputs, // Use resolved inputs for execution
-    rawInput: effectiveInput,
+    rawInput: upstreamPayload,
     upstreamOutputs: new Map(),
     workflowId,
     userId,
     currentUserId,
-    supabase,
+    db,
     resolvedInputSources,
   };
   
@@ -1035,19 +1056,10 @@ async function resolveNodeInputsUniversalContract(
   ) {
     const runtimeFields = getRuntimeAiFields(runtimeInputSchema, effectiveFillModes);
 
-    // Universal empty-field resolution: also include empty manual_static fields that don't
-    // explicitly block runtime AI (not credentials, not supportsRuntimeAI=false).
-    // This allows users to leave any field blank at build time and have it auto-filled at
-    // runtime from user intent + previous node output.
-    const emptyUnblockedFields = Object.keys(runtimeInputSchema).filter((fieldName) => {
-      if (runtimeFields.includes(fieldName)) return false; // already in runtime_ai pool
-      if (isMeaningfulValueForResolution(resolvedInputs[fieldName])) return false; // already filled
-      if (inputSources[fieldName] === 'template') return false; // template reference — leave it
-      const wouldAllow = coerceFieldFillModeByPolicy(
-        fieldName, 'runtime_ai', runtimeInputSchema, migratedConfig as Record<string, any>
-      ).mode === 'runtime_ai';
-      return wouldAllow;
-    });
+    // Only fields explicitly owned by runtime_ai may be filled at runtime.
+    // Manual/static fields are user-owned, even when empty; filling them from intent can
+    // corrupt concrete integration values such as Google Sheets ranges or API IDs.
+    const emptyUnblockedFields: string[] = [];
     const allRuntimeFields = [...runtimeFields, ...emptyUnblockedFields];
     runtimeFieldsAudit = allRuntimeFields;
 
@@ -1220,9 +1232,15 @@ async function resolveNodeInputsUniversalContract(
       if (mode === 'manual_static' || mode === 'buildtime_ai_once') {
         const staticValue = (migratedConfig as Record<string, any>)[fieldName];
         if (isMeaningfulStaticValue(staticValue)) {
-          (resolvedInputs as Record<string, any>)[fieldName] = staticValue;
-          inputSources[fieldName] =
-            typeof staticValue === 'string' && staticValue.includes('{{') ? 'template' : 'static_config';
+          if (typeof staticValue === 'string' && staticValue.includes('{{')) {
+            const resolved = resolveTemplateExpression(staticValue, nodeOutputs);
+            (resolvedInputs as Record<string, any>)[fieldName] =
+              resolved !== undefined && resolved !== null && resolved !== staticValue ? resolved : staticValue;
+            inputSources[fieldName] = 'template';
+          } else {
+            (resolvedInputs as Record<string, any>)[fieldName] = staticValue;
+            inputSources[fieldName] = 'static_config';
+          }
         }
       }
     }

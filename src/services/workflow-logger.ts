@@ -357,10 +357,10 @@ export class WorkflowLogger extends EventEmitter {
    */
   private async logToDatabase(entry: WorkflowLogEntry): Promise<void> {
     try {
-      const { getDbClient } = await import('../core/database/supabase-compat');
-      const supabase = getDbClient();
+      const { getDbClient } = await import('../core/database/aws-db-client');
+      const db = getDbClient();
       
-      await supabase
+      await db
         .from('workflow_execution_logs')
         .insert({
           workflow_id: entry.workflowId,

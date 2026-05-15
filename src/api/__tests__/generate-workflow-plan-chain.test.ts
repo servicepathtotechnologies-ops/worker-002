@@ -198,7 +198,7 @@ describe('generate-workflow canonical plan chain gates', () => {
 
   it('flags over-broad chains for simple branching intent', () => {
     const issues = validateCanonicalChainCompleteness(
-      ['form', 'delay', 'wait', 'if_else', 'supabase', 'google_sheets', 'google_gmail', 'salesforce', 'log_output'],
+      ['form', 'delay', 'wait', 'if_else', 'db', 'google_sheets', 'google_gmail', 'salesforce', 'log_output'],
       { userPrompt: 'Users submit form, if age > 18 send gmail else send slack' }
     );
     expect(issues.some((i) => i.reason.includes('over_broad_chain_non_intent_nodes'))).toBe(true);

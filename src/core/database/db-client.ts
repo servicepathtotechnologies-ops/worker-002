@@ -1,13 +1,12 @@
 /**
  * AWS RDS database client — canonical entry point.
  *
- * Re-exports everything from supabase-compat.ts under clean names.
+ * Re-exports everything from aws-db-client.ts.
  * New code should import from this file:
  *
  *   import { getDbClient } from '../core/database/db-client';
  *
  * The underlying implementation uses pg.Pool → AWS RDS PostgreSQL.
- * No Supabase SDK is used at runtime.
  */
 
-export { getDbClient, getSupabaseClient, createSupabaseClient } from './supabase-compat';
+export { getDbClient, createDbClient } from './aws-db-client';

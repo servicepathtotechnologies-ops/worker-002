@@ -88,7 +88,7 @@ const INTEGRATION_KEYWORDS: Record<string, string[]> = {
   'postgresql': ['postgres', 'postgresql'],
   'mysql': ['mysql'],
   'mongodb': ['mongo', 'mongodb'],
-  'supabase': ['supabase'],
+  'db': ['db'],
   'database_write': ['database', 'db', 'store'],
   'database_read': ['read database', 'query database'],
   
@@ -274,8 +274,8 @@ export class StepNodeMapper {
           nodeType = 'mysql';
         } else if (context.includes('mongo')) {
           nodeType = 'mongodb';
-        } else if (context.includes('supabase')) {
-          nodeType = 'supabase';
+        } else if (context.includes('db')) {
+          nodeType = 'db';
         } else {
           // Default to database_write
           nodeType = 'database_write';

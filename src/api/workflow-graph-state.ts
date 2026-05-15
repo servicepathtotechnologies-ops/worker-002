@@ -60,6 +60,26 @@ function hasGraphShape(nodes: any[], edges: any[]): boolean {
   return nodes.length > 0 || edges.length > 0;
 }
 
+function nodeIdSet(nodes: any[]): Set<string> {
+  return new Set(
+    nodes
+      .map((node: any) => String(node?.id || '').trim())
+      .filter(Boolean)
+  );
+}
+
+function isStrictSuperset(candidate: Set<string>, other: Set<string>): boolean {
+  if (candidate.size <= other.size) return false;
+  for (const id of other) {
+    if (!candidate.has(id)) return false;
+  }
+  return true;
+}
+
+function graphCompletenessScore(nodes: any[], edges: any[]): number {
+  return nodes.length * 10_000 + edges.length;
+}
+
 export function resolveWorkflowGraphState(workflow: WorkflowRowLike): ResolvedWorkflowGraphState {
   const columnNodes = parseArrayField(workflow.nodes);
   const columnEdges = parseArrayField(workflow.edges);
@@ -134,6 +154,46 @@ export function resolveWorkflowGraphState(workflow: WorkflowRowLike): ResolvedWo
       inSync: true,
       needsHealing: false,
       reason: 'graph_columns_in_sync',
+    };
+  }
+
+  const graphNodeIds = nodeIdSet(graphNodes);
+  const columnNodeIds = nodeIdSet(columnNodes);
+  const graphIsStrictSuperset = isStrictSuperset(graphNodeIds, columnNodeIds);
+  const columnsAreStrictSuperset = isStrictSuperset(columnNodeIds, graphNodeIds);
+
+  if (graphIsStrictSuperset && !columnsAreStrictSuperset) {
+    return {
+      nodes: graphNodes,
+      edges: graphEdges,
+      source: 'graph',
+      inSync: false,
+      needsHealing: true,
+      reason: 'graph_columns_mismatch_graph_has_more_nodes',
+    };
+  }
+
+  if (columnsAreStrictSuperset && !graphIsStrictSuperset) {
+    return {
+      nodes: columnNodes,
+      edges: columnEdges,
+      source: 'columns',
+      inSync: false,
+      needsHealing: true,
+      reason: 'graph_columns_mismatch_columns_have_more_nodes',
+    };
+  }
+
+  const graphScore = graphCompletenessScore(graphNodes, graphEdges);
+  const columnsScore = graphCompletenessScore(columnNodes, columnEdges);
+  if (graphScore > columnsScore) {
+    return {
+      nodes: graphNodes,
+      edges: graphEdges,
+      source: 'graph',
+      inSync: false,
+      needsHealing: true,
+      reason: 'graph_columns_mismatch_graph_more_complete',
     };
   }
 

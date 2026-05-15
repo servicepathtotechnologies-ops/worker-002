@@ -1,5 +1,5 @@
 import { Request } from 'express';
-import { getDbClient } from '../database/supabase-compat';
+import { getDbClient } from '../database/aws-db-client';
 import { resolveCanonicalUserId } from '../database/identity-resolver';
 import { ErrorCode, createError } from './error-codes';
 
@@ -9,7 +9,7 @@ import { ErrorCode, createError } from './error-codes';
  * Throws UNAUTHORIZED otherwise.
  */
 export async function requireAuthenticatedUser(req: Request): Promise<string> {
-  const supabase = getDbClient();
+  const db = getDbClient();
 
   const authHeader = req.headers.authorization;
   let userId: string | undefined;
@@ -18,7 +18,7 @@ export async function requireAuthenticatedUser(req: Request): Promise<string> {
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.replace('Bearer ', '').trim();
     if (token) {
-      const { data: { user }, error } = await supabase.auth.getUser(token);
+      const { data: { user }, error } = await db.auth.getUser(token);
       if (!error && user) {
         userId = user.id;
         email  = user.email || '';
@@ -44,10 +44,10 @@ export async function requireAuthenticatedUser(req: Request): Promise<string> {
  * Returns the canonical user ID if Google is connected, throws error otherwise.
  */
 export async function requireGoogleAuth(req: Request): Promise<string> {
-  const supabase = getDbClient();
+  const db = getDbClient();
   const userId = await requireAuthenticatedUser(req);
 
-  const { data: googleTokenData, error: googleError } = await supabase
+  const { data: googleTokenData, error: googleError } = await db
     .from('google_oauth_tokens')
     .select('id, expires_at')
     .eq('user_id', userId)

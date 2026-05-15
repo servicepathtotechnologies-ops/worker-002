@@ -1,8 +1,8 @@
 // Webhook Trigger API Route
-// Migrated from Supabase Edge Function
+// Worker API handler
 
 import { Request, Response } from 'express';
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 import { config } from '../core/config';
 import { verifyWebhookSignature } from '../services/webhook-signature';
 
@@ -11,7 +11,7 @@ import { verifyWebhookSignature } from '../services/webhook-signature';
  * Creates an execution and triggers workflow execution
  */
 export default async function webhookTriggerHandler(req: Request, res: Response) {
-  const supabase = getDbClient();
+  const db = getDbClient();
 
   try {
     // Extract workflow ID from URL path
@@ -52,7 +52,7 @@ export default async function webhookTriggerHandler(req: Request, res: Response)
     };
 
     // Verify workflow exists and has webhook enabled
-    const { data: workflow, error: workflowError } = await supabase
+    const { data: workflow, error: workflowError } = await db
       .from('workflows')
       .select('*')
       .eq('id', workflowId)
@@ -100,7 +100,7 @@ export default async function webhookTriggerHandler(req: Request, res: Response)
 
     // Create execution record
     const startedAt = new Date().toISOString();
-    const { data: execution, error: execError } = await supabase
+    const { data: execution, error: execError } = await db
       .from('executions')
       .insert({
         workflow_id: workflowId,

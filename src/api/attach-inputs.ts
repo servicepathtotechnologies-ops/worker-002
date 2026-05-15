@@ -26,7 +26,7 @@
 
 import { Request, Response } from 'express';
 import { createHash } from 'crypto';
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 import { workflowLifecycleManager } from '../services/workflow-lifecycle-manager';
 import { workflowValidator } from '../services/ai/workflow-validator';
 import { nodeLibrary } from '../services/nodes/node-library';
@@ -347,7 +347,7 @@ async function runAttachInputsPipeline(req: Request, res: Response): Promise<{ s
     }
 
     // Get current user
-    const supabase = getDbClient();
+    const db = getDbClient();
     const authHeader = req.headers.authorization;
     let userId: string | undefined;
 
@@ -355,7 +355,7 @@ async function runAttachInputsPipeline(req: Request, res: Response): Promise<{ s
       const token = authHeader.replace('Bearer ', '').trim();
       if (token) {
         try {
-          const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+          const { data: { user }, error: authError } = await db.auth.getUser(token);
           if (!authError && user) {
             userId = user.id;
           }
@@ -366,7 +366,7 @@ async function runAttachInputsPipeline(req: Request, res: Response): Promise<{ s
     }
 
     // Fetch workflow
-    const { data: workflow, error: workflowError } = await supabase
+    const { data: workflow, error: workflowError } = await db
       .from('workflows')
       .select('*')
       .eq('id', workflowId)
@@ -595,7 +595,7 @@ async function runAttachInputsPipeline(req: Request, res: Response): Promise<{ s
 
       // âœ… ATOMIC PHASE FIX: Advance phase ONLY after successful normalization + validation.
       // This ensures a 400 on normalization failure never mutates the phase.
-      await supabase
+      await db
         .from('workflows')
         .update({
           status: 'active',
@@ -2014,7 +2014,7 @@ async function runAttachInputsPipeline(req: Request, res: Response): Promise<{ s
     // ðŸ†• VERSIONING: Get previous definition before update
     let previousDefinition: any = null;
     try {
-      const { data: previousWorkflow } = await supabase
+      const { data: previousWorkflow } = await db
         .from('workflows')
         .select('*')
         .eq('id', workflowId)
@@ -2041,7 +2041,7 @@ async function runAttachInputsPipeline(req: Request, res: Response): Promise<{ s
     // âœ… CRITICAL: Update workflow graph AND status in a single atomic operation
     // Also sync phase field if it exists (for backward compatibility)
     // Note: Database uses 'nodes' and 'edges' columns, not 'graph'
-    const { data: updateData, error: updateError } = await supabase
+    const { data: updateData, error: updateError } = await db
       .from('workflows')
       .update({
         nodes: nodesToSave,
@@ -2129,7 +2129,7 @@ async function runAttachInputsPipeline(req: Request, res: Response): Promise<{ s
           const authHeader = req.headers.authorization;
           if (authHeader && authHeader.startsWith('Bearer ')) {
             const token = authHeader.replace('Bearer ', '').trim();
-            const { data: { user } } = await supabase.auth.getUser(token);
+            const { data: { user } } = await db.auth.getUser(token);
             if (user) {
               createdBy = user.id;
             }
@@ -2186,7 +2186,7 @@ async function runAttachInputsPipeline(req: Request, res: Response): Promise<{ s
         acc[item.mode] = (acc[item.mode] || 0) + 1;
         return acc;
       }, {} as Record<string, number>);
-      await supabase
+      await db
         .from('workflow_events')
         .insert({
           workflow_id: workflowId,

@@ -392,7 +392,7 @@ export class RepairEngine {
    */
   private isDataSourceNodeType(nodeType: string): boolean {
     const dataSourceNodeTypes = [
-      'google_sheets', 'database_read', 'supabase', 'postgresql', 'mysql', 'mongodb',
+      'google_sheets', 'database_read', 'db', 'postgresql', 'mysql', 'mongodb',
       'http_request', 'webhook', 'form', 'airtable', 'notion'
     ];
     return dataSourceNodeTypes.includes(nodeType);

@@ -14,7 +14,7 @@
  */
 
 import { Request, Response } from 'express';
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 import { workflowLifecycleManager } from '../services/workflow-lifecycle-manager';
 import { ErrorCode, createError } from '../core/utils/error-codes';
 import { validateStructuralReadiness } from '../core/validation/workflow-save-validator';
@@ -133,7 +133,7 @@ export default async function attachCredentialsHandler(req: Request, res: Respon
     console.log(`[AttachCredentials] Received ${Object.keys(credentials).length} credential(s) for workflow ${workflowId}`);
 
     // Get current user
-    const supabase = getDbClient();
+    const db = getDbClient();
     const authHeader = req.headers.authorization;
     let userId: string | undefined;
 
@@ -141,7 +141,7 @@ export default async function attachCredentialsHandler(req: Request, res: Respon
       const token = authHeader.replace('Bearer ', '').trim();
       if (token) {
         try {
-          const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+          const { data: { user }, error: authError } = await db.auth.getUser(token);
           if (!authError && user) {
             userId = user.id;
           }
@@ -152,7 +152,7 @@ export default async function attachCredentialsHandler(req: Request, res: Respon
     }
 
     // Fetch workflow
-    const { data: workflow, error: workflowError } = await supabase
+    const { data: workflow, error: workflowError } = await db
       .from('workflows')
       .select('*')
       .eq('id', workflowId)
@@ -530,7 +530,7 @@ export default async function attachCredentialsHandler(req: Request, res: Respon
     // ✅ CRITICAL: Update workflow graph AND status in a single atomic operation
     // Also sync phase field if it exists (for backward compatibility)
     // Note: Database uses 'nodes' and 'edges' columns, not 'graph'
-    const { data: updateData, error: updateError } = await supabase
+    const { data: updateData, error: updateError } = await db
       .from('workflows')
       .update({
         nodes: finalNormalizedGraph.nodes,
@@ -596,7 +596,7 @@ export default async function attachCredentialsHandler(req: Request, res: Respon
 
       // ✅ CRITICAL: Audit trail - log credentials attached and ready events
       try {
-        await supabase
+        await db
           .from('workflow_events')
           .insert([
             {
@@ -626,7 +626,7 @@ export default async function attachCredentialsHandler(req: Request, res: Respon
     } else {
       // ✅ CRITICAL: Audit trail - log credentials attached even if not ready
       try {
-        await supabase
+        await db
           .from('workflow_events')
           .insert({
             workflow_id: workflowId,

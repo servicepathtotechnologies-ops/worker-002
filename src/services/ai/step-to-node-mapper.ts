@@ -91,8 +91,8 @@ export function mapActionToNodeType(action: AllowedAction, context?: {
       if (promptLower.includes('mongodb') || promptLower.includes('mongo')) {
         return ['mongodb'];
       }
-      if (promptLower.includes('supabase')) {
-        return ['supabase'];
+      if (promptLower.includes('db')) {
+        return ['db'];
       }
       // Default to database_write
       return ['database_write'];

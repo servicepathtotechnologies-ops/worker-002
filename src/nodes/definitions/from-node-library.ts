@@ -60,6 +60,7 @@ function toNodeDefinition(schema: NodeSchema): NodeDefinition {
       ui: {
         options: (v as any).options,
         requiredIf: (v as any).requiredIf,
+        visibleIf: (v as any).visibleIf,
         widget: (v as any)?.requiredIf?.field?.toLowerCase?.().includes('recipient')
           ? 'multi_email'
           : undefined,
@@ -92,19 +93,73 @@ function toNodeDefinition(schema: NodeSchema): NodeDefinition {
 
   const validateInputs = (inputs: Record<string, any>) => {
     const errors: string[] = [];
+    const isEmpty = (v: any) => v === undefined || v === null || v === '';
 
-    // Required checks
+    // Required checks (unconditionally required fields)
     for (const k of required) {
-      const v = inputs?.[k];
-      if (v === undefined || v === null || v === '') {
+      if (isEmpty(inputs?.[k])) {
         errors.push(`${k} is required`);
+      }
+    }
+
+    // requiredIf checks — collect all fields that share the same requiredIf condition
+    // so we can handle OR groups (e.g. documentId OR documentUrl)
+    const requiredIfGroups = new Map<string, string[]>(); // groupKey → fieldNames
+    for (const [k, spec] of Object.entries(inputSchema)) {
+      const ri = spec.ui?.requiredIf;
+      if (!ri) continue;
+      const groupKey = `${ri.field}:${'equals' in ri ? `eq:${ri.equals}` : `neq:${ri.notEquals}`}`;
+      if (!requiredIfGroups.has(groupKey)) requiredIfGroups.set(groupKey, []);
+      requiredIfGroups.get(groupKey)!.push(k);
+    }
+
+    const reportedGroups = new Set<string>();
+    for (const [k, spec] of Object.entries(inputSchema)) {
+      const ri = spec.ui?.requiredIf;
+      if (!ri) continue;
+
+      // Check if the condition is active
+      const controlVal = inputs?.[ri.field];
+      let conditionActive = false;
+      if ('equals' in ri && ri.equals !== undefined) {
+        conditionActive = controlVal === ri.equals;
+      } else if ('notEquals' in ri && ri.notEquals !== undefined) {
+        conditionActive = controlVal !== ri.notEquals;
+      }
+
+      if (!conditionActive) continue;
+
+      // Build the group key to check OR logic
+      const groupKey = `${ri.field}:${'equals' in ri ? `eq:${ri.equals}` : `neq:${ri.notEquals}`}`;
+      if (reportedGroups.has(groupKey)) continue;
+
+      const groupFields = requiredIfGroups.get(groupKey) ?? [k];
+      // Satisfied if ANY field in the group has a non-empty value
+      const anySatisfied = groupFields.some((f) => !isEmpty(inputs?.[f]));
+      if (!anySatisfied) {
+        reportedGroups.add(groupKey);
+        const fieldLabels = groupFields.map((f) => inputSchema[f]?.description || f);
+        if (groupFields.length > 1) {
+          // OR group — name each field by its description
+          const names = groupFields.map((f) => {
+            const d = inputSchema[f]?.description || f;
+            // Take first clause of description before ' — '
+            return d.split('—')[0].trim();
+          });
+          const cond = 'notEquals' in ri ? `(not ${ri.notEquals})` : ri.equals;
+          errors.push(`${names.join(' or ')} is required when ${ri.field} is ${cond}`);
+        } else {
+          const desc = fieldLabels[0].split('—')[0].trim();
+          const cond = 'notEquals' in ri ? `not "${ri.notEquals}"` : `"${ri.equals}"`;
+          errors.push(`${desc} is required when ${ri.field} is ${cond}`);
+        }
       }
     }
 
     // Field-level validation hooks
     for (const [k, spec] of Object.entries(inputSchema)) {
       const v = inputs?.[k];
-      if (v === undefined || v === null || v === '') continue;
+      if (isEmpty(v)) continue;
       if (spec.validation) {
         const res = spec.validation(v);
         if (res !== true) {

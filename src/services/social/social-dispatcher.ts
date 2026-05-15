@@ -5,7 +5,7 @@
  * Routes node operations to appropriate service handlers.
  */
 
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { DbClient } from '@db/db-js';
 import { getProviderToken } from '../../shared/social-token-manager';
 import { postGitHubIssue, createGitHubRepository, getGitHubUser, commitGitHubFile } from './githubService';
 import { postToFacebook, getFacebookUser } from './facebookService';
@@ -31,7 +31,7 @@ export interface SocialNodeConfig {
  * Execute social media node operation
  */
 export async function executeSocialNode(
-  supabase: SupabaseClient,
+  db: DbClient,
   config: SocialNodeConfig,
   userId?: string,
   currentUserId?: string
@@ -46,7 +46,7 @@ export async function executeSocialNode(
   // WhatsApp and Instagram use their own token managers — skip generic token lookup
   if (provider === 'whatsapp') {
     try {
-      const waToken = await getWhatsAppAccessToken(supabase, userIdsToTry);
+      const waToken = await getWhatsAppAccessToken(db, userIdsToTry);
       if (!waToken) {
         return {
           success: false,
@@ -56,7 +56,7 @@ export async function executeSocialNode(
           error: 'No WhatsApp token found. Please connect your WhatsApp Business account in settings.',
         };
       }
-      return await executeWhatsAppNode(waToken, supabase, config);
+      return await executeWhatsAppNode(waToken, db, config);
     } catch (error) {
       return {
         success: false,
@@ -70,7 +70,7 @@ export async function executeSocialNode(
 
   if (provider === 'instagram') {
     try {
-      const igToken = await getInstagramAccessToken(supabase, userIdsToTry);
+      const igToken = await getInstagramAccessToken(db, userIdsToTry);
       if (!igToken) {
         return {
           success: false,
@@ -80,7 +80,7 @@ export async function executeSocialNode(
           error: 'No Instagram token found. Please connect your Instagram account in settings.',
         };
       }
-      return await executeInstagramNode(igToken, supabase, config);
+      return await executeInstagramNode(igToken, db, config);
     } catch (error) {
       return {
         success: false,
@@ -93,7 +93,7 @@ export async function executeSocialNode(
   }
   
   const token = userIdsToTry.length > 0
-    ? await getProviderToken(supabase, userIdsToTry, provider)
+    ? await getProviderToken(db, userIdsToTry, provider)
     : null;
   
   if (!token) {
@@ -679,7 +679,7 @@ async function executeTwitterOperation(
  */
 async function executeWhatsAppNode(
   token: string,
-  supabase: SupabaseClient,
+  db: DbClient,
   config: Record<string, any>
 ): Promise<SocialServiceResponse> {
   try {
@@ -689,7 +689,7 @@ async function executeWhatsAppNode(
       operation: op as string,
       ...restConfig,
     };
-    const node = new WhatsAppNode(token, supabase);
+    const node = new WhatsAppNode(token, db);
     const result: WhatsAppNodeResult = await node.execute(params);
 
     if (result.success) {
@@ -725,7 +725,7 @@ async function executeWhatsAppNode(
  */
 async function executeInstagramNode(
   token: string,
-  supabase: SupabaseClient,
+  db: DbClient,
   config: Record<string, any>
 ): Promise<SocialServiceResponse> {
   try {
@@ -735,7 +735,7 @@ async function executeInstagramNode(
       operation: op as string,
       ...restConfig,
     };
-    const node = new InstagramNode(token, supabase);
+    const node = new InstagramNode(token, db);
     const result: InstagramNodeResult = await node.execute(params);
 
     if (result.success) {

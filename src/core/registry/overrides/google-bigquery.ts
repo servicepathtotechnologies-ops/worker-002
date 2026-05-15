@@ -35,7 +35,7 @@ export function overrideGoogleBigQuery(
         const query = String(inputs.query || '').trim();
         if (!projectId) throw new Error('projectId is required');
         if (!query) throw new Error('query is required');
-        const accessToken = await getGoogleTokenForContext(context);
+        const accessToken = await getGoogleTokenForContext(context, ['https://www.googleapis.com/auth/bigquery']);
         const output = await googleApiRequest(`https://bigquery.googleapis.com/bigquery/v2/projects/${encodeURIComponent(projectId)}/queries`, accessToken, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

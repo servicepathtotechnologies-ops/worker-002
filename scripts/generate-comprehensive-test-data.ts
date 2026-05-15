@@ -10,7 +10,7 @@
  * Usage: npm run generate:comprehensive-test-data
  */
 
-import { createClient } from '@supabase/supabase-js';
+import { createClient } from '@db/db-js';
 import * as dotenv from 'dotenv';
 import * as path from 'path';
 
@@ -24,7 +24,7 @@ if (!supabaseUrl || !supabaseKey) {
   process.exit(1);
 }
 
-const supabase = createClient(supabaseUrl, supabaseKey);
+const db = createClient(supabaseUrl, supabaseKey);
 
 // ============================================
 // NODE TYPE CATEGORIES & EXAMPLES
@@ -1193,7 +1193,7 @@ async function generateComprehensiveTestData() {
     for (const scenario of allScenarios) {
       try {
         // 1. Create workflow
-        const { data: workflow, error: workflowError } = await supabase
+        const { data: workflow, error: workflowError } = await db
           .from('workflows')
           .insert({
             name: `Test Workflow ${scenario.id}: ${scenario.userPrompt.substring(0, 50)}...`,
@@ -1229,7 +1229,7 @@ async function generateComprehensiveTestData() {
         if (workflowError) throw workflowError;
 
         // 2. Create execution
-        const { data: execution, error: executionError } = await supabase
+        const { data: execution, error: executionError } = await db
           .from('executions')
           .insert({
             workflow_id: workflow.id,
@@ -1258,7 +1258,7 @@ async function generateComprehensiveTestData() {
           completed_at: new Date().toISOString(),
         }));
 
-        const { error: stepsError } = await supabase
+        const { error: stepsError } = await db
           .from('execution_steps')
           .insert(steps);
 

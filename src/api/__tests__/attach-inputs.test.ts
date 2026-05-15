@@ -14,7 +14,7 @@ import attachInputsHandler, {
   mergeOwnershipUnlockInputsForNode,
   normalizeSwitchCasesInput,
 } from '../attach-inputs';
-import { getDbClient } from '../../core/database/supabase-compat';
+import { getDbClient } from '../../core/database/aws-db-client';
 
 const mkNode = (
   id: string,
@@ -34,7 +34,7 @@ const mkNode = (
 });
 
 // Mock dependencies
-jest.mock('../../core/database/supabase-compat');
+jest.mock('../../core/database/aws-db-client');
 jest.mock('../../core/utils/workflow-cloner');
 // These tests validate normalization/validation behavior, so use real implementations.
 jest.mock('../../core/validation/workflow-save-validator', () => jest.requireActual('../../core/validation/workflow-save-validator'));

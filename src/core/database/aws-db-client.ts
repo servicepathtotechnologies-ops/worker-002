@@ -1,11 +1,8 @@
 /**
  * AWS RDS database client — backed by pg.Pool → AWS RDS PostgreSQL.
  *
- * Previously named supabase-compat.ts. Kept under the same filename for
- * backward compatibility; import from db-client.ts for new code.
- *
- * Exports getDbClient() (preferred) and getSupabaseClient() (deprecated alias).
- * Internally uses pg.Pool → AWS RDS — no Supabase SDK required at runtime.
+ * Exports getDbClient() and createDbClient().
+ * Internally uses pg.Pool → AWS RDS — no external DB SDK required at runtime.
  *
  * Supported patterns:
  *   .from(table).select(cols).eq(col, val).single()
@@ -502,12 +499,6 @@ export function getDbClient(): any {
   return _client;
 }
 
-/**
- * @deprecated Use getDbClient() instead.
- * Kept for backward compatibility during migration.
- */
-export const getSupabaseClient = getDbClient;
-
-export function createSupabaseClient(_url?: string, _key?: string): any {
+export function createDbClient(_url?: string, _key?: string): any {
   return new RDSClient();
 }

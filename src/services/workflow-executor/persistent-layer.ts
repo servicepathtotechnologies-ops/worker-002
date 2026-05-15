@@ -11,7 +11,7 @@
  * - Write-through pattern (write to DB immediately)
  */
 
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { DbClient } from '@db/db-js';
 import { getCacheRedisClient, invalidateExecutionStatusCache } from '../../middleware/redisGetCache';
 
 export interface ExecutionStateSnapshot {
@@ -42,10 +42,10 @@ function toJsonSafe(val: unknown): unknown {
 }
 
 export class PersistentLayer {
-  private supabase: SupabaseClient;
+  private db: DbClient;
 
-  constructor(supabase: SupabaseClient) {
-    this.supabase = supabase;
+  constructor(db: DbClient) {
+    this.db = db;
   }
 
   /**
@@ -73,12 +73,12 @@ export class PersistentLayer {
     error?: string
   ): Promise<void> {
     try {
-      // Use Supabase RPC for transactional operations
+      // Use RPC for transactional operations
       // If RPC not available, use sequential writes with error handling
       
       // 1. Write node execution step (checkpoint)
-      // Use upsert with conflict resolution for Supabase
-      const { error: stepError } = await this.supabase
+      // Use upsert with conflict resolution
+      const { error: stepError } = await this.db
         .from('execution_steps')
         .upsert({
           execution_id: executionId,
@@ -101,9 +101,9 @@ export class PersistentLayer {
       }
 
       // 2. Get current execution state
-      // Note: Supabase executions table may not have step_outputs column yet
+      // Note: executions table may not have step_outputs column yet
       // We'll use execution_steps table as source of truth
-      const { data: exec, error: fetchError } = await this.supabase
+      const { data: exec, error: fetchError } = await this.db
         .from('executions')
         .select('id, workflow_id, status')
         .eq('id', executionId)
@@ -115,7 +115,7 @@ export class PersistentLayer {
 
       // 3. Update execution state (atomic)
       // Store current_node in logs or use execution_steps as source of truth
-      const { error: updateError } = await this.supabase
+      const { error: updateError } = await this.db
         .from('executions')
         .update({
           status: 'running', // Keep execution running
@@ -144,7 +144,7 @@ export class PersistentLayer {
   async restoreExecutionState(executionId: string): Promise<ExecutionStateSnapshot> {
     try {
       // Get execution record
-      const { data: exec, error: execError } = await this.supabase
+      const { data: exec, error: execError } = await this.db
         .from('executions')
         .select('*')
         .eq('id', executionId)
@@ -155,7 +155,7 @@ export class PersistentLayer {
       }
 
       // Get all completed steps
-      const { data: steps, error: stepsError } = await this.supabase
+      const { data: steps, error: stepsError } = await this.db
         .from('execution_steps')
         .select('*')
         .eq('execution_id', executionId)
@@ -210,7 +210,7 @@ export class PersistentLayer {
     nodeId: string
   ): Promise<unknown | null> {
     try {
-      const { data, error } = await this.supabase
+      const { data, error } = await this.db
         .from('execution_steps')
         .select('output_json')
         .eq('execution_id', executionId)
@@ -240,7 +240,7 @@ export class PersistentLayer {
    */
   async getAllNodeOutputs(executionId: string): Promise<Record<string, unknown>> {
     try {
-      const { data, error } = await this.supabase
+      const { data, error } = await this.db
         .from('execution_steps')
         .select('node_id, output_json, status')
         .eq('execution_id', executionId)
@@ -288,7 +288,7 @@ export class PersistentLayer {
 
       if (output !== undefined) {
         updateData.output = toJsonSafe(output);
-        // Supabase may have result_data or just output
+        // DB row may have result_data or just output
         if (updateData.result_data === undefined) {
           updateData.result_data = toJsonSafe(output);
         }
@@ -296,7 +296,7 @@ export class PersistentLayer {
 
       if (error) {
         updateData.error = error;
-        // Supabase may have error_message or just error
+        // DB row may have error_message or just error
         if (updateData.error_message === undefined) {
           updateData.error_message = error;
         }
@@ -321,7 +321,7 @@ export class PersistentLayer {
         updateData.last_heartbeat = meta.lastHeartbeat;
       }
 
-      const { error: updateError } = await this.supabase
+      const { error: updateError } = await this.db
         .from('executions')
         .update(updateData)
         .eq('id', executionId);

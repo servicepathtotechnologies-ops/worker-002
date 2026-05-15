@@ -89,12 +89,12 @@ export class NodeEquivalenceMapper {
           nodeType: "database_read" // or database_write
         },
         {
-          id: "supabase",
+          id: "db",
           name: "Supabase",
           description: "Modern PostgreSQL with realtime features",
           icon: "⚡",
           requirements: ["Supabase URL", "API key"],
-          nodeType: "supabase"
+          nodeType: "db"
         },
         {
           id: "mysql",
@@ -268,10 +268,10 @@ export class NodeEquivalenceMapper {
     const storePatterns = [
       /store\s+(data|information|details)/i,
       /save\s+(data|information|details)/i,
-      /save\s+to\s+(database|db|postgres|mysql|supabase)/i,
-      /store\s+in\s+(database|db|postgres|mysql|supabase)/i,
-      /(database|db|postgres|mysql|supabase).*store/i,
-      /(database|db|postgres|mysql|supabase).*save/i,
+      /save\s+to\s+(database|db|postgres|mysql|db)/i,
+      /store\s+in\s+(database|db|postgres|mysql|db)/i,
+      /(database|db|postgres|mysql|db).*store/i,
+      /(database|db|postgres|mysql|db).*save/i,
     ];
     
     // Check if it's explicitly about storing
@@ -304,7 +304,7 @@ export class NodeEquivalenceMapper {
       database: [
         // Only trigger on explicit storage keywords, not generic "data"
         "store", "save to", "save in", "persist", "record to", "save data to",
-        "database", "db", "postgres", "mysql", "supabase", "mongodb",
+        "database", "db", "postgres", "mysql", "db", "mongodb",
         "store in database", "save to database", "store data", "save data",
         // Common user phrasing (without the word "data")
         "save customer", "save customers", "save user", "save users",

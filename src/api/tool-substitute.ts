@@ -8,7 +8,7 @@
 
 import { Request, Response } from 'express';
 import { toolSubstitutionEngine } from '../services/ai/tool-substitution-engine';
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 import { Workflow } from '../core/types/ai-types';
 
 interface ToolSubstituteRequest {
@@ -40,15 +40,15 @@ export async function substituteTools(req: Request, res: Response) {
     }
 
     // Get user ID from auth
-    const supabase = getDbClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const db = getDbClient();
+    const { data: { user } } = await db.auth.getUser();
     const userId = user?.id;
 
     let workflow: Workflow;
 
     // Get workflow from database if workflowId provided
     if (workflowId) {
-      const { data: dbWorkflow, error: fetchError } = await supabase
+      const { data: dbWorkflow, error: fetchError } = await db
         .from('workflows')
         .select('nodes, edges')
         .eq('id', workflowId)
@@ -110,7 +110,7 @@ export async function substituteTools(req: Request, res: Response) {
 
     // Update workflow in database if workflowId provided
     if (workflowId) {
-      const { error: updateError } = await supabase
+      const { error: updateError } = await db
         .from('workflows')
         .update({
           nodes: result.workflow.nodes,
@@ -174,8 +174,8 @@ export async function getAvailableSubstitutions(req: Request, res: Response) {
 
     // Get workflow from database if workflowId provided
     if (workflowId && typeof workflowId === 'string') {
-      const supabase = getDbClient();
-      const { data: dbWorkflow, error: fetchError } = await supabase
+      const db = getDbClient();
+      const { data: dbWorkflow, error: fetchError } = await db
         .from('workflows')
         .select('nodes, edges')
         .eq('id', workflowId)

@@ -8,6 +8,7 @@ export type InputControlType =
   | 'select'
   | 'boolean'
   | 'password'
+  | 'date'
   | 'json';
 
 export interface InputControlOption {
@@ -19,7 +20,7 @@ export interface InputControlMetadata {
   inputType: InputControlType;
   options?: InputControlOption[];
   placeholder?: string;
-  uiWidget?: 'text' | 'textarea' | 'json' | 'multi_email';
+  uiWidget?: 'text' | 'textarea' | 'json' | 'multi_email' | 'date';
 }
 
 function toOptions(options: Array<{ label: string; value: string }> | undefined): InputControlOption[] | undefined {
@@ -49,6 +50,10 @@ export function getInputControlMetadata(
 
   if (widget === 'json') {
     return { inputType: 'textarea', placeholder: description, uiWidget: widget };
+  }
+
+  if (widget === 'date') {
+    return { inputType: 'date', placeholder: 'YYYY-MM-DD', uiWidget: widget };
   }
 
   if (shouldUseSelectForExplicitOptions(fieldName, { options: explicitOptions })) {

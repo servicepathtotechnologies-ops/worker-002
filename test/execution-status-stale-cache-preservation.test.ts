@@ -148,7 +148,7 @@ describe('Pres-1a — Active execution cache HIT is preserved (non-terminal stat
     const before = await redisMock.get(cacheKey);
     expect(before).not.toBeNull();
 
-    // Mock Supabase for PersistentLayer
+    // Mock DB for PersistentLayer
     const mockSupabase = {
       from: jest.fn().mockImplementation(() => ({
         update: jest.fn().mockReturnThis(),
@@ -169,7 +169,7 @@ describe('Pres-1a — Active execution cache HIT is preserved (non-terminal stat
         getCacheRedisClient: jest.fn().mockResolvedValue(redisMock),
       };
     });
-    jest.mock('../src/core/database/supabase-compat', () => ({
+    jest.mock('../src/core/database/aws-db-client', () => ({
       getDbClient: () => mockSupabase,
     }));
 
@@ -228,7 +228,7 @@ describe('Pres-1a — Active execution cache HIT is preserved (non-terminal stat
         getCacheRedisClient: jest.fn().mockResolvedValue(redisMock),
       };
     });
-    jest.mock('../src/core/database/supabase-compat', () => ({
+    jest.mock('../src/core/database/aws-db-client', () => ({
       getDbClient: () => mockSupabase,
     }));
 
@@ -282,7 +282,7 @@ describe('Pres-1b — Redis-unavailable fallback: updateExecutionStatus does not
         invalidateExecutionStatusCache: jest.fn().mockResolvedValue(undefined),
       };
     });
-    jest.mock('../src/core/database/supabase-compat', () => ({
+    jest.mock('../src/core/database/aws-db-client', () => ({
       getDbClient: () => mockSupabase,
     }));
 
@@ -327,7 +327,7 @@ describe('Pres-1b — Redis-unavailable fallback: updateExecutionStatus does not
         invalidateExecutionStatusCache: jest.fn().mockResolvedValue(undefined),
       };
     });
-    jest.mock('../src/core/database/supabase-compat', () => ({
+    jest.mock('../src/core/database/aws-db-client', () => ({
       getDbClient: () => mockSupabase,
     }));
 
@@ -350,7 +350,7 @@ describe('Pres-1c — Non-existent execution ID is handled gracefully', () => {
    * Validates: Requirement 3.4
    *
    * When updateExecutionStatus is called for an execution ID that does not exist
-   * in the DB, the system must not crash. Supabase returns an error but the
+   * in the DB, the system must not crash. DB returns an error but the
    * PersistentLayer should propagate it (or handle it) without an unhandled
    * rejection.
    *
@@ -359,7 +359,7 @@ describe('Pres-1c — Non-existent execution ID is handled gracefully', () => {
   test('updateExecutionStatus for unknown execution ID does not cause unhandled rejection', async () => {
     const unknownId = 'nonexistent-exec-id-xyz';
 
-    // Supabase returns an error for unknown IDs
+    // DB returns an error for unknown IDs
     const mockSupabase = {
       from: jest.fn().mockImplementation(() => ({
         update: jest.fn().mockReturnThis(),
@@ -381,7 +381,7 @@ describe('Pres-1c — Non-existent execution ID is handled gracefully', () => {
         invalidateExecutionStatusCache: jest.fn().mockResolvedValue(undefined),
       };
     });
-    jest.mock('../src/core/database/supabase-compat', () => ({
+    jest.mock('../src/core/database/aws-db-client', () => ({
       getDbClient: () => mockSupabase,
     }));
 
@@ -404,7 +404,7 @@ describe('Pres-1c — Non-existent execution ID is handled gracefully', () => {
     expect(typeof threw).toBe('boolean'); // Always true — just confirms we got here
   });
 
-  test('PersistentLayer constructor does not throw with a mock supabase client', () => {
+  test('PersistentLayer constructor does not throw with a mock db client', () => {
     const mockSupabase = {
       from: jest.fn(),
     };
@@ -420,7 +420,7 @@ describe('Pres-1c — Non-existent execution ID is handled gracefully', () => {
 // ─── Preservation for Bug 2 ───────────────────────────────────────────────────
 
 /**
- * Build a full-featured Supabase mock that supports the chaining patterns
+ * Build a full-featured DB mock that supports the chaining patterns
  * used by CredentialVault (.select().eq().eq().limit()) and other callers.
  */
 function buildFullSupabaseMock(workflow: any) {
@@ -494,7 +494,7 @@ describe('Pres-2a — Single non-concurrent attach-inputs runs the pipeline exac
     const workflow = buildMinimalWorkflow(workflowId);
     const mockSupabase = buildFullSupabaseMock(workflow);
 
-    jest.mock('../src/core/database/supabase-compat', () => ({
+    jest.mock('../src/core/database/aws-db-client', () => ({
       getDbClient: () => mockSupabase,
     }));
 
@@ -536,7 +536,7 @@ describe('Pres-2a — Single non-concurrent attach-inputs runs the pipeline exac
     const workflow = buildMinimalWorkflow(workflowId);
     const mockSupabase = buildFullSupabaseMock(workflow);
 
-    jest.mock('../src/core/database/supabase-compat', () => ({
+    jest.mock('../src/core/database/aws-db-client', () => ({
       getDbClient: () => mockSupabase,
     }));
 
@@ -608,7 +608,7 @@ describe('Pres-2b — Sequential second request runs the pipeline (no stuck in-f
     const workflow = buildMinimalWorkflow(workflowId);
     const mockSupabase = buildFullSupabaseMock(workflow);
 
-    jest.mock('../src/core/database/supabase-compat', () => ({
+    jest.mock('../src/core/database/aws-db-client', () => ({
       getDbClient: () => mockSupabase,
     }));
 
@@ -654,7 +654,7 @@ describe('Pres-2b — Sequential second request runs the pipeline (no stuck in-f
     const workflow = buildMinimalWorkflow(workflowId);
     const mockSupabase = buildFullSupabaseMock(workflow);
 
-    jest.mock('../src/core/database/supabase-compat', () => ({
+    jest.mock('../src/core/database/aws-db-client', () => ({
       getDbClient: () => mockSupabase,
     }));
 

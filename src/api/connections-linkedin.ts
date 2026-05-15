@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 
 /**
  * LinkedIn connection utilities:
@@ -11,7 +11,7 @@ import { getDbClient } from '../core/database/supabase-compat';
 
 export async function linkedinStatusHandler(req: Request, res: Response) {
   try {
-    const supabase = getDbClient();
+    const db = getDbClient();
 
     const authHeader = req.headers.authorization;
     let userId: string | undefined;
@@ -19,7 +19,7 @@ export async function linkedinStatusHandler(req: Request, res: Response) {
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const token = authHeader.replace('Bearer ', '').trim();
       if (token) {
-        const { data: { user }, error } = await supabase.auth.getUser(token);
+        const { data: { user }, error } = await db.auth.getUser(token);
         if (!error && user) {
           userId = user.id;
         }
@@ -33,7 +33,7 @@ export async function linkedinStatusHandler(req: Request, res: Response) {
       });
     }
 
-    const { data: tokenData, error: tokenError } = await supabase
+    const { data: tokenData, error: tokenError } = await db
       .from('linkedin_oauth_tokens')
       .select('id, expires_at, scope, created_at, updated_at')
       .eq('user_id', userId)
@@ -77,7 +77,7 @@ export async function linkedinStatusHandler(req: Request, res: Response) {
 
 export async function linkedinDisconnectHandler(req: Request, res: Response) {
   try {
-    const supabase = getDbClient();
+    const db = getDbClient();
 
     const authHeader = req.headers.authorization;
     let userId: string | undefined;
@@ -85,7 +85,7 @@ export async function linkedinDisconnectHandler(req: Request, res: Response) {
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const token = authHeader.replace('Bearer ', '').trim();
       if (token) {
-        const { data: { user }, error } = await supabase.auth.getUser(token);
+        const { data: { user }, error } = await db.auth.getUser(token);
         if (!error && user) {
           userId = user.id;
         }
@@ -100,7 +100,7 @@ export async function linkedinDisconnectHandler(req: Request, res: Response) {
     }
 
     // Delete LinkedIn OAuth tokens
-    const { error: tokenError } = await supabase
+    const { error: tokenError } = await db
       .from('linkedin_oauth_tokens')
       .delete()
       .eq('user_id', userId);
@@ -114,7 +114,7 @@ export async function linkedinDisconnectHandler(req: Request, res: Response) {
     }
 
     // Delete vault credential entry for LinkedIn
-    const { error: vaultError } = await supabase
+    const { error: vaultError } = await db
       .from('user_credentials')
       .delete()
       .eq('user_id', userId)
@@ -140,7 +140,7 @@ export async function linkedinDisconnectHandler(req: Request, res: Response) {
 
 export async function linkedinTestHandler(req: Request, res: Response) {
   try {
-    const supabase = getDbClient();
+    const db = getDbClient();
 
     const authHeader = req.headers.authorization;
     let userId: string | undefined;
@@ -148,7 +148,7 @@ export async function linkedinTestHandler(req: Request, res: Response) {
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const token = authHeader.replace('Bearer ', '').trim();
       if (token) {
-        const { data: { user }, error } = await supabase.auth.getUser(token);
+        const { data: { user }, error } = await db.auth.getUser(token);
         if (!error && user) {
           userId = user.id;
         }
@@ -164,7 +164,7 @@ export async function linkedinTestHandler(req: Request, res: Response) {
 
     // Reuse shared helper to resolve access token (includes refresh handling)
     const { getLinkedInAccessToken } = await import('../shared/linkedin-oauth');
-    const accessToken = await getLinkedInAccessToken(supabase, userId);
+    const accessToken = await getLinkedInAccessToken(db, userId);
 
     if (!accessToken) {
       return res.status(401).json({
@@ -174,7 +174,7 @@ export async function linkedinTestHandler(req: Request, res: Response) {
     }
 
     // Verify token validity and fetch basic profile info.
-    // With Supabase `linkedin_oidc` provider, LinkedIn exposes OIDC `userinfo`.
+    // Via LinkedIn OIDC provider, LinkedIn exposes OIDC `userinfo`.
     // Fallback to legacy `/v2/me` for older apps/scopes.
     const tryEndpoints = [
       { name: 'userinfo', url: 'https://api.linkedin.com/v2/userinfo' },
@@ -245,7 +245,7 @@ export async function linkedinTestHandler(req: Request, res: Response) {
 
 export async function linkedinRefreshNowHandler(req: Request, res: Response) {
   try {
-    const supabase = getDbClient();
+    const db = getDbClient();
 
     const authHeader = req.headers.authorization;
     let userId: string | undefined;
@@ -253,7 +253,7 @@ export async function linkedinRefreshNowHandler(req: Request, res: Response) {
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const token = authHeader.replace('Bearer ', '').trim();
       if (token) {
-        const { data: { user }, error } = await supabase.auth.getUser(token);
+        const { data: { user }, error } = await db.auth.getUser(token);
         if (!error && user) {
           userId = user.id;
         }
@@ -267,7 +267,7 @@ export async function linkedinRefreshNowHandler(req: Request, res: Response) {
       });
     }
 
-    const { data: tokenRow, error: tokenError } = await supabase
+    const { data: tokenRow, error: tokenError } = await db
       .from('linkedin_oauth_tokens')
       .select('refresh_token')
       .eq('user_id', userId)
@@ -292,7 +292,7 @@ export async function linkedinRefreshNowHandler(req: Request, res: Response) {
 
     // Use the helper which will attempt refresh when nearing expiry;
     // by calling it immediately, we force the refresh path to run if appropriate.
-    const accessToken = await getLinkedInAccessToken(supabase, userId);
+    const accessToken = await getLinkedInAccessToken(db, userId);
 
     if (!accessToken) {
       return res.status(500).json({

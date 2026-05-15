@@ -1,8 +1,8 @@
 // Google Sheets API Helper
-// Migrated from Supabase Edge Function
+// Worker API handler
 // Simplified version - full implementation available in functions/_shared/google-sheets.ts
 
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 import { config } from '../core/config';
 import { decryptToken, encryptToken } from '../core/utils/token-encryption';
 import { resolveOAuthTokenString } from './credential-resolver';
@@ -28,20 +28,21 @@ interface GoogleSheetsResponse {
 
 /**
  * Get Google access token for a user
- * @param supabase - Supabase client
+ * @param db - AWS RDS database client
  * @param userId - User ID or array of user IDs to try (in order)
  * @returns Access token or null if not found
  */
 export async function getGoogleAccessToken(
-  supabase: any,
-  userId: string | string[]
+  db: any,
+  userId: string | string[],
+  requiredScopes?: string[],
 ): Promise<string | null> {
   const userIds = Array.isArray(userId) ? userId : [userId];
-  return resolveOAuthTokenString('google', userIds);
+  return resolveOAuthTokenString('google', userIds, requiredScopes);
 }
 
 async function refreshGoogleToken(
-  supabase: any,
+  db: any,
   userId: string,
   refreshToken: string
 ): Promise<string | null> {
@@ -92,7 +93,7 @@ async function refreshGoogleToken(
       updateData.refresh_token = encryptToken(tokenData.refresh_token);
     }
 
-    const { error: updateError } = await supabase
+    const { error: updateError } = await db
       .from('google_oauth_tokens')
       .update(updateData)
       .eq('user_id', userId);

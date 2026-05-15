@@ -13,7 +13,7 @@
  */
 
 import crypto from 'crypto';
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 import { config } from '../core/config';
 
 /**
@@ -210,11 +210,11 @@ function sanitizeForLogging(value: any): any {
  * Credential Vault
  */
 export class CredentialVault {
-  private supabase: ReturnType<typeof getDbClient>;
+  private db: ReturnType<typeof getDbClient>;
   private tableName = 'credential_vault';
 
   constructor() {
-    this.supabase = getDbClient();
+    this.db = getDbClient();
   }
 
   /**
@@ -246,7 +246,7 @@ export class CredentialVault {
 
     // Check if credential already exists. SQL NULL does not match with "=", so
     // user-level credentials need an explicit IS NULL filter.
-    let existingQuery = this.supabase
+    let existingQuery = this.db
       .from(this.tableName)
       .select('id')
       .eq('user_id', context.userId)
@@ -262,7 +262,7 @@ export class CredentialVault {
 
     if (existing.data) {
       // Update existing
-      const { data, error } = await this.supabase
+      const { data, error } = await this.db
         .from(this.tableName)
         .update(credentialData)
         .eq('id', existing.data.id)
@@ -278,7 +278,7 @@ export class CredentialVault {
       console.log('[CredentialVault] ✅ Updated credential:', sanitizeForLogging({ key, type, userId: context.userId }));
     } else {
       // Insert new
-      const { data, error } = await this.supabase
+      const { data, error } = await this.db
         .from(this.tableName)
         .insert({
           ...credentialData,
@@ -320,7 +320,7 @@ export class CredentialVault {
     await this.validateAccess(context);
 
     // Build query
-    let query = this.supabase
+    let query = this.db
       .from(this.tableName)
       .select('encrypted_value, last_used_at')
       .eq('user_id', context.userId)
@@ -345,7 +345,7 @@ export class CredentialVault {
       const decryptedValue = decryptValue(data.encrypted_value);
 
       // Update last used timestamp
-      await this.supabase
+      await this.db
         .from(this.tableName)
         .update({ last_used_at: new Date().toISOString() })
         .eq('user_id', context.userId)
@@ -371,7 +371,7 @@ export class CredentialVault {
     await this.validateAccess(context);
 
     // Build query
-    let query = this.supabase
+    let query = this.db
       .from(this.tableName)
       .select('encrypted_value, metadata, last_used_at')
       .eq('user_id', context.userId)
@@ -395,7 +395,7 @@ export class CredentialVault {
       const decryptedValue = decryptValue(data.encrypted_value);
 
       // Update last used timestamp
-      await this.supabase
+      await this.db
         .from(this.tableName)
         .update({ last_used_at: new Date().toISOString() })
         .eq('user_id', context.userId)
@@ -418,7 +418,7 @@ export class CredentialVault {
     // Validate access
     await this.validateAccess(context);
 
-    let query = this.supabase
+    let query = this.db
       .from(this.tableName)
       .select('id, user_id, workflow_id, type, key, metadata, created_at, updated_at, last_used_at')
       .eq('user_id', context.userId);
@@ -460,7 +460,7 @@ export class CredentialVault {
     // Validate access
     await this.validateAccess(context);
 
-    let deleteQuery = this.supabase
+    let deleteQuery = this.db
       .from(this.tableName)
       .delete()
       .eq('user_id', context.userId)
@@ -491,7 +491,7 @@ export class CredentialVault {
     // Validate access
     await this.validateAccess(context);
 
-    let query = this.supabase
+    let query = this.db
       .from(this.tableName)
       .select('id')
       .eq('user_id', context.userId)
@@ -521,7 +521,7 @@ export class CredentialVault {
     // e.g., check if user has permission to access workflow
     if (context.workflowId) {
       // Verify user has access to workflow
-      const { data, error } = await this.supabase
+      const { data, error } = await this.db
         .from('workflows')
         .select('id')
         .eq('id', context.workflowId)

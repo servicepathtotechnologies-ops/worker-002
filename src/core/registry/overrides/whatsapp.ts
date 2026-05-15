@@ -148,8 +148,8 @@ export function overrideWhatsapp(
     },
     execute: async (context) => {
       try {
-        const { supabase, userId, currentUserId, config } = context;
-        const result = await executeSocialNode(supabase, { provider: 'whatsapp', operation: config.operation ?? 'sendText', ...config }, userId, currentUserId);
+        const { db, userId, currentUserId, config } = context;
+        const result = await executeSocialNode(db, { provider: 'whatsapp', operation: config.operation ?? 'sendText', ...config }, userId, currentUserId);
         return {
           success: result.success,
           output: result.data,

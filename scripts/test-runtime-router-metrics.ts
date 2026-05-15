@@ -27,7 +27,7 @@ import { DataFlowContractLayer } from '../src/services/data-flow-contract-layer'
 import { Workflow } from '../src/core/types/ai-types';
 import { LRUNodeOutputsCache } from '../src/core/cache/lru-node-outputs-cache';
 import { executeNodeDynamically } from '../src/core/execution/dynamic-node-executor';
-import { getSupabaseClient } from '../src/core/database/supabase-compat';
+import { getDbClient } from '../src/core/database/aws-db-client';
 import { IntentDrivenJsonRouter } from '../src/core/intent-driven-json-router';
 
 interface RouterMetrics {
@@ -290,7 +290,7 @@ async function executeWorkflowRuntime(prompt: string, scenarioName: string) {
   );
 
   // 3) Prepare execution context
-  const supabase = getSupabaseClient();
+  const db = getDbClient();
   const nodeOutputs = new LRUNodeOutputsCache(50);
   const sortedNodes = topologicalSort(workflowWithContracts);
 
@@ -308,7 +308,7 @@ async function executeWorkflowRuntime(prompt: string, scenarioName: string) {
         node,
         input: {}, // Dynamic executor currently derives inputs from previous outputs + AI
         nodeOutputs,
-        supabase,
+        db,
         workflowId,
         userId: 'test-user-id',
         currentUserId: 'test-user-id',

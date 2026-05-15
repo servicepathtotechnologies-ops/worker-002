@@ -73,7 +73,7 @@ export class WhatsAppNode {
 
   constructor(
     private readonly accessToken: string,
-    private readonly supabase: any,
+    private readonly db: any,
   ) {}
 
   // ── Public entry point ────────────────────────────────────────────────────

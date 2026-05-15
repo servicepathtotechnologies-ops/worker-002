@@ -72,7 +72,8 @@ export class CredentialRefreshError extends CredentialError {
 
 export class CredentialStorageError extends CredentialError {
   constructor(context: CredentialErrorContext) {
-    super('CredentialStorageError', `${context.provider} credential storage failed`, context);
+    const cause = context.causeMessage ? `: ${context.causeMessage}` : '';
+    super('CredentialStorageError', `${context.provider} credential storage failed${cause}`, context);
   }
 }
 
@@ -86,4 +87,3 @@ export function credentialFixMessage(provider: string, scopes: string[]): string
   const scopeLabel = scopes.length > 0 ? ` and approve ${scopes.join(', ')}` : '';
   return `Reconnect your ${provider} account${scopeLabel}.`;
 }
-

@@ -7,12 +7,29 @@ function personResourceName(contactId: string): string {
 }
 
 function buildPerson(inputs: Record<string, any>) {
-  if (inputs.contactData && typeof inputs.contactData === 'object') return inputs.contactData;
-  const person: Record<string, any> = {};
-  if (inputs.name) person.names = [{ displayName: String(inputs.name), givenName: String(inputs.name) }];
-  if (inputs.email) person.emailAddresses = [{ value: String(inputs.email) }];
-  if (inputs.phone) person.phoneNumbers = [{ value: String(inputs.phone) }];
+  const person: Record<string, any> = (
+    inputs.contactData &&
+    typeof inputs.contactData === 'object' &&
+    !Array.isArray(inputs.contactData)
+  )
+    ? { ...inputs.contactData }
+    : {};
+
+  if (inputs.name && !person.names) {
+    person.names = [{ displayName: String(inputs.name), givenName: String(inputs.name) }];
+  }
+  if (inputs.email && !person.emailAddresses) {
+    person.emailAddresses = [{ value: String(inputs.email) }];
+  }
+  if (inputs.phone && !person.phoneNumbers) {
+    person.phoneNumbers = [{ value: String(inputs.phone) }];
+  }
+
   return person;
+}
+
+function hasPersonData(person: Record<string, any>): boolean {
+  return Object.keys(person).length > 0;
 }
 
 export function overrideGoogleContacts(
@@ -41,7 +58,7 @@ export function overrideGoogleContacts(
       const inputs = mergedInputs(context);
       const operation = String(inputs.operation || 'read');
       try {
-        const accessToken = await getGoogleTokenForContext(context);
+        const accessToken = await getGoogleTokenForContext(context, ['https://www.googleapis.com/auth/contacts']);
         let output: any;
         const personFields = 'names,emailAddresses,phoneNumbers,organizations';
         if (operation === 'read') {
@@ -51,19 +68,27 @@ export function overrideGoogleContacts(
             output = await googleApiRequest(`https://people.googleapis.com/v1/people/me/connections?personFields=${personFields}&pageSize=${Number(inputs.pageSize || 100)}`, accessToken);
           }
         } else if (operation === 'create') {
+          const person = buildPerson(inputs);
+          if (!hasPersonData(person)) {
+            throw new Error('At least one of name, email, phone, or contactData is required to create a contact');
+          }
           output = await googleApiRequest('https://people.googleapis.com/v1/people:createContact', accessToken, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(buildPerson(inputs)),
+            body: JSON.stringify(person),
           });
         } else if (operation === 'update') {
           const contactId = String(inputs.contactId || '').trim();
           if (!contactId) throw new Error('contactId is required for update');
           const existing = await googleApiRequest(`https://people.googleapis.com/v1/${personResourceName(contactId)}?personFields=metadata,${personFields}`, accessToken);
+          const person = buildPerson(inputs);
+          if (!hasPersonData(person)) {
+            throw new Error('At least one of name, email, phone, or contactData is required to update a contact');
+          }
           output = await googleApiRequest(`https://people.googleapis.com/v1/${personResourceName(contactId)}:updateContact?updatePersonFields=names,emailAddresses,phoneNumbers`, accessToken, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ...buildPerson(inputs), etag: inputs.etag || existing.etag }),
+            body: JSON.stringify({ ...person, etag: inputs.etag || existing.etag }),
           });
         } else if (operation === 'delete') {
           const contactId = String(inputs.contactId || '').trim();

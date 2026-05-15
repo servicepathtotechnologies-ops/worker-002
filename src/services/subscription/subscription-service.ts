@@ -1,4 +1,4 @@
-import { getDbClient } from '../../core/database/supabase-compat';
+import { getDbClient } from '../../core/database/aws-db-client';
 import { getRedisClient } from '../../shared/redis-client';
 import { config } from '../../core/config';
 
@@ -68,7 +68,7 @@ export interface EnforcementResult {
  * Integrates with database functions from Task 1
  */
 export class SubscriptionService {
-  private supabase = getDbClient();
+  private db = getDbClient();
   private readonly CACHE_TTL = 300; // 5 minutes
   private readonly PLANS_CACHE_KEY = 'subscription:plans';
   private readonly USER_SUBSCRIPTION_CACHE_PREFIX = 'subscription:user:';
@@ -119,7 +119,7 @@ export class SubscriptionService {
       }
 
       // Fetch from database
-      const { data: plans, error } = await this.supabase
+      const { data: plans, error } = await this.db
         .from('subscription_plans')
         .select('*')
         .eq('is_active', true)
@@ -179,7 +179,7 @@ export class SubscriptionService {
       }
 
       // Use database function to get subscription details
-      const { data, error } = await this.supabase
+      const { data, error } = await this.db
         .rpc('get_user_subscription_details', { target_user_id: userId });
 
       if (error) {
@@ -190,10 +190,10 @@ export class SubscriptionService {
 
       if (!subscriptionData) {
         // Ensure user has a free subscription
-        await this.supabase.rpc('ensure_free_subscription', { target_user_id: userId });
+        await this.db.rpc('ensure_free_subscription', { target_user_id: userId });
         
         // Retry getting subscription details
-        const { data: retryData, error: retryError } = await this.supabase
+        const { data: retryData, error: retryError } = await this.db
           .rpc('get_user_subscription_details', { target_user_id: userId });
 
         if (retryError) {
@@ -252,7 +252,7 @@ export class SubscriptionService {
       }
 
       // Use database function to upgrade subscription
-      const { data: subscriptionId, error } = await this.supabase
+      const { data: subscriptionId, error } = await this.db
         .rpc('upgrade_subscription', {
           target_user_id: userId,
           new_plan_name: targetPlan.name,
@@ -357,7 +357,7 @@ export class SubscriptionService {
       }
 
       // Update subscription status to cancelled
-      const { error } = await this.supabase
+      const { error } = await this.db
         .from('subscriptions')
         .update({
           status: 'cancelled',
@@ -371,7 +371,7 @@ export class SubscriptionService {
       }
 
       // Log the cancellation
-      await this.supabase
+      await this.db
         .from('subscription_history')
         .insert({
           user_id: userId,
@@ -382,7 +382,7 @@ export class SubscriptionService {
         });
 
       // Create Free subscription
-      await this.supabase.rpc('ensure_free_subscription', { target_user_id: userId });
+      await this.db.rpc('ensure_free_subscription', { target_user_id: userId });
 
       // Clear cache
       await this.clearUserSubscriptionCache(userId);
@@ -416,13 +416,13 @@ export class SubscriptionService {
       // Check if subscription is expired
       if (currentSubscription.expiresAt && new Date() > currentSubscription.expiresAt) {
         // Update subscription status to expired
-        await this.supabase
+        await this.db
           .from('subscriptions')
           .update({ status: 'expired' })
           .eq('id', currentSubscription.id);
 
         // Log the expiration
-        await this.supabase
+        await this.db
           .from('subscription_history')
           .insert({
             user_id: userId,
@@ -433,7 +433,7 @@ export class SubscriptionService {
           });
 
         // Create Free subscription
-        await this.supabase.rpc('ensure_free_subscription', { target_user_id: userId });
+        await this.db.rpc('ensure_free_subscription', { target_user_id: userId });
 
         // Clear cache
         await this.clearUserSubscriptionCache(userId);
@@ -475,7 +475,7 @@ export class SubscriptionService {
    */
   async checkLimit(userId: string): Promise<LimitCheckResult> {
     try {
-      const { data, error } = await this.supabase
+      const { data, error } = await this.db
         .rpc('check_workflow_limit', { target_user_id: userId });
 
       if (error) {
@@ -530,7 +530,7 @@ export class SubscriptionService {
       }
 
       // Increment workflow count
-      const { data: success, error } = await this.supabase
+      const { data: success, error } = await this.db
         .rpc('increment_workflow_count', { target_user_id: userId });
 
       if (error || !success) {

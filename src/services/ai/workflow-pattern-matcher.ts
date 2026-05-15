@@ -144,13 +144,13 @@ export class WorkflowPatternMatcher {
         name: 'form_to_database',
         description: 'Form submission to database storage',
         requiredCapabilities: ['trigger:form', 'action:write'],
-        optionalCapabilities: ['platform:database', 'platform:supabase'],
+        optionalCapabilities: ['platform:database', 'platform:db'],
         confidenceThreshold: 0.7,
         matcher: (intent) => {
           let score = 0;
           if (intent.trigger === 'form') score += 0.5;
           if (intent.action === 'write' || intent.action === 'save') score += 0.3;
-          if (intent.platform?.includes('database') || intent.platform?.includes('supabase')) score += 0.2;
+          if (intent.platform?.includes('database') || intent.platform?.includes('db')) score += 0.2;
           return score;
         }
       },

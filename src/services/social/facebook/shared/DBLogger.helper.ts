@@ -1,18 +1,17 @@
 import { randomUUID } from 'crypto';
-import { config } from '../../../../core/config';
 import { FacebookOperationLog } from '../types/facebook.types';
-import { getDbClient } from '../../../../core/database/supabase-compat';
+import { getDbClient } from '../../../../core/database/aws-db-client';
 
-export interface SupabaseLoggerOptions {
+export interface DBLoggerOptions {
   enabled: boolean;
   tableName: string;
 }
 
-export class SupabaseLogger {
-  private readonly options: SupabaseLoggerOptions;
+export class DBLogger {
+  private readonly options: DBLoggerOptions;
   private readonly client: any;
 
-  constructor(options: Partial<SupabaseLoggerOptions>) {
+  constructor(options: Partial<DBLoggerOptions>) {
     this.options = {
       enabled: Boolean(options.enabled),
       tableName: options.tableName || 'facebook_operation_logs',
@@ -32,7 +31,7 @@ export class SupabaseLogger {
       await this.client.from(this.options.tableName).insert(payload as never);
     } catch (error) {
       // Never break node execution on logging failure.
-      console.warn('[Facebook][SupabaseLogger] Failed to write operation log:', error);
+      console.warn('[Facebook][DBLogger] Failed to write operation log:', error);
     }
   }
 }

@@ -1,4 +1,4 @@
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { DbClient } from '@db/db-js';
 
 /**
  * Unit Tests for Amazon SES Credential Handling

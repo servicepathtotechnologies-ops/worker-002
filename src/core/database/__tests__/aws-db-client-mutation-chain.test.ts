@@ -5,7 +5,7 @@ const mockConnect = jest.fn(async () => ({
   release: mockRelease,
 }));
 
-describe('supabase-compat mutation chains', () => {
+describe('aws-db-client mutation chains', () => {
   beforeEach(() => {
     jest.resetModules();
     jest.clearAllMocks();
@@ -21,7 +21,7 @@ describe('supabase-compat mutation chains', () => {
   });
 
   it('preserves update operation when select().single() is chained', async () => {
-    const { getDbClient } = require('../supabase-compat');
+    const { getDbClient } = require('../aws-db-client');
 
     const { data, error } = await getDbClient()
       .from('workflows')
@@ -52,7 +52,7 @@ describe('supabase-compat mutation chains', () => {
   });
 
   it('preserves insert operation when select().single() is chained', async () => {
-    const { getDbClient } = require('../supabase-compat');
+    const { getDbClient } = require('../aws-db-client');
 
     await getDbClient()
       .from('workflows')
@@ -66,7 +66,7 @@ describe('supabase-compat mutation chains', () => {
   });
 
   it('serializes durable execution JSON columns before writing to postgres', async () => {
-    const { getDbClient } = require('../supabase-compat');
+    const { getDbClient } = require('../aws-db-client');
     const output = { items: [{ row: 1 }], headers: ['row'] };
 
     await getDbClient()
@@ -88,5 +88,22 @@ describe('supabase-compat mutation chains', () => {
     expect(params).toContain(JSON.stringify(output));
     expect(params).toContain(JSON.stringify({ nodeId: 'node-1' }));
     expect(params).toContain(JSON.stringify({ sequence: 1 }));
+  });
+
+  it('serializes plain strings for JSON columns instead of sending invalid JSON text', async () => {
+    const { getDbClient } = require('../aws-db-client');
+
+    await getDbClient()
+      .from('execution_steps')
+      .upsert({
+        execution_id: 'exec-1',
+        node_id: 'log-1',
+        output_json: 'Gmail List -> count=10',
+      }, { onConflict: 'execution_id,node_id' })
+      .select()
+      .single();
+
+    const [, params] = mockQuery.mock.calls[0];
+    expect(params).toContain(JSON.stringify('Gmail List -> count=10'));
   });
 });

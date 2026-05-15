@@ -5,7 +5,7 @@
  * and checks all enterprise architecture features.
  */
 
-import { SupabaseClient, createClient } from '@supabase/supabase-js';
+import { SupabaseClient, createClient } from '@db/db-js';
 import * as dotenv from 'dotenv';
 
 dotenv.config({ path: '.env' });
@@ -18,14 +18,14 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
   process.exit(1);
 }
 
-const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_KEY);
+const db: DbClient = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 async function verifyTestData() {
   console.log('🔍 Verifying test data...\n');
 
   try {
     // 1. Check total executions
-    const { data: executions, error: execError } = await supabase
+    const { data: executions, error: execError } = await db
       .from('executions')
       .select('id, status, current_node, step_outputs')
       .limit(1000);
@@ -37,7 +37,7 @@ async function verifyTestData() {
     console.log(`✅ Total executions found: ${executions?.length || 0}`);
 
     // 2. Check execution_steps
-    const { data: steps, error: stepsError } = await supabase
+    const { data: steps, error: stepsError } = await db
       .from('execution_steps')
       .select('id, execution_id, node_id, output_json, status')
       .limit(1000);

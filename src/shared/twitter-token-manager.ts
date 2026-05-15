@@ -1,10 +1,10 @@
 /**
  * Twitter Token Manager
  * 
- * Helper functions to retrieve and manage Twitter OAuth tokens from Supabase.
+ * Helper functions to retrieve and manage Twitter OAuth tokens from the database.
  */
 
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { DbClient } from '@db/db-js';
 import { resolveOAuthTokenString } from './credential-resolver';
 
 export interface TwitterTokenData {
@@ -19,11 +19,11 @@ export interface TwitterTokenData {
 }
 
 /**
- * Get Twitter access token from Supabase
+ * Get Twitter access token from DB
  * Tries multiple user IDs in order (workflow owner, then current user)
  */
 export async function getTwitterAccessToken(
-  supabase: SupabaseClient,
+  db: DbClient,
   userId?: string | string[]
 ): Promise<string | null> {
   if (!userId) return null;
@@ -35,7 +35,7 @@ export async function getTwitterAccessToken(
  * Get full Twitter token data (including metadata)
  */
 export async function getTwitterTokenData(
-  supabase: SupabaseClient,
+  db: DbClient,
   userId?: string | string[]
 ): Promise<TwitterTokenData | null> {
   if (!userId) {
@@ -48,7 +48,7 @@ export async function getTwitterTokenData(
     if (!uid) continue;
 
     try {
-      const { data: tokenData, error } = await supabase
+      const { data: tokenData, error } = await db
         .from('twitter_oauth_tokens')
         .select('*')
         .eq('user_id', uid)

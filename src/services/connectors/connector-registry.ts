@@ -948,25 +948,25 @@ export class ConnectorRegistry {
     // SUPABASE CONNECTOR
     // ============================================
     this.register({
-      id: 'supabase',
-      provider: 'supabase',
+      id: 'db',
+      provider: 'db',
       service: 'database',
       capabilities: [
         'database.read',
         'database.write',
         'database.query',
-        'supabase.query',
+        'db.query',
       ],
-      keywords: ['supabase', 'supa base'],
+      keywords: ['db', 'supa base'],
       credentialContract: {
-        provider: 'supabase',
+        provider: 'db',
         type: 'api_key',
-        vaultKey: 'supabase',
+        vaultKey: 'db',
         displayName: 'Supabase API Key',
         required: true,
         credentialFieldName: 'apiKey',
       },
-      nodeTypes: ['supabase'],
+      nodeTypes: ['db'],
       description: 'Connect to Supabase database via API key',
     });
 

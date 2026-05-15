@@ -12,7 +12,7 @@
  * - Prevent breaking running executions
  */
 
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 import { WorkflowNode, WorkflowEdge } from '../core/types/ai-types';
 
 /**
@@ -106,11 +106,11 @@ export interface WorkflowSnapshot {
  * Workflow Version Manager
  */
 export class WorkflowVersionManager {
-  private supabase: ReturnType<typeof getDbClient>;
+  private db: ReturnType<typeof getDbClient>;
   private tableName = 'workflow_versions';
 
   constructor() {
-    this.supabase = getDbClient();
+    this.db = getDbClient();
   }
 
   /**
@@ -191,7 +191,7 @@ export class WorkflowVersionManager {
   ): Promise<WorkflowVersion | null> {
     // ✅ CRITICAL FIX: Verify workflow exists before creating version
     // This prevents foreign key constraint violations
-    const { data: workflow, error: workflowError } = await this.supabase
+    const { data: workflow, error: workflowError } = await this.db
       .from('workflows_new')
       .select('id')
       .eq('id', workflowId)
@@ -249,7 +249,7 @@ export class WorkflowVersionManager {
     };
 
     // Store in database with separate snapshot columns
-    const { data, error } = await this.supabase
+    const { data, error } = await this.db
       .from(this.tableName)
       .insert({
         workflow_id: workflowId,
@@ -280,7 +280,7 @@ export class WorkflowVersionManager {
    * Get current version of workflow
    */
   async getCurrentVersion(workflowId: string): Promise<WorkflowVersion | null> {
-    const { data, error } = await this.supabase
+    const { data, error } = await this.db
       .from(this.tableName)
       .select('*')
       .eq('workflow_id', workflowId)
@@ -304,7 +304,7 @@ export class WorkflowVersionManager {
    * Get specific version
    */
   async getVersion(workflowId: string, version: number): Promise<WorkflowVersion | null> {
-    const { data, error } = await this.supabase
+    const { data, error } = await this.db
       .from(this.tableName)
       .select('*')
       .eq('workflow_id', workflowId)
@@ -326,7 +326,7 @@ export class WorkflowVersionManager {
    * Get version history
    */
   async getVersionHistory(workflowId: string, limit: number = 50): Promise<WorkflowVersion[]> {
-    const { data, error } = await this.supabase
+    const { data, error } = await this.db
       .from(this.tableName)
       .select('*')
       .eq('workflow_id', workflowId)
@@ -370,7 +370,7 @@ export class WorkflowVersionManager {
     }
 
     // Get current workflow
-    const { data: currentWorkflow, error: workflowError } = await this.supabase
+    const { data: currentWorkflow, error: workflowError } = await this.db
       .from('workflows')
       .select('*')
       .eq('id', workflowId)
@@ -385,7 +385,7 @@ export class WorkflowVersionManager {
     }
 
     // Restore workflow from version snapshot
-    const { error: updateError } = await this.supabase
+    const { error: updateError } = await this.db
       .from('workflows')
       .update({
         name: targetVersionData.definitionSnapshot.name,
@@ -475,7 +475,7 @@ export class WorkflowVersionManager {
    */
   async checkExecutionCompatibility(workflowId: string): Promise<ExecutionCompatibility> {
     // Check for running executions
-    const { data: executions, error } = await this.supabase
+    const { data: executions, error } = await this.db
       .from('executions')
       .select('id, status')
       .eq('workflow_id', workflowId)

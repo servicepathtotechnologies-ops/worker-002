@@ -53,7 +53,7 @@ export async function executeDatabaseNode(
     case 'sqlite':
       return await runSQLiteNode(context);
 
-    case 'supabase':
+    case 'db':
       return await runSupabaseNode(context);
 
     case 'timescaledb':

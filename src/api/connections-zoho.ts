@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 import { getZohoApiBaseUrl, ZohoRegion } from '../shared/zoho-oauth';
 
 /**
@@ -12,7 +12,7 @@ import { getZohoApiBaseUrl, ZohoRegion } from '../shared/zoho-oauth';
 
 export async function zohoStatusHandler(req: Request, res: Response) {
   try {
-    const supabase = getDbClient();
+    const db = getDbClient();
 
     const authHeader = req.headers.authorization;
     let userId: string | undefined;
@@ -20,7 +20,7 @@ export async function zohoStatusHandler(req: Request, res: Response) {
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const token = authHeader.replace('Bearer ', '').trim();
       if (token) {
-        const { data: { user }, error } = await supabase.auth.getUser(token);
+        const { data: { user }, error } = await db.auth.getUser(token);
         if (!error && user) {
           userId = user.id;
         }
@@ -34,7 +34,7 @@ export async function zohoStatusHandler(req: Request, res: Response) {
       });
     }
 
-    const { data: tokenData, error: tokenError } = await supabase
+    const { data: tokenData, error: tokenError } = await db
       .from('zoho_oauth_tokens')
       .select('id, access_token, refresh_token, expires_at, region, created_at, updated_at')
       .eq('user_id', userId)
@@ -79,7 +79,7 @@ export async function zohoStatusHandler(req: Request, res: Response) {
 
 export async function zohoConnectHandler(req: Request, res: Response) {
   try {
-    const supabase = getDbClient();
+    const db = getDbClient();
 
     const authHeader = req.headers.authorization;
     let userId: string | undefined;
@@ -87,7 +87,7 @@ export async function zohoConnectHandler(req: Request, res: Response) {
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const token = authHeader.replace('Bearer ', '').trim();
       if (token) {
-        const { data: { user }, error } = await supabase.auth.getUser(token);
+        const { data: { user }, error } = await db.auth.getUser(token);
         if (!error && user) {
           userId = user.id;
         }
@@ -140,7 +140,7 @@ export async function zohoConnectHandler(req: Request, res: Response) {
     const expiresAt = new Date(Date.now() + 3600 * 1000); // 1 hour from now
 
     // Upsert Zoho OAuth tokens
-    const { data: tokenData, error: upsertError } = await supabase
+    const { data: tokenData, error: upsertError } = await db
       .from('zoho_oauth_tokens')
       .upsert({
         user_id: userId,
@@ -164,7 +164,7 @@ export async function zohoConnectHandler(req: Request, res: Response) {
     }
 
     // Mirror into user_credentials vault for connector-based discovery
-    const { error: vaultError } = await supabase
+    const { error: vaultError } = await db
       .from('user_credentials')
       .upsert({
         user_id: userId,
@@ -205,7 +205,7 @@ export async function zohoConnectHandler(req: Request, res: Response) {
 
 export async function zohoTestHandler(req: Request, res: Response) {
   try {
-    const supabase = getDbClient();
+    const db = getDbClient();
 
     const authHeader = req.headers.authorization;
     let userId: string | undefined;
@@ -213,7 +213,7 @@ export async function zohoTestHandler(req: Request, res: Response) {
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const token = authHeader.replace('Bearer ', '').trim();
       if (token) {
-        const { data: { user }, error } = await supabase.auth.getUser(token);
+        const { data: { user }, error } = await db.auth.getUser(token);
         if (!error && user) {
           userId = user.id;
         }
@@ -228,7 +228,7 @@ export async function zohoTestHandler(req: Request, res: Response) {
     }
 
     const { getZohoAccessToken } = await import('../shared/zoho-oauth');
-    const { data: tokenData } = await supabase
+    const { data: tokenData } = await db
       .from('zoho_oauth_tokens')
       .select('access_token, region')
       .eq('user_id', userId)
@@ -305,7 +305,7 @@ export async function zohoTestHandler(req: Request, res: Response) {
 
 export async function zohoDisconnectHandler(req: Request, res: Response) {
   try {
-    const supabase = getDbClient();
+    const db = getDbClient();
 
     const authHeader = req.headers.authorization;
     let userId: string | undefined;
@@ -313,7 +313,7 @@ export async function zohoDisconnectHandler(req: Request, res: Response) {
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const token = authHeader.replace('Bearer ', '').trim();
       if (token) {
-        const { data: { user }, error } = await supabase.auth.getUser(token);
+        const { data: { user }, error } = await db.auth.getUser(token);
         if (!error && user) {
           userId = user.id;
         }
@@ -328,7 +328,7 @@ export async function zohoDisconnectHandler(req: Request, res: Response) {
     }
 
     // Delete Zoho OAuth tokens
-    const { error: tokenError } = await supabase
+    const { error: tokenError } = await db
       .from('zoho_oauth_tokens')
       .delete()
       .eq('user_id', userId);
@@ -342,7 +342,7 @@ export async function zohoDisconnectHandler(req: Request, res: Response) {
     }
 
     // Delete vault credential entry for Zoho
-    const { error: vaultError } = await supabase
+    const { error: vaultError } = await db
       .from('user_credentials')
       .delete()
       .eq('user_id', userId)

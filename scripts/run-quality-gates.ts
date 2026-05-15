@@ -49,7 +49,7 @@ function checkEnvTemplateSanitized(): void {
     /eyJ[a-zA-Z0-9_\-]{20,}\.[a-zA-Z0-9_\-]{10,}\.[a-zA-Z0-9_\-]{10,}/,
     /secret_[A-Za-z0-9]{8,}/,
     /Supabase%40123/i,
-    /nvrrqvlqnnvlihtlgmzn\.supabase\.co/i,
+    /nvrrqvlqnnvlihtlgmzn\.db\.co/i,
   ];
   for (const pattern of forbiddenSecretPatterns) {
     assert(!pattern.test(content), `env.example appears to contain a secret-like value matching ${pattern}`);

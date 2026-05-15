@@ -1,11 +1,11 @@
 ﻿/**
  * Instagram Token Manager
  * 
- * Helper functions to retrieve and manage Instagram/Facebook OAuth tokens from Supabase.
+ * Helper functions to retrieve and manage Instagram/Facebook OAuth tokens from the database.
  * Instagram uses Facebook OAuth tokens with Instagram permissions.
  */
 
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { DbClient } from '@db/db-js';
 import { decryptToken, encryptToken } from '../core/utils/token-encryption';
 import { resolveOAuthTokenString } from './credential-resolver';
 
@@ -20,7 +20,7 @@ export interface InstagramTokenData {
 }
 
 /**
- * Get Instagram/Facebook access token from Supabase
+ * Get Instagram/Facebook access token from DB
  * Tries multiple user IDs in order (workflow owner, then current user)
  * 
  * Note: Instagram uses Facebook OAuth tokens with Instagram permissions.
@@ -28,7 +28,7 @@ export interface InstagramTokenData {
  * pages_show_list, business_management
  */
 export async function getInstagramAccessToken(
-  supabase: SupabaseClient,
+  db: DbClient,
   userId?: string | string[]
 ): Promise<string | null> {
   if (!userId) return null;
@@ -93,7 +93,7 @@ export async function getInstagramBusinessAccountId(
  * Get full Instagram token data (including metadata)
  */
 export async function getInstagramTokenData(
-  supabase: SupabaseClient,
+  db: DbClient,
   userId?: string | string[]
 ): Promise<InstagramTokenData | null> {
   if (!userId) {
@@ -107,7 +107,7 @@ export async function getInstagramTokenData(
 
     try {
       // Try instagram_oauth_tokens first
-      const { data: instagramTokenData, error: instagramError } = await supabase
+      const { data: instagramTokenData, error: instagramError } = await db
         .from('instagram_oauth_tokens')
         .select('*')
         .eq('user_id', uid)
@@ -118,7 +118,7 @@ export async function getInstagramTokenData(
       }
 
       // Fall back to facebook_oauth_tokens
-      const { data: facebookTokenData, error: facebookError } = await supabase
+      const { data: facebookTokenData, error: facebookError } = await db
         .from('facebook_oauth_tokens')
         .select('*')
         .eq('user_id', uid)

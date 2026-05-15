@@ -2,7 +2,7 @@ import { getLinkedInAccessToken } from '../linkedin-oauth';
 
 describe('getLinkedInAccessToken', () => {
   it('returns null when no token rows exist', async () => {
-    const supabase = {
+    const db = {
       from: jest.fn().mockReturnValue({
         select: jest.fn().mockReturnThis(),
         eq: jest.fn().mockReturnThis(),
@@ -10,14 +10,14 @@ describe('getLinkedInAccessToken', () => {
       }),
     };
 
-    const token = await getLinkedInAccessToken(supabase, 'user-1');
+    const token = await getLinkedInAccessToken(db, 'user-1');
 
     expect(token).toBeNull();
   });
 
   it('returns access token when not expired', async () => {
     const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-    const supabase = {
+    const db = {
       from: jest.fn().mockReturnValue({
         select: jest.fn().mockReturnThis(),
         eq: jest.fn().mockReturnThis(),
@@ -32,7 +32,7 @@ describe('getLinkedInAccessToken', () => {
       }),
     };
 
-    const token = await getLinkedInAccessToken(supabase, 'user-1');
+    const token = await getLinkedInAccessToken(db, 'user-1');
 
     expect(token).toBe('test-token');
   });

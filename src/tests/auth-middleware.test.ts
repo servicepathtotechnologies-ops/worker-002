@@ -1,8 +1,8 @@
 import { Request, Response } from 'express';
 import { authenticateUser, requireAdmin, requireRole, requireSubscriptionPlan, AuthenticatedRequest } from '../core/middleware/subscription-auth';
 
-// Mock Supabase client
-jest.mock('../core/database/supabase-compat', () => ({
+// Mock DB client
+jest.mock('../core/database/aws-db-client', () => ({
   getDbClient: () => ({
     auth: {
       getUser: jest.fn()

@@ -13,7 +13,7 @@ import { unifiedNodeRegistry } from '../../../core/registry/unified-node-registr
 import { LRUNodeOutputsCache } from '../../../core/cache/lru-node-outputs-cache';
 import { WorkflowNode } from '../../../core/types/ai-types';
 
-// Mock Supabase client
+// Mock DB client
 const createMockSupabaseClient = () => {
   return {
     from: () => ({

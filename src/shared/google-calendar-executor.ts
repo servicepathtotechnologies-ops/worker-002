@@ -6,7 +6,7 @@
  */
 
 import { google, calendar_v3 } from 'googleapis';
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { DbClient } from '@db/db-js';
 import { getGoogleAccessToken } from './google-sheets';
 
 export interface GoogleCalendarOperationParams {
@@ -79,12 +79,12 @@ function getCalendarClient(accessToken: string): calendar_v3.Calendar {
  * Execute Google Calendar operation
  */
 export async function executeGoogleCalendarOperation(
-  supabase: SupabaseClient,
+  db: DbClient,
   userIds: string[],
   params: GoogleCalendarOperationParams
 ): Promise<any> {
   // Get access token
-  const accessToken = await getGoogleAccessToken(supabase, userIds);
+  const accessToken = await getGoogleAccessToken(db, userIds);
   if (!accessToken) {
     throw new Error('Google Calendar: OAuth token not found. Please connect your Google account in the Connections panel.');
   }

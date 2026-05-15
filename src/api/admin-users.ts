@@ -1,10 +1,10 @@
 import { Request, Response } from 'express';
-import { getDbClient } from '../core/database/supabase-compat';
+import { getDbClient } from '../core/database/aws-db-client';
 
 type AppRole = 'admin' | 'moderator' | 'user';
 type WorkflowStatus = 'active' | 'inactive';
 
-/** Supabase Auth ban: blocks sign-in and refresh; reversible via ban_duration: 'none'. */
+/** Cognito auth ban: blocks sign-in and refresh; reversible via ban_duration: 'none'. */
 const ADMIN_SUSPEND_BAN_DURATION = '876000h'; // ~100 years — effectively indefinite until admin reinstates
 
 function isUserBanned(user: any): boolean {
@@ -129,20 +129,20 @@ function getWorkflowBuildTokens(workflow: any): number {
   return 0;
 }
 
-async function requireAdminUser(supabase: ReturnType<typeof getDbClient>, req: Request) {
+async function requireAdminUser(db: ReturnType<typeof getDbClient>, req: Request) {
   const authHeader = req.headers.authorization;
   if (!authHeader) {
     return { ok: false as const, error: 'Unauthorized', status: 401 };
   }
 
   const token = authHeader.replace('Bearer ', '').trim();
-  const { data: authData, error: authError } = await supabase.auth.getUser(token);
+  const { data: authData, error: authError } = await db.auth.getUser(token);
   if (authError || !authData?.user) {
     return { ok: false as const, error: 'Unauthorized', status: 401 };
   }
 
   const requester = authData.user;
-  const { data: roleData, error: roleError } = await supabase
+  const { data: roleData, error: roleError } = await db
     .from('user_roles')
     .select('role')
     .eq('user_id', requester.id)
@@ -157,10 +157,10 @@ async function requireAdminUser(supabase: ReturnType<typeof getDbClient>, req: R
 }
 
 export default async function adminUsersHandler(req: Request, res: Response) {
-  const supabase = getDbClient();
+  const db = getDbClient();
 
   try {
-    const auth = await requireAdminUser(supabase, req);
+    const auth = await requireAdminUser(db, req);
     if (!auth.ok) {
       return res.status(auth.status).json({ error: auth.error });
     }
@@ -170,14 +170,14 @@ export default async function adminUsersHandler(req: Request, res: Response) {
 
     if (method === 'GET') {
       if (userId) {
-        const { data: userData, error: userError } = await supabase.auth.admin.getUserById(userId);
+        const { data: userData, error: userError } = await db.auth.admin.getUserById(userId);
         if (userError || !userData?.user) {
           return res.status(404).json({ error: 'User not found' });
         }
 
         const user = userData.user;
 
-        const { data: profileRow, error: profileError } = await supabase
+        const { data: profileRow, error: profileError } = await db
           .from('profiles')
           .select('user_id, full_name, email')
           .eq('user_id', userId)
@@ -186,7 +186,7 @@ export default async function adminUsersHandler(req: Request, res: Response) {
           throw profileError;
         }
 
-        const { data: roleRows, error: rolesError } = await supabase
+        const { data: roleRows, error: rolesError } = await db
           .from('user_roles')
           .select('role')
           .eq('user_id', userId);
@@ -203,7 +203,7 @@ export default async function adminUsersHandler(req: Request, res: Response) {
           'user' as AppRole
         );
 
-        const { data: workflowRows, error: workflowsError } = await supabase
+        const { data: workflowRows, error: workflowsError } = await db
           .from('workflows')
           .select('id, name, status, metadata')
           .eq('user_id', userId)
@@ -216,7 +216,7 @@ export default async function adminUsersHandler(req: Request, res: Response) {
         let executionCountsByWorkflow = new Map<string, number>();
 
         if (workflowIds.length > 0) {
-          const { data: executionRows, error: executionsError } = await supabase
+          const { data: executionRows, error: executionsError } = await db
             .from('executions')
             .select('workflow_id')
             .in('workflow_id', workflowIds);
@@ -261,7 +261,7 @@ export default async function adminUsersHandler(req: Request, res: Response) {
         });
       }
 
-      const { data: usersData, error: usersError } = await supabase.auth.admin.listUsers();
+      const { data: usersData, error: usersError } = await db.auth.admin.listUsers();
       if (usersError) {
         throw usersError;
       }
@@ -269,7 +269,7 @@ export default async function adminUsersHandler(req: Request, res: Response) {
       const users: any[] = usersData?.users ?? [];
       const userIds = users.map((user: any) => user.id);
 
-      const { data: profileRows, error: profilesError } = await supabase
+      const { data: profileRows, error: profilesError } = await db
         .from('profiles')
         .select('user_id, full_name, email')
         .in('user_id', userIds);
@@ -277,7 +277,7 @@ export default async function adminUsersHandler(req: Request, res: Response) {
         throw profilesError;
       }
 
-      const { data: roleRows, error: rolesError } = await supabase
+      const { data: roleRows, error: rolesError } = await db
         .from('user_roles')
         .select('user_id, role')
         .in('user_id', userIds);
@@ -336,7 +336,7 @@ export default async function adminUsersHandler(req: Request, res: Response) {
         }
 
         if (body.suspended === true) {
-          const { data: adminRoleRow, error: adminCheckError } = await supabase
+          const { data: adminRoleRow, error: adminCheckError } = await db
             .from('user_roles')
             .select('user_id')
             .eq('user_id', userId)
@@ -354,7 +354,7 @@ export default async function adminUsersHandler(req: Request, res: Response) {
           }
         }
 
-        const { error: banError } = await supabase.auth.admin.updateUserById(userId, {
+        const { error: banError } = await db.auth.admin.updateUserById(userId, {
           ban_duration: body.suspended ? ADMIN_SUSPEND_BAN_DURATION : 'none',
         });
 
@@ -370,7 +370,7 @@ export default async function adminUsersHandler(req: Request, res: Response) {
           return res.status(400).json({ error: 'role must be one of: admin, moderator, user' });
         }
 
-        const { error: deleteRolesError } = await supabase
+        const { error: deleteRolesError } = await db
           .from('user_roles')
           .delete()
           .eq('user_id', userId);
@@ -378,7 +378,7 @@ export default async function adminUsersHandler(req: Request, res: Response) {
           throw deleteRolesError;
         }
 
-        const { data: roleData, error: insertRoleError } = await supabase
+        const { data: roleData, error: insertRoleError } = await db
           .from('user_roles')
           .insert({ user_id: userId, role: requestedRole })
           .select('user_id, role')
@@ -402,7 +402,7 @@ export default async function adminUsersHandler(req: Request, res: Response) {
         return res.status(400).json({ error: 'You cannot delete your own account from admin panel' });
       }
 
-      const { error } = await supabase.auth.admin.deleteUser(userId);
+      const { error } = await db.auth.admin.deleteUser(userId);
       if (error) {
         throw error;
       }

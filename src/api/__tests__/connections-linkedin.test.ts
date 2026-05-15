@@ -6,8 +6,8 @@ import {
   linkedinDisconnectHandler,
 } from '../connections-linkedin';
 
-// Minimal mocks for Supabase client and fetch
-jest.mock('../../core/database/supabase-compat', () => ({
+// Minimal mocks for DB client and fetch
+jest.mock('../../core/database/aws-db-client', () => ({
   getDbClient: () => ({
     auth: {
       getUser: jest.fn().mockResolvedValue({ data: { user: null }, error: null }),

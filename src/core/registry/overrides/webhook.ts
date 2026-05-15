@@ -15,11 +15,11 @@ export function overrideWebhook(
   return {
     ...def,
     execute: async (context) => {
-      const { input } = context;
-      
-      // Extract input object
-      const inputObj = typeof input === 'object' && input !== null && !Array.isArray(input)
-        ? input as Record<string, unknown>
+      // Use rawInput — the incoming webhook payload from the HTTP handler.
+      // context.input does not exist on NodeExecutionContext; the correct field is rawInput.
+      const rawInput = context.rawInput;
+      const inputObj = typeof rawInput === 'object' && rawInput !== null && !Array.isArray(rawInput)
+        ? rawInput as Record<string, unknown>
         : {};
       
       // ✅ OPTIMIZED: Webhook trigger - return clean output with just the payload
