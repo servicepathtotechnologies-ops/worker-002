@@ -1,4 +1,3 @@
-import { CredentialMissingScopeError } from './credential-errors';
 import {
   normalizeProvider,
   requiredScopesForProvider,
@@ -64,15 +63,8 @@ export async function handleOAuthCallback(input: HandleOAuthCallbackInput): Prom
   }
 
   if (!scopesCover(returnedScopes, requiredScopes)) {
-    throw new CredentialMissingScopeError(
-      {
-        userId: input.userId,
-        provider,
-        requiredScopes,
-        resolverStep: 'oauth_scope_validation',
-      },
-      returnedScopes,
-    );
+    const missing = requiredScopes.filter((s) => !returnedScopes.includes(s));
+    console.warn(`[OAuthCallback] ⚠️ ${provider} granted partial scopes — missing: ${missing.join(', ')}. Storing anyway; execution will fail if those scopes are needed.`);
   }
 
   const credentialId = await upsertUnifiedCredential({

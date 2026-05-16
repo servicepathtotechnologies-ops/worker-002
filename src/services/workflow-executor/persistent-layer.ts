@@ -288,18 +288,10 @@ export class PersistentLayer {
 
       if (output !== undefined) {
         updateData.output = toJsonSafe(output);
-        // DB row may have result_data or just output
-        if (updateData.result_data === undefined) {
-          updateData.result_data = toJsonSafe(output);
-        }
       }
 
       if (error) {
         updateData.error = error;
-        // DB row may have error_message or just error
-        if (updateData.error_message === undefined) {
-          updateData.error_message = error;
-        }
       }
 
       if (status === 'success' || status === 'failed') {

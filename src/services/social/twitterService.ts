@@ -10,6 +10,7 @@
 
 import fetch from 'node-fetch';
 import { SocialServiceResponse } from './types';
+import { readAcknowledgedHttpResponse } from '../../core/http/acknowledged-response';
 
 const TWITTER_API_BASE = 'https://api.twitter.com/2';
 
@@ -107,12 +108,13 @@ export async function postTweet(
       }),
     });
     
+    const parsed = await readAcknowledgedHttpResponse(response as unknown as Response);
+    const data = parsed.data as any;
+
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
+      const errorData = data || parsed.rawText || {};
       throw new TwitterAPIError(response.status, response.statusText, errorData);
     }
-    
-    const data = await response.json();
     
     return {
       success: true,
@@ -171,12 +173,13 @@ export async function getTwitterUser(token: string): Promise<TwitterServiceRespo
       },
     });
     
+    const parsed = await readAcknowledgedHttpResponse(response as unknown as Response);
+    const data = parsed.data as any;
+
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
+      const errorData = data || parsed.rawText || {};
       throw new TwitterAPIError(response.status, response.statusText, errorData);
     }
-    
-    const data = await response.json();
     
     return {
       success: true,

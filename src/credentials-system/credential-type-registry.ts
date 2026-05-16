@@ -27,6 +27,8 @@ const facebookOAuthScopes = Array.from(new Set([
   'public_profile',
   'email',
   'pages_show_list',
+  'pages_read_engagement',
+  'pages_manage_posts',
   ...csvEnv('META_FACEBOOK_EXTRA_SCOPES'),
   ...csvEnv('FACEBOOK_EXTRA_SCOPES'),
 ]));

@@ -6,6 +6,7 @@
 
 import type { UnifiedNodeDefinition } from '../../types/unified-node-contract';
 import type { NodeSchema } from '../../../services/nodes/node-library';
+import { readAcknowledgedHttpResponse } from '../../http/acknowledged-response';
 
 function trimSlash(value: string): string {
   return value.replace(/\/+$/, '');
@@ -27,12 +28,12 @@ async function salesforceFetch(args: {
       ...((args.init?.headers || {}) as Record<string, string>),
     },
   });
-  const text = await response.text();
-  const payload = text ? JSON.parse(text) : null;
+  const parsed = await readAcknowledgedHttpResponse(response);
+  const payload = parsed.data;
   if (!response.ok) {
     const message = Array.isArray(payload)
       ? payload.map((e) => e.message).filter(Boolean).join('; ')
-      : payload?.message || text || `Salesforce API error ${response.status}`;
+      : payload?.message || parsed.rawText || `Salesforce API error ${response.status}`;
     throw new Error(message);
   }
   return payload;

@@ -6134,18 +6134,33 @@ export class NodeLibrary {
           },
           pageId: {
             type: 'string',
-            description: 'Notion page ID',
+            description: 'Notion Page ID (for get, update, archive, restore)',
             examples: ['page-id'],
           },
           databaseId: {
             type: 'string',
-            description: 'Notion database ID',
+            description: 'Notion Database ID (for query, get, or creating a page as a database row)',
             examples: ['database-id'],
           },
+          parentPageId: {
+            type: 'string',
+            description: 'Parent Page ID — where the new page will be created (required for page › create and database › create)',
+            examples: ['parent-page-id'],
+          },
+          title: {
+            type: 'string',
+            description: 'Page or database title (plain text)',
+            examples: ['My Page', 'Project Tracker'],
+          },
           content: {
-            type: 'object',
-            description: 'Page or database content',
-            examples: [{ title: 'Page Title', content: 'Page content' }],
+            type: 'string',
+            description: 'Page body content (plain text — added as a paragraph block)',
+            examples: ['This is the page content.'],
+          },
+          properties: {
+            type: 'string',
+            description: 'Page properties as simple JSON key:value pairs (for database rows). Example: {"Status":"In Progress","Priority":"High"}',
+            examples: ['{"Status":"Done","Count":3}'],
           },
           filter: {
             type: 'object',

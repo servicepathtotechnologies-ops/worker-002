@@ -7,6 +7,7 @@
 
 import fetch from 'node-fetch';
 import { SocialServiceResponse } from './types';
+import { readAcknowledgedHttpResponse } from '../../core/http/acknowledged-response';
 
 const GITHUB_API_BASE = 'https://api.github.com';
 
@@ -101,12 +102,13 @@ export async function postGitHubIssue(
       }),
     });
     
+    const parsed = await readAcknowledgedHttpResponse(response as unknown as Response);
+    const data = parsed.data as any;
+
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
+      const errorData = data || parsed.rawText || {};
       throw new GitHubAPIError(response.status, response.statusText, errorData);
     }
-    
-    const data = await response.json();
     
     return {
       success: true,
@@ -194,12 +196,13 @@ export async function createGitHubRepository(
       }),
     });
     
+    const parsed = await readAcknowledgedHttpResponse(response as unknown as Response);
+    const data = parsed.data as any;
+
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
+      const errorData = data || parsed.rawText || {};
       throw new GitHubAPIError(response.status, response.statusText, errorData);
     }
-    
-    const data = await response.json();
     
     return {
       success: true,
@@ -263,12 +266,13 @@ export async function getGitHubUser(token: string): Promise<GitHubServiceRespons
       },
     });
     
+    const parsed = await readAcknowledgedHttpResponse(response as unknown as Response);
+    const data = parsed.data as any;
+
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
+      const errorData = data || parsed.rawText || {};
       throw new GitHubAPIError(response.status, response.statusText, errorData);
     }
-    
-    const data = await response.json();
     
     return {
       success: true,

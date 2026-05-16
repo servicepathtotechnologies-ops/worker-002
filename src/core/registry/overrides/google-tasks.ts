@@ -1,6 +1,11 @@
 import type { UnifiedNodeDefinition } from '../../types/unified-node-contract';
 import type { NodeSchema } from '../../../services/nodes/node-library';
-import { getGoogleTokenForContext, googleApiRequest, mergedInputs } from './google-workspace-utils';
+import {
+  getGoogleTokenForContext,
+  googleApiRequest,
+  googleApiRequestWithAcknowledgement,
+  mergedInputs,
+} from './google-workspace-utils';
 
 function isValidDateOnly(datePart: string): boolean {
   const match = datePart.match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -99,6 +104,7 @@ export function overrideGoogleTasks(
       try {
         const accessToken = await getGoogleTokenForContext(context, ['https://www.googleapis.com/auth/tasks']);
         let output: any;
+        let acknowledgementStatus: 'parsed' | 'empty_success' | 'parse_failed' | 'not_required' = 'not_required';
         if (operation === 'read') {
           if (inputs.taskId) {
             output = await googleApiRequest(`https://tasks.googleapis.com/tasks/v1/lists/${taskListId}/tasks/${encodeURIComponent(String(inputs.taskId))}`, accessToken);
@@ -123,12 +129,21 @@ export function overrideGoogleTasks(
           });
         } else if (operation === 'delete') {
           if (!inputs.taskId) throw new Error('taskId is required for delete');
-          await googleApiRequest(`https://tasks.googleapis.com/tasks/v1/lists/${taskListId}/tasks/${encodeURIComponent(String(inputs.taskId))}`, accessToken, { method: 'DELETE' });
+          const deleteAck = await googleApiRequestWithAcknowledgement(`https://tasks.googleapis.com/tasks/v1/lists/${taskListId}/tasks/${encodeURIComponent(String(inputs.taskId))}`, accessToken, { method: 'DELETE' });
+          acknowledgementStatus = deleteAck.acknowledgementStatus;
           output = { deleted: true, taskId: inputs.taskId };
         } else {
           throw new Error(`Unsupported Google Tasks operation: ${operation}`);
         }
-        return { success: true, output: { operation, data: output } };
+        return {
+          success: true,
+          output: { operation, data: output },
+          metadata: {
+            operationStatus: 'succeeded',
+            acknowledgementStatus,
+            persistenceStatus: 'saved',
+          },
+        };
       } catch (error: any) {
         return { success: false, error: { code: 'GOOGLE_TASKS_FAILED', message: error?.message || 'Google Tasks operation failed' } };
       }

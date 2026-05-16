@@ -1,6 +1,10 @@
 import type { NodeExecutionContext } from '../../types/unified-node-contract';
 import { getGoogleAccessToken } from '../../../shared/google-sheets';
 import { parseGoogleApiError } from '../../../shared/google-api-utils';
+import {
+  readAcknowledgedHttpResponse,
+  type AcknowledgedHttpResponse,
+} from '../../http/acknowledged-response';
 
 export async function getGoogleTokenForContext(
   context: NodeExecutionContext,
@@ -30,6 +34,15 @@ export async function googleApiRequest(
   accessToken: string,
   init: RequestInit = {},
 ): Promise<any> {
+  const result = await googleApiRequestWithAcknowledgement(url, accessToken, init);
+  return result.data;
+}
+
+export async function googleApiRequestWithAcknowledgement(
+  url: string,
+  accessToken: string,
+  init: RequestInit = {},
+): Promise<AcknowledgedHttpResponse> {
   const response = await fetch(url, {
     ...init,
     headers: {
@@ -38,22 +51,13 @@ export async function googleApiRequest(
     },
   });
 
-  const contentType = response.headers.get('content-type') || '';
+  const parsed = await readAcknowledgedHttpResponse(response, { binaryForNonText: true });
   if (!response.ok) {
-    const errorText = await response.text();
+    const errorText = parsed.rawText || (typeof parsed.data === 'string' ? parsed.data : JSON.stringify(parsed.data || ''));
     throw new Error(parseGoogleApiError(response, errorText));
   }
 
-  if (contentType.includes('application/json')) {
-    return await response.json();
-  }
-
-  const buffer = Buffer.from(await response.arrayBuffer());
-  return {
-    contentType,
-    dataBase64: buffer.toString('base64'),
-    size: buffer.length,
-  };
+  return parsed;
 }
 
 export function mergedInputs(context: NodeExecutionContext): Record<string, any> {

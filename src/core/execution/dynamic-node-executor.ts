@@ -49,6 +49,7 @@ export const EXECUTION_OBSERVABILITY_KEYS = {
   resolvedInputs: (nodeId: string) => `__resolved_inputs__:${nodeId}`,
   runtimeResolutionAudit: (nodeId: string) => `__runtime_resolution_audit__:${nodeId}`,
   selfValidation: (nodeId: string) => `__self_validation__:${nodeId}`,
+  acknowledgement: (nodeId: string) => `__acknowledgement__:${nodeId}`,
 } as const;
 
 type UniversalInputContractFlags = {
@@ -794,6 +795,16 @@ export async function executeNodeDynamically(
   // Step 8: Execute node using definition.execute() (NO hardcoded logic)
   try {
     const result = await definition.execute(execContext);
+    if (result.metadata?.operationStatus || result.metadata?.acknowledgementStatus || result.metadata?.persistenceStatus) {
+      nodeOutputs.set(EXECUTION_OBSERVABILITY_KEYS.acknowledgement(node.id), {
+        nodeId: node.id,
+        nodeType,
+        operationStatus: result.metadata.operationStatus,
+        acknowledgementStatus: result.metadata.acknowledgementStatus,
+        persistenceStatus: result.metadata.persistenceStatus,
+        timestamp: new Date().toISOString(),
+      });
+    }
     
     if (!result.success) {
       console.error(`[DynamicExecutor] âŒ Node execution failed:`, result.error);

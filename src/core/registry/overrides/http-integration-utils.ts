@@ -1,28 +1,15 @@
+import { extractProviderErrorMessage, readAcknowledgedHttpResponse } from '../../http/acknowledged-response';
+
 export async function integrationJsonRequest(
   url: string,
   init: RequestInit = {},
 ): Promise<any> {
   const response = await fetch(url, init);
-  const text = await response.text();
-  let payload: any = null;
-  if (text) {
-    try {
-      payload = JSON.parse(text);
-    } catch {
-      payload = text;
-    }
-  }
+  const parsed = await readAcknowledgedHttpResponse(response);
   if (!response.ok) {
-    const message =
-      payload?.message ||
-      payload?.detail ||
-      payload?.error?.message ||
-      payload?.errors?.[0]?.message ||
-      (typeof payload === 'string' ? payload : '') ||
-      `HTTP ${response.status}`;
-    throw new Error(message);
+    throw new Error(extractProviderErrorMessage(parsed));
   }
-  return payload;
+  return parsed.data;
 }
 
 export function authHeaderFromToken(token: string): Record<string, string> {

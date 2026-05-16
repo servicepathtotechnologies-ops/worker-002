@@ -7,6 +7,7 @@
 
 import { MetaApiError } from './types';
 import { getInstagramBusinessAccountId } from '../../shared/instagram-token-manager';
+import { readAcknowledgedHttpResponse } from '../../core/http/acknowledged-response';
 
 // ─── Interfaces ──────────────────────────────────────────────────────────────
 
@@ -447,11 +448,12 @@ export class InstagramNode {
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
 
-    const json = (await response.json()) as any;
+    const parsed = await readAcknowledgedHttpResponse(response);
+    const json = parsed.data as any;
 
     if (!response.ok) {
       const err = json?.error ?? {};
-      const error = new Error(err.message ?? `HTTP ${response.status}`);
+      const error = new Error(err.message ?? parsed.rawText ?? `HTTP ${response.status}`);
       (error as any).code = err.code;
       (error as any).fbtrace_id = err.fbtrace_id;
       (error as any).errorSubcode = err.error_subcode;

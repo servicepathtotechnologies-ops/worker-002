@@ -55,6 +55,7 @@ import { circuitBreakerManager } from '../services/workflow-executor/distributed
 import { getProviderCircuitKeyFromNodeType } from '../core/reliability/provider-circuit-key';
 import { decryptToken } from '../core/utils/token-encryption';
 import { retrieveCredential } from '../core/utils/credential-retriever';
+import { readAcknowledgedHttpResponse } from '../core/http/acknowledged-response';
 
 const EXECUTION_RUNTIME_MARKER = 'runtime-marker-2026-03-20-v1';
 
@@ -6435,14 +6436,8 @@ export async function executeNodeLegacy(
 
         clearTimeout(timeoutId);
 
-        const contentType = response.headers.get('content-type') || '';
-        let responseData: unknown;
-
-        if (contentType.includes('application/json')) {
-          responseData = await response.json();
-        } else {
-          responseData = await response.text();
-        }
+        const acknowledgedResponse = await readAcknowledgedHttpResponse(response);
+        const responseData: unknown = acknowledgedResponse.data;
 
         // ✅ REFACTORED: HTTP node returns response object directly (not wrapped)
         return {
@@ -6451,6 +6446,7 @@ export async function executeNodeLegacy(
           headers: Object.fromEntries(response.headers.entries()),
           data: responseData,
           url: resolvedUrl,
+          acknowledgementStatus: acknowledgedResponse.acknowledgementStatus,
         };
       } catch (error) {
         console.error('[HTTP Request] ❌ Fetch error:', error);
@@ -9160,7 +9156,9 @@ export async function executeNodeLegacy(
             result = await notion.pages.retrieve({ page_id: pageId });
           } else if (operation === 'create') {
             const databaseId = resolveString(getStringProperty(config, 'databaseId', ''));
-            const parentPageId = resolveString(getStringProperty(config, 'parentPageId', ''));
+            // Accept both 'parentPageId' and legacy 'parentId' key name
+            const parentPageId = resolveString(getStringProperty(config, 'parentPageId', ''))
+              || resolveString(getStringProperty(config, 'parentId', ''));
             const properties = getJsonProp('properties');
             const children = getJsonProp('children');
 
@@ -9280,7 +9278,9 @@ export async function executeNodeLegacy(
               result = await queryFn(startCursor || undefined);
             }
           } else if (operation === 'create') {
-            const parentPageId = resolveString(getStringProperty(config, 'parentPageId', ''));
+            // Accept both 'parentPageId' and legacy 'parentId' key name
+            const parentPageId = resolveString(getStringProperty(config, 'parentPageId', ''))
+              || resolveString(getStringProperty(config, 'parentId', ''));
             const title = getJsonProp('title');
             const schema = getJsonProp('schema');
             const isInline = getBooleanProperty(config, 'isInline', false);
@@ -10551,16 +10551,18 @@ export async function executeNodeLegacy(
             const postParams = new URLSearchParams();
             postParams.append('access_token', resolvedAccessToken);
             const response = await fetch(`${url}?${postParams.toString()}`, options);
-            const data = await response.json() as any;
+            const acknowledgedResponse = await readAcknowledgedHttpResponse(response);
+            const data = acknowledgedResponse.data as any;
             if (!response.ok) {
-              throw new Error((data as any)?.error?.message || `Instagram API error: ${response.statusText}`);
+              throw new Error((data as any)?.error?.message || acknowledgedResponse.rawText || `Instagram API error: ${response.statusText}`);
             }
             return data;
           } else {
             const response = await fetch(fullUrl, options);
-            const data = await response.json() as any;
+            const acknowledgedResponse = await readAcknowledgedHttpResponse(response);
+            const data = acknowledgedResponse.data as any;
             if (!response.ok) {
-              throw new Error((data as any)?.error?.message || `Instagram API error: ${response.statusText}`);
+              throw new Error((data as any)?.error?.message || acknowledgedResponse.rawText || `Instagram API error: ${response.statusText}`);
             }
             return data;
           }
@@ -11293,16 +11295,18 @@ export async function executeNodeLegacy(
             const postParams = new URLSearchParams();
             postParams.append('access_token', resolvedAccessToken);
             const response = await fetch(`${url}?${postParams.toString()}`, options);
-            const data = await response.json() as any;
+            const acknowledgedResponse = await readAcknowledgedHttpResponse(response);
+            const data = acknowledgedResponse.data as any;
             if (!response.ok) {
-              throw new Error((data as any)?.error?.message || `WhatsApp API error: ${response.statusText}`);
+              throw new Error((data as any)?.error?.message || acknowledgedResponse.rawText || `WhatsApp API error: ${response.statusText}`);
             }
             return data;
           } else {
             const response = await fetch(fullUrl, options);
-            const data = await response.json() as any;
+            const acknowledgedResponse = await readAcknowledgedHttpResponse(response);
+            const data = acknowledgedResponse.data as any;
             if (!response.ok) {
-              throw new Error((data as any)?.error?.message || `WhatsApp API error: ${response.statusText}`);
+              throw new Error((data as any)?.error?.message || acknowledgedResponse.rawText || `WhatsApp API error: ${response.statusText}`);
             }
             return data;
           }

@@ -169,6 +169,9 @@ export interface NodeExecutionResult {
   metadata?: {
     executionTime?: number;
     retries?: number;
+    operationStatus?: 'succeeded' | 'failed' | 'unknown';
+    acknowledgementStatus?: 'parsed' | 'empty_success' | 'parse_failed' | 'not_required';
+    persistenceStatus?: 'saved' | 'delayed' | 'failed';
     [key: string]: any;
   };
 }

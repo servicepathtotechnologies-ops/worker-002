@@ -204,6 +204,35 @@ function merged(context: NodeExecutionContext): Record<string, any> {
   return { ...(context.config || {}), ...(context.inputs || {}) };
 }
 
+/**
+ * Extracts a bare Notion UUID from whatever the user pastes:
+ *   - Already a UUID with dashes  → returned as-is
+ *   - 32-char hex string          → formatted with dashes
+ *   - "PageName-...-<32hex>"      → last 32 hex chars extracted & formatted
+ *   - Full Notion URL             → ID extracted from path segment
+ */
+function notionId(value: any): string {
+  const raw = str(value);
+  if (!raw) return '';
+
+  // Already a properly dashed UUID (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(raw)) {
+    return raw.toLowerCase();
+  }
+
+  // Extract 32-char hex block — works for:
+  //   "CtrlChecks-E2E-Root-Page-35355e30b52a81fc83ddfccfe6d52ca2"
+  //   "https://www.notion.so/workspace/Page-35355e30b52a81fc83ddfccfe6d52ca2"
+  const match = raw.match(/([0-9a-f]{32})(?:[^0-9a-f]|$)/i);
+  if (match) {
+    const hex = match[1].toLowerCase();
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+
+  // Return as-is and let Notion API give a clear error
+  return raw;
+}
+
 // ─── Override ─────────────────────────────────────────────────────────────────
 
 export function overrideNotion(
@@ -482,14 +511,15 @@ export function overrideNotion(
         if (resource === 'page') {
 
           if (operation === 'get') {
-            const pageId = str(cfg.pageId);
+            const pageId = notionId(cfg.pageId);
             if (!pageId) throw new Error('pageId is required for page › get');
             result = await notion.pages.retrieve({ page_id: pageId });
           }
 
           else if (operation === 'create') {
-            const databaseId   = str(cfg.databaseId);
-            const parentPageId = str(cfg.parentPageId);
+            const databaseId   = notionId(cfg.databaseId);
+            // Accept both 'parentPageId' and legacy 'parentId' key name
+            const parentPageId = notionId(cfg.parentPageId) || notionId(cfg.parentId);
 
             if (!databaseId && !parentPageId) {
               throw new Error('Provide either databaseId (create row in database) or parentPageId (create child page)');
@@ -536,7 +566,7 @@ export function overrideNotion(
           }
 
           else if (operation === 'update') {
-            const pageId = str(cfg.pageId);
+            const pageId = notionId(cfg.pageId);
             if (!pageId) throw new Error('pageId is required for page › update');
 
             const simpleProps = parseJsonSafe(cfg.properties);
@@ -551,13 +581,13 @@ export function overrideNotion(
           }
 
           else if (operation === 'archive') {
-            const pageId = str(cfg.pageId);
+            const pageId = notionId(cfg.pageId);
             if (!pageId) throw new Error('pageId is required for page › archive');
             result = await notion.pages.update({ page_id: pageId, archived: true });
           }
 
           else if (operation === 'restore') {
-            const pageId = str(cfg.pageId);
+            const pageId = notionId(cfg.pageId);
             if (!pageId) throw new Error('pageId is required for page › restore');
             result = await notion.pages.update({ page_id: pageId, archived: false });
           }
@@ -573,7 +603,7 @@ export function overrideNotion(
         else if (resource === 'database') {
 
           if (operation === 'get') {
-            const databaseId = str(cfg.databaseId);
+            const databaseId = notionId(cfg.databaseId);
             if (!databaseId) throw new Error('databaseId is required for database › get');
             result = await notion.databases.retrieve({ database_id: databaseId });
           }
@@ -592,7 +622,7 @@ export function overrideNotion(
           }
 
           else if (operation === 'query') {
-            const databaseId = str(cfg.databaseId);
+            const databaseId = notionId(cfg.databaseId);
             if (!databaseId) throw new Error('databaseId is required for database › query');
 
             const ps  = clampedPageSize();
@@ -631,7 +661,8 @@ export function overrideNotion(
           }
 
           else if (operation === 'create') {
-            const parentPageId = str(cfg.parentPageId);
+            // Accept both 'parentPageId' and legacy 'parentId' key name
+            const parentPageId = notionId(cfg.parentPageId) || notionId(cfg.parentId);
             if (!parentPageId) throw new Error('parentPageId is required for database › create');
 
             const titleText = str(cfg.title) || str(cfg.databaseTitle) || 'Untitled Database';
@@ -647,7 +678,7 @@ export function overrideNotion(
           }
 
           else if (operation === 'update') {
-            const databaseId = str(cfg.databaseId);
+            const databaseId = notionId(cfg.databaseId);
             if (!databaseId) throw new Error('databaseId is required for database › update');
 
             const titleText = str(cfg.title) || str(cfg.databaseTitle);
@@ -675,13 +706,13 @@ export function overrideNotion(
         else if (resource === 'block') {
 
           if (operation === 'get') {
-            const blockId = str(cfg.blockId);
+            const blockId = notionId(cfg.blockId);
             if (!blockId) throw new Error('blockId is required for block › get');
             result = await notion.blocks.retrieve({ block_id: blockId });
           }
 
           else if (operation === 'listChildren') {
-            const blockId = str(cfg.blockId);
+            const blockId = notionId(cfg.blockId);
             if (!blockId) throw new Error('blockId is required for block › listChildren');
             const ps  = clampedPageSize();
             const all = returnAll();
@@ -692,7 +723,7 @@ export function overrideNotion(
           }
 
           else if (operation === 'appendChildren') {
-            const blockId = str(cfg.blockId);
+            const blockId = notionId(cfg.blockId);
             if (!blockId) throw new Error('blockId is required for block › appendChildren');
 
             const content      = str(cfg.content);
@@ -708,7 +739,7 @@ export function overrideNotion(
           }
 
           else if (operation === 'update') {
-            const blockId = str(cfg.blockId);
+            const blockId = notionId(cfg.blockId);
             if (!blockId) throw new Error('blockId is required for block › update');
 
             const content      = str(cfg.content);
@@ -724,7 +755,7 @@ export function overrideNotion(
           }
 
           else if (operation === 'delete') {
-            const blockId = str(cfg.blockId);
+            const blockId = notionId(cfg.blockId);
             if (!blockId) throw new Error('blockId is required for block › delete');
             result = await notion.blocks.delete({ block_id: blockId });
           }
@@ -740,7 +771,7 @@ export function overrideNotion(
         else if (resource === 'user') {
 
           if (operation === 'get') {
-            const userId = str(cfg.userId);
+            const userId = notionId(cfg.userId);
             if (!userId) throw new Error('userId is required for user › get');
             result = await notion.users.retrieve({ user_id: userId });
           }
@@ -769,8 +800,8 @@ export function overrideNotion(
         else if (resource === 'comment') {
 
           if (operation === 'list') {
-            const pageId  = str(cfg.pageId);
-            const blockId = str(cfg.blockId);
+            const pageId  = notionId(cfg.pageId);
+            const blockId = notionId(cfg.blockId);
             if (!pageId && !blockId) throw new Error('Provide pageId or blockId for comment › list');
 
             const ps  = clampedPageSize();
@@ -787,7 +818,7 @@ export function overrideNotion(
           }
 
           else if (operation === 'create') {
-            const pageId           = str(cfg.pageId);
+            const pageId           = notionId(cfg.pageId);
             const discussionId     = str(cfg.parentDiscussionId);
             const commentText      = str(cfg.comment) || str(cfg.content);
 

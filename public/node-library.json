@@ -1277,7 +1277,10 @@
       "operation",
       "pageId",
       "databaseId",
+      "parentPageId",
+      "title",
       "content",
+      "properties",
       "filter"
     ]
   },
