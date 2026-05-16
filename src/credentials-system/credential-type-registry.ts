@@ -23,12 +23,13 @@ const facebookBusinessConfigId =
   process.env.FACEBOOK_CONFIG_ID ||
   '';
 
+// pages_manage_posts and pages_read_engagement require Meta App Review.
+// Request only approved scopes here; add the others via META_FACEBOOK_EXTRA_SCOPES
+// once your app is approved at developers.facebook.com → App Review.
 const facebookOAuthScopes = Array.from(new Set([
   'public_profile',
   'email',
   'pages_show_list',
-  'pages_read_engagement',
-  'pages_manage_posts',
   ...csvEnv('META_FACEBOOK_EXTRA_SCOPES'),
   ...csvEnv('FACEBOOK_EXTRA_SCOPES'),
 ]));
@@ -1766,7 +1767,7 @@ export const credentialTypeDefinitions: CredentialTypeDefinition[] = addCredenti
     provider: 'facebook',
     displayName: 'Facebook OAuth2',
     authType: 'oauth2',
-    requiredScopes: ['public_profile', 'email', 'pages_show_list', 'pages_read_engagement', 'pages_manage_posts'],
+    requiredScopes: ['public_profile', 'email', 'pages_show_list'],
     inputFields: [],
     form: { layout: 'stacked', oauthButtonLabel: 'Connect Facebook', testLabel: 'Test Facebook' },
     validation: { requiredFields: [] },

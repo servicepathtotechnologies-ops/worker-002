@@ -31,7 +31,7 @@ export const PROVIDER_REQUIRED_SCOPES: Record<string, string[]> = {
   linkedin: ['w_member_social', 'r_emailaddress', 'r_liteprofile'],
   notion: ['read_content', 'update_content', 'insert_content'],
   instagram: ['instagram_basic', 'instagram_content_publish', 'pages_show_list', 'pages_read_engagement', 'business_management'],
-  facebook: ['public_profile', 'email', 'pages_show_list', 'pages_read_engagement', 'pages_manage_posts'],
+  facebook: ['public_profile', 'email', 'pages_show_list'],
   github: ['repo'],
   salesforce: ['api', 'refresh_token'],
   zoho: ['ZohoCRM.modules.ALL', 'ZohoCRM.users.READ'],
