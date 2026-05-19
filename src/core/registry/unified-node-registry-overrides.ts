@@ -1,5 +1,6 @@
 import type { UnifiedNodeDefinition } from '../types/unified-node-contract';
 import type { NodeSchema } from '../../services/nodes/node-library';
+import { applyGeneratedOperationContracts } from './generated-node-operation-contracts';
 
 import { overrideGoogleGmail } from './overrides/google-gmail';
 import { overrideIfElse } from './overrides/if-else';
@@ -139,6 +140,8 @@ import { overrideZendesk } from './overrides/zendesk-node';
 import { overrideNetlify } from './overrides/netlify';
 import { overrideWorkday } from './overrides/workday';
 import { overridePinecone } from './overrides/pinecone';
+import { overrideQdrant } from './overrides/qdrant';
+import { overrideCohere } from './overrides/cohere';
 import { overrideLangchain } from './overrides/langchain';
 import { overrideLightricks } from './overrides/lightricks';
 
@@ -304,6 +307,8 @@ const overridesByType: Record<string, OverrideFn> = {
   netlify: overrideNetlify,
   workday: overrideWorkday,
   pinecone: overridePinecone,
+  qdrant: overrideQdrant,
+  cohere: overrideCohere,
   langchain: overrideLangchain,
   lightricks: overrideLightricks,
 };
@@ -314,8 +319,29 @@ const overridesByType: Record<string, OverrideFn> = {
  */
 export function applyNodeDefinitionOverrides(def: UnifiedNodeDefinition, schema: NodeSchema): UnifiedNodeDefinition {
   const fn = overridesByType[schema.type];
-  if (!fn) return def;
-  return fn(def, schema);
+  const next = applyGeneratedOperationContracts(fn ? fn(def, schema) : def);
+  const credentialFields = next.credentialSchema?.credentialFields ?? [];
+  const requirements = next.credentialSchema?.requirements ?? [];
+
+  if (credentialFields.length === 0 || requirements.length > 0) {
+    return next;
+  }
+
+  return {
+    ...next,
+    credentialSchema: {
+      ...next.credentialSchema,
+      requirements: [
+        {
+          provider: next.type,
+          category: 'api_key',
+          required: true,
+          description: `${next.label} credentials`,
+          scopes: [],
+        },
+      ],
+    },
+  };
 }
 
 /** Node types that replace `execute` (or related) via registry overrides — used for compliance matrix / audits. */

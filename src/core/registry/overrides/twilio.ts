@@ -14,6 +14,18 @@ export function overrideTwilio(
 ): UnifiedNodeDefinition {
   return {
     ...def,
+    credentialSchema: {
+      requirements: [{
+        provider: 'twilio',
+        category: 'api_key',
+        required: true,
+        description: 'Twilio Account SID + Auth Token',
+        credentialTypeId: 'twilio_api_key',
+        authType: 'basic_auth' as const,
+        label: 'Twilio API Key',
+      }],
+      credentialFields: ['accountSid', 'authToken'],
+    },
     execute: async (context) => {
       return await executeViaLegacyExecutor({ context, schema });
     },

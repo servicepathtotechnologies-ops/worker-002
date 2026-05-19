@@ -46,7 +46,21 @@ export interface NodeInputField {
    * Semantic role for universal runtime AI behavior and UX grouping.
    * This is metadata only (no node-specific execution branching).
    */
-  role?: 'title_like' | 'long_body' | 'short_summary' | 'raw_json' | 'id' | 'config' | 'prompt' | 'recipient' | 'content';
+  role?:
+    | 'title_like'
+    | 'long_body'
+    | 'short_summary'
+    | 'raw_json'
+    | 'id'
+    | 'config'
+    | 'prompt'
+    | 'recipient'
+    | 'content'
+    | 'operation_selector'
+    | 'type_selector'
+    | 'field_name'
+    | 'value'
+    | 'query';
   /** Canonical ownership class used across planner/question/runtime phases. */
   ownership?: FieldOwnershipClass;
   /**
@@ -130,6 +144,12 @@ export interface NodeCredentialRequirement {
   required: boolean;
   description: string;
   scopes?: string[]; // OAuth scopes if applicable
+  requiredScopes?: string[];
+  credentialTypeId?: string; // Primary exact credential type, e.g. openai_api_key
+  credentialTypeIds?: string[]; // Accepted credential types for multi-auth providers
+  authType?: 'oauth2' | 'api_key' | 'bearer_token' | 'basic_auth' | 'query_auth' | 'custom_header';
+  label?: string;
+  testable?: boolean;
 }
 
 export interface NodeCredentialSchema {
@@ -142,6 +162,18 @@ export interface NodeMigration {
   fromVersion: string;
   toVersion: string;
   migrate: (oldConfig: Record<string, any>) => Record<string, any>;
+}
+
+export interface NodeOperationContract {
+  resource?: string;
+  operation: string;
+  label: string;
+  requiredFields: string[];
+  optionalFields: string[];
+  credentialProviders: string[];
+  outputFields: string[];
+  legacyAliases?: string[];
+  status: 'implemented' | 'unsupported' | 'deprecated';
 }
 
 export interface NodeExecutionContext {
@@ -188,7 +220,7 @@ export interface UnifiedNodeDefinition {
   // ============================================
   type: string; // Canonical node type (e.g., 'google_sheets', 'ai_chat_model')
   label: string; // Human-readable label
-  category: 'trigger' | 'data' | 'ai' | 'communication' | 'logic' | 'transformation' | 'utility';
+  category: string;
   description: string;
   icon?: string;
   version: string; // Schema version (e.g., '1.0.0')
@@ -198,6 +230,7 @@ export interface UnifiedNodeDefinition {
   // ============================================
   inputSchema: NodeInputSchema; // ALL possible input fields
   outputSchema: NodeOutputSchema; // ALL possible output ports
+  operationContracts?: NodeOperationContract[]; // Operation-level UI/execution contract
   credentialSchema?: NodeCredentialSchema; // Credential requirements
   
   // ============================================

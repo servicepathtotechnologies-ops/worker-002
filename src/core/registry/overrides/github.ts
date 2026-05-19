@@ -14,6 +14,18 @@ export function overrideGithub(
 ): UnifiedNodeDefinition {
   return {
     ...def,
+    credentialSchema: {
+      requirements: [{
+        provider: 'github',
+        category: 'api_key',
+        required: true,
+        description: 'GitHub Personal Access Token',
+        credentialTypeId: 'github_pat',
+        authType: 'bearer_token' as const,
+        label: 'GitHub Personal Token',
+      }],
+      credentialFields: ['token', 'apiKey'],
+    },
     execute: async (context) => {
       return await executeViaLegacyExecutor({ context, schema });
     },

@@ -1655,10 +1655,12 @@ async function runAttachInputsPipeline(req: Request, res: Response): Promise<{ s
           const lower = e.toLowerCase();
           return (
             lower.includes('cycle') ||
-            lower.includes('multiple trigger') ||
-            lower.includes('no trigger') ||
-            lower.includes('missing trigger')
+            lower.includes('multiple trigger')
           );
+        });
+        const triggerReadinessErrors = (validationResult.errors || []).filter((e: string) => {
+          const lower = e.toLowerCase();
+          return lower.includes('no trigger') || lower.includes('missing trigger');
         });
         const orphanErrors = (validationResult.errors || []).filter((e: string) =>
           e.toLowerCase().includes('orphan')
@@ -1681,6 +1683,14 @@ async function runAttachInputsPipeline(req: Request, res: Response): Promise<{ s
         if (orphanErrors.length > 0) {
           console.warn('[AttachInputs] âš ï¸ Orphaned nodes detected (non-blocking, will be auto-removed):', orphanErrors);
           contractDiagnostics.validationValid = true; // treat as valid for save purposes
+        }
+
+        // Metadata/config updates (for example field ownership changes from the properties panel)
+        // must remain editable while users are still assembling or testing a workflow. A missing
+        // trigger is an execution-readiness issue, not a config-save blocker for attach-inputs.
+        if (triggerReadinessErrors.length > 0) {
+          console.warn('[AttachInputs] Trigger readiness errors detected (non-blocking for config save):', triggerReadinessErrors);
+          contractDiagnostics.validationValid = true;
         }
       }
     } catch (contractError) {

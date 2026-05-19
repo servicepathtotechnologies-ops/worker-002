@@ -449,9 +449,31 @@ export class CredentialResolver {
 
       // 🆕 CONNECTIONS TABLE: Check the unified connections table written by the
       // Connections page (oauthService.callback → connectionService.createConnection).
-      // This is the primary storage for all OAuth connections created via the UI.
-      // credentialTypeId follows the pattern "<provider>_oauth2" (e.g. "google_oauth2"),
-      // so a prefix match against vaultKey covers all providers universally.
+      // Covers api_key, webhook, token, and basic_auth credentials saved via /connections.
+      if (credentialType === 'api_key' || credentialType === 'webhook' || credentialType === 'token' || credentialType === 'basic_auth') {
+        try {
+          const { data: connRows, error: connError } = await this.db
+            .from('connections')
+            .select('id, credential_type_id')
+            .eq('user_id', effectiveUserId)
+            .eq('status', 'active');
+
+          if (!connError && Array.isArray(connRows) && connRows.length > 0) {
+            const match = connRows.some(
+              (row: any) =>
+                typeof row.credential_type_id === 'string' &&
+                row.credential_type_id.toLowerCase().startsWith(vaultKey.toLowerCase()),
+            );
+            if (match) {
+              console.log(`[CredentialResolution] ✅ ${vaultKey} ${credentialType} found in connections table`);
+              return true;
+            }
+          }
+        } catch {
+          // Non-fatal — fall through to remaining checks
+        }
+      }
+
       if (credentialType === 'oauth') {
         try {
           const { data: connRows, error: connError } = await this.db

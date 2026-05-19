@@ -2315,7 +2315,7 @@ export const NODE_QUESTION_CONFIGS: Record<string, NodeQuestionConfig> = {
         options: [
           { value: 'create', label: 'Create Tweet' },
           { value: 'delete', label: 'Delete Tweet' },
-          { value: 'searchRecent', label: 'Search Recent Tweets' },
+          { value: 'recent', label: 'Search Recent Tweets' },
         ],
         default: 'create',
       },
@@ -2356,7 +2356,7 @@ export const NODE_QUESTION_CONFIGS: Record<string, NodeQuestionConfig> = {
         dependsOn: {
           field: 'operation',
           operator: 'equals',
-          value: 'searchRecent',
+          value: 'recent',
         },
       },
     ],

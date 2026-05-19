@@ -1581,7 +1581,13 @@ async function startServer() {
   // Start server
   const PORT = config.port;
   console.log(`[ServerStartup] 🔵 About to bind to port ${PORT}...`);
-  
+
+  // Print effective OAuth callback URLs so operators can verify provider app settings.
+  try {
+    const { logOAuthRedirectUris } = require('./credentials-system/credential-type-registry');
+    logOAuthRedirectUris();
+  } catch { /* non-fatal */ }
+
   try {
     console.log(`[ServerStartup] 🔵 Calling app.listen(${PORT}, '0.0.0.0')...`);
     const server = app.listen(PORT, '0.0.0.0', () => {

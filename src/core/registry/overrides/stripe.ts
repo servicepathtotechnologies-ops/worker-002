@@ -14,6 +14,18 @@ export function overrideStripe(
 ): UnifiedNodeDefinition {
   return {
     ...def,
+    credentialSchema: {
+      requirements: [{
+        provider: 'stripe',
+        category: 'api_key',
+        required: true,
+        description: 'Stripe Secret Key',
+        credentialTypeId: 'stripe_api_key',
+        authType: 'bearer_token' as const,
+        label: 'Stripe API Key',
+      }],
+      credentialFields: ['secretKey', 'apiKey'],
+    },
     execute: async (context) => {
       return await executeViaLegacyExecutor({ context, schema });
     },

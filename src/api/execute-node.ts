@@ -25,7 +25,7 @@ interface WorkflowNode {
  */
 export default async function executeNodeHandler(req: Request, res: Response) {
   const db = getDbClient();
-  const { runId, nodeId, nodeType, config: nodeConfig, input, workflowId } = req.body;
+  const { runId, nodeId, nodeType, config: nodeConfig, input, workflowId, connectionRefs } = req.body;
 
   console.log(`[DEBUG] Execute node request:`, {
     runId,
@@ -135,9 +135,17 @@ export default async function executeNodeHandler(req: Request, res: Response) {
       } else {
         console.log(`[DEBUG] No provided config, using saved workflow config`);
       }
+      // Merge connectionRefs from request (user's live selection in Properties Panel)
+      if (connectionRefs && typeof connectionRefs === 'object' && Object.keys(connectionRefs).length > 0) {
+        (node.data as any).connectionRefs = { ...((node.data as any).connectionRefs || {}), ...connectionRefs };
+        console.log(`[DEBUG] Merged connectionRefs from request:`, Object.keys(connectionRefs));
+      }
     } else if (nodeConfig) {
       // Node doesn't exist in workflow, use provided config
       node.data.config = nodeConfig;
+      if (connectionRefs && typeof connectionRefs === 'object' && Object.keys(connectionRefs).length > 0) {
+        (node.data as any).connectionRefs = connectionRefs;
+      }
     }
 
     // ✅ PRE-EXECUTION: Validate this node's config before running

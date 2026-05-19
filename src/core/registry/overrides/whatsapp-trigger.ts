@@ -28,7 +28,7 @@ export function overrideWhatsappTrigger(
     ...def,
     type: 'whatsapp_trigger',
     label: 'WhatsApp Trigger',
-    category: 'trigger',
+    category: 'triggers',
     description: 'Trigger workflows on WhatsApp events: message received, delivered, read, conversation created',
     icon: '💬',
     version: '1.0.0',

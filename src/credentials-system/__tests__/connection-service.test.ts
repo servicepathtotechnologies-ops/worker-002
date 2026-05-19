@@ -40,12 +40,13 @@ describe('ConnectionService', () => {
     expect(result[0].status).toBe('expired');
   });
 
-  it('rejects duplicate live connections for the same credential type', async () => {
-    queryAsService.mockResolvedValueOnce([
+  it('allows multiple live connections for the same credential type', async () => {
+    queryAsService
+      .mockResolvedValueOnce([
       {
-        id: 'conn-1',
+        id: 'conn-2',
         user_id: 'user-1',
-        name: 'Google OAuth',
+        name: 'Another Google',
         credential_type_id: 'google_oauth2',
         provider: 'google',
         auth_type: 'oauth2',
@@ -57,26 +58,26 @@ describe('ConnectionService', () => {
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       },
-    ]);
+    ])
+      .mockResolvedValueOnce([]);
 
-    await expect(new ConnectionService().createConnection({
+    const result = await new ConnectionService().createConnection({
       userId: 'user-1',
       name: 'Another Google',
       credentialTypeId: 'google_oauth2',
-      credentials: {},
-    })).rejects.toMatchObject({
-      statusCode: 409,
-      code: 'CONNECTION_ALREADY_EXISTS',
+      credentials: { accessToken: 'token-2' },
     });
+
+    expect(result.id).toBe('conn-2');
+    expect(queryAsService.mock.calls[0][0]).toContain('INSERT INTO connections');
   });
 
-  it('soft revokes deleted connections', async () => {
+  it('deletes connections and cleans up legacy provider credentials', async () => {
     queryAsService.mockResolvedValue([]);
 
     await new ConnectionService().deleteConnection('user-1', 'conn-1');
 
-    expect(queryAsService.mock.calls[0][0]).toContain("SET status = 'revoked'");
-    expect(queryAsService.mock.calls[0][0]).toContain('revoked_at');
+    expect(queryAsService.mock.calls[1][0]).toContain('DELETE FROM connections');
   });
 
   it('rejects revoked connections during credential lookup', async () => {

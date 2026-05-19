@@ -28,33 +28,19 @@ function oauthCallbackHtml(input: {
   message?: string;
   returnTo?: string | null;
 }) {
+  // Redirect the popup to a same-origin frontend relay page.
+  // This bypasses COOP issues (e.g. marketplace.zoom.us) that permanently sever
+  // window.opener after the popup passes through a cross-origin provider domain.
+  // The relay page uses BroadcastChannel (unaffected by COOP) to deliver the result.
   const origin = frontendOrigin(input.returnTo);
-  const fallbackPath = input.type === 'oauth-success' && input.connectionId
-    ? `/connections?connected=${encodeURIComponent(input.connectionId)}`
-    : '/connections?oauth=error';
-  const payload = JSON.stringify({
-    type: input.type,
-    connectionId: input.connectionId,
-    message: input.message,
-  });
-  const targetOrigin = JSON.stringify(origin);
-  const fallbackUrl = JSON.stringify(`${origin}${fallbackPath}`);
+  const relay = new URL(`${origin}/auth/oauth-relay`);
+  relay.searchParams.set('type', input.type);
+  if (input.connectionId) relay.searchParams.set('connectionId', input.connectionId);
+  if (input.message) relay.searchParams.set('message', input.message);
+  if (input.returnTo) relay.searchParams.set('returnTo', input.returnTo);
+  const relayHref = relay.toString();
 
-  return `<!DOCTYPE html><html><head><title>${input.type === 'oauth-success' ? 'Connected' : 'Connection failed'}</title></head><body>
-<script>
-  try {
-    if (window.opener) {
-      window.opener.postMessage(${payload}, ${targetOrigin});
-      window.close();
-    } else {
-      window.location.href = ${fallbackUrl};
-    }
-  } catch(e) {
-    window.location.href = ${fallbackUrl};
-  }
-</script>
-<p>${input.type === 'oauth-success' ? 'Connected successfully.' : 'Connection failed.'} You can close this window.</p>
-</body></html>`;
+  return `<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url=${relayHref}"><title>Connecting...</title></head><body><script>window.location.replace(${JSON.stringify(relayHref)})</script><p>Completing connection...</p></body></html>`;
 }
 
 export async function credentialTypesHandler(_req: Request, res: Response) {
@@ -111,6 +97,26 @@ export async function oauthStartHandler(req: Request, res: Response) {
   res.json(result);
 }
 
+function mapOAuthErrorToUserMessage(rawMessage: string): string {
+  const lower = rawMessage.toLowerCase();
+  if (lower.includes('invalid_grant') || lower.includes('invalid authorization code')) {
+    return 'The authorization code was rejected by the provider. This can happen if the connection window was open too long, or if the redirect URI is not registered in your app settings. Please try connecting again.';
+  }
+  if (lower.includes('invalid_client') || lower.includes('client authentication failed')) {
+    return 'The app credentials were rejected. Check that your OAuth Client ID and Secret are correctly configured.';
+  }
+  if (lower.includes('redirect_uri_mismatch') || lower.includes('redirect uri')) {
+    return 'The redirect URI does not match. Ensure the callback URL registered in your provider app settings matches the backend exactly.';
+  }
+  if (lower.includes('invalid or expired oauth state')) {
+    return 'The connection session expired. Please start the connection flow again.';
+  }
+  if (lower.includes('access_denied') || lower.includes('user denied')) {
+    return 'Access was denied. Please approve the requested permissions in the provider login window.';
+  }
+  return 'The connection could not be completed. Please try again.';
+}
+
 export async function oauthCallbackHandler(req: Request, res: Response) {
   const code = String(req.query.code || req.body.code || '');
   const state = String(req.query.state || req.body.state || '');
@@ -119,7 +125,9 @@ export async function oauthCallbackHandler(req: Request, res: Response) {
     result = await oauthService.callback({ code, state });
   } catch (error) {
     if (req.method === 'GET') {
-      const message = error instanceof Error ? error.message : 'OAuth connection failed';
+      const raw = error instanceof Error ? error.message : 'OAuth connection failed';
+      console.error('[OAuthCallback] callback error:', raw, error);
+      const message = mapOAuthErrorToUserMessage(raw);
       return res.status(200).send(oauthCallbackHtml({ type: 'oauth-error', message }));
     }
     throw error;

@@ -33,6 +33,7 @@ export interface NodeInputSchema {
       supportsBuildtimeAI?: boolean;
     };
     role?: string;
+    ownership?: 'credential' | 'structural' | 'value';
     essentialForExecution?: boolean;
   };
 }
@@ -74,6 +75,19 @@ export interface NodeDefinition {
   credentialSchema?: {
     // High-level providers needed (e.g., ['google', 'slack'])
     providers?: string[];
+    requirements?: Array<{
+      provider: string;
+      category: string;
+      required: boolean;
+      description?: string;
+      scopes?: string[];
+      requiredScopes?: string[];
+      credentialTypeId?: string;
+      credentialTypeIds?: string[];
+      authType?: string;
+      label?: string;
+      testable?: boolean;
+    }>;
     // Config fields that are credentials (API keys, tokens) when applicable
     required?: string[];
     optional?: string[];
@@ -135,6 +149,7 @@ export class NodeDefinitionRegistry {
         exampleValue: v.exampleValue,
         fillMode: v.fillMode,
         role: v.role,
+        ownership: v.ownership,
         essentialForExecution: v.essentialForExecution,
         ...(v.ui ? { ui: v.ui } : {}),
       };
@@ -176,6 +191,7 @@ export class NodeDefinitionRegistry {
               )
             ),
             required: def.credentialSchema.requirements.filter((r) => r.required).map((r) => r.category),
+            requirements: def.credentialSchema.requirements,
             credentialFields: def.credentialSchema.credentialFields,
           }
         : undefined,

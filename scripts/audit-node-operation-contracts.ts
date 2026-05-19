@@ -12,6 +12,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import * as ts from 'typescript';
 
 type AnyRecord = Record<string, any>;
 
@@ -27,6 +28,12 @@ type OperationAuditRow = {
   requiredInputsMissingFromSchema: string[];
   operationOptions: string[];
   resourceOptions: string[];
+  backendSupportedOperations: string[];
+  backendOnlyOperations: string[];
+  schemaOnlyOperations: string[];
+  frontendFallbackOperationOptions: string[];
+  frontendOnlyOperations: string[];
+  backendOnlyFrontendOperations: string[];
   operationCoverage: Array<{
     operation: string;
     status: 'explicit' | 'generic_operation_dispatch' | 'registry_direct_unproven' | 'missing_legacy_case' | 'not_referenced';
@@ -48,6 +55,20 @@ type AuditSummary = {
   nodesWithOperations: number;
   operationCount: number;
   frontendStaticFallbackCount: number;
+  frontendVisibleFallbackCount: number;
+  frontendStaticNodeCount: number;
+  frontendOnlyStaticNodeCount: number;
+  backendOnlyNodeCount: number;
+  frontendOperationMismatchCount: number;
+  schemaOperationMismatchCount: number;
+  frontendOnlyStaticNodes: string[];
+  backendOnlyNodes: string[];
+};
+
+type FrontendStaticNode = {
+  type: string;
+  operationOptions: string[];
+  resourceOptions: string[];
 };
 
 function readText(absPath: string): string {
@@ -89,16 +110,119 @@ function fieldOptions(field: AnyRecord | undefined): string[] {
   return uniq(values);
 }
 
-function extractFrontendStaticNodeTypes(repoRoot: string): Set<string> {
+function stringValue(node: ts.Node | undefined): string | null {
+  if (!node) return null;
+  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
+  return null;
+}
+
+function propertyName(name: ts.PropertyName): string | null {
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) return name.text;
+  return null;
+}
+
+function objectProperty(object: ts.ObjectLiteralExpression, key: string): ts.Expression | undefined {
+  for (const prop of object.properties) {
+    if (!ts.isPropertyAssignment(prop)) continue;
+    const name = propertyName(prop.name);
+    if (name === key) return prop.initializer;
+  }
+  return undefined;
+}
+
+function optionValuesFromArray(initializer: ts.Expression | undefined): string[] {
+  if (!initializer || !ts.isArrayLiteralExpression(initializer)) return [];
+  const values: string[] = [];
+  for (const item of initializer.elements) {
+    const raw = stringValue(item);
+    if (raw) {
+      values.push(raw);
+      continue;
+    }
+    if (ts.isObjectLiteralExpression(item)) {
+      const value = stringValue(objectProperty(item, 'value'));
+      if (value) values.push(value);
+    }
+  }
+  return uniq(values);
+}
+
+function extractFrontendStaticNodes(repoRoot: string): Map<string, FrontendStaticNode> {
   const frontendNodeTypesPath = path.join(repoRoot, 'ctrl_checks', 'src', 'components', 'workflow', 'nodeTypes.ts');
   const source = readText(frontendNodeTypesPath);
-  const types = new Set<string>();
-  const re = /\{\s*type:\s*['"]([a-zA-Z0-9_]+)['"]\s*,\s*label:/g;
+  const file = ts.createSourceFile(frontendNodeTypesPath, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const nodes = new Map<string, FrontendStaticNode>();
+
+  function visit(node: ts.Node) {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === 'NODE_TYPES' &&
+      node.initializer &&
+      ts.isArrayLiteralExpression(node.initializer)
+    ) {
+      for (const item of node.initializer.elements) {
+        if (!ts.isObjectLiteralExpression(item)) continue;
+        const type = stringValue(objectProperty(item, 'type'));
+        if (!type) continue;
+        const entry: FrontendStaticNode = { type, operationOptions: [], resourceOptions: [] };
+        const configFields = objectProperty(item, 'configFields');
+        if (configFields && ts.isArrayLiteralExpression(configFields)) {
+          for (const field of configFields.elements) {
+            if (!ts.isObjectLiteralExpression(field)) continue;
+            const key = stringValue(objectProperty(field, 'key'));
+            if (key !== 'operation' && key !== 'resource') continue;
+            const values = optionValuesFromArray(objectProperty(field, 'options'));
+            if (key === 'operation') entry.operationOptions = values;
+            if (key === 'resource') entry.resourceOptions = values;
+          }
+        }
+        nodes.set(type, entry);
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+
+  visit(file);
+  return nodes;
+}
+
+function extractBackendSupportedFallbackTypes(repoRoot: string): Set<string> | null {
+  const allowlistPath = path.join(repoRoot, 'ctrl_checks', 'src', 'components', 'workflow', 'backendSupportedNodeTypes.ts');
+  const source = readText(allowlistPath);
+  if (!source) return null;
+  const values = Array.from(source.matchAll(/'([a-zA-Z0-9_]+)'/g)).map((m) => m[1]);
+  return values.length > 0 ? new Set(values) : null;
+}
+
+function extractBackendSupportedFallbackOperations(repoRoot: string): Record<string, string[]> {
+  const operationsPath = path.join(repoRoot, 'ctrl_checks', 'src', 'components', 'workflow', 'backendSupportedNodeOperations.ts');
+  const source = readText(operationsPath);
+  const result: Record<string, string[]> = {};
+  const re = /^\s*([a-zA-Z0-9_]+):\s*\[([^\]]*)\]/gm;
   let m: RegExpExecArray | null;
   while ((m = re.exec(source))) {
-    types.add(m[1]);
+    result[m[1]] = uniq(Array.from(m[2].matchAll(/'([^']+)'/g)).map((match) => match[1]));
   }
-  return types;
+  return result;
+}
+
+function extractSupportedOperationsFromBlock(block: string): string[] {
+  const supported = new Set<string>();
+  const regexes = [
+    /Supported:\s*([^.`"\n]+)/g,
+    /Supported operations?:\s*([^.`"\n]+)/gi,
+  ];
+  for (const re of regexes) {
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(block))) {
+      for (const part of m[1].split(',')) {
+        const op = part.trim().replace(/['"`]/g, '');
+        if (/^[a-zA-Z0-9_]+$/.test(op)) supported.add(op);
+      }
+    }
+  }
+  return uniq(Array.from(supported));
 }
 
 function hasSchemaDrivenFrontend(repoRoot: string): boolean {
@@ -203,9 +327,18 @@ function main() {
 
   const executeWorkflowSource = readText(path.join(workerRoot, 'src', 'api', 'execute-workflow.ts'));
   const legacyCases = extractTopLevelLegacyCases(executeWorkflowSource);
-  const frontendStaticTypes = extractFrontendStaticNodeTypes(repoRoot);
+  const frontendStaticNodes = extractFrontendStaticNodes(repoRoot);
+  const frontendStaticTypes = new Set(frontendStaticNodes.keys());
+  const fallbackAllowlist = extractBackendSupportedFallbackTypes(repoRoot);
+  const fallbackOperationAllowlist = extractBackendSupportedFallbackOperations(repoRoot);
+  const frontendVisibleStaticTypes = new Set(
+    Array.from(frontendStaticTypes).filter((type) => !fallbackAllowlist || fallbackAllowlist.has(type)),
+  );
   const schemaDrivenFrontend = hasSchemaDrivenFrontend(repoRoot);
   const nodeTypes = unifiedNodeRegistry.getAllTypes().sort() as string[];
+  const backendTypeSet = new Set(nodeTypes);
+  const frontendOnlyStaticNodes = uniq(Array.from(frontendVisibleStaticTypes).filter((type) => !backendTypeSet.has(type)));
+  const backendOnlyNodes = uniq(nodeTypes.filter((type) => !frontendVisibleStaticTypes.has(type)));
 
   const rows: OperationAuditRow[] = [];
 
@@ -237,6 +370,21 @@ function main() {
     const requiredInputsMissingFromSchema = requiredInputs.filter((f: string) => !inputSchema[f]);
     const credentialProviders = uniq((def.credentialSchema?.requirements || []).map((r: AnyRecord) => String(r.provider || '')));
     const credentialFields = uniq(def.credentialSchema?.credentialFields || []);
+    const backendSupportedOperations = extractSupportedOperationsFromBlock(legacy.block);
+    const effectiveBackendOperations = backendSupportedOperations.length > 0 ? backendSupportedOperations : operationOptions;
+    const backendOnlyOperations = uniq(effectiveBackendOperations.filter((op) => !operationOptions.includes(op)));
+    const schemaOnlyOperations = uniq(
+      backendSupportedOperations.length > 0
+        ? operationOptions.filter((op) => !backendSupportedOperations.includes(op))
+        : [],
+    );
+    const frontendFallback = frontendStaticNodes.get(nodeType);
+    const hasFallbackOperationAllowlist = Object.prototype.hasOwnProperty.call(fallbackOperationAllowlist, nodeType);
+    const frontendFallbackOperationOptions = frontendFallback && frontendVisibleStaticTypes.has(nodeType)
+      ? (hasFallbackOperationAllowlist ? fallbackOperationAllowlist[nodeType] : [])
+      : [];
+    const frontendOnlyOperations = uniq(frontendFallbackOperationOptions.filter((op) => !effectiveBackendOperations.includes(op)));
+    const backendOnlyFrontendOperations = uniq(effectiveBackendOperations.filter((op) => !frontendFallbackOperationOptions.includes(op)));
 
     const operationCoverage = operationCoverageForNode({
       executionKind,
@@ -280,6 +428,24 @@ function main() {
         message: 'Credential fields are listed but no credential provider requirement is declared.',
       });
     }
+    if (backendOnlyOperations.length > 0) {
+      issues.push({
+        severity: 'critical',
+        message: `Backend supports operations not exposed by registry schema: ${backendOnlyOperations.join(', ')}`,
+      });
+    }
+    if (schemaOnlyOperations.length > 0) {
+      issues.push({
+        severity: 'critical',
+        message: `Registry schema exposes operations not listed by backend executor: ${schemaOnlyOperations.join(', ')}`,
+      });
+    }
+    if (frontendFallbackOperationOptions.length > 0 && frontendOnlyOperations.length > 0) {
+      issues.push({
+        severity: 'critical',
+        message: `Static fallback exposes operations not supported by backend: ${frontendOnlyOperations.join(', ')}`,
+      });
+    }
     if (!frontendStaticTypes.has(nodeType) && !schemaDrivenFrontend) {
       issues.push({
         severity: 'warning',
@@ -299,6 +465,12 @@ function main() {
       requiredInputsMissingFromSchema,
       operationOptions,
       resourceOptions,
+      backendSupportedOperations,
+      backendOnlyOperations,
+      schemaOnlyOperations,
+      frontendFallbackOperationOptions,
+      frontendOnlyOperations,
+      backendOnlyFrontendOperations,
       operationCoverage,
       credentialProviders,
       credentialFields,
@@ -318,6 +490,14 @@ function main() {
     nodesWithOperations: rows.filter((r) => r.operationOptions.length > 0).length,
     operationCount: rows.reduce((sum, r) => sum + r.operationOptions.length, 0),
     frontendStaticFallbackCount: rows.filter((r) => r.uiStaticFallbackPresent).length,
+    frontendVisibleFallbackCount: frontendVisibleStaticTypes.size,
+    frontendStaticNodeCount: frontendStaticTypes.size,
+    frontendOnlyStaticNodeCount: frontendOnlyStaticNodes.length,
+    backendOnlyNodeCount: backendOnlyNodes.length,
+    frontendOperationMismatchCount: rows.filter((r) => r.frontendOnlyOperations.length > 0).length,
+    schemaOperationMismatchCount: rows.filter((r) => r.backendOnlyOperations.length > 0 || r.schemaOnlyOperations.length > 0).length,
+    frontendOnlyStaticNodes,
+    backendOnlyNodes,
   };
 
   fs.mkdirSync(outDir, { recursive: true });
@@ -332,6 +512,12 @@ function main() {
     'hasLegacyCase',
     'operationCount',
     'operations',
+    'backendSupportedOperations',
+    'backendOnlyOperations',
+    'schemaOnlyOperations',
+    'frontendFallbackOperations',
+    'frontendOnlyOperations',
+    'backendOnlyFrontendOperations',
     'resourceCount',
     'resources',
     'credentialProviders',
@@ -352,6 +538,12 @@ function main() {
     r.hasLegacyCase,
     r.operationOptions.length,
     r.operationOptions,
+    r.backendSupportedOperations,
+    r.backendOnlyOperations,
+    r.schemaOnlyOperations,
+    r.frontendFallbackOperationOptions,
+    r.frontendOnlyOperations,
+    r.backendOnlyFrontendOperations,
     r.resourceOptions.length,
     r.resourceOptions,
     r.credentialProviders,
@@ -378,7 +570,17 @@ function main() {
   md += `- Declared operation values: ${summary.operationCount}\n`;
   md += `- Registry-direct execute nodes: ${summary.registryDirectCount}\n`;
   md += `- Legacy-delegate execute nodes: ${summary.legacyDelegateCount}\n`;
-  md += `- Legacy frontend fallback nodes: ${summary.frontendStaticFallbackCount}\n\n`;
+  md += `- Legacy frontend fallback nodes matching backend: ${summary.frontendStaticFallbackCount}\n`;
+  md += `- Visible static fallback nodes after allowlist: ${summary.frontendVisibleFallbackCount}\n`;
+  md += `- Static frontend nodes with no backend registry definition: ${summary.frontendOnlyStaticNodeCount}\n`;
+  md += `- Backend nodes missing from static fallback: ${summary.backendOnlyNodeCount}\n\n`;
+  md += `- Nodes with schema/backend operation mismatch: ${summary.schemaOperationMismatchCount}\n`;
+  md += `- Nodes with frontend/backend operation mismatch: ${summary.frontendOperationMismatchCount}\n\n`;
+
+  if (summary.frontendOnlyStaticNodeCount > 0) {
+    md += '## Static Frontend-Only Nodes\n\n';
+    md += `${summary.frontendOnlyStaticNodes.join(', ')}\n\n`;
+  }
 
   md += '## Critical Nodes\n\n';
   if (criticalRows.length === 0) {
@@ -405,6 +607,12 @@ function main() {
 
   console.log(JSON.stringify(summary, null, 2));
   if (criticalRows.length > 0 && process.argv.includes('--fail-on-critical')) {
+    process.exit(1);
+  }
+  if (summary.frontendOnlyStaticNodeCount > 0 && process.argv.includes('--fail-on-ui-mismatch')) {
+    process.exit(1);
+  }
+  if ((summary.frontendOperationMismatchCount > 0 || summary.schemaOperationMismatchCount > 0) && process.argv.includes('--fail-on-ui-mismatch')) {
     process.exit(1);
   }
 }

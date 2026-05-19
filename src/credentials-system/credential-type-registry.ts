@@ -349,6 +349,37 @@ export const credentialTypeDefinitions: CredentialTypeDefinition[] = addCredenti
     maskFields: ['access_token', 'refresh_token', 'authed_user'],
   },
 
+  // ─── Zoom ───────────────────────────────────────────────────────────────────
+  {
+    id: 'zoom_oauth2',
+    provider: 'zoom',
+    displayName: 'Zoom OAuth2',
+    authType: 'oauth2',
+    inputFields: [],
+    form: { layout: 'stacked', oauthButtonLabel: 'Connect Zoom', testLabel: 'Test Zoom' },
+    validation: { requiredFields: [] },
+    injection: [{ target: 'header', name: 'Authorization', valueTemplate: 'Bearer {{access_token}}' }],
+    testRequest: {
+      method: 'GET',
+      url: 'https://api.zoom.us/v2/users/me',
+      successStatus: [200],
+    },
+    oauth2: {
+      provider: 'zoom',
+      authorizationUrl: 'https://zoom.us/oauth/authorize',
+      tokenUrl: 'https://zoom.us/oauth/token',
+      clientIdEnv: 'ZOOM_CLIENT_ID',
+      clientSecretEnv: 'ZOOM_CLIENT_SECRET',
+      redirectUriEnv: 'GENERIC_ZOOM_OAUTH_REDIRECT_URI',
+      defaultScopes: ['meeting:write:meeting', 'meeting:read:meeting', 'meeting:read:list_meetings', 'user:read:user'],
+      scopeSeparator: ' ',
+      pkce: false,
+      tokenAuthMethod: 'basic',
+    },
+    refresh: { enabled: true, refreshBeforeSeconds: 300 },
+    maskFields: ['access_token', 'refresh_token'],
+  },
+
   // ─── GitHub ─────────────────────────────────────────────────────────────────
   {
     id: 'github_oauth2',
@@ -542,7 +573,7 @@ export const credentialTypeDefinitions: CredentialTypeDefinition[] = addCredenti
         type: 'password',
         required: true,
         secret: true,
-        helpText: 'Create at id.atlassian.com/manage-profile/security/api-tokens',
+        helpText: 'Create your API token at https://id.atlassian.com/manage-profile/security/api-tokens — click "Create API token", give it a name, then copy the token value.',
       },
       {
         name: 'domain',
@@ -761,6 +792,30 @@ export const credentialTypeDefinitions: CredentialTypeDefinition[] = addCredenti
     maskFields: ['access_token', 'refresh_token'],
   },
 
+  // ─── HubSpot Private App ────────────────────────────────────────────────────
+  {
+    id: 'hubspot_private_app',
+    provider: 'hubspot',
+    displayName: 'HubSpot Private App Token',
+    authType: 'bearer_token' as const,
+    inputFields: [
+      {
+        name: 'token',
+        label: 'Private App Access Token',
+        type: 'password' as const,
+        required: true,
+        secret: true,
+        helpText: 'Create in HubSpot → Settings → Integrations → Private Apps → Create a private app',
+      },
+    ],
+    form: { layout: 'stacked' as const, submitLabel: 'Save Token', testLabel: 'Test HubSpot' },
+    validation: { requiredFields: ['token'] },
+    injection: [{ target: 'header' as const, name: 'Authorization', valueTemplate: 'Bearer {{token}}' }],
+    testRequest: { method: 'GET' as const, url: 'https://api.hubapi.com/crm/v3/objects/contacts?limit=1', successStatus: [200] },
+    refresh: { enabled: false, refreshBeforeSeconds: 0 },
+    maskFields: ['token'],
+  },
+
   // ─── Salesforce ─────────────────────────────────────────────────────────────
   {
     id: 'salesforce_oauth2',
@@ -858,9 +913,47 @@ export const credentialTypeDefinitions: CredentialTypeDefinition[] = addCredenti
         type: 'password',
         required: true,
         secret: true,
-        helpText: 'Create at airtable.com/create/tokens',
+        helpText: 'Create at https://airtable.com/create/tokens',
       },
     ],
+    guide: {
+      summary:
+        'Create an Airtable Personal Access Token with record and schema access, then paste it here to connect Airtable to CtrlChecks.',
+      prerequisites: [
+        'You are signed in to the Airtable account that owns or can access the base.',
+        'You have permission to create Personal Access Tokens for that account.',
+        'You know which workspace or base CtrlChecks should access.',
+      ],
+      steps: [
+        'Open https://airtable.com/create/tokens directly in your browser.',
+        'Click Create new token.',
+        'Name it something clear, for example CtrlChecks Airtable.',
+        'Add scopes: data.records:read, data.records:write, and schema.bases:read.',
+        'Under Access, select the exact workspace or base you want CtrlChecks to use.',
+        'Click Create token, copy the token once, then paste it into this Personal Access Token field.',
+      ],
+      fieldGuides: {
+        token: {
+          label: 'Personal Access Token',
+          description: 'Bearer token used by CtrlChecks to call the Airtable API.',
+          whereToFind:
+            'Create it at https://airtable.com/create/tokens. The token is shown only once after creation and usually starts with pat.',
+          example: 'pat...',
+          notes: [
+            'Required scopes: data.records:read, data.records:write, schema.bases:read.',
+            'Grant access only to the workspace or base needed for this workflow.',
+            'If you lose the token, create a new one; Airtable will not show the full token again.',
+          ],
+        },
+      },
+      securityNotes: [
+        'Do not share the token outside CtrlChecks.',
+        'Use the smallest Airtable base/workspace access that the workflow needs.',
+        'Rotate the token immediately if it is exposed in screenshots, logs, or chat.',
+        'CtrlChecks stores the token encrypted and masks it in the UI.',
+      ],
+      docsUrl: 'https://airtable.com/create/tokens',
+    },
     form: { layout: 'stacked', submitLabel: 'Save Token', testLabel: 'Test Airtable' },
     validation: { requiredFields: ['token'] },
     injection: [{ target: 'header', name: 'Authorization', valueTemplate: 'Bearer {{token}}' }],
@@ -1316,6 +1409,29 @@ export const credentialTypeDefinitions: CredentialTypeDefinition[] = addCredenti
       headers: { 'anthropic-version': '2023-06-01' },
       successStatus: [200],
     },
+    refresh: { enabled: false, refreshBeforeSeconds: 0 },
+    maskFields: ['apiKey'],
+  },
+
+  // ─── Google Gemini ────────────────────────────────────────────────────────────
+  {
+    id: 'gemini_api_key',
+    provider: 'gemini',
+    displayName: 'Gemini API Key',
+    authType: 'api_key',
+    inputFields: [
+      {
+        name: 'apiKey',
+        label: 'API Key',
+        type: 'password',
+        required: true,
+        secret: true,
+        helpText: 'Get your API key from aistudio.google.com/apikey',
+      },
+    ],
+    form: { layout: 'stacked', submitLabel: 'Save API Key', testLabel: 'Test Gemini' },
+    validation: { requiredFields: ['apiKey'] },
+    injection: [],
     refresh: { enabled: false, refreshBeforeSeconds: 0 },
     maskFields: ['apiKey'],
   },
@@ -1816,12 +1932,12 @@ export const credentialTypeDefinitions: CredentialTypeDefinition[] = addCredenti
     provider: 'linkedin',
     displayName: 'LinkedIn OAuth2',
     authType: 'oauth2',
-    requiredScopes: ['w_member_social', 'r_emailaddress', 'r_liteprofile'],
+    requiredScopes: ['openid', 'profile', 'email', 'w_member_social'],
     inputFields: [],
     form: { layout: 'stacked', oauthButtonLabel: 'Connect LinkedIn', testLabel: 'Test LinkedIn' },
     validation: { requiredFields: [] },
     injection: [{ target: 'header', name: 'Authorization', valueTemplate: 'Bearer {{access_token}}' }],
-    testRequest: { method: 'GET', url: 'https://api.linkedin.com/v2/me', successStatus: [200] },
+    testRequest: { method: 'GET', url: 'https://api.linkedin.com/v2/userinfo', successStatus: [200] },
     oauth2: {
       provider: 'linkedin',
       authorizationUrl: 'https://www.linkedin.com/oauth/v2/authorization',
@@ -1829,7 +1945,7 @@ export const credentialTypeDefinitions: CredentialTypeDefinition[] = addCredenti
       clientIdEnv: 'LINKEDIN_CLIENT_ID',
       clientSecretEnv: 'LINKEDIN_CLIENT_SECRET',
       redirectUriEnv: 'GENERIC_LINKEDIN_OAUTH_REDIRECT_URI',
-      defaultScopes: ['w_member_social', 'r_emailaddress', 'r_liteprofile'],
+      defaultScopes: ['openid', 'profile', 'email', 'w_member_social'],
       scopeSeparator: ' ',
       pkce: false,
     },
@@ -1841,7 +1957,10 @@ export const credentialTypeDefinitions: CredentialTypeDefinition[] = addCredenti
     provider: 'youtube',
     displayName: 'YouTube OAuth2',
     authType: 'oauth2',
-    requiredScopes: ['https://www.googleapis.com/auth/youtube.upload', 'https://www.googleapis.com/auth/youtube.force-ssl'],
+    requiredScopes: [
+      'https://www.googleapis.com/auth/youtube.force-ssl',
+      'https://www.googleapis.com/auth/youtube.upload',
+    ],
     inputFields: [],
     form: { layout: 'stacked', oauthButtonLabel: 'Connect YouTube', testLabel: 'Test YouTube' },
     validation: { requiredFields: [] },
@@ -1854,7 +1973,10 @@ export const credentialTypeDefinitions: CredentialTypeDefinition[] = addCredenti
       clientIdEnv: 'GOOGLE_OAUTH_CLIENT_ID',
       clientSecretEnv: 'GOOGLE_OAUTH_CLIENT_SECRET',
       redirectUriEnv: 'GENERIC_YOUTUBE_OAUTH_REDIRECT_URI',
-      defaultScopes: ['https://www.googleapis.com/auth/youtube.upload', 'https://www.googleapis.com/auth/youtube.force-ssl'],
+      defaultScopes: [
+        'https://www.googleapis.com/auth/youtube.force-ssl',
+        'https://www.googleapis.com/auth/youtube.upload',
+      ],
       scopeSeparator: ' ',
       accessType: 'offline',
       prompt: 'consent',
@@ -2058,6 +2180,66 @@ export const credentialTypeDefinitions: CredentialTypeDefinition[] = addCredenti
     refresh: { enabled: false, refreshBeforeSeconds: 0 },
     maskFields: ['password', 'privateKey'],
   },
+
+  // ─── Vercel ───────────────────────────────────────────────────────────────────
+  {
+    id: 'vercel_api_key',
+    provider: 'vercel',
+    displayName: 'Vercel API Token',
+    authType: 'bearer_token',
+    inputFields: [
+      {
+        name: 'token',
+        label: 'API Token',
+        type: 'password',
+        required: true,
+        secret: true,
+        helpText: 'Create at vercel.com/account/tokens',
+      },
+    ],
+    form: { layout: 'stacked', submitLabel: 'Save Token', testLabel: 'Test Vercel' },
+    validation: { requiredFields: ['token'] },
+    injection: [{ target: 'header', name: 'Authorization', valueTemplate: 'Bearer {{token}}' }],
+    refresh: { enabled: false, refreshBeforeSeconds: 0 },
+    maskFields: ['token'],
+  },
+
+  // ─── Jenkins ─────────────────────────────────────────────────────────────────
+  {
+    id: 'jenkins_api_token',
+    provider: 'jenkins',
+    displayName: 'Jenkins API Token',
+    authType: 'basic_auth',
+    inputFields: [
+      { name: 'url',      label: 'Jenkins URL', type: 'text',     required: true,  placeholder: 'https://jenkins.example.com' },
+      { name: 'username', label: 'Username',     type: 'text',     required: true  },
+      { name: 'apiToken', label: 'API Token',    type: 'password', required: true,  secret: true, helpText: 'Manage Jenkins → Users → Configure → API Token' },
+    ],
+    form: { layout: 'stacked', submitLabel: 'Save Credentials', testLabel: 'Test Jenkins' },
+    validation: { requiredFields: ['url', 'username', 'apiToken'] },
+    injection: [],
+    refresh: { enabled: false, refreshBeforeSeconds: 0 },
+    maskFields: ['apiToken'],
+  },
+
+  // ─── Odoo ─────────────────────────────────────────────────────────────────────
+  {
+    id: 'odoo_credentials',
+    provider: 'odoo',
+    displayName: 'Odoo Credentials',
+    authType: 'basic_auth',
+    inputFields: [
+      { name: 'url',      label: 'Odoo URL',  type: 'text',     required: true,  placeholder: 'https://mycompany.odoo.com' },
+      { name: 'database', label: 'Database',  type: 'text',     required: true  },
+      { name: 'username', label: 'Username',  type: 'text',     required: true  },
+      { name: 'password', label: 'Password',  type: 'password', required: true,  secret: true },
+    ],
+    form: { layout: 'stacked', submitLabel: 'Save Credentials', testLabel: 'Test Odoo' },
+    validation: { requiredFields: ['url', 'database', 'username', 'password'] },
+    injection: [],
+    refresh: { enabled: false, refreshBeforeSeconds: 0 },
+    maskFields: ['password'],
+  },
 ]);
 
 export function getCredentialType(id: string): CredentialTypeDefinition | undefined {
@@ -2067,4 +2249,14 @@ export function getCredentialType(id: string): CredentialTypeDefinition | undefi
 export function getRedirectUri(definition: CredentialTypeDefinition): string {
   const envValue = definition.oauth2?.redirectUriEnv ? process.env[definition.oauth2.redirectUriEnv] : undefined;
   return envValue || `${providerBase}/api/credential-connections/oauth/callback`;
+}
+
+/** Prints the effective callback URL for every OAuth2 provider at server startup.
+ *  Operators should verify each URL matches the app's registered redirect URL exactly. */
+export function logOAuthRedirectUris(): void {
+  const oauthProviders = credentialTypeDefinitions.filter((d) => d.oauth2?.redirectUriEnv);
+  console.info('[OAuth] Effective callback URLs — must be registered in each provider\'s app settings:');
+  for (const d of oauthProviders) {
+    console.info(`  [OAuth]   ${d.provider} (${d.id}): ${getRedirectUri(d)}`);
+  }
 }

@@ -263,21 +263,18 @@ export const NODE_CREDENTIAL_REQUIREMENTS: Map<string, NodeCredentialRequirement
   ['discord', {
     nodeType: 'discord',
     requiredCredentials: [{
-      fieldName: 'webhookUrl',
-      displayName: 'Discord Webhook URL',
-      type: 'url',
-      description: 'Discord webhook URL for sending messages',
-      placeholder: 'https://discord.com/api/webhooks/...',
-      helpText: 'Create a webhook in Discord: Server Settings → Integrations → Webhooks',
+      fieldName: 'botToken',
+      displayName: 'Discord Bot Token',
+      type: 'password',
+      description: 'Discord bot token for sending messages via the Bot API',
+      placeholder: 'Bot token from discord.com/developers/applications',
+      helpText: 'Get your bot token from discord.com/developers/applications → Your App → Bot → Token',
       validation: (value: string) => {
-        if (!value) return 'Webhook URL is required';
-        if (!value.startsWith('https://discord.com/api/webhooks/')) {
-          return 'Invalid Discord webhook URL format';
-        }
+        if (!value) return 'Bot token is required';
         return true;
       },
     }],
-    authMethod: 'webhook',
+    authMethod: 'token',
   }],
 
   // ============================================

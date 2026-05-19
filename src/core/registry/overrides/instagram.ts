@@ -64,7 +64,7 @@ export function overrideInstagram(
     ...def,
     type: 'instagram',
     label: 'Instagram',
-    category: 'communication',
+    category: 'social_media',
     description: 'Publish content, send DMs, moderate comments via Instagram Graph API',
     icon: '📸',
     version: '1.0.0',

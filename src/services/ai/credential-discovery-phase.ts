@@ -318,13 +318,16 @@ export class CredentialDiscoveryPhase {
             }
           }
           // Fallback: SMTP and similar — multi-field or no credentialFieldName on connector
+          // Only trigger on fields that look like actual credential fields, not config fields
+          // like baseId, tableName, operation, etc.
+          const CREDENTIAL_FIELD_RE = /key|token|secret|password|api|auth|credential|bearer|access/i;
           if (!satisfied && schema && schema.configSchema) {
             const config = node.data?.config || {};
             const requiredFields = schema.configSchema.required || [];
             for (const field of requiredFields) {
               const fieldValue = config[field];
-              if (fieldValue && typeof fieldValue === 'string' && 
-                  fieldValue.trim() !== '' && 
+              if (fieldValue && typeof fieldValue === 'string' &&
+                  fieldValue.trim() !== '' &&
                   !fieldValue.includes('{{ENV.') &&
                   !fieldValue.includes('{{$json')) {
                 if (field.toLowerCase().includes('webhook') || field.toLowerCase().includes('url')) {
@@ -333,7 +336,7 @@ export class CredentialDiscoveryPhase {
                     console.log(`[CredentialDiscovery] ✅ Credential field "${field}" found in node config for ${nodeId}`);
                     break;
                   }
-                } else {
+                } else if (CREDENTIAL_FIELD_RE.test(field)) {
                   satisfied = true;
                   console.log(`[CredentialDiscovery] ✅ Credential field "${field}" found in node config for ${nodeId}`);
                   break;

@@ -42,6 +42,7 @@ import {
 import type { FieldHelpCategory } from '../utils/field-help-metadata';
 import { classifyFieldOwnership, isCredentialOwnership } from '../utils/field-ownership';
 import type { Workflow } from '../types/ai-types';
+import { enrichCredentialSchema } from '../../credentials-system/credential-requirements';
 
 export interface BuildValueContext {
   upstreamFields: Array<{
@@ -420,9 +421,10 @@ export class UnifiedNodeRegistry implements INodeRegistry {
         // ✅ Universal fix: overrides can change inputSchema ownership/helpCategory.
         // Credential schema must be derived from the final (post-override) inputSchema,
         // otherwise the UI may ask twice (config + credential) for the same field.
+        const extractedCredentialSchema = this.extractCredentialSchema(schema, overridden.inputSchema);
         const definition: UnifiedNodeDefinition = {
           ...overridden,
-          credentialSchema: this.extractCredentialSchema(schema, overridden.inputSchema),
+          credentialSchema: this.mergeCredentialSchema(overridden.credentialSchema, extractedCredentialSchema),
         };
         this.register(definition);
       } catch (error: any) {
@@ -441,9 +443,10 @@ export class UnifiedNodeRegistry implements INodeRegistry {
           console.log(`[UnifiedNodeRegistry] 🔄 Attempting explicit registration of log_output...`);
           const baseDefinition = this.convertNodeLibrarySchemaToUnified(logOutputSchema);
           const overridden = applyNodeDefinitionOverrides(baseDefinition, logOutputSchema);
+          const extractedCredentialSchema = this.extractCredentialSchema(logOutputSchema, overridden.inputSchema);
           const definition: UnifiedNodeDefinition = {
             ...overridden,
-            credentialSchema: this.extractCredentialSchema(logOutputSchema, overridden.inputSchema),
+            credentialSchema: this.mergeCredentialSchema(overridden.credentialSchema, extractedCredentialSchema),
           };
           this.register(definition);
           console.log(`[UnifiedNodeRegistry] ✅ Successfully registered log_output after retry`);
@@ -867,319 +870,218 @@ export class UnifiedNodeRegistry implements INodeRegistry {
    * 
    * This is a UNIVERSAL fix that applies to ALL nodes automatically.
    */
-  private normalizeNodeCategory(schema: any): 'trigger' | 'data' | 'ai' | 'communication' | 'logic' | 'transformation' | 'utility' {
+  private normalizeNodeCategory(schema: any): string {
     const originalCategory = (schema.category || '').toLowerCase();
     const nodeType = (schema.type || '').toLowerCase();
     const keywords = (schema.keywords || []).map((k: string) => k.toLowerCase());
     const tags = keywords;
-    
-    // ✅ STEP 1: Map ALL schema categories to unified categories
-    // This is a COMPREHENSIVE mapping covering ALL node types in the system
-    const categoryMap: Record<string, 'trigger' | 'data' | 'ai' | 'communication' | 'logic' | 'transformation' | 'utility'> = {
-      // Triggers
-      'trigger': 'trigger',
-      'triggers': 'trigger', // Plural form
-      
-      // Data sources
-      'data': 'data',
-      'database': 'data', // Database nodes are data sources
-      'file': 'data', // File nodes (read operations) are data sources
-      'google': 'data', // Google services (sheets, docs, etc.) are data sources
-      'productivity': 'data', // Productivity tools (notion, airtable) are data sources
-      
-      // AI nodes
+
+    // Direct pass-through for categories that already match frontend IDs
+    const directMap: Record<string, ReturnType<typeof this.normalizeNodeCategory>> = {
+      'triggers': 'triggers',
+      'trigger': 'triggers',
       'ai': 'ai',
-      
-      // Communication/Output nodes
-      'communication': 'communication',
-      'social': 'communication', // ✅ FIX: Social media nodes are communication (output)
-      'output': 'communication', // Output nodes are communication
-      'microsoft': 'communication', // Microsoft communication services (outlook, teams)
-      
-      // Logic/Flow nodes
       'logic': 'logic',
-      'flow': 'logic', // Flow control nodes are logic
-      'workflow': 'logic', // Workflow nodes are logic
-      
-      // Transformation nodes
-      'transformation': 'transformation',
-      
-      // Utility nodes
+      'flow': 'logic',
+      'workflow': 'logic',
+      'data': 'data',
+      'transformation': 'data',
+      'database': 'database',
+      'google': 'google',
+      'productivity': 'productivity',
+      'crm': 'crm',
+      'devops': 'devops',
+      'ecommerce': 'ecommerce',
+      'payment': 'payment',
+      'cms': 'cms',
+      'file': 'storage',
+      'storage': 'storage',
+      'http_api': 'http_api',
+      'integration': 'http_api',
+      'auth': 'authentication',
+      'authentication': 'authentication',
+      'social': 'social_media',
+      'social_media': 'social_media',
+      'output': 'output',
+      'communication': 'output',
+      'microsoft': 'output',
+      'analytics': 'analytics',
+      'queue': 'utility',
+      'cache': 'utility',
+      'actions': 'utility',
       'utility': 'utility',
-      'http_api': 'utility', // HTTP API nodes are utility
-      'queue': 'utility', // Queue nodes are utility
-      'cache': 'utility', // Cache nodes are utility
-      'auth': 'utility', // Auth nodes are utility
-      'actions': 'utility', // Action nodes are utility
-      
-      // CRM nodes (can be data source or output based on operation)
-      'crm': 'data', // CRM nodes default to data (output when writing)
-      
-      // E-commerce nodes (typically data/output)
-      'ecommerce': 'data', // E-commerce nodes are data (output when writing)
-      
-      // DevOps nodes (typically data sources)
-      'devops': 'data', // DevOps nodes (github, gitlab, jira) are data sources
     };
-    
-    // ✅ STEP 1.5: Check node type patterns EARLY (before categoryMap) to catch communication nodes
-    // This ensures google_gmail is categorized as 'communication' (output), not 'data' (source)
-    const communicationTypes = ['gmail', 'email', 'slack', 'discord', 'telegram', 'teams', 'whatsapp', 'message', 'notify', 'twilio'];
-    const isCommunication = communicationTypes.some(comm => nodeType.includes(comm));
+
+    if (originalCategory && directMap[originalCategory] !== undefined) {
+      // Special case: google_gmail and similar google communication nodes belong to 'output'
+      const socialMediaTypes = ['linkedin', 'twitter', 'instagram', 'facebook', 'youtube'];
+      const isSocialMedia = socialMediaTypes.some(s => nodeType.includes(s));
+      const communicationTypes = ['gmail', 'email', 'slack', 'discord', 'telegram', 'teams', 'whatsapp', 'twilio', 'sendgrid', 'mailgun'];
+      const isCommunication = communicationTypes.some(c => nodeType.includes(c));
+      if (isSocialMedia) return 'social_media';
+      if (isCommunication && (originalCategory === 'google' || originalCategory === 'microsoft')) return 'output';
+      return directMap[originalCategory];
+    }
+
+    // Node-type pattern matching for nodes with ambiguous/missing categories
     const socialMediaTypes = ['linkedin', 'twitter', 'instagram', 'facebook', 'youtube'];
-    const isSocialMedia = socialMediaTypes.some(social => nodeType.includes(social));
-    
-    // ✅ CRITICAL FIX: Check communication BEFORE categoryMap
-    // This ensures google_gmail is categorized as 'communication' (output), not 'data' (source)
-    // Check tags first (from schema)
-    const hasOutputTags = tags.some((tag: string) => 
-      ['output', 'send', 'notify', 'post', 'publish', 'share', 'email', 'message', 'slack', 'discord', 'telegram', 'linkedin', 'twitter', 'instagram', 'facebook', 'social', 'communication'].includes(tag)
-    );
-    if (isSocialMedia || isCommunication || hasOutputTags || originalCategory === 'social' || originalCategory === 'communication' || originalCategory === 'output' || originalCategory === 'microsoft') {
-      return 'communication';
-    }
-    
-    // If category maps directly, use it (BUT skip if it's a communication node - already handled above)
-    if (originalCategory && categoryMap[originalCategory]) {
-      return categoryMap[originalCategory];
-    }
-    
-    // ✅ STEP 2: Check operations in config schema to determine category
-    // Operations like post, send, create, write indicate output/communication
-    const configSchema = schema.configSchema;
-    let allOperations: string[] = [];
-    
-    // Try to extract operations from config schema
-    if (configSchema?.optional?.operation) {
-      const operationField = configSchema.optional.operation as any;
-      const operationExamples = operationField?.examples || [];
-      const operationDefault = operationField?.default || '';
-      allOperations = [
-        operationDefault,
-        ...(Array.isArray(operationExamples) ? operationExamples : []),
-      ].filter(Boolean).map((op: any) => String(op).toLowerCase());
-    } else if (configSchema?.required?.includes('operation')) {
-      // Operation is required but we don't have examples - check node type for hints
-      allOperations = [];
-    }
-    
-    // Output/communication operations
-    const outputOperations = ['post', 'send', 'create', 'write', 'update', 'publish', 'share', 'notify', 'email', 'message'];
-    const hasOutputOperation = allOperations.some((op: string) => 
-      outputOperations.some(outputOp => op.includes(outputOp))
-    );
-    
-    // Read operations indicate data source
-    const readOperations = ['read', 'get', 'fetch', 'list', 'retrieve', 'query', 'search'];
-    const hasReadOperation = allOperations.some((op: string) => 
-      readOperations.some(readOp => op.includes(readOp))
-    );
-    
-    // ✅ STEP 3: Check tags for category hints (hasOutputTags already defined above)
-    const hasDataSourceTags = tags.some((tag: string) => 
-      ['read', 'fetch', 'get', 'list', 'query', 'data_source', 'input'].includes(tag)
-    );
-    const hasTransformationTags = tags.some((tag: string) => 
-      ['transform', 'process', 'analyze', 'summarize', 'filter', 'sort', 'aggregate'].includes(tag)
-    );
-    const hasAITags = tags.some((tag: string) => 
-      ['ai', 'llm', 'chat', 'agent', 'model', 'gpt', 'claude', 'ollama'].includes(tag)
-    );
-    const hasLogicTags = tags.some((tag: string) => 
-      ['if', 'else', 'switch', 'conditional', 'branch', 'merge', 'loop'].includes(tag)
-    );
-    
-    // ✅ STEP 4: Check node type patterns (COMPREHENSIVE coverage)
-    // (isCommunication and isSocialMedia already defined above)
-    
-    // CRM nodes
-    const crmTypes = ['hubspot', 'salesforce', 'zoho', 'pipedrive', 'crm', 'freshdesk', 'intercom', 'mailchimp', 'activecampaign', 'sap', 'dynamics', 'odoo'];
-    const isCrm = crmTypes.some(crm => nodeType.includes(crm));
-    
-    // Database nodes
-    const databaseTypes = ['database', 'postgres', 'mysql', 'mongodb', 'db', 'sql', 'redis', 'bigquery'];
-    const isDatabase = databaseTypes.some(db => nodeType.includes(db));
-    
-    // AI nodes
-    const aiTypes = ['ai_chat_model', 'ai_agent', 'ai_service', 'ollama', 'openai', 'gpt', 'claude', 'gemini', 'text_summarizer', 'sentiment_analyzer', 'chat_model', 'memory', 'tool'];
-    const isAI = aiTypes.some(ai => nodeType.includes(ai));
-    
-    // Logic/Flow nodes
-    const logicTypes = ['if_else', 'switch', 'merge', 'try_catch', 'retry', 'parallel', 'loop', 'filter', 'noop', 'split_in_batches', 'stop_and_error'];
-    const isLogic = logicTypes.some(logic => nodeType.includes(logic));
-    
-    // Trigger nodes
+    const isSocialMedia = socialMediaTypes.some(s => nodeType.includes(s));
+    if (isSocialMedia || originalCategory === 'social') return 'social_media';
+
+    const communicationTypes = ['gmail', 'email', 'slack', 'discord', 'telegram', 'teams', 'whatsapp', 'twilio', 'sendgrid', 'mailgun', 'notify', 'message'];
+    const isCommunication = communicationTypes.some(c => nodeType.includes(c));
+    if (isCommunication) return 'output';
+
     const triggerTypes = ['trigger', 'schedule', 'webhook', 'interval', 'form_trigger', 'chat_trigger', 'error_trigger', 'workflow_trigger'];
-    const isTrigger = triggerTypes.some(trig => nodeType.includes(trig));
-    
-    // Google service nodes
+    if (triggerTypes.some(t => nodeType.includes(t))) return 'triggers';
+
+    const aiTypes = ['ai_chat_model', 'ai_agent', 'ai_service', 'ollama', 'openai', 'gpt', 'claude', 'gemini', 'text_summarizer', 'sentiment_analyzer', 'chat_model', 'memory'];
+    if (aiTypes.some(a => nodeType.includes(a)) || tags.some((t: string) => ['ai', 'llm', 'agent'].includes(t))) return 'ai';
+
+    const logicTypes = ['if_else', 'switch', 'merge', 'try_catch', 'retry', 'parallel', 'loop', 'noop', 'split_in_batches', 'stop_and_error'];
+    if (logicTypes.some(l => nodeType.includes(l)) || tags.some((t: string) => ['conditional', 'branch', 'merge'].includes(t))) return 'logic';
+
+    const databaseTypes = ['postgres', 'mysql', 'mongodb', 'bigquery', '_db', 'sql_'];
+    if (databaseTypes.some(d => nodeType.includes(d))) return 'database';
+
     const googleTypes = ['google_sheets', 'google_doc', 'google_drive', 'google_calendar', 'google_contacts', 'google_tasks', 'google_bigquery'];
-    const isGoogle = googleTypes.some(google => nodeType.includes(google));
-    
-    // File/storage nodes
-    const fileTypes = ['file', 's3', 'dropbox', 'onedrive', 'ftp', 'sftp', 'binary_file'];
-    const isFile = fileTypes.some(file => nodeType.includes(file));
-    
-    // HTTP/API nodes
-    const httpTypes = ['http_request', 'http_response', 'http_post', 'webhook_response', 'graphql'];
-    const isHttp = httpTypes.some(http => nodeType.includes(http));
-    
-    // Queue/Cache nodes
-    const queueCacheTypes = ['queue', 'cache'];
-    const isQueueCache = queueCacheTypes.some(qc => nodeType.includes(qc));
-    
-    // Auth nodes
-    const authTypes = ['oauth', 'api_key', 'auth'];
-    const isAuth = authTypes.some(auth => nodeType.includes(auth));
-    
-    // DevOps nodes
-    const devopsTypes = ['github', 'gitlab', 'bitbucket', 'jira', 'jenkins'];
-    const isDevops = devopsTypes.some(devops => nodeType.includes(devops));
-    
-    // E-commerce nodes
-    const ecommerceTypes = ['shopify', 'woocommerce', 'stripe', 'paypal'];
-    const isEcommerce = ecommerceTypes.some(ec => nodeType.includes(ec));
-    
-    // Productivity nodes
-    const productivityTypes = ['notion', 'airtable', 'clickup'];
-    const isProductivity = productivityTypes.some(prod => nodeType.includes(prod));
-    
-    // Data manipulation nodes
-    const dataManipulationTypes = ['json_parser', 'merge_data', 'edit_fields', 'math', 'html', 'xml', 'csv', 'rename_keys', 'aggregate', 'sort', 'limit', 'set', 'set_variable', 'text_formatter', 'date_time'];
-    const isDataManipulation = dataManipulationTypes.some(dm => nodeType.includes(dm));
-    
-    // Utility nodes
-    const utilityTypes = ['wait', 'delay', 'timeout', 'return', 'execute_workflow', 'code', 'function', 'function_item'];
-    const isUtility = utilityTypes.some(util => nodeType.includes(util));
-    
-    // ✅ STEP 5: Determine category based on ALL factors
-    // Priority: Trigger > AI > Logic > Communication/Social > Data Manipulation > CRM/Database/E-commerce > Google/Productivity > File/Storage > HTTP/API > Queue/Cache/Auth > Utility > Transformation > Data
-    
-    // Trigger nodes (highest priority)
-    if (isTrigger || originalCategory === 'trigger' || originalCategory === 'triggers') {
-      return 'trigger';
-    }
-    
-    // AI nodes
-    if (isAI || hasAITags || originalCategory === 'ai') {
-      return 'ai';
-    }
-    
-    // Logic/Flow nodes
-    if (isLogic || hasLogicTags || originalCategory === 'logic' || originalCategory === 'flow' || originalCategory === 'workflow') {
-      return 'logic';
-    }
-    
-    // Social media and communication nodes are always communication (output)
-    // (Already handled above, but keep for completeness)
-    if (isSocialMedia || isCommunication || hasOutputTags || originalCategory === 'social' || originalCategory === 'communication' || originalCategory === 'output' || originalCategory === 'microsoft') {
-      return 'communication';
-    }
-    
-    // Data manipulation nodes (transformations)
-    if (isDataManipulation || hasTransformationTags || originalCategory === 'transformation') {
-      return 'transformation';
-    }
-    
-    // CRM nodes: Check operations - if write/create, they're data (output), otherwise data (source)
-    if (isCrm || originalCategory === 'crm') {
-      // CRM nodes with write operations are outputs (they write to CRM)
-      if (hasOutputOperation && !hasReadOperation) {
-        return 'data'; // CRM write operations are data outputs
-      }
-      // Default: CRM can be both read and write, but typically write (output)
-      return 'data';
-    }
-    
-    // E-commerce nodes (typically data/output)
-    if (isEcommerce || originalCategory === 'ecommerce') {
-      // E-commerce nodes with write operations are outputs
-      if (hasOutputOperation && !hasReadOperation) {
-        return 'data'; // E-commerce write operations are data outputs
-      }
-      // Default: E-commerce nodes are data sources
-      return 'data';
-    }
-    
-    // Database nodes: Check operations
-    if (isDatabase || originalCategory === 'database') {
-      // Database write operations are outputs
-      if (hasOutputOperation && nodeType.includes('write')) {
-        return 'data'; // Database write is data output
-      }
-      // Database read operations are data sources
-      if (hasReadOperation && nodeType.includes('read')) {
-        return 'data'; // Database read is data source
-      }
-      // Default: database nodes are data sources
-      return 'data';
-    }
-    
-    // Google service nodes (data sources)
-    if (isGoogle || originalCategory === 'google') {
-      return 'data';
-    }
-    
-    // Productivity nodes (data sources)
-    if (isProductivity || originalCategory === 'productivity') {
-      return 'data';
-    }
-    
-    // File/storage nodes: Check operations
-    if (isFile || originalCategory === 'file') {
-      // File write operations are outputs
-      if (hasOutputOperation && (nodeType.includes('write') || nodeType.includes('upload'))) {
-        return 'data'; // File write is data output
-      }
-      // File read operations are data sources
-      if (hasReadOperation && nodeType.includes('read')) {
-        return 'data'; // File read is data source
-      }
-      // Default: file nodes are data sources
-      return 'data';
-    }
-    
-    // HTTP/API nodes (utility)
-    if (isHttp || originalCategory === 'http_api') {
-      return 'utility';
-    }
-    
-    // Queue/Cache nodes (utility)
-    if (isQueueCache || originalCategory === 'queue' || originalCategory === 'cache') {
-      return 'utility';
-    }
-    
-    // Auth nodes (utility)
-    if (isAuth || originalCategory === 'auth') {
-      return 'utility';
-    }
-    
-    // DevOps nodes (data sources)
-    if (isDevops || originalCategory === 'devops') {
-      return 'data';
-    }
-    
-    // Utility nodes
-    if (isUtility || originalCategory === 'utility' || originalCategory === 'actions') {
-      return 'utility';
-    }
-    
-    // ✅ STEP 6: Fallback based on operations
-    if (hasOutputOperation && !hasReadOperation) {
-      // Node only has output operations → communication
-      return 'communication';
-    }
-    
-    if (hasReadOperation && !hasOutputOperation) {
-      // Node only has read operations → data source
-      return 'data';
-    }
-    
-    // ✅ STEP 7: Default fallback
-    // If no clear category, default to transformation (safest default)
-    return 'transformation';
+    if (googleTypes.some(g => nodeType.includes(g))) return 'google';
+
+    const productivityTypes = ['notion', 'airtable', 'clickup', 'asana', 'monday', 'trello'];
+    if (productivityTypes.some(p => nodeType.includes(p))) return 'productivity';
+
+    const crmTypes = ['hubspot', 'salesforce', 'zoho', 'pipedrive', 'freshdesk', 'intercom', 'mailchimp', 'activecampaign', 'dynamics', 'odoo'];
+    if (crmTypes.some(c => nodeType.includes(c))) return 'crm';
+
+    const devopsTypes = ['github', 'gitlab', 'bitbucket', 'jira', 'jenkins', 'circleci', 'travis'];
+    if (devopsTypes.some(d => nodeType.includes(d))) return 'devops';
+
+    const ecommerceTypes = ['shopify', 'woocommerce'];
+    if (ecommerceTypes.some(e => nodeType.includes(e))) return 'ecommerce';
+
+    const paymentTypes = ['stripe', 'paypal', 'braintree', 'square', 'razorpay'];
+    if (paymentTypes.some(p => nodeType.includes(p))) return 'payment';
+
+    const cmsTypes = ['wordpress', 'contentful', 'strapi', 'ghost', 'drupal'];
+    if (cmsTypes.some(c => nodeType.includes(c))) return 'cms';
+
+    const storageTypes = ['s3', 'dropbox', 'onedrive', 'ftp', 'sftp', 'binary_file'];
+    if (storageTypes.some(s => nodeType.includes(s))) return 'storage';
+
+    const httpTypes = ['http_request', 'http_response', 'http_post', 'webhook_response', 'graphql', 'rest_api'];
+    if (httpTypes.some(h => nodeType.includes(h))) return 'http_api';
+
+    const authTypes = ['oauth', 'api_key_auth', 'jwt_auth'];
+    if (authTypes.some(a => nodeType.includes(a))) return 'authentication';
+
+    const dataTypes = ['json_parser', 'merge_data', 'edit_fields', 'math', 'html', 'xml', 'csv', 'rename_keys', 'aggregate', 'sort', 'limit', 'set_variable', 'text_formatter', 'date_time'];
+    if (dataTypes.some(d => nodeType.includes(d))) return 'data';
+
+    const utilityTypes = ['wait', 'delay', 'timeout', 'return', 'execute_workflow', 'code', 'function_item'];
+    if (utilityTypes.some(u => nodeType.includes(u))) return 'utility';
+
+    // Default fallback
+    return 'utility';
   }
   
+  /**
+   * Maps provider name → preferred credentialTypeId (and its display label).
+   * Used to enrich every node's credentialSchema.requirements with the right
+   * credentialTypeId so the Properties panel shows the correct connection picker.
+   */
+  private static readonly PROVIDER_CREDENTIAL_MAP: Record<string, { credentialTypeId: string; label: string; authType: 'oauth2' | 'api_key' | 'bearer_token' | 'basic_auth' }> = {
+    // AI
+    gemini:        { credentialTypeId: 'gemini_api_key',       label: 'Gemini API Key',          authType: 'api_key' },
+    openai:        { credentialTypeId: 'openai_api_key',       label: 'OpenAI API Key',           authType: 'bearer_token' },
+    anthropic:     { credentialTypeId: 'anthropic_api_key',    label: 'Anthropic API Key',        authType: 'api_key' },
+    pinecone:      { credentialTypeId: 'pinecone_api_key',     label: 'Pinecone API Key',         authType: 'api_key' },
+    qdrant:        { credentialTypeId: 'qdrant_api_key',       label: 'Qdrant API Key',           authType: 'api_key' },
+    cohere:        { credentialTypeId: 'cohere_api_key',       label: 'Cohere API Key',           authType: 'api_key' },
+    huggingface:   { credentialTypeId: 'huggingface_token',    label: 'Hugging Face Token',       authType: 'bearer_token' },
+    mistral:       { credentialTypeId: 'mistral_api_key',      label: 'Mistral API Key',          authType: 'api_key' },
+    // Google OAuth
+    google:        { credentialTypeId: 'google_oauth2',        label: 'Google OAuth2',            authType: 'oauth2' },
+    // Communication / messaging
+    slack:         { credentialTypeId: 'slack_oauth2',         label: 'Slack Connection',         authType: 'oauth2' },
+    discord:         { credentialTypeId: 'discord_bot_token',    label: 'Discord Bot Token',        authType: 'bearer_token' },
+    discord_webhook: { credentialTypeId: 'discord_webhook',      label: 'Discord Webhook URL',      authType: 'api_key' },
+    telegram:      { credentialTypeId: 'telegram_bot_token',   label: 'Telegram Bot Token',       authType: 'api_key' },
+    whatsapp:      { credentialTypeId: 'whatsapp_api_key',     label: 'WhatsApp API Key',         authType: 'bearer_token' },
+    twilio:        { credentialTypeId: 'twilio_api_key',       label: 'Twilio API Key',           authType: 'basic_auth' },
+    sendgrid:      { credentialTypeId: 'sendgrid_api_key',     label: 'SendGrid API Key',         authType: 'bearer_token' },
+    mailgun:       { credentialTypeId: 'mailgun_api',          label: 'Mailgun API Key',          authType: 'api_key' },
+    mailchimp:     { credentialTypeId: 'mailchimp_api_key',    label: 'Mailchimp API Key',        authType: 'api_key' },
+    activecampaign:{ credentialTypeId: 'activecampaign_api',   label: 'ActiveCampaign API Key',   authType: 'api_key' },
+    // Project management
+    notion:        { credentialTypeId: 'notion_api_key',       label: 'Notion API Key',           authType: 'bearer_token' },
+    airtable:      { credentialTypeId: 'airtable_api_key',     label: 'Airtable API Key',         authType: 'bearer_token' },
+    clickup:       { credentialTypeId: 'clickup_api_token',    label: 'ClickUp API Token',        authType: 'bearer_token' },
+    linear:        { credentialTypeId: 'linear_api_key',       label: 'Linear API Key',           authType: 'bearer_token' },
+    trello:        { credentialTypeId: 'trello_api_key',       label: 'Trello API Key',           authType: 'api_key' },
+    asana:         { credentialTypeId: 'asana_oauth2',         label: 'Asana Connection',         authType: 'oauth2' },
+    // CRM
+    hubspot:       { credentialTypeId: 'hubspot_oauth2',       label: 'HubSpot Connection',       authType: 'oauth2' },
+    salesforce:    { credentialTypeId: 'salesforce_oauth2',    label: 'Salesforce Connection',    authType: 'oauth2' },
+    pipedrive:     { credentialTypeId: 'pipedrive_api_key',    label: 'Pipedrive API Key',        authType: 'api_key' },
+    zoho:          { credentialTypeId: 'zoho_oauth2',          label: 'Zoho Connection',          authType: 'oauth2' },
+    freshdesk:     { credentialTypeId: 'freshdesk_api_key',    label: 'Freshdesk API Key',        authType: 'basic_auth' },
+    intercom:      { credentialTypeId: 'intercom_token',       label: 'Intercom Token',           authType: 'bearer_token' },
+    zendesk:       { credentialTypeId: 'zendesk_api',          label: 'Zendesk API Key',          authType: 'basic_auth' },
+    // Social media
+    twitter:       { credentialTypeId: 'twitter_oauth2',       label: 'Twitter Connection',       authType: 'oauth2' },
+    facebook:      { credentialTypeId: 'facebook_oauth2',      label: 'Facebook Connection',      authType: 'oauth2' },
+    instagram:     { credentialTypeId: 'instagram_oauth2',     label: 'Instagram Connection',     authType: 'oauth2' },
+    linkedin:      { credentialTypeId: 'linkedin_oauth2',      label: 'LinkedIn Connection',      authType: 'oauth2' },
+    youtube:       { credentialTypeId: 'youtube_oauth2',       label: 'YouTube Connection',       authType: 'oauth2' },
+    // DevOps
+    github:        { credentialTypeId: 'github_pat',           label: 'GitHub Personal Token',    authType: 'bearer_token' },
+    gitlab:        { credentialTypeId: 'gitlab_pat',           label: 'GitLab Personal Token',    authType: 'bearer_token' },
+    bitbucket:     { credentialTypeId: 'bitbucket_app_password', label: 'Bitbucket App Password', authType: 'basic_auth' },
+    jira:          { credentialTypeId: 'jira_api_key',         label: 'Jira API Key',             authType: 'basic_auth' },
+    jenkins:       { credentialTypeId: 'jenkins_api_token',    label: 'Jenkins API Token',        authType: 'basic_auth' },
+    vercel:        { credentialTypeId: 'vercel_api_key',       label: 'Vercel API Token',         authType: 'bearer_token' },
+    // Payment
+    stripe:        { credentialTypeId: 'stripe_api_key',       label: 'Stripe API Key',           authType: 'bearer_token' },
+    paypal:        { credentialTypeId: 'paypal_oauth2',        label: 'PayPal Connection',        authType: 'oauth2' },
+    shopify:       { credentialTypeId: 'shopify_api_key',      label: 'Shopify API Key',          authType: 'api_key' },
+    woocommerce:   { credentialTypeId: 'woocommerce_api_key',  label: 'WooCommerce API Key',      authType: 'basic_auth' },
+    typeform:      { credentialTypeId: 'typeform_token',       label: 'Typeform Token',           authType: 'bearer_token' },
+    calendly:      { credentialTypeId: 'calendly_api',         label: 'Calendly API Key',         authType: 'bearer_token' },
+    xero:          { credentialTypeId: 'xero_oauth2',          label: 'Xero Connection',          authType: 'oauth2' },
+    // Cloud / infra
+    aws:           { credentialTypeId: 'aws_s3_api_key',       label: 'AWS Credentials',          authType: 'api_key' },
+    cloudflare:    { credentialTypeId: 'cloudflare_api_key',   label: 'Cloudflare API Key',       authType: 'bearer_token' },
+    dropbox:       { credentialTypeId: 'dropbox_oauth2',       label: 'Dropbox Connection',       authType: 'oauth2' },
+    microsoft:     { credentialTypeId: 'microsoft_oauth2',     label: 'Microsoft Connection',     authType: 'oauth2' },
+    zoom:          { credentialTypeId: 'zoom_oauth2',          label: 'Zoom Connection',          authType: 'oauth2' },
+    // Databases
+    postgresql:    { credentialTypeId: 'postgresql_connection', label: 'PostgreSQL Connection',   authType: 'basic_auth' },
+    mysql:         { credentialTypeId: 'mysql_connection',     label: 'MySQL Connection',         authType: 'basic_auth' },
+    mongodb:       { credentialTypeId: 'mongodb_connection',   label: 'MongoDB Connection',       authType: 'basic_auth' },
+    redis:         { credentialTypeId: 'redis_connection',     label: 'Redis Connection',         authType: 'api_key' },
+    firebase:      { credentialTypeId: 'firebase_credentials', label: 'Firebase Credentials',     authType: 'api_key' },
+    sftp:          { credentialTypeId: 'sftp_credentials',     label: 'SFTP Credentials',         authType: 'basic_auth' },
+    ftp:           { credentialTypeId: 'ftp_credentials',      label: 'FTP Credentials',          authType: 'basic_auth' },
+    odoo:          { credentialTypeId: 'odoo_credentials',     label: 'Odoo Credentials',         authType: 'basic_auth' },
+  };
+
+  private enrichRequirementsWithCredentialType(
+    requirements: NodeCredentialRequirement[],
+    provider: string,
+  ): NodeCredentialRequirement[] {
+    const mapping = UnifiedNodeRegistry.PROVIDER_CREDENTIAL_MAP[provider.toLowerCase()];
+    if (!mapping) return requirements;
+    return requirements.map((req) => {
+      if (req.credentialTypeId) return req; // already set by override — don't overwrite
+      return {
+        ...req,
+        credentialTypeId: mapping.credentialTypeId,
+        authType: req.authType ?? mapping.authType,
+        label: req.label ?? mapping.label,
+      };
+    });
+  }
+
   /**
    * Extract credential schema from NodeLibrary schema + unified inputSchema help metadata
    */
@@ -1189,7 +1091,7 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     const provider =
       Array.isArray(schema.providers) && typeof schema.providers[0] === 'string'
         ? schema.providers[0]
-        : this.inferProviderFromNodeType(schema.type);
+        : this.inferProviderFromNodeType(schema.type) || schema.type;
 
     // Credential schema is ownership-driven only.
     for (const [fieldName, fd] of Object.entries(inputSchema)) {
@@ -1210,19 +1112,86 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     
     const credentialFields = Array.from(credentialFieldsSet);
     if (requirements.length === 0 && credentialFields.length === 0) {
+      // If schema.providers is explicitly declared and the first provider maps to a known
+      // credential type, synthesize a picker requirement so the UI shows the connection
+      // selector even when the node has no ownership-marked fields.
+      // Guard: only fires when providers[] is explicitly set — utility/trigger nodes that
+      // carry no providers array are unaffected.
+      if (Array.isArray(schema.providers) && schema.providers.length > 0) {
+        const firstProvider = String(schema.providers[0]).toLowerCase();
+        const mapping = UnifiedNodeRegistry.PROVIDER_CREDENTIAL_MAP[firstProvider];
+        if (mapping) {
+          const syntheticReq: NodeCredentialRequirement = {
+            provider: String(schema.providers[0]),
+            category: mapping.authType === 'oauth2' ? 'oauth' : 'api_key',
+            required: false,
+            description: `${mapping.label} connection`,
+            credentialTypeId: mapping.credentialTypeId,
+            authType: mapping.authType,
+            label: mapping.label,
+          };
+          return enrichCredentialSchema({ requirements: [syntheticReq], credentialFields: [] });
+        }
+      }
       return undefined;
     }
-    
-    return {
-      requirements,
+
+    if (requirements.length === 0 && credentialFields.length > 0 && provider) {
+      requirements.push({
+        provider,
+        category: 'api_key',
+        required: credentialFields.some((fieldName) => schema.configSchema?.required?.includes(fieldName)),
+        description: `${schema.label || schema.type} credentials`,
+      });
+    }
+
+    const enrichedRequirements = this.enrichRequirementsWithCredentialType(requirements, provider);
+
+    return enrichCredentialSchema({
+      requirements: enrichedRequirements,
       credentialFields,
-    };
+    });
+  }
+
+  private mergeCredentialSchema(
+    explicitSchema: NodeCredentialSchema | undefined,
+    extractedSchema: NodeCredentialSchema | undefined,
+  ): NodeCredentialSchema | undefined {
+    if (!explicitSchema) return enrichCredentialSchema(extractedSchema);
+    if (!extractedSchema) return enrichCredentialSchema(explicitSchema);
+
+    const requirements = [...(explicitSchema.requirements || [])];
+    // Two-tier dedup: first by credentialTypeId (most specific), then by provider (one picker per service)
+    const seenKeys = new Set(
+      requirements.map((req) => req.credentialTypeId || `${req.provider}:${req.category}:${req.required}`),
+    );
+    const seenProviders = new Set(
+      requirements.map((req) => req.provider).filter((p): p is string => Boolean(p)),
+    );
+    for (const req of extractedSchema.requirements || []) {
+      const key = req.credentialTypeId || `${req.provider}:${req.category}:${req.required}`;
+      if (seenKeys.has(key)) continue;
+      if (req.provider && seenProviders.has(req.provider)) continue;
+      seenKeys.add(key);
+      if (req.provider) seenProviders.add(req.provider);
+      requirements.push(req);
+    }
+
+    const credentialFields = Array.from(new Set([
+      ...(explicitSchema.credentialFields || []),
+      ...(extractedSchema.credentialFields || []),
+    ]));
+
+    return enrichCredentialSchema({ requirements, credentialFields });
   }
   
   private inferProviderFromNodeType(nodeType: string): string | undefined {
     const typeLower = nodeType.toLowerCase();
+    // Gemini uses an API key, not Google OAuth — must come before the generic 'google' check
+    if (typeLower === 'google_gemini') return 'gemini';
     if (typeLower.includes('google')) return 'google';
     if (typeLower.includes('slack')) return 'slack';
+    if (typeLower === 'discord_webhook') return 'discord_webhook';
     if (typeLower.includes('discord')) return 'discord';
     if (typeLower.includes('openai') || typeLower.includes('gpt')) return 'openai';
     if (typeLower.includes('anthropic') || typeLower.includes('claude')) return 'anthropic';
@@ -1274,7 +1243,8 @@ export class UnifiedNodeRegistry implements INodeRegistry {
 
     const nameLower = fieldName.toLowerCase();
     if (nameLower.includes('oauth')) return 'oauth';
-    if (nameLower.includes('api_key')) return 'api_key';
+    // Match both camelCase 'apiKey' (→ 'apikey') and snake_case 'api_key'
+    if (nameLower === 'apikey' || nameLower.includes('api_key')) return 'api_key';
     if (nameLower.includes('token')) return 'token';
     // NOTE: 'webhook' substring match intentionally removed — it was the Bug 1 root cause.
     // Legitimate webhook secrets are identified by helpCategory='webhook_secret' (in STRICT_CREDENTIAL_CATEGORIES)
@@ -1429,10 +1399,15 @@ export class UnifiedNodeRegistry implements INodeRegistry {
       requiredScopes = this.inferDefaultOAuthScopes(nodeType, provider);
     }
 
+    // Use the mapping if available; otherwise fall back to heuristic list
+    const mappedAuthType = provider ? UnifiedNodeRegistry.PROVIDER_CREDENTIAL_MAP[provider.toLowerCase()]?.authType : undefined;
     const oauthish =
-      reqs.some((r) => (r.category || '').toLowerCase() === 'oauth') ||
-      (provider &&
-        ['google', 'linkedin', 'twitter', 'facebook', 'instagram'].includes(provider));
+      mappedAuthType === 'oauth2' ||
+      reqs.some((r) => r.authType === 'oauth2' || (r.category || '').toLowerCase() === 'oauth') ||
+      (provider && !mappedAuthType &&
+        ['google', 'linkedin', 'twitter', 'facebook', 'instagram', 'microsoft', 'zoom',
+         'slack', 'github', 'gitlab', 'notion', 'hubspot', 'salesforce', 'zoho',
+         'paypal', 'shopify', 'xero', 'asana', 'mailchimp', 'dropbox', 'youtube'].includes(provider));
 
     const credentialType: 'OAuth' | 'API_KEY' | 'UNKNOWN' = oauthish ? 'OAuth' : 'API_KEY';
 
@@ -1469,7 +1444,7 @@ export class UnifiedNodeRegistry implements INodeRegistry {
       if (t.includes('calendar')) return ['https://www.googleapis.com/auth/calendar'];
       return [];
     }
-    if (t === 'linkedin') return ['r_liteprofile', 'r_emailaddress'];
+    if (t === 'linkedin') return ['openid', 'profile', 'email', 'w_member_social'];
     if (provider === 'vercel' || t === 'vercel') return ['deployments:read', 'deployments:write'];
     return [];
   }
@@ -1711,7 +1686,7 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     }
     const list: UnifiedNodeDefinition[] = [];
     for (const def of this.definitions.values()) {
-      if (def.category === 'communication') {
+      if (def.category === 'output' || def.category === 'social_media') {
         list.push(def);
       }
     }

@@ -14,6 +14,18 @@ export function overrideShopify(
 ): UnifiedNodeDefinition {
   return {
     ...def,
+    credentialSchema: {
+      requirements: [{
+        provider: 'shopify',
+        category: 'api_key',
+        required: true,
+        description: 'Shopify Admin API access token',
+        credentialTypeId: 'shopify_api_key',
+        authType: 'api_key' as const,
+        label: 'Shopify API Key',
+      }],
+      credentialFields: ['accessToken', 'apiKey'],
+    },
     execute: async (context) => {
       return await executeViaLegacyExecutor({ context, schema });
     },

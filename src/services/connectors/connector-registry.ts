@@ -232,7 +232,7 @@ export class ConnectorRegistry {
     // DISCORD CONNECTOR
     // ============================================
     this.register({
-      id: 'discord_webhook',
+      id: 'discord_bot_token',
       provider: 'discord',
       service: 'discord',
       capabilities: [
@@ -240,16 +240,34 @@ export class ConnectorRegistry {
         'discord.send',
         'message.send',
       ],
-      keywords: ['discord', 'discord message'],
+      keywords: ['discord', 'discord message', 'discord bot'],
+      credentialContract: {
+        provider: 'discord',
+        type: 'token',
+        vaultKey: 'discord',
+        displayName: 'Discord Bot Token',
+        required: true,
+        credentialFieldName: 'botToken',
+      },
+      nodeTypes: ['discord'],
+      description: 'Send messages to Discord channels via Discord Bot API',
+    });
+    // Discord webhook connector (separate node type)
+    this.register({
+      id: 'discord_webhook_connector',
+      provider: 'discord',
+      service: 'discord',
+      capabilities: ['notification.send', 'discord.send'],
+      keywords: ['discord webhook'],
       credentialContract: {
         provider: 'discord',
         type: 'webhook',
-        vaultKey: 'discord',
+        vaultKey: 'discord_webhook',
         displayName: 'Discord Webhook URL',
         required: true,
         credentialFieldName: 'webhookUrl',
       },
-      nodeTypes: ['discord', 'discord_webhook'],
+      nodeTypes: ['discord_webhook'],
       description: 'Send messages to Discord via webhook',
     });
 
@@ -352,7 +370,7 @@ export class ConnectorRegistry {
       credentialContract: {
         provider: 'linkedin',
         type: 'oauth',
-        scopes: ['r_liteprofile', 'r_emailaddress', 'w_member_social'],
+        scopes: ['openid', 'profile', 'email', 'w_member_social'],
         vaultKey: 'linkedin',
         displayName: 'LinkedIn OAuth',
         required: true,
@@ -561,6 +579,32 @@ export class ConnectorRegistry {
     });
 
     // ============================================
+    // ZOOM CONNECTOR
+    // ============================================
+    this.register({
+      id: 'zoom_oauth',
+      provider: 'zoom',
+      service: 'video_conferencing',
+      capabilities: [
+        'zoom.meeting',
+        'zoom.create',
+        'zoom.list',
+      ],
+      keywords: ['zoom', 'meeting', 'video call', 'video conferencing'],
+      credentialContract: {
+        provider: 'zoom',
+        type: 'oauth',
+        scopes: ['meeting:write', 'meeting:read', 'user:read'],
+        vaultKey: 'zoom',
+        displayName: 'Zoom OAuth',
+        required: true,
+        credentialFieldName: 'accessToken',
+      },
+      nodeTypes: ['zoom_video'],
+      description: 'Create and manage Zoom meetings via OAuth',
+    });
+
+    // ============================================
     // INSTAGRAM CONNECTOR
     // ============================================
     this.register({
@@ -593,21 +637,25 @@ export class ConnectorRegistry {
       provider: 'youtube',
       service: 'youtube',
       capabilities: [
+        'youtube.channels.read',
+        'youtube.search',
         'video.upload',
         'video.update',
-        'youtube.post',
       ],
-      keywords: ['youtube', 'you tube', 'yt', 'upload to youtube'],
+      keywords: ['youtube', 'you tube', 'yt', 'youtube channel', 'youtube videos'],
       credentialContract: {
         provider: 'youtube',
         type: 'oauth',
-        scopes: ['https://www.googleapis.com/auth/youtube.upload', 'https://www.googleapis.com/auth/youtube'],
+        scopes: [
+          'https://www.googleapis.com/auth/youtube.force-ssl',
+          'https://www.googleapis.com/auth/youtube.upload',
+        ],
         vaultKey: 'youtube',
         displayName: 'YouTube OAuth',
         required: true,
       },
       nodeTypes: ['youtube'],
-      description: 'Upload videos to YouTube via OAuth',
+      description: 'Read, upload, and manage YouTube videos via OAuth',
     });
 
     // ============================================

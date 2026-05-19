@@ -20,9 +20,11 @@ export function getDbPool(): Pool {
       ssl:  { rejectUnauthorized: false },
       min:  0,   // don't maintain idle connections — avoids endless retries when DB is unreachable
       max:  10,
-      idleTimeoutMillis:       30_000,
-      connectionTimeoutMillis: 5_000,  // fail fast if pool is exhausted
-      statement_timeout:       30_000,
+      idleTimeoutMillis:            30_000,
+      connectionTimeoutMillis:       5_000,  // fail fast if pool is exhausted
+      statement_timeout:            30_000,
+      keepAlive:                    true,    // prevent NAT/firewall silently dropping idle connections
+      keepAliveInitialDelayMillis:  10_000,
     });
 
     pool.on('error', (err) => {
@@ -39,6 +41,26 @@ export function getDbPool(): Pool {
       );
       if (waitingCount > 0) {
         console.error('[DB] ALERT — queries are waiting for a free connection.');
+      }
+    }, 60_000).unref();
+
+    // Background health probe: when the circuit is open, proactively heal it
+    // every 60 s instead of waiting for a user request to trigger the retry.
+    // Also runs a heartbeat every 5 min during normal operation to catch stale
+    // connections early (e.g. after an RDS maintenance window).
+    let _lastHeartbeat = 0;
+    setInterval(async () => {
+      const now = Date.now();
+      const circuitIsOpen   = now < _circuitOpenUntil;
+      const heartbeatIsDue  = now - _lastHeartbeat > 5 * 60_000;
+      if (circuitIsOpen || heartbeatIsDue) {
+        const ok = await isDatabaseReachable().catch(() => false);
+        if (ok) {
+          _lastHeartbeat = now;
+          if (circuitIsOpen) console.info('[DB] Health probe: circuit healed — DB is reachable again');
+        } else if (circuitIsOpen) {
+          console.warn('[DB] Health probe: DB still unreachable, circuit remains open');
+        }
       }
     }, 60_000).unref();
   }
@@ -69,7 +91,8 @@ function isConnectionError(err: any): boolean {
 
 export class DbUnavailableError extends Error {
   code = 'DB_UNAVAILABLE';
-  constructor() { super('DB circuit open — database unreachable, retrying in 30s'); }
+  statusCode = 503;
+  constructor() { super('Service temporarily unavailable — please try again in a moment.'); }
 }
 
 async function withCircuit<T>(fn: () => Promise<T>): Promise<T> {

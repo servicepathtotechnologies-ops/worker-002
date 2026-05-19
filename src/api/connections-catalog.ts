@@ -106,7 +106,7 @@ const DASHBOARD_OAUTH: Record<string, OAuthProviderMetadata> = {
     statusTable: 'linkedin_oauth_tokens',
     connectUrl: '/api/oauth/linkedin/start',
     disconnectUrl: '/api/connections/linkedin',
-    scopes: ['w_member_social', 'r_emailaddress', 'r_liteprofile'],
+    scopes: ['openid', 'profile', 'email', 'w_member_social'],
     flow: 'backend_redirect',
   },
   github: {

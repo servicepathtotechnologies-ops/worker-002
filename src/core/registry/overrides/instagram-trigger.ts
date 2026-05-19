@@ -28,7 +28,7 @@ export function overrideInstagramTrigger(
     ...def,
     type: 'instagram_trigger',
     label: 'Instagram Trigger',
-    category: 'trigger',
+    category: 'triggers',
     description: 'Trigger workflows on Instagram events: new DM, comment, mention, postback',
     icon: '📸',
     version: '1.0.0',

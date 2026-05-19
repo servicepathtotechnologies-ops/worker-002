@@ -280,10 +280,29 @@ export async function executeClickUpNode(
   };
 
   // Call the comprehensive ClickUp node
-  const result = await runClickUpNode(clickupCredentials, {
+  let result = await runClickUpNode(clickupCredentials, {
     name: normalizedOperation,
     params: params,
   });
+
+  // If create/update task fails due to an invalid status name, retry without it.
+  // ClickUp status names are list-specific and case-sensitive — users often type wrong values.
+  if (
+    !result.success &&
+    result.error?.toLowerCase().includes('status') &&
+    (normalizedOperation === 'createTask' || normalizedOperation === 'updateTask') &&
+    params.status
+  ) {
+    const paramsWithoutStatus = { ...params };
+    delete paramsWithoutStatus.status;
+    result = await runClickUpNode(clickupCredentials, {
+      name: normalizedOperation,
+      params: paramsWithoutStatus,
+    });
+    if (result.success) {
+      result.data = { ...result.data, _statusSkipped: true, _statusNote: 'Status field was ignored because it does not exist in this list. Task created without status.' };
+    }
+  }
 
   // Handle response - throw error if not successful, return data if successful
   if (!result.success) {

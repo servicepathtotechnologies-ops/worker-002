@@ -14,6 +14,18 @@ export function overrideDiscord(
 ): UnifiedNodeDefinition {
   return {
     ...def,
+    credentialSchema: {
+      requirements: [{
+        provider: 'discord',
+        category: 'api_key',
+        required: true,
+        description: 'Discord Bot Token',
+        credentialTypeId: 'discord_bot_token',
+        authType: 'bearer_token' as const,
+        label: 'Discord Bot Token',
+      }],
+      credentialFields: ['botToken', 'token'],
+    },
     execute: async (context) => {
       // Use legacy executor for now (complex Discord API integration)
       return await executeViaLegacyExecutor({ context, schema });

@@ -265,7 +265,7 @@ export class WorkflowLifecycleManager {
     const firstCommunication = orderedNodes.find((node: WorkflowNode) => {
       const type = resolveNodeType((node.data as any)?.type || node.type);
       const def = unifiedNodeRegistry.get(type);
-      return def?.category === 'communication';
+      return def?.category === 'output' || def?.category === 'social_media' || def?.category === 'communication';
     });
 
     const referenceNodeId =
@@ -849,7 +849,7 @@ export class WorkflowLifecycleManager {
       const outputNodes = workflow.nodes.filter((n: any) => {
         const nodeType = unifiedNormalizeNodeType(n);
         const nodeDef = unifiedNodeRegistry.get(nodeType);
-        return nodeDef?.category === 'communication'; // ✅ Valid category: 'communication'
+        return nodeDef?.category === 'output' || nodeDef?.category === 'social_media' || nodeDef?.category === 'communication';
       });
       
       // ✅ Determine last node in each category for injection positioning
@@ -977,7 +977,7 @@ export class WorkflowLifecycleManager {
               // Transformations/AI: after last data source or after last transformation
               referenceNodeId = lastTransformation?.id || lastDataSource?.id || triggerNode?.id || orderedNodeIds[0] || '';
               position = 'after';
-            } else if (category === 'communication') {
+            } else if (category === 'output' || category === 'social_media' || category === 'communication') {
               // Outputs/Communication: after last transformation or after last output
               referenceNodeId = lastOutput?.id || lastTransformation?.id || lastDataSource?.id || triggerNode?.id || orderedNodeIds[0] || '';
               position = 'after';

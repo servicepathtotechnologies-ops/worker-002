@@ -767,6 +767,10 @@ export async function executeNodeDynamically(
       templateResolvedConfig[key] = value;
     }
   }
+  const nodeConnectionRefs = ((node as any).data?.connectionRefs || {}) as Record<string, unknown>;
+  if (Object.keys(nodeConnectionRefs).length > 0 && !templateResolvedConfig.connectionRefs) {
+    templateResolvedConfig.connectionRefs = nodeConnectionRefs;
+  }
   // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   // Step 7: Create execution context (rawInput = effective normalized payload for never-failing code)

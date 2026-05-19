@@ -448,15 +448,16 @@
       "operation"
     ],
     "optionalConfig": [
-      "apiKey",
-      "credentialId",
       "operation",
       "workspaceId",
       "spaceId",
       "listId",
       "taskId",
       "taskName",
-      "taskDescription"
+      "taskDescription",
+      "status",
+      "priority",
+      "commentText"
     ]
   },
   {
@@ -1187,12 +1188,19 @@
     ],
     "optionalConfig": [
       "operation",
-      "videoUrl",
       "title",
       "description",
-      "channelId",
-      "accessToken",
-      "credentialId"
+      "tags",
+      "videoUrl",
+      "videoDataBase64",
+      "mimeType",
+      "privacyStatus",
+      "madeForKids",
+      "categoryId",
+      "videoId",
+      "query",
+      "maxResults",
+      "channelId"
     ]
   },
   {
@@ -1402,13 +1410,13 @@
       "result"
     ],
     "requiredConfig": [
-      "channelId",
       "message"
     ],
     "optionalConfig": [
       "channelId",
       "message",
-      "botToken"
+      "botToken",
+      "webhookUrl"
     ]
   },
   {
@@ -1808,13 +1816,11 @@
     ],
     "requiredConfig": [
       "model",
-      "messages",
-      "apiKey"
+      "prompt"
     ],
     "optionalConfig": [
       "model",
-      "apiKey",
-      "messages"
+      "prompt"
     ]
   },
   {
@@ -2970,15 +2976,20 @@
       "operation"
     ],
     "optionalConfig": [
-      "baseUrl",
-      "email",
-      "apiToken",
       "operation",
-      "issueKey",
+      "domain",
       "projectKey",
+      "issueKey",
       "summary",
-      "descriptionText",
-      "issueType"
+      "description",
+      "issueType",
+      "priority",
+      "assignee",
+      "labels",
+      "jql",
+      "maxResults",
+      "commentBody",
+      "transitionId"
     ]
   },
   {
@@ -3543,6 +3554,60 @@
     ]
   },
   {
+    "type": "qdrant",
+    "category": "database",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "operation",
+      "url",
+      "collection"
+    ],
+    "optionalConfig": [
+      "operation",
+      "url",
+      "collection",
+      "apiKey",
+      "vector",
+      "limit",
+      "id",
+      "payload",
+      "withPayload"
+    ]
+  },
+  {
+    "type": "cohere",
+    "category": "ai",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "model",
+      "prompt"
+    ],
+    "optionalConfig": [
+      "model",
+      "prompt",
+      "preamble",
+      "apiKey",
+      "temperature",
+      "maxTokens"
+    ]
+  },
+  {
     "type": "langchain",
     "category": "ai",
     "inputs": [
@@ -3592,6 +3657,102 @@
       "fps",
       "resolution",
       "options"
+    ]
+  },
+  {
+    "type": "huggingface",
+    "category": "ai",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "model",
+      "prompt"
+    ],
+    "optionalConfig": [
+      "model",
+      "prompt",
+      "maxTokens",
+      "temperature"
+    ]
+  },
+  {
+    "type": "mistral",
+    "category": "ai",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "model",
+      "prompt"
+    ],
+    "optionalConfig": [
+      "model",
+      "systemPrompt",
+      "prompt",
+      "temperature",
+      "maxTokens"
+    ]
+  },
+  {
+    "type": "linear",
+    "category": "productivity",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "operation"
+    ],
+    "optionalConfig": [
+      "operation",
+      "teamId",
+      "issueId",
+      "title",
+      "description",
+      "stateId",
+      "priority"
+    ]
+  },
+  {
+    "type": "trello",
+    "category": "productivity",
+    "inputs": [
+      "input",
+      "inputData"
+    ],
+    "outputs": [
+      "output",
+      "data",
+      "result"
+    ],
+    "requiredConfig": [
+      "operation"
+    ],
+    "optionalConfig": [
+      "operation",
+      "boardId",
+      "listId",
+      "cardId",
+      "cardName",
+      "cardDesc"
     ]
   }
 ]

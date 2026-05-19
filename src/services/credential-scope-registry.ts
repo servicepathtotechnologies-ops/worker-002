@@ -28,14 +28,18 @@ export const PROVIDER_REQUIRED_SCOPES: Record<string, string[]> = {
   ],
   twitter: ['tweet.read', 'tweet.write', 'users.read', 'offline.access'],
   whatsapp: ['business_management', 'whatsapp_business_management', 'whatsapp_business_messaging'],
-  linkedin: ['w_member_social', 'r_emailaddress', 'r_liteprofile'],
+  linkedin: ['openid', 'profile', 'email', 'w_member_social'],
   notion: ['read_content', 'update_content', 'insert_content'],
   instagram: ['instagram_basic', 'instagram_content_publish', 'pages_show_list', 'pages_read_engagement', 'business_management'],
   facebook: ['public_profile', 'email', 'pages_show_list'],
   github: ['repo'],
   salesforce: ['api', 'refresh_token'],
   zoho: ['ZohoCRM.modules.ALL', 'ZohoCRM.users.READ'],
-  youtube: ['https://www.googleapis.com/auth/youtube.upload', 'https://www.googleapis.com/auth/youtube.force-ssl'],
+  zoom: ['meeting:write:meeting', 'meeting:read:meeting', 'meeting:read:list_meetings', 'user:read:user'],
+  youtube: [
+    'https://www.googleapis.com/auth/youtube.force-ssl',
+    'https://www.googleapis.com/auth/youtube.upload',
+  ],
 };
 
 const NODE_PROVIDER: Record<string, string> = {
@@ -64,6 +68,7 @@ const NODE_PROVIDER: Record<string, string> = {
   outlook: 'microsoft',
   microsoft: 'microsoft',
   youtube: 'youtube',
+  zoom_video: 'zoom',
 };
 
 export function normalizeProvider(provider: string): string {

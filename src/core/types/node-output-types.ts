@@ -593,9 +593,24 @@ export const NODE_OUTPUT_SCHEMAS: Record<string, NodeOutputSchema> = {
     defaultValue: ''
   },
   youtube: {
-    type: 'string', // CRITICAL: Output nodes return strings, not JSON objects
-    convertible: ['object'],
-    defaultValue: ''
+    type: 'object',
+    structure: {
+      fields: {
+        success: 'boolean',
+        operation: 'string',
+        videoId: 'string',
+        channelId: 'string',
+        title: 'string',
+        url: 'string',
+        privacyStatus: 'string',
+        statistics: 'object',
+        items: 'array',
+        video: 'object',
+        channel: 'object',
+      }
+    },
+    convertible: ['string'],
+    defaultValue: { success: false }
   },
   amazon_ses: {
     type: 'object',

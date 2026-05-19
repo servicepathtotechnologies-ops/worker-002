@@ -358,6 +358,96 @@ export async function createLinkedInMediaPost(
 }
 
 /**
+ * Create a LinkedIn article link-share post (shareMediaCategory: ARTICLE).
+ */
+export async function createLinkedInArticlePost(
+  accessToken: string,
+  personUrn: string,
+  text: string,
+  articleUrl: string,
+  visibility: 'PUBLIC' | 'CONNECTIONS' = 'PUBLIC'
+): Promise<{ id: string }> {
+  const author = normalizePersonUrn(personUrn);
+  const requestBody = {
+    author,
+    lifecycleState: 'PUBLISHED',
+    specificContent: {
+      'com.linkedin.ugc.ShareContent': {
+        shareCommentary: { text },
+        shareMediaCategory: 'ARTICLE',
+        media: [{ status: 'READY', originalUrl: articleUrl }],
+      },
+    },
+    visibility: {
+      'com.linkedin.ugc.MemberNetworkVisibility': visibility === 'CONNECTIONS' ? 'CONNECTIONS' : 'PUBLIC',
+    },
+  };
+
+  const response = await fetch('https://api.linkedin.com/v2/ugcPosts', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+      'X-Restli-Protocol-Version': '2.0.0',
+    },
+    body: JSON.stringify(requestBody),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`LinkedIn article post error (${response.status}): ${errorText.slice(0, 300)}`);
+  }
+
+  return (await response.json()) as { id: string };
+}
+
+/**
+ * Create a LinkedIn post on behalf of a company/organization page.
+ * Requires w_organization_social scope.
+ */
+export async function createLinkedInCompanyPost(
+  accessToken: string,
+  organizationId: string,
+  text: string,
+  visibility: 'PUBLIC' | 'CONNECTIONS' = 'PUBLIC'
+): Promise<{ id: string }> {
+  const author = organizationId.startsWith('urn:li:organization:')
+    ? organizationId
+    : `urn:li:organization:${organizationId}`;
+
+  const requestBody = {
+    author,
+    lifecycleState: 'PUBLISHED',
+    specificContent: {
+      'com.linkedin.ugc.ShareContent': {
+        shareCommentary: { text },
+        shareMediaCategory: 'NONE',
+      },
+    },
+    visibility: {
+      'com.linkedin.ugc.MemberNetworkVisibility': visibility === 'CONNECTIONS' ? 'CONNECTIONS' : 'PUBLIC',
+    },
+  };
+
+  const response = await fetch('https://api.linkedin.com/v2/ugcPosts', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+      'X-Restli-Protocol-Version': '2.0.0',
+    },
+    body: JSON.stringify(requestBody),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`LinkedIn company post error (${response.status}): ${errorText.slice(0, 300)}`);
+  }
+
+  return (await response.json()) as { id: string };
+}
+
+/**
  * Delete a LinkedIn post
  */
 export async function deleteLinkedInPost(accessToken: string, postUrn: string): Promise<void> {

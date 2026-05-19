@@ -25,7 +25,7 @@ import { WorkflowNode } from '../types/ai-types';
  * Universal node category detection
  * Uses registry category property - works for ALL nodes
  */
-export function getNodeCategory(nodeType: string): 'trigger' | 'data' | 'ai' | 'communication' | 'logic' | 'transformation' | 'utility' | null {
+export function getNodeCategory(nodeType: string): string | null {
   const normalized = unifiedNormalizeNodeTypeString(nodeType);
   const nodeDef = unifiedNodeRegistry.get(normalized);
   return nodeDef?.category || null;

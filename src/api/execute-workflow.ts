@@ -1,5 +1,6 @@
 // Execute Workflow API Route
 // Worker API handler with correct state propagation
+/// <reference path="../types/ssh2-sftp-client.d.ts" />
 
 import { Request, Response } from 'express';
 import { getDbClient } from '../core/database/aws-db-client';
@@ -56,6 +57,7 @@ import { getProviderCircuitKeyFromNodeType } from '../core/reliability/provider-
 import { decryptToken } from '../core/utils/token-encryption';
 import { retrieveCredential } from '../core/utils/credential-retriever';
 import { readAcknowledgedHttpResponse } from '../core/http/acknowledged-response';
+import { connectionService } from '../credentials-system/connection-service';
 
 const EXECUTION_RUNTIME_MARKER = 'runtime-marker-2026-03-20-v1';
 
@@ -304,6 +306,418 @@ function getStringProperty(obj: Record<string, unknown>, key: string, defaultVal
   if (typeof value === 'string') return value;
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
   return defaultValue;
+}
+
+/**
+ * Extracts a meaningful string from upstream node output for use as AI prompt input.
+ * Returns empty string for empty/trivial payloads (empty object, empty array).
+ */
+function extractUpstreamStringForPrompt(upstream: unknown): string {
+  if (typeof upstream === 'string') return upstream.trim();
+  if (upstream === null || upstream === undefined) return '';
+  if (Array.isArray(upstream)) {
+    if (upstream.length === 0) return '';
+    try {
+      const json = JSON.stringify(upstream);
+      return json.length > 4000 ? json.slice(0, 4000) + '...' : json;
+    } catch { return ''; }
+  }
+  if (typeof upstream === 'object') {
+    const obj = upstream as Record<string, unknown>;
+    const keys = Object.keys(obj);
+    if (keys.length === 0) return '';
+    // Check for common text-like fields first to avoid serializing large objects
+    for (const key of ['text', 'message', 'content', 'response', 'body', 'output', 'result']) {
+      if (typeof obj[key] === 'string' && (obj[key] as string).trim()) {
+        return (obj[key] as string).trim();
+      }
+    }
+    // Skip objects that only have internal meta fields
+    if (keys.every(k => k.startsWith('_'))) return '';
+    try {
+      const json = JSON.stringify(obj);
+      return json.length > 4000 ? json.slice(0, 4000) + '...' : json;
+    } catch { return ''; }
+  }
+  return String(upstream).trim();
+}
+
+function normalizeLegacyNodeType(type: string): string {
+  const normalized = String(type || '').trim();
+  const aliases: Record<string, string> = {
+    html_extract: 'html',
+    schedule_trigger: 'schedule',
+  };
+  return aliases[normalized] || normalized;
+}
+
+function normalizeLegacyNodeConfig(nodeType: string, rawConfig: Record<string, unknown>): Record<string, unknown> {
+  const config: Record<string, unknown> = { ...rawConfig };
+  const op = getStringProperty(config, 'operation', '').trim();
+  const opLower = op.toLowerCase();
+
+  if (nodeType === 'stripe') {
+    const stripeOps: Record<string, string> = {
+      create_payment: 'paymentintent',
+      create_payment_intent: 'paymentintent',
+      get_payment: 'get_payment_intent',
+      list_payments: 'list_payment_intents',
+      create_refund: 'refund',
+      create_customer: 'create_customer',
+      create_subscription: 'create_subscription',
+      create_invoice: 'create_invoice',
+    };
+    if (stripeOps[opLower]) config.operation = stripeOps[opLower];
+  }
+
+  if (nodeType === 'shopify') {
+    const shopifyOps: Record<string, { resource: string; operation: string }> = {
+      get_product: { resource: 'product', operation: 'get' },
+      list_products: { resource: 'product', operation: 'list' },
+      create_product: { resource: 'product', operation: 'create' },
+      update_product: { resource: 'product', operation: 'update' },
+      get_order: { resource: 'order', operation: 'get' },
+      list_orders: { resource: 'order', operation: 'list' },
+      create_order: { resource: 'order', operation: 'create' },
+      get_customer: { resource: 'customer', operation: 'get' },
+      list_customers: { resource: 'customer', operation: 'list' },
+    };
+    const mapped = shopifyOps[opLower];
+    if (mapped) {
+      config.resource = config.resource || mapped.resource;
+      config.operation = mapped.operation;
+    }
+    if (!config.apiKey && config.accessToken) config.apiKey = config.accessToken;
+    if (!config.data && config.productData) config.data = config.productData;
+    if (!config.data && config.orderData) config.data = config.orderData;
+  }
+
+  if (nodeType === 'google_calendar') {
+    if (!config.start && config.startTime) config.start = { dateTime: getStringProperty(config, 'startTime', '') };
+    if (!config.end && config.endTime) config.end = { dateTime: getStringProperty(config, 'endTime', '') };
+    if (!config.eventData) {
+      const description = getStringProperty(config, 'description', '');
+      if (description) config.eventData = { description };
+    } else if (config.eventData && typeof config.eventData === 'object' && config.description) {
+      config.eventData = { ...(config.eventData as Record<string, unknown>), description: config.description };
+    }
+  }
+
+  if (nodeType === 'json_parser' && !config.json && config.expression) {
+    const expression = String(config.expression).trim();
+    if (expression.startsWith('{') || expression.startsWith('[')) {
+      config.json = config.expression;
+    }
+  }
+
+  return config;
+}
+
+function collectConnectionRefIds(node: WorkflowNode, config: Record<string, unknown>): string[] {
+  const refs = {
+    ...(((config as any).connectionRefs || {}) as Record<string, unknown>),
+    ...((((node.data as any)?.connectionRefs || {}) as Record<string, unknown>)),
+  };
+  const ids = new Set<string>();
+  for (const value of Object.values(refs)) {
+    if (typeof value === 'string' && value.trim()) ids.add(value.trim());
+  }
+  const directId = (config as any).connectionId || (node.data as any)?.connectionId;
+  if (typeof directId === 'string' && directId.trim()) ids.add(directId.trim());
+  return Array.from(ids);
+}
+
+function getConnectionRefForProvider(
+  node: WorkflowNode,
+  config: Record<string, unknown>,
+  provider: string,
+): string | null {
+  const refs = {
+    ...(((config as any).connectionRefs || {}) as Record<string, unknown>),
+    ...((((node.data as any)?.connectionRefs || {}) as Record<string, unknown>)),
+  };
+  const candidates = [
+    provider,
+    `${provider}_api_key`,
+    `${provider}_oauth2`,
+  ];
+  for (const key of candidates) {
+    const value = refs[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  const directId = (config as any).connectionId || (node.data as any)?.connectionId;
+  return typeof directId === 'string' && directId.trim() ? directId.trim() : null;
+}
+
+async function getAcceptedCredentialTypesForNode(node: WorkflowNode): Promise<Set<string>> {
+  const nodeType = String((node.data as any)?.type || node.type || '').trim();
+  if (!nodeType) return new Set();
+
+  try {
+    const { unifiedNodeRegistry } = await import('../core/registry/unified-node-registry');
+    const definition = unifiedNodeRegistry.get(nodeType);
+    const ids = new Set<string>();
+    for (const requirement of definition?.credentialSchema?.requirements || []) {
+      if (requirement.credentialTypeId) ids.add(requirement.credentialTypeId);
+      for (const id of requirement.credentialTypeIds || []) ids.add(id);
+    }
+    return ids;
+  } catch (error) {
+    console.warn('[execute-workflow] Unable to inspect credential schema for selected connection validation', {
+      nodeType,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return new Set();
+  }
+}
+
+async function collectConnectionRefIdsWithFallback(
+  node: WorkflowNode,
+  config: Record<string, unknown>,
+  ownerUserId?: string,
+): Promise<string[]> {
+  const selectedIds = collectConnectionRefIds(node, config);
+  if (selectedIds.length > 0 || !ownerUserId) return selectedIds;
+
+  // Universal fallback: use the node's credentialSchema to find the canonical connection.
+  // If the node has exactly one required credentialTypeId, auto-select the user's saved one.
+  try {
+    const { unifiedNodeRegistry } = await import('../core/registry/unified-node-registry');
+    const nodeType = String((node.data as any)?.type || node.type || '');
+    const definition = unifiedNodeRegistry.get(nodeType);
+    const requirements = definition?.credentialSchema?.requirements ?? [];
+    const credentialTypeIds = Array.from(new Set(
+      requirements
+        .map((r) => r.credentialTypeId)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0)
+    ));
+    // Only auto-select when there's exactly one required credential type
+    if (credentialTypeIds.length === 1) {
+      const connection = await connectionService.findCanonicalConnection(ownerUserId, credentialTypeIds[0]);
+      if (connection) return [connection.id];
+    }
+  } catch {
+    // fall through — don't block execution on registry lookup failure
+  }
+
+  return selectedIds;
+}
+
+function mergeRuntimeCredentials(config: Record<string, unknown>, credentials: Record<string, unknown>): Record<string, unknown> {
+  const next = { ...config };
+  // Treat empty-string defaults as "unset" — schemas often default api_key/token fields to ''
+  // and we must not let that block real credential values from being injected.
+  for (const [key, value] of Object.entries(credentials)) {
+    if (value !== undefined && value !== null && value !== '' && (next[key] === undefined || next[key] === '')) {
+      next[key] = value;
+    }
+  }
+
+  const aliases: Array<[string, string]> = [
+    ['access_token', 'accessToken'],
+    ['accessToken', 'access_token'],
+    ['api_key', 'apiKey'],
+    ['apiKey', 'api_key'],
+    ['bearerToken', 'accessToken'],
+    ['token', 'accessToken'],
+    ['token', 'apiKey'],
+    ['token', 'botToken'],             // Discord bot: credential 'token' → node 'botToken'
+    ['apiKey', 'botToken'],            // Telegram: vault stores 'apiKey' → node reads 'botToken'
+    ['secretKey', 'apiKey'],           // Stripe: credential 'secretKey' → generic 'apiKey'
+    ['apiKey', 'secretKey'],           // Reverse: 'apiKey' also exposed as 'secretKey'
+    ['authToken', 'token'],            // Twilio: authToken alias for generic token consumers
+    ['webhook_url', 'webhookUrl'],
+    ['headerName', 'webhookUrl'],      // Discord/Slack webhooks: vault 'headerName' (the URL field) → node 'webhookUrl'
+    ['apiToken', 'apiKey'],            // ClickUp: vault 'apiToken' → node 'apiKey'
+    ['apiToken', 'token'],             // ClickUp alt: vault 'apiToken' → node 'token'
+    ['apiKey', 'awsAccessKeyId'],      // AWS S3/SES: vault 'apiKey' → node 'awsAccessKeyId'
+    ['secretKey', 'awsSecretAccessKey'], // AWS S3/SES: vault 'secretKey' → node 'awsSecretAccessKey'
+    ['appPassword', 'password'],       // Bitbucket: vault 'appPassword' → node 'password'
+    ['apiUrl', 'baseUrl'],             // ActiveCampaign: vault 'apiUrl' → node 'baseUrl'
+    ['username', 'email'],             // Jira: vault 'username' (email) → node 'email'
+    ['password', 'apiToken'],          // Jira: vault 'password' (API token) → node 'apiToken'
+    ['domain', 'baseUrl'],             // Jira: vault 'domain' → node 'baseUrl' (https:// added at runtime)
+  ];
+  for (const [from, to] of aliases) {
+    // Also treat '' as unset: schema defaults (apiKey: '', token: '') must not block injection
+    if ((next[to] === undefined || next[to] === '') && credentials[from] !== undefined && credentials[from] !== null && credentials[from] !== '') {
+      next[to] = credentials[from];
+    }
+  }
+  return next;
+}
+
+async function injectSelectedConnectionCredentials(params: {
+  node: WorkflowNode;
+  config: Record<string, unknown>;
+  userId?: string;
+  currentUserId?: string;
+}): Promise<{ config: Record<string, unknown>; error?: string }> {
+  const ownerUserId = params.userId || params.currentUserId;
+  const connectionIds = await collectConnectionRefIdsWithFallback(params.node, params.config, ownerUserId);
+  if (!ownerUserId || connectionIds.length === 0) return { config: params.config };
+
+  const acceptedCredentialTypes = await getAcceptedCredentialTypesForNode(params.node);
+  let nextConfig = { ...params.config };
+  for (const connectionId of connectionIds) {
+    try {
+      const connection = await connectionService.getDecryptedConnection(ownerUserId, connectionId);
+      if (acceptedCredentialTypes.size > 0 && !acceptedCredentialTypes.has(connection.credentialTypeId)) {
+        return {
+          config: nextConfig,
+          error: `Connection "${connection.name}" is a ${connection.credentialTypeId} credential, but this node requires ${Array.from(acceptedCredentialTypes).join(', ')}.`,
+        };
+      }
+      if (connection.status === 'expired') {
+        return { config: nextConfig, error: `Connection "${connection.name}" is expired. Reconnect before executing this workflow.` };
+      }
+      if (connection.status !== 'active') {
+        return { config: nextConfig, error: `Connection "${connection.name}" is ${connection.status}. Select an active connection.` };
+      }
+      nextConfig = mergeRuntimeCredentials(nextConfig, connection.credentials);
+      await connectionService.markUsed(ownerUserId, connectionId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to resolve selected connection';
+      // Stale/wrong ref — try auto-selecting the canonical connection for this node instead
+      console.warn(`[CredentialInjection] Explicit connectionRef failed (${message}), trying auto-selection fallback`);
+      try {
+        const { unifiedNodeRegistry } = await import('../core/registry/unified-node-registry');
+        const nodeType = String((params.node.data as any)?.type || params.node.type || '');
+        const definition = unifiedNodeRegistry.get(nodeType);
+        const requirements = (definition?.credentialSchema?.requirements ?? []) as Array<{ credentialTypeId?: string }>;
+        const credTypeIds = requirements
+          .map((r) => r.credentialTypeId)
+          .filter((id): id is string => typeof id === 'string' && id.length > 0);
+        if (credTypeIds.length === 1 && ownerUserId) {
+          const fallback = await connectionService.findCanonicalConnection(ownerUserId, credTypeIds[0]);
+          if (fallback) {
+            const conn = await connectionService.getDecryptedConnection(ownerUserId, fallback.id);
+            if (conn.status === 'active') {
+              nextConfig = mergeRuntimeCredentials(nextConfig, conn.credentials);
+              await connectionService.markUsed(ownerUserId, fallback.id);
+              continue;
+            }
+          }
+        }
+      } catch {
+        // auto-selection also failed — fall through to error
+      }
+      return { config: nextConfig, error: `Selected connection is not available for this workflow owner: ${message}` };
+    }
+  }
+
+  return { config: nextConfig };
+}
+
+async function resolveOpenAiApiKeyForNode(params: {
+  node: WorkflowNode;
+  config: Record<string, unknown>;
+  userId?: string;
+  currentUserId?: string;
+}): Promise<{ apiKey?: string; error?: string }> {
+  const ownerUserId = params.userId || params.currentUserId;
+  const selectedConnectionId = getConnectionRefForProvider(params.node, params.config, 'openai');
+  if (!selectedConnectionId) {
+    const legacyKey =
+      getStringProperty(params.config, 'apiKey', '') ||
+      getStringProperty(params.config, 'token', '') ||
+      getStringProperty(params.config, 'accessToken', '');
+    if (legacyKey.trim()) return { apiKey: legacyKey.trim() };
+    return { error: 'OpenAI connection is required. Select an OpenAI API Key connection before executing this node.' };
+  }
+
+  if (!ownerUserId) {
+    return { error: 'OpenAI connection cannot be resolved without an authenticated workflow owner.' };
+  }
+
+  try {
+    const connection = await connectionService.getDecryptedConnection(ownerUserId, selectedConnectionId);
+    if (connection.provider !== 'openai' || connection.credentialTypeId !== 'openai_api_key') {
+      return { error: 'Selected connection is not an OpenAI API Key connection.' };
+    }
+    if (connection.status === 'expired') {
+      return { error: `OpenAI connection "${connection.name}" is expired. Reconnect before executing this workflow.` };
+    }
+    if (connection.status !== 'active') {
+      return { error: `OpenAI connection "${connection.name}" is ${connection.status}. Select an active connection.` };
+    }
+
+    const apiKey =
+      getStringProperty(connection.credentials, 'token', '') ||
+      getStringProperty(connection.credentials, 'apiKey', '') ||
+      getStringProperty(connection.credentials, 'accessToken', '');
+    if (!apiKey.trim()) {
+      return { error: `OpenAI connection "${connection.name}" does not contain an API key.` };
+    }
+    await connectionService.markUsed(ownerUserId, connection.id);
+    return { apiKey: apiKey.trim() };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unable to resolve selected connection';
+    return { error: `Selected OpenAI connection is not available for this workflow owner: ${message}` };
+  }
+}
+
+async function resolveGeminiApiKeyForNode(params: {
+  node: WorkflowNode;
+  config: Record<string, unknown>;
+  userId?: string;
+  currentUserId?: string;
+}): Promise<{ apiKey?: string; error?: string }> {
+  const ownerUserId = params.userId || params.currentUserId;
+  const selectedConnectionId = getConnectionRefForProvider(params.node, params.config, 'gemini');
+
+  // If the user selected a connection, use that key.
+  if (selectedConnectionId && ownerUserId) {
+    try {
+      const connection = await connectionService.getDecryptedConnection(ownerUserId, selectedConnectionId);
+      if (connection.provider !== 'gemini' || connection.credentialTypeId !== 'gemini_api_key') {
+        return { error: 'Selected connection is not a Gemini API Key connection.' };
+      }
+      if (connection.status === 'expired') {
+        return { error: `Gemini connection "${connection.name}" is expired. Reconnect before executing this workflow.` };
+      }
+      if (connection.status !== 'active') {
+        return { error: `Gemini connection "${connection.name}" is ${connection.status}. Select an active connection.` };
+      }
+      const apiKey = getStringProperty(connection.credentials, 'apiKey', '').trim();
+      if (!apiKey) {
+        return { error: `Gemini connection "${connection.name}" does not contain an API key.` };
+      }
+      await connectionService.markUsed(ownerUserId, connection.id);
+      return { apiKey };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to resolve selected connection';
+      return { error: `Selected Gemini connection is not available: ${message}` };
+    }
+  }
+
+  // Fallback: inline key from config, then server GEMINI_API_KEY env var.
+  const inlineKey =
+    getStringProperty(params.config, 'apiKey', '') ||
+    getStringProperty(params.config, 'accessToken', '') ||
+    getStringProperty(params.config, 'token', '');
+  if (inlineKey.trim()) return { apiKey: inlineKey.trim() };
+
+  return {}; // caller falls back to process.env.GEMINI_API_KEY via LLMAdapter
+}
+
+function getUploadBuffer(config: Record<string, unknown>): Buffer | null {
+  const dataBase64 = getStringProperty(config, 'dataBase64', '').trim();
+  if (dataBase64) return Buffer.from(dataBase64, 'base64');
+
+  const data = config.data;
+  if (typeof data === 'string' && data.trim()) return Buffer.from(data);
+  if (Buffer.isBuffer(data)) return data;
+  if (data instanceof Uint8Array) return Buffer.from(data);
+  if (data !== undefined && data !== null && typeof data === 'object') return Buffer.from(JSON.stringify(data));
+
+  const content = config.content;
+  if (typeof content === 'string') return Buffer.from(content);
+  if (Buffer.isBuffer(content)) return content;
+  if (content instanceof Uint8Array) return Buffer.from(content);
+  if (content !== undefined && content !== null && typeof content === 'object') return Buffer.from(JSON.stringify(content));
+
+  return null;
 }
 
 function getNumberProperty(obj: Record<string, unknown>, key: string, defaultValue: number = 0): number {
@@ -2343,9 +2757,19 @@ export async function executeNodeLegacy(
 ): Promise<unknown> {
   // PHASE 1: Normalize node type to handle custom type pattern
   const normalizedType = unifiedNormalizeNodeType(node);
-  const type = normalizedType || node.data?.type || node.type;
-  const config = node.data?.config || {};
+  const type = normalizeLegacyNodeType(normalizedType || node.data?.type || node.type);
+  let config = normalizeLegacyNodeConfig(type, node.data?.config || {});
   const inputObj = extractInputObject(input);
+
+  const credentialInjection = await injectSelectedConnectionCredentials({ node, config, userId, currentUserId });
+  config = credentialInjection.config;
+  if (credentialInjection.error) {
+    return normalizeLegacyWrappedNodeOutput({
+      ...inputObj,
+      _error: credentialInjection.error,
+      _connectionError: true,
+    });
+  }
 
   console.log(`[ExecuteNodeLegacy] 🔄 Executing node using legacy executor: ${node.data?.label || node.id} (${type})`);
 
@@ -3871,17 +4295,19 @@ export async function executeNodeLegacy(
 
     case 'aws_s3': {
       // ✅ AWS S3 node - upload/download/list using aws-sdk v2
-      const operation = getStringProperty(config, 'operation', '').toLowerCase();
+      const rawOp = getStringProperty(config, 'operation', '').toLowerCase();
+      // Normalize UI values to backend values
+      const operation = rawOp === 'get' ? 'download' : rawOp === 'put' ? 'upload' : rawOp;
       const bucket = getStringProperty(config, 'bucket', '').trim();
       const key = getStringProperty(config, 'key', '').trim();
       const prefix = getStringProperty(config, 'prefix', '').trim();
       const region = (getStringProperty(config, 'region', '') || 'us-east-1').trim();
 
-      if (!operation) return { ...inputObj, _error: 'aws_s3: operation is required (upload, download, list)' };
+      if (!operation) return { ...inputObj, _error: 'aws_s3: operation is required (get/download, put/upload, list, delete)' };
       if (!bucket) return { ...inputObj, _error: 'aws_s3: bucket is required' };
 
-      const accessKeyId = getStringProperty(config, 'accessKeyId', '').trim();
-      const secretAccessKey = getStringProperty(config, 'secretAccessKey', '').trim();
+      const accessKeyId = (getStringProperty(config, 'awsAccessKeyId', '') || getStringProperty(config, 'accessKeyId', '')).trim();
+      const secretAccessKey = (getStringProperty(config, 'awsSecretAccessKey', '') || getStringProperty(config, 'secretAccessKey', '')).trim();
       const sessionToken = getStringProperty(config, 'sessionToken', '').trim();
 
       try {
@@ -3922,14 +4348,19 @@ export async function executeNodeLegacy(
 
         if (operation === 'upload') {
           if (!key) return { ...inputObj, _error: 'aws_s3: key is required for upload', bucket };
-          const dataBase64 = (getStringProperty(config, 'dataBase64', '') || getStringProperty(config, 'data', '')).trim();
-          if (!dataBase64) return { ...inputObj, _error: 'aws_s3: dataBase64 (or data) is required for upload', bucket, key };
-          const buf = Buffer.from(dataBase64, 'base64');
+          const buf = getUploadBuffer(config);
+          if (!buf) return { ...inputObj, _error: 'aws_s3: dataBase64, data, or content is required for upload', bucket, key };
           const resp = await s3.putObject({ Bucket: bucket, Key: key, Body: buf }).promise();
           return { ...inputObj, bucket, key, sizeBytes: buf.length, etag: resp.ETag, uploaded: true };
         }
 
-        return { ...inputObj, _error: `aws_s3: unsupported operation "${operation}" (supported: upload, download, list)` };
+        if (operation === 'delete') {
+          if (!key) return { ...inputObj, _error: 'aws_s3: key is required for delete', bucket };
+          await s3.deleteObject({ Bucket: bucket, Key: key }).promise();
+          return { ...inputObj, success: true, bucket, key, deleted: true };
+        }
+
+        return { ...inputObj, _error: `aws_s3: unsupported operation "${rawOp}" (supported: get, put, list, delete)` };
       } catch (e) {
         return { ...inputObj, _error: `aws_s3: ${e instanceof Error ? e.message : String(e)}` };
       }
@@ -3937,7 +4368,9 @@ export async function executeNodeLegacy(
 
     case 'dropbox': {
       // ✅ Dropbox file operations via Dropbox API
-      const operation = getStringProperty(config, 'operation', '').toLowerCase();
+      const rawOpDropbox = getStringProperty(config, 'operation', '').toLowerCase();
+      // Normalize UI value 'read' → 'download'
+      const operation = rawOpDropbox === 'read' ? 'download' : rawOpDropbox;
       const path = (getStringProperty(config, 'path', '') || '').trim(); // Dropbox paths start with '/'
       const recursive = (config as any)?.recursive === true || getStringProperty(config, 'recursive', 'false') === 'true';
 
@@ -4006,9 +4439,8 @@ export async function executeNodeLegacy(
 
         if (operation === 'upload') {
           if (!path) return { ...inputObj, _error: 'Dropbox: path is required for upload' };
-          const dataBase64 = (getStringProperty(config, 'dataBase64', '') || getStringProperty(config, 'data', '')).trim();
-          if (!dataBase64) return { ...inputObj, _error: 'Dropbox: dataBase64 (or data) is required for upload', path };
-          const buf = Buffer.from(dataBase64, 'base64');
+          const buf = getUploadBuffer(config);
+          if (!buf) return { ...inputObj, _error: 'Dropbox: dataBase64, data, or content is required for upload', path };
           const resp = await fetch('https://content.dropboxapi.com/2/files/upload', {
             method: 'POST',
             headers: {
@@ -4025,7 +4457,19 @@ export async function executeNodeLegacy(
           return { ...inputObj, success: true, path, sizeBytes: buf.length, metadata: data };
         }
 
-        return { ...inputObj, _error: `Dropbox: Unsupported operation "${operation}". Supported: upload, download, list` };
+        if (operation === 'delete') {
+          if (!path) return { ...inputObj, _error: 'Dropbox: path is required for delete' };
+          const resp = await fetch('https://api.dropboxapi.com/2/files/delete_v2', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
+            body: JSON.stringify({ path }),
+          });
+          const data = await resp.json().catch(() => null);
+          if (!resp.ok) return { ...inputObj, _error: `Dropbox delete failed (${resp.status})`, _errorDetails: data };
+          return { ...inputObj, success: true, path, deleted: true, metadata: (data as any)?.metadata };
+        }
+
+        return { ...inputObj, _error: `Dropbox: Unsupported operation "${rawOpDropbox}". Supported: read, upload, list, delete` };
       } catch (e) {
         return { ...inputObj, _error: `Dropbox error: ${e instanceof Error ? e.message : String(e)}` };
       }
@@ -4033,7 +4477,9 @@ export async function executeNodeLegacy(
 
     case 'onedrive': {
       // ✅ OneDrive file operations via Microsoft Graph
-      const operation = getStringProperty(config, 'operation', '').toLowerCase();
+      const rawOpOD = getStringProperty(config, 'operation', '').toLowerCase();
+      // Normalize UI value 'read' → 'download'
+      const operation = rawOpOD === 'read' ? 'download' : rawOpOD;
       const pathRaw = (getStringProperty(config, 'path', '') || '').trim();
       const path = pathRaw.startsWith('/') ? pathRaw : (pathRaw ? `/${pathRaw}` : '');
 
@@ -4096,9 +4542,8 @@ export async function executeNodeLegacy(
 
         if (operation === 'upload') {
           if (!path) return { ...inputObj, _error: 'OneDrive: path is required for upload' };
-          const dataBase64 = (getStringProperty(config, 'dataBase64', '') || getStringProperty(config, 'data', '')).trim();
-          if (!dataBase64) return { ...inputObj, _error: 'OneDrive: dataBase64 (or data) is required for upload', path };
-          const buf = Buffer.from(dataBase64, 'base64');
+          const buf = getUploadBuffer(config);
+          if (!buf) return { ...inputObj, _error: 'OneDrive: dataBase64, data, or content is required for upload', path };
           const url = `${graph}/me/drive/root:${encodeURI(path)}:/content`;
           const resp = await fetch(url, {
             method: 'PUT',
@@ -4115,7 +4560,26 @@ export async function executeNodeLegacy(
           return { ...inputObj, success: true, path, sizeBytes: buf.length, metadata: data };
         }
 
-        return { ...inputObj, _error: `OneDrive: Unsupported operation "${operation}". Supported: upload, download, list` };
+        if (operation === 'delete') {
+          const fileId = getStringProperty(config, 'fileId', '').trim();
+          const deleteUrl = fileId
+            ? `${graph}/me/drive/items/${encodeURIComponent(fileId)}`
+            : path
+            ? `${graph}/me/drive/root:${encodeURI(path)}`
+            : null;
+          if (!deleteUrl) return { ...inputObj, _error: 'OneDrive: fileId or path is required for delete' };
+          const resp = await fetch(deleteUrl, {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${accessToken}` },
+          });
+          if (!resp.ok) {
+            const text = await resp.text().catch(() => '');
+            return { ...inputObj, _error: `OneDrive delete failed (${resp.status})`, _errorDetails: text };
+          }
+          return { ...inputObj, success: true, deleted: true, path: path || fileId };
+        }
+
+        return { ...inputObj, _error: `OneDrive: Unsupported operation "${rawOpOD}". Supported: read, upload, list, delete` };
       } catch (e) {
         return { ...inputObj, _error: `OneDrive error: ${e instanceof Error ? e.message : String(e)}` };
       }
@@ -4182,7 +4646,7 @@ export async function executeNodeLegacy(
 
       try {
         if (!operation) {
-          return { ...inputObj, _error: 'Stripe: operation is required (charge, refund, createCustomer)' };
+          return { ...inputObj, _error: 'Stripe: operation is required (paymentintent, refund, create_customer, get_payment_intent, list_payment_intents, create_subscription, create_invoice)' };
         }
 
         if (operation === 'createcustomer' || operation === 'create_customer') {
@@ -4249,7 +4713,57 @@ export async function executeNodeLegacy(
           return { ...inputObj, success: true, charge: resp.data };
         }
 
-        return { ...inputObj, _error: `Stripe: Unsupported operation "${operation}". Supported: charge, refund, createCustomer` };
+        if (operation === 'get_payment_intent') {
+          const paymentIntentId = getStringProperty(config, 'paymentIntentId', '').trim();
+          if (!paymentIntentId) return { ...inputObj, _error: 'Stripe get_payment: paymentIntentId is required' };
+          const resp = await fetch(`https://api.stripe.com/v1/payment_intents/${encodeURIComponent(paymentIntentId)}`, {
+            method: 'GET',
+            headers: { 'Authorization': `Bearer ${apiKey}` },
+          });
+          const data = await resp.json().catch(() => null);
+          if (!resp.ok) return { ...inputObj, _error: `Stripe get payment_intent failed (${resp.status})`, _errorDetails: data };
+          return { ...inputObj, success: true, paymentIntent: data };
+        }
+
+        if (operation === 'list_payment_intents') {
+          const limit = Math.max(1, Math.min(100, Number(getStringProperty(config, 'limit', '10') || 10)));
+          const customerId = getStringProperty(config, 'customerId', '').trim();
+          const params = new URLSearchParams({ limit: String(limit) });
+          if (customerId) params.set('customer', resolveStr(customerId));
+          const resp = await fetch(`https://api.stripe.com/v1/payment_intents?${params.toString()}`, {
+            method: 'GET',
+            headers: { 'Authorization': `Bearer ${apiKey}` },
+          });
+          const data = await resp.json().catch(() => null);
+          if (!resp.ok) return { ...inputObj, _error: `Stripe list payment_intents failed (${resp.status})`, _errorDetails: data };
+          return { ...inputObj, success: true, items: Array.isArray((data as any)?.data) ? (data as any).data : [], stripe: data };
+        }
+
+        if (operation === 'create_subscription') {
+          const customerId = getStringProperty(config, 'customerId', '').trim();
+          const priceId = getStringProperty(config, 'priceId', '').trim() || getStringProperty(config, 'metadata', '').trim();
+          if (!customerId) return { ...inputObj, _error: 'Stripe create_subscription: customerId is required' };
+          if (!priceId) return { ...inputObj, _error: 'Stripe create_subscription: priceId is required' };
+          const resp = await stripeFetch('subscriptions', {
+            customer: resolveStr(customerId),
+            'items[0][price]': resolveStr(priceId),
+          });
+          if (!resp.ok) return { ...inputObj, _error: `Stripe create subscription failed (${resp.status})`, _errorDetails: resp.data };
+          return { ...inputObj, success: true, subscription: resp.data };
+        }
+
+        if (operation === 'create_invoice') {
+          const customerId = getStringProperty(config, 'customerId', '').trim();
+          if (!customerId) return { ...inputObj, _error: 'Stripe create_invoice: customerId is required' };
+          const resp = await stripeFetch('invoices', {
+            customer: resolveStr(customerId),
+            description: description ? resolveStr(description) : undefined,
+          });
+          if (!resp.ok) return { ...inputObj, _error: `Stripe create invoice failed (${resp.status})`, _errorDetails: resp.data };
+          return { ...inputObj, success: true, invoice: resp.data };
+        }
+
+        return { ...inputObj, _error: `Stripe: Unsupported operation "${operation}". Supported: create_payment_intent, get_payment, list_payments, create_refund, create_customer, create_subscription, create_invoice` };
       } catch (e) {
         return { ...inputObj, _error: `Stripe error: ${e instanceof Error ? e.message : String(e)}` };
       }
@@ -4497,8 +5011,21 @@ export async function executeNodeLegacy(
       // ✅ Zoom Video node — create/list/get/update/delete meetings via Zoom REST API
       const operation = (getStringProperty(config, 'operation', 'createMeeting') || 'createMeeting').trim();
 
-      // Resolve access token from config or credential vault
+      // Resolve access token: connections table first, then config, then legacy vault
       let accessToken = (getStringProperty(config, 'accessToken', '') || '').trim();
+      if (!accessToken) {
+        try {
+          const injected = await injectSelectedConnectionCredentials({
+            node,
+            config,
+            userId,
+            currentUserId,
+          });
+          accessToken = (getStringProperty(injected.config, 'accessToken', '') || getStringProperty(injected.config, 'access_token', '') || '').trim();
+        } catch {
+          // non-fatal — fall through to error below
+        }
+      }
       if (!accessToken) {
         try {
           const { retrieveCredential } = await import('../core/utils/credential-retriever');
@@ -4515,7 +5042,7 @@ export async function executeNodeLegacy(
       }
 
       if (!accessToken) {
-        return { ...inputObj, _error: 'Zoom: accessToken is required. Provide it in node config or attach a vault credential with key "zoom".' };
+        return { ...inputObj, _error: 'Zoom: accessToken is required. Connect a Zoom account via /connections or provide an access token.' };
       }
 
       const zoomHeaders = {
@@ -4624,7 +5151,7 @@ export async function executeNodeLegacy(
       const shopDomain = getStringProperty(config, 'shopDomain', '').trim();
       const execContext = createTypedContext();
 
-      let token = (getStringProperty(config, 'apiKey', '') || '').trim();
+      let token = (getStringProperty(config, 'apiKey', '') || getStringProperty(config, 'accessToken', '') || '').trim();
       if (!token) {
         try {
           const { retrieveCredential } = await import('../core/utils/credential-retriever');
@@ -4685,6 +5212,10 @@ export async function executeNodeLegacy(
 
         // Parse payload (object or json string)
         let payload: any = (config as any).data ?? (config as any).orderData ?? (config as any).productData ?? null;
+        if (!payload && (operation === 'create' || operation === 'update') && resource === 'product') {
+          const title = getStringProperty(config, 'title', '').trim();
+          if (title) payload = { title };
+        }
         if (typeof payload === 'string' && payload.trim()) {
           const resolved = resolveTypedValue(payload, execContext);
           try { payload = JSON.parse(typeof resolved === 'string' ? resolved : JSON.stringify(resolved)); } catch { payload = null; }
@@ -4739,8 +5270,8 @@ export async function executeNodeLegacy(
       const operation = (getStringProperty(config, 'operation', 'get') || 'get').toLowerCase();
       const storeUrl = getStringProperty(config, 'storeUrl', '').trim();
 
-      let apiKey = (getStringProperty(config, 'apiKey', '') || '').trim();
-      let apiSecret = (getStringProperty(config, 'apiSecret', '') || '').trim();
+      let apiKey = (getStringProperty(config, 'apiKey', '') || getStringProperty(config, 'username', '') || '').trim();
+      let apiSecret = (getStringProperty(config, 'apiSecret', '') || getStringProperty(config, 'password', '') || '').trim();
       if (!apiKey || !apiSecret) {
         try {
           const { retrieveCredential } = await import('../core/utils/credential-retriever');
@@ -4916,31 +5447,27 @@ export async function executeNodeLegacy(
     }
 
     case 'jira': {
-      // ✅ Jira (Atlassian Cloud) minimal: create/read/update/delete issues
-      const operation = (getStringProperty(config, 'operation', 'read') || 'read').toLowerCase();
-      const baseUrl = getStringProperty(config, 'baseUrl', '').trim().replace(/\/+$/, '');
-      const email = getStringProperty(config, 'email', '').trim();
+      const operation = (getStringProperty(config, 'operation', 'create') || 'create').toLowerCase()
+        .replace('create_issue', 'create').replace('get_issue', 'get').replace('update_issue', 'update')
+        .replace('delete_issue', 'delete').replace('search_issues', 'search').replace('add_comment', 'comment')
+        .replace('transition_issue', 'transition').replace('get_projects', 'projects')
+        .replace('_issue', '').replace('_issues', '');
 
-      // Token from config.apiToken or vault key "jira"
-      let apiToken = getStringProperty(config, 'apiToken', '').trim();
-      if (!apiToken) {
-        try {
-          const { retrieveCredential } = await import('../core/utils/credential-retriever');
-          const userIdsToTry: string[] = [];
-          if (userId) userIdsToTry.push(userId);
-          if (currentUserId && currentUserId !== userId) userIdsToTry.push(currentUserId);
-          for (const uid of userIdsToTry) {
-            const found = await retrieveCredential({ userId: uid, workflowId, nodeId: node.id, nodeType: type }, 'jira');
-            if (found) { apiToken = found; break; }
-          }
-        } catch {
-          // ignore
-        }
-      }
+      // Email: merged credential injects 'username' → aliased to 'email'
+      const email = (getStringProperty(config, 'email', '') || getStringProperty(config, 'username', '')).trim();
 
-      if (!baseUrl) return { ...inputObj, _error: 'Jira: baseUrl is required (e.g., https://your-domain.atlassian.net)' };
-      if (!email) return { ...inputObj, _error: 'Jira: email is required (for API token auth)' };
-      if (!apiToken) return { ...inputObj, _error: 'Jira: apiToken not found. Provide apiToken or vault credential "jira".' };
+      // API token: merged credential injects 'password' → aliased to 'apiToken'
+      const apiToken = (getStringProperty(config, 'apiToken', '') || getStringProperty(config, 'password', '')).trim();
+
+      // Base URL: credential injects 'domain' → aliased to 'baseUrl'; add https:// if missing
+      const rawDomain = getStringProperty(config, 'baseUrl', '') || getStringProperty(config, 'domain', '');
+      const baseUrl = rawDomain.trim().replace(/\/+$/, '')
+        ? (rawDomain.trim().startsWith('http') ? rawDomain.trim().replace(/\/+$/, '') : `https://${rawDomain.trim().replace(/\/+$/, '')}`)
+        : '';
+
+      if (!baseUrl) return { ...inputObj, _error: 'Jira: domain is required (e.g., yourcompany.atlassian.net)' };
+      if (!email) return { ...inputObj, _error: 'Jira: email is required — connect your Jira account in the credential selector.' };
+      if (!apiToken) return { ...inputObj, _error: 'Jira: API token not found — connect your Jira account in the credential selector.' };
 
       const auth = Buffer.from(`${email}:${apiToken}`).toString('base64');
       const headers: Record<string, string> = {
@@ -4951,97 +5478,128 @@ export async function executeNodeLegacy(
 
       const issueKey = getStringProperty(config, 'issueKey', '').trim();
 
+      // Helper: build Atlassian Document Format paragraph from plain text
+      const makeAdf = (text: string) => ({
+        type: 'doc', version: 1,
+        content: [{ type: 'paragraph', content: [{ type: 'text', text }] }],
+      });
+
       try {
-        if (operation === 'read' || operation === 'get') {
-          if (!issueKey) return { ...inputObj, _error: 'Jira read: issueKey is required (e.g., PROJ-123)' };
+        if (operation === 'get' || operation === 'read') {
+          if (!issueKey) return { ...inputObj, _error: 'Jira get_issue: issueKey is required (e.g., PROJ-123)' };
           const resp = await fetch(`${baseUrl}/rest/api/3/issue/${encodeURIComponent(issueKey)}`, { headers });
           const data = await resp.json().catch(() => null);
-          if (!resp.ok) return { ...inputObj, _error: `Jira read failed (${resp.status})`, _errorDetails: data };
+          if (!resp.ok) return { ...inputObj, _error: `Jira get_issue failed (${resp.status})`, _errorDetails: data };
           return { ...inputObj, success: true, issue: data };
         }
 
         if (operation === 'create') {
           const projectKey = getStringProperty(config, 'projectKey', '').trim();
           const summary = getStringProperty(config, 'summary', '').trim();
-          const descriptionText = getStringProperty(config, 'descriptionText', '').trim();
+          const descriptionText = (getStringProperty(config, 'description', '') || getStringProperty(config, 'descriptionText', '')).trim();
           const issueType = (getStringProperty(config, 'issueType', '') || 'Task').trim();
-          if (!projectKey || !summary) return { ...inputObj, _error: 'Jira create: projectKey and summary are required' };
+          const priority = getStringProperty(config, 'priority', '').trim();
+          const assigneeId = getStringProperty(config, 'assignee', '').trim();
+          let labels: string[] = [];
+          try { const raw = (config as any).labels; labels = Array.isArray(raw) ? raw : (typeof raw === 'string' && raw ? JSON.parse(raw) : []); } catch { labels = []; }
 
-          const body = {
-            fields: {
-              project: { key: projectKey },
-              summary,
-              issuetype: { name: issueType },
-              ...(descriptionText
-                ? {
-                    description: {
-                      type: 'doc',
-                      version: 1,
-                      content: [
-                        {
-                          type: 'paragraph',
-                          content: [{ type: 'text', text: descriptionText }],
-                        },
-                      ],
-                    },
-                  }
-                : {}),
-            },
+          if (!projectKey || !summary) return { ...inputObj, _error: 'Jira create_issue: projectKey and summary are required' };
+
+          const fields: any = {
+            project: { key: projectKey },
+            summary,
+            issuetype: { name: issueType },
+            ...(descriptionText ? { description: makeAdf(descriptionText) } : {}),
+            ...(priority ? { priority: { name: priority } } : {}),
+            ...(assigneeId ? { assignee: { accountId: assigneeId } } : {}),
+            ...(labels.length ? { labels } : {}),
           };
 
           const resp = await fetch(`${baseUrl}/rest/api/3/issue`, {
-            method: 'POST',
-            headers,
-            body: JSON.stringify(body),
+            method: 'POST', headers, body: JSON.stringify({ fields }),
           });
           const data = await resp.json().catch(() => null);
-          if (!resp.ok) return { ...inputObj, _error: `Jira create failed (${resp.status})`, _errorDetails: data };
-          return { ...inputObj, success: true, created: data };
+          if (!resp.ok) return { ...inputObj, _error: `Jira create_issue failed (${resp.status})`, _errorDetails: data };
+          return { ...inputObj, success: true, issueKey: (data as any)?.key, issueId: (data as any)?.id, created: data };
         }
 
         if (operation === 'update') {
-          if (!issueKey) return { ...inputObj, _error: 'Jira update: issueKey is required' };
+          if (!issueKey) return { ...inputObj, _error: 'Jira update_issue: issueKey is required' };
           const summary = getStringProperty(config, 'summary', '').trim();
-          const descriptionText = getStringProperty(config, 'descriptionText', '').trim();
-          if (!summary && !descriptionText) return { ...inputObj, _error: 'Jira update: provide summary and/or descriptionText' };
+          const descriptionText = (getStringProperty(config, 'description', '') || getStringProperty(config, 'descriptionText', '')).trim();
+          const priority = getStringProperty(config, 'priority', '').trim();
+          if (!summary && !descriptionText && !priority) return { ...inputObj, _error: 'Jira update_issue: provide at least one of summary, description, or priority' };
 
           const fields: any = {};
           if (summary) fields.summary = summary;
-          if (descriptionText) {
-            fields.description = {
-              type: 'doc',
-              version: 1,
-              content: [
-                {
-                  type: 'paragraph',
-                  content: [{ type: 'text', text: descriptionText }],
-                },
-              ],
-            };
-          }
+          if (descriptionText) fields.description = makeAdf(descriptionText);
+          if (priority) fields.priority = { name: priority };
 
           const resp = await fetch(`${baseUrl}/rest/api/3/issue/${encodeURIComponent(issueKey)}`, {
-            method: 'PUT',
-            headers,
-            body: JSON.stringify({ fields }),
+            method: 'PUT', headers, body: JSON.stringify({ fields }),
           });
           const text = await resp.text().catch(() => '');
-          if (!resp.ok) return { ...inputObj, _error: `Jira update failed (${resp.status})`, _errorDetails: text };
-          return { ...inputObj, success: true, updated: true };
+          if (!resp.ok) return { ...inputObj, _error: `Jira update_issue failed (${resp.status})`, _errorDetails: text };
+          return { ...inputObj, success: true, updated: true, issueKey };
         }
 
         if (operation === 'delete') {
-          if (!issueKey) return { ...inputObj, _error: 'Jira delete: issueKey is required' };
+          if (!issueKey) return { ...inputObj, _error: 'Jira delete_issue: issueKey is required' };
           const resp = await fetch(`${baseUrl}/rest/api/3/issue/${encodeURIComponent(issueKey)}`, {
-            method: 'DELETE',
-            headers,
+            method: 'DELETE', headers,
           });
           const text = await resp.text().catch(() => '');
-          if (!resp.ok) return { ...inputObj, _error: `Jira delete failed (${resp.status})`, _errorDetails: text };
+          if (!resp.ok) return { ...inputObj, _error: `Jira delete_issue failed (${resp.status})`, _errorDetails: text };
           return { ...inputObj, success: true, deleted: true, issueKey };
         }
 
-        return { ...inputObj, _error: `Jira: Unsupported operation "${operation}". Supported: create, read, update, delete` };
+        if (operation === 'search') {
+          const jql = getStringProperty(config, 'jql', '').trim();
+          const maxResults = Number((config as any).maxResults ?? 50);
+          if (!jql) return { ...inputObj, _error: 'Jira search_issues: jql query is required (e.g., project = PROJ AND status = "In Progress")' };
+          // Jira Cloud deprecated /rest/api/3/search (POST) — use /search/jql instead
+          const resp = await fetch(`${baseUrl}/rest/api/3/search/jql`, {
+            method: 'POST', headers,
+            body: JSON.stringify({ jql, maxResults, fields: ['summary', 'status', 'assignee', 'priority', 'issuetype', 'created', 'updated'] }),
+          });
+          const data = await resp.json().catch(() => null);
+          if (!resp.ok) return { ...inputObj, _error: `Jira search_issues failed (${resp.status})`, _errorDetails: data };
+          return { ...inputObj, success: true, total: (data as any)?.total, issues: (data as any)?.issues };
+        }
+
+        if (operation === 'comment') {
+          if (!issueKey) return { ...inputObj, _error: 'Jira add_comment: issueKey is required' };
+          const commentBody = (getStringProperty(config, 'commentBody', '') || getStringProperty(config, 'comment', '')).trim();
+          if (!commentBody) return { ...inputObj, _error: 'Jira add_comment: commentBody is required' };
+          const resp = await fetch(`${baseUrl}/rest/api/3/issue/${encodeURIComponent(issueKey)}/comment`, {
+            method: 'POST', headers, body: JSON.stringify({ body: makeAdf(commentBody) }),
+          });
+          const data = await resp.json().catch(() => null);
+          if (!resp.ok) return { ...inputObj, _error: `Jira add_comment failed (${resp.status})`, _errorDetails: data };
+          return { ...inputObj, success: true, commentId: (data as any)?.id, comment: data };
+        }
+
+        if (operation === 'transition') {
+          if (!issueKey) return { ...inputObj, _error: 'Jira transition_issue: issueKey is required' };
+          const transitionId = getStringProperty(config, 'transitionId', '').trim();
+          if (!transitionId) return { ...inputObj, _error: 'Jira transition_issue: transitionId is required. Use Get Transitions to find valid IDs.' };
+          const resp = await fetch(`${baseUrl}/rest/api/3/issue/${encodeURIComponent(issueKey)}/transitions`, {
+            method: 'POST', headers, body: JSON.stringify({ transition: { id: transitionId } }),
+          });
+          const text = await resp.text().catch(() => '');
+          if (!resp.ok) return { ...inputObj, _error: `Jira transition_issue failed (${resp.status})`, _errorDetails: text };
+          return { ...inputObj, success: true, transitioned: true, issueKey, transitionId };
+        }
+
+        if (operation === 'projects') {
+          const resp = await fetch(`${baseUrl}/rest/api/3/project?expand=description,lead`, { headers });
+          const data = await resp.json().catch(() => null);
+          if (!resp.ok) return { ...inputObj, _error: `Jira get_projects failed (${resp.status})`, _errorDetails: data };
+          const projects = Array.isArray(data) ? data.map((p: any) => ({ key: p.key, id: p.id, name: p.name, type: p.projectTypeKey })) : data;
+          return { ...inputObj, success: true, projects };
+        }
+
+        return { ...inputObj, _error: `Jira: Unsupported operation "${operation}". Supported: create_issue, get_issue, update_issue, delete_issue, search_issues, add_comment, transition_issue, get_projects` };
       } catch (e) {
         return { ...inputObj, _error: `Jira error: ${e instanceof Error ? e.message : String(e)}` };
       }
@@ -5220,9 +5778,21 @@ export async function executeNodeLegacy(
     }
 
     case 'clickup': {
-      let clickupCredentials =
-        (node as any).credentials?.clickup_api || (node as any).clickup_api || null;
-      if (!clickupCredentials?.apiKey && !clickupCredentials?.apiToken) {
+      // Prefer the already-merged config (injected via mergeRuntimeCredentials 'apiToken→apiKey' alias)
+      const clickupApiKeyFromConfig =
+        getStringProperty(config, 'apiKey', '') ||
+        getStringProperty(config, 'apiToken', '') ||
+        getStringProperty(config, 'token', '');
+
+      let clickupCredentials: { apiKey: string; teamId?: string; baseUrl?: string } | null = null;
+
+      if (clickupApiKeyFromConfig) {
+        clickupCredentials = {
+          apiKey: clickupApiKeyFromConfig,
+          teamId: getStringProperty(config, 'workspaceId', '') || getStringProperty(config, 'teamId', '') || undefined,
+        };
+      } else {
+        // Legacy fallback: retrieve from dashboard credential store
         const stored = await retrieveDashboardCredential({
           userId,
           currentUserId,
@@ -5232,15 +5802,16 @@ export async function executeNodeLegacy(
           key: 'clickup',
         });
         const parsed = parseCredentialValue(stored);
-        const apiKey = parsed.apiKey || parsed.apiToken || parsed.token || parsed.value || stored || '';
-        if (apiKey) {
+        const legacyKey = parsed.apiKey || parsed.apiToken || parsed.token || parsed.value || stored || '';
+        if (legacyKey) {
           clickupCredentials = {
-            apiKey,
+            apiKey: legacyKey,
             teamId: parsed.teamId || parsed.workspaceId,
             baseUrl: parsed.baseUrl,
           };
         }
       }
+
       result = await executeClickUpNode(node as any, inputObj, clickupCredentials);
       break;
     }
@@ -5277,47 +5848,101 @@ export async function executeNodeLegacy(
     }
 
     case 'openai_gpt':
-    case 'anthropic_claude':
-    case 'google_gemini': {
-      // ✅ REFACTORED: AI nodes with typed resolution
-      const prompt = getStringProperty(config, 'prompt', '');
+    case 'anthropic_claude': {
+      let prompt = getStringProperty(config, 'prompt', '');
+      if (!prompt && Array.isArray((config as any).messages)) {
+        prompt = (config as any).messages
+          .map((message: any) => typeof message === 'string' ? message : message?.content)
+          .filter((content: unknown) => typeof content === 'string' && content.trim())
+          .join('\n');
+      }
       const model = getStringProperty(config, 'model', 'gpt-4o');
-      let apiKey = getStringProperty(config, 'apiKey', '');
-      const provider = type === 'openai_gpt' ? 'openai' : 
-                      type === 'anthropic_claude' ? 'claude' : 'gemini';
-      
-      if (!apiKey) {
-        const credentialKey =
-          type === 'openai_gpt' ? 'openai' :
-          type === 'anthropic_claude' ? 'anthropic' :
-          'gemini';
+      let apiKey =
+        getStringProperty(config, 'apiKey', '') ||
+        getStringProperty(config, 'accessToken', '') ||
+        getStringProperty(config, 'token', '');
+      const provider = type === 'openai_gpt' ? 'openai' : 'claude';
+
+      if (type === 'openai_gpt') {
+        const selectedOpenAi = await resolveOpenAiApiKeyForNode({ node, config, userId, currentUserId });
+        if (selectedOpenAi.error) {
+          return { success: false, error: selectedOpenAi.error };
+        }
+        apiKey = selectedOpenAi.apiKey || apiKey;
+      }
+
+      if (!apiKey && type === 'anthropic_claude') {
         const stored = await retrieveDashboardCredential({
-          userId,
-          currentUserId,
-          workflowId,
-          nodeId: node.id,
-          nodeType: type,
-          key: credentialKey,
+          userId, currentUserId, workflowId, nodeId: node.id, nodeType: type, key: 'anthropic',
         });
         const parsed = parseCredentialValue(stored);
         apiKey = parsed.apiKey || parsed.key || parsed.token || parsed.value || stored || '';
       }
-      
-      // Use typed execution context
+
       const execContext = createTypedContext();
-      // Prompts are always strings
       const resolvedPrompt = typeof resolveWithSchema(prompt, execContext, 'string') === 'string'
         ? resolveWithSchema(prompt, execContext, 'string') as string
         : String(resolveTypedValue(prompt, execContext));
-      
+
       const llmAdapter = new LLMAdapter();
-      const response = await llmAdapter.chat(provider, [
-        { role: 'user', content: resolvedPrompt }
-      ], { model, apiKey });
+      const rawUpstreamOA = nodeOutputs.get('input') ?? nodeOutputs.get('$json');
+      const upstreamStrOA = !prompt.includes('{{') ? extractUpstreamStringForPrompt(rawUpstreamOA) : '';
+      const messagesOA: Array<{ role: 'system' | 'user'; content: string }> = [];
+      if (upstreamStrOA && upstreamStrOA !== resolvedPrompt) {
+        if (resolvedPrompt) messagesOA.push({ role: 'system', content: resolvedPrompt });
+        messagesOA.push({ role: 'user', content: upstreamStrOA });
+      } else {
+        messagesOA.push({ role: 'user', content: resolvedPrompt });
+      }
+      const response = await llmAdapter.chat(provider, messagesOA, { model, apiKey });
 
       return {
         response: response.content,
         model: response.model,
+        usage: response.usage,
+        finishReason: response.finishReason,
+      };
+    }
+
+    case 'google_gemini': {
+      let prompt = getStringProperty(config, 'prompt', '');
+      if (!prompt && Array.isArray((config as any).messages)) {
+        prompt = (config as any).messages
+          .map((message: any) => typeof message === 'string' ? message : message?.content)
+          .filter((content: unknown) => typeof content === 'string' && content.trim())
+          .join('\n');
+      }
+      const model = getStringProperty(config, 'model', 'gemini-2.5-flash');
+
+      // Resolve API key: user-selected connection → inline config key → server env var (via LLMAdapter)
+      const geminiResolved = await resolveGeminiApiKeyForNode({ node, config, userId, currentUserId });
+      if (geminiResolved.error) {
+        return { success: false, error: geminiResolved.error };
+      }
+      const apiKey = geminiResolved.apiKey || '';
+
+      const execContext = createTypedContext();
+      const resolvedPrompt = typeof resolveWithSchema(prompt, execContext, 'string') === 'string'
+        ? resolveWithSchema(prompt, execContext, 'string') as string
+        : String(resolveTypedValue(prompt, execContext));
+
+      const llmAdapter = new LLMAdapter();
+      const rawUpstreamGG = nodeOutputs.get('input') ?? nodeOutputs.get('$json');
+      const upstreamStrGG = !prompt.includes('{{') ? extractUpstreamStringForPrompt(rawUpstreamGG) : '';
+      const messagesGG: Array<{ role: 'system' | 'user'; content: string }> = [];
+      if (upstreamStrGG && upstreamStrGG !== resolvedPrompt) {
+        if (resolvedPrompt) messagesGG.push({ role: 'system', content: resolvedPrompt });
+        messagesGG.push({ role: 'user', content: upstreamStrGG });
+      } else {
+        messagesGG.push({ role: 'user', content: resolvedPrompt });
+      }
+      const response = await llmAdapter.chat('gemini', messagesGG, { model, apiKey });
+
+      return {
+        response: response.content,
+        model: response.model,
+        usage: response.usage,
+        finishReason: response.finishReason,
       };
     }
 
@@ -5357,7 +5982,18 @@ export async function executeNodeLegacy(
         resolvedPromptEmpty: !resolvedPrompt || resolvedPrompt.trim() === '',
       });
 
-      if (!resolvedPrompt || resolvedPrompt.trim() === '') {
+      // When the prompt has no template expressions, incorporate upstream node output:
+      // static prompt becomes system context, upstream data becomes the user message.
+      const rawUpstreamAC = nodeOutputs.get('input') ?? nodeOutputs.get('$json');
+      const upstreamStrAC = !prompt.includes('{{') ? extractUpstreamStringForPrompt(rawUpstreamAC) : '';
+      let effectiveUserMessage = resolvedPrompt;
+      let extraSystemContext = '';
+      if (upstreamStrAC && upstreamStrAC !== resolvedPrompt) {
+        extraSystemContext = resolvedPrompt;
+        effectiveUserMessage = upstreamStrAC;
+      }
+
+      if (!effectiveUserMessage || effectiveUserMessage.trim() === '') {
         console.error('[AI Chat Model] ❌ ERROR: Prompt is empty or missing', {
           nodeId: node.id,
           nodeLabel: node.data?.label,
@@ -5371,8 +6007,10 @@ export async function executeNodeLegacy(
       const messages: Array<{ role: 'system' | 'user'; content: string }> = [];
       if (systemPrompt && systemPrompt.trim()) {
         messages.push({ role: 'system', content: systemPrompt });
+      } else if (extraSystemContext) {
+        messages.push({ role: 'system', content: extraSystemContext });
       }
-      messages.push({ role: 'user', content: resolvedPrompt });
+      messages.push({ role: 'user', content: effectiveUserMessage });
 
       // ✅ Use Gemini with GEMINI_API_KEY from config
       const { config: appConfig } = await import('../core/config');
@@ -7615,11 +8253,17 @@ export async function executeNodeLegacy(
     case 'airtable': {
       // ✅ Airtable node with comprehensive operation support
       // Supports: list, get, create, update, upsert, delete operations
-      let apiKey = getStringProperty(config, 'apiKey', '');
+      let apiKey =
+        getStringProperty(config, 'apiKey', '') ||
+        getStringProperty(config, 'accessToken', '') ||
+        getStringProperty(config, 'token', '');
       const baseId = getStringProperty(config, 'baseId', '');
-      const tableName = getStringProperty(config, 'table', '');
+      const tableName =
+        getStringProperty(config, 'table', '') ||
+        getStringProperty(config, 'tableId', '');
       const resource = getStringProperty(config, 'resource', 'Record');
-      const operation = getStringProperty(config, 'operation', 'list');
+      const rawOperation = getStringProperty(config, 'operation', 'list').toLowerCase();
+      const operation = rawOperation === 'read' ? 'list' : rawOperation;
 
       if (!apiKey) {
         const stored = await retrieveDashboardCredential({
@@ -7637,7 +8281,7 @@ export async function executeNodeLegacy(
       if (!apiKey) {
         return {
           ...inputObj,
-          _error: 'Airtable node: API Key is required',
+          _error: 'Airtable node: Select an active Airtable connection or provide a Personal Access Token.',
         };
       }
       if (!baseId) {
@@ -7649,7 +8293,7 @@ export async function executeNodeLegacy(
       if (!tableName) {
         return {
           ...inputObj,
-          _error: 'Airtable node: Table name is required',
+          _error: 'Airtable node: Table ID or table name is required',
         };
       }
 
@@ -7664,6 +8308,8 @@ export async function executeNodeLegacy(
       const resolvedApiKey = typeof resolveWithSchema(apiKey, execContext, 'string') === 'string'
         ? resolveWithSchema(apiKey, execContext, 'string') as string
         : String(resolveTypedValue(apiKey, execContext));
+      const toResolvableString = (value: unknown, fallback: string) =>
+        typeof value === 'string' ? value : JSON.stringify(value ?? fallback);
 
       try {
         // Initialize Airtable with API key
@@ -7835,13 +8481,14 @@ export async function executeNodeLegacy(
           };
         } else if (operation === 'create') {
           // Create Records operation
-          const recordsJson = getStringProperty(config, 'records', '[]');
+          const recordsInput = config.records !== undefined ? config.records : (config.fields ?? []);
+          const recordsSource = toResolvableString(recordsInput, '[]');
           const typecast = getBooleanProperty(config, 'typecast', false);
 
           // Resolve and parse records
           let recordsToCreate: Array<{ fields: Record<string, any> }>;
           try {
-            const recordsResolved = resolveTypedValue(recordsJson, execContext);
+            const recordsResolved = resolveTypedValue(recordsSource, execContext);
             if (Array.isArray(recordsResolved)) {
               // If it's already an array, check if it's array of objects with fields
               if (recordsResolved.length > 0 && recordsResolved[0]?.fields) {
@@ -7896,34 +8543,36 @@ export async function executeNodeLegacy(
           };
         } else if (operation === 'update') {
           // Update Records operation
-          const recordsJson = getStringProperty(config, 'records', '[]');
+          const recordsInput = config.records !== undefined ? config.records : (config.fields ?? []);
+          const recordsSource = toResolvableString(recordsInput, '[]');
+          const recordIdFallback = getStringProperty(config, 'recordId', '');
           const typecast = getBooleanProperty(config, 'typecast', false);
 
           // Resolve and parse records
           let recordsToUpdate: Array<{ id: string; fields: Record<string, any> }>;
           try {
-            const recordsResolved = resolveTypedValue(recordsJson, execContext);
+            const recordsResolved = resolveTypedValue(recordsSource, execContext);
             if (Array.isArray(recordsResolved)) {
               recordsToUpdate = recordsResolved.map((r: any) => ({
-                id: r.id || r.recordId,
+                id: r.id || r.recordId || recordIdFallback,
                 fields: r.fields || r,
               }));
             } else if (typeof recordsResolved === 'object' && recordsResolved !== null) {
               const recordObj = recordsResolved as Record<string, any>;
               recordsToUpdate = [{
-                id: recordObj.id || recordObj.recordId || '',
+                id: recordObj.id || recordObj.recordId || recordIdFallback,
                 fields: recordObj.fields || recordObj,
               }];
             } else {
               const parsed = typeof recordsResolved === 'string' ? JSON.parse(recordsResolved) : recordsResolved;
               if (Array.isArray(parsed)) {
                 recordsToUpdate = parsed.map((r: any) => ({
-                  id: r.id || r.recordId,
+                  id: r.id || r.recordId || recordIdFallback,
                   fields: r.fields || r,
                 }));
               } else {
                 recordsToUpdate = [{
-                  id: parsed.id || parsed.recordId || '',
+                  id: parsed.id || parsed.recordId || recordIdFallback,
                   fields: parsed.fields || parsed,
                 }];
               }
@@ -7965,7 +8614,8 @@ export async function executeNodeLegacy(
           };
         } else if (operation === 'upsert') {
           // Upsert Records operation (Update or Create)
-          const recordsJson = getStringProperty(config, 'records', '[]');
+          const recordsInput = config.records !== undefined ? config.records : (config.fields ?? []);
+          const recordsSource = toResolvableString(recordsInput, '[]');
           const matchField = getStringProperty(config, 'matchField', '');
           const typecast = getBooleanProperty(config, 'typecast', false);
 
@@ -7983,7 +8633,7 @@ export async function executeNodeLegacy(
           // Resolve and parse records
           let recordsToUpsert: Array<{ fields: Record<string, any> }>;
           try {
-            const recordsResolved = resolveTypedValue(recordsJson, execContext);
+            const recordsResolved = resolveTypedValue(recordsSource, execContext);
             if (Array.isArray(recordsResolved)) {
               recordsToUpsert = recordsResolved.map((r: any) => ({
                 fields: r.fields || r,
@@ -8099,12 +8749,13 @@ export async function executeNodeLegacy(
           };
         } else if (operation === 'delete') {
           // Delete Records operation
-          const recordIdsJson = getStringProperty(config, 'recordIds', '');
+          const recordIdsInput = config.recordIds !== undefined ? config.recordIds : getStringProperty(config, 'recordId', '');
+          const recordIdsSource = toResolvableString(recordIdsInput, '');
 
           // Resolve and parse record IDs
           let recordIds: string[];
           try {
-            const recordIdsResolved = resolveTypedValue(recordIdsJson, execContext);
+            const recordIdsResolved = resolveTypedValue(recordIdsSource, execContext);
             if (Array.isArray(recordIdsResolved)) {
               recordIds = recordIdsResolved.map(id => String(id));
             } else if (typeof recordIdsResolved === 'string') {
@@ -9121,6 +9772,17 @@ export async function executeNodeLegacy(
           return defaultValue;
         };
 
+        const notionRichText = (text: string) => [{ type: 'text', text: { content: text } }];
+        const notionParagraphChildren = (text: string) => text
+          ? [{ object: 'block', type: 'paragraph', paragraph: { rich_text: notionRichText(text) } }]
+          : null;
+        const notionTitle = (key: string): any => {
+          const jsonTitle = getJsonProp(key);
+          if (jsonTitle) return jsonTitle;
+          const titleText = resolveString(getStringProperty(config, key, ''));
+          return titleText ? notionRichText(titleText) : null;
+        };
+
         // Helper to collect all paginated results
         const collectAllPages = async <T>(
           paginatedFn: (startCursor?: string) => Promise<{ results: T[]; next_cursor: string | null; has_more: boolean }>,
@@ -9160,7 +9822,7 @@ export async function executeNodeLegacy(
             const parentPageId = resolveString(getStringProperty(config, 'parentPageId', ''))
               || resolveString(getStringProperty(config, 'parentId', ''));
             const properties = getJsonProp('properties');
-            const children = getJsonProp('children');
+            const children = getJsonProp('children') || notionParagraphChildren(resolveString(getStringProperty(config, 'content', '')));
 
             if (!databaseId && !parentPageId) {
               return { ...inputObj, _error: 'Notion node: Either databaseId or parentPageId is required for create operation' };
@@ -9281,7 +9943,7 @@ export async function executeNodeLegacy(
             // Accept both 'parentPageId' and legacy 'parentId' key name
             const parentPageId = resolveString(getStringProperty(config, 'parentPageId', ''))
               || resolveString(getStringProperty(config, 'parentId', ''));
-            const title = getJsonProp('title');
+            const title = notionTitle('title');
             const schema = getJsonProp('schema');
             const isInline = getBooleanProperty(config, 'isInline', false);
 
@@ -9306,7 +9968,7 @@ export async function executeNodeLegacy(
             if (!databaseId) {
               return { ...inputObj, _error: 'Notion node: databaseId is required for update operation' };
             }
-            const title = getJsonProp('title');
+            const title = notionTitle('title');
             const schema = getJsonProp('schema');
 
             const updateData: any = {};
@@ -9360,7 +10022,7 @@ export async function executeNodeLegacy(
             if (!blockId) {
               return { ...inputObj, _error: 'Notion node: blockId is required for appendChildren operation' };
             }
-            const children = getJsonProp('children');
+            const children = getJsonProp('children') || notionParagraphChildren(resolveString(getStringProperty(config, 'content', '')));
             if (!children || !Array.isArray(children) || children.length === 0) {
               return { ...inputObj, _error: 'Notion node: children (blocks array) is required for appendChildren operation' };
             }
@@ -9465,7 +10127,7 @@ export async function executeNodeLegacy(
           } else if (operation === 'create') {
             const pageId = resolveString(getStringProperty(config, 'pageId', ''));
             const parentDiscussionId = resolveString(getStringProperty(config, 'parentDiscussionId', ''));
-            const richText = getJsonProp('richText');
+            const richText = getJsonProp('richText') || notionRichText(resolveString(getStringProperty(config, 'comment', '')));
 
             if (!pageId && !parentDiscussionId) {
               return { ...inputObj, _error: 'Notion node: Either pageId or parentDiscussionId is required for create comment operation' };
@@ -9602,6 +10264,17 @@ export async function executeNodeLegacy(
             }
           }
           return null;
+        };
+
+        const compactTwitterOptions = (options: Record<string, unknown>): Record<string, unknown> | undefined => {
+          const compacted = Object.fromEntries(
+            Object.entries(options).filter(([, value]) => {
+              if (value === undefined || value === null || value === '') return false;
+              if (Array.isArray(value) && value.length === 0) return false;
+              return true;
+            })
+          );
+          return Object.keys(compacted).length > 0 ? compacted : undefined;
         };
 
         // Helper to resolve string with templates
@@ -9851,12 +10524,13 @@ export async function executeNodeLegacy(
             const expansions = getJsonProp('expansions');
             const userFields = getJsonProp('userFields');
             const tweetFields = getJsonProp('tweetFields');
-            
-            result = await twitter.v2.me({
+
+            const meOptions = compactTwitterOptions({
               expansions,
               'user.fields': userFields,
               'tweet.fields': tweetFields,
             });
+            result = meOptions ? await twitter.v2.me(meOptions as any) : await twitter.v2.me();
           } else if (operation === 'follow') {
             const targetUserId = resolveString(getStringProperty(config, 'targetUserId', ''));
             if (!targetUserId) {
@@ -11990,6 +12664,7 @@ export async function executeNodeLegacy(
           operation,
           calendarId: resolveString(getStringProperty(config, 'calendarId', 'primary')),
           summary: resolveString(getStringProperty(config, 'summary', '')),
+          description: resolveString(getStringProperty(config, 'description', '')),
           eventId: resolveString(getStringProperty(config, 'eventId', '')),
           start: getJsonProp('start'),
           end: getJsonProp('end'),
@@ -12109,9 +12784,7 @@ export async function executeNodeLegacy(
       // For now we map them to the core operations implemented below so existing
       // workflows don't break with "Unknown operation" errors.
       const operation =
-        rawOperation === 'create_post_media' ||
-        rawOperation === 'create_article' ||
-        rawOperation === 'create_company_post'
+        rawOperation === 'create_post_media'
           ? 'create_post'
           : rawOperation === 'get_org_updates' || rawOperation === 'get_engagement'
           ? 'get_posts'
@@ -12179,6 +12852,8 @@ export async function executeNodeLegacy(
         getLinkedInProfile,
         getLinkedInPosts,
         createLinkedInPost,
+        createLinkedInArticlePost,
+        createLinkedInCompanyPost,
         deleteLinkedInPost,
         getPersonUrnFromToken,
         registerLinkedInUpload,
@@ -12481,7 +13156,7 @@ export async function executeNodeLegacy(
                 // For permission / auth errors, fail fast
                 if (err.message?.includes('401') || err.message?.includes('403')) {
                   const message =
-                    'LinkedIn authorization failed. Check that required permissions (w_member_social, r_liteprofile, r_emailaddress) are granted.';
+                    'LinkedIn authorization failed. Check that required permissions (openid, profile, email, w_member_social) are granted.';
                   console.error('[LinkedIn Node] Authorization error.', {
                     message: err.message,
                   });
@@ -12537,10 +13212,72 @@ export async function executeNodeLegacy(
             };
           }
 
+          case 'create_article': {
+            const articleUrl = getStringProperty(config, 'articleUrl', '').trim();
+            if (!articleUrl) {
+              return {
+                ...inputObj,
+                _error: 'LinkedIn node: articleUrl is required for create_article operation',
+              };
+            }
+            if (!personUrn) {
+              return {
+                ...inputObj,
+                _error: 'LinkedIn node: personUrn is required for create_article operation',
+              };
+            }
+            const visibility = getStringProperty(config, 'visibility', 'PUBLIC') as 'PUBLIC' | 'CONNECTIONS';
+            if (dryRun) {
+              return {
+                ...inputObj,
+                success: true,
+                dryRun: true,
+                simulatedRequest: {
+                  endpoint: 'https://api.linkedin.com/v2/ugcPosts',
+                  method: 'POST',
+                  body: { author: `urn:li:person:${personUrn}`, shareMediaCategory: 'ARTICLE', articleUrl, text: resolvedText, visibility },
+                },
+              };
+            }
+            const result = await createLinkedInArticlePost(accessToken, personUrn, resolvedText, articleUrl, visibility);
+            return { ...inputObj, postId: result.id, success: true };
+          }
+
+          case 'create_company_post': {
+            const organizationId = getStringProperty(config, 'organizationId', '').trim();
+            if (!organizationId) {
+              return {
+                ...inputObj,
+                _error: 'LinkedIn node: organizationId is required for create_company_post operation (e.g. "123456789" from your LinkedIn Company Page URL)',
+              };
+            }
+            if (!resolvedText || !resolvedText.trim()) {
+              return {
+                ...inputObj,
+                _error: 'LinkedIn node: text is required for create_company_post operation',
+              };
+            }
+            const visibility = getStringProperty(config, 'visibility', 'PUBLIC') as 'PUBLIC' | 'CONNECTIONS';
+            if (dryRun) {
+              return {
+                ...inputObj,
+                success: true,
+                dryRun: true,
+                simulatedRequest: {
+                  endpoint: 'https://api.linkedin.com/v2/ugcPosts',
+                  method: 'POST',
+                  body: { author: `urn:li:organization:${organizationId}`, text: resolvedText, visibility },
+                },
+              };
+            }
+            const result = await createLinkedInCompanyPost(accessToken, organizationId, resolvedText, visibility);
+            return { ...inputObj, postId: result.id, success: true };
+          }
+
           default:
             return {
               ...inputObj,
-              _error: `LinkedIn node: Unknown operation "${rawOperation}". Supported operations: get_profile, get_posts, post, create_post, delete_post (UI operations like create_post_media/create_article/create_company_post/get_org_updates/get_engagement are internally mapped to these).`,
+              _error: `LinkedIn node: Unknown operation "${rawOperation}". Supported: get_profile, create_post, create_post_media, create_article, delete_post.`,
             };
         }
       } catch (err) {
@@ -13524,24 +14261,26 @@ export async function executeNodeLegacy(
     }
 
     case 'discord': {
-      // Discord node - send message to a channel via Discord Bot API
+      // Discord node — supports both Bot API (botToken + channelId) and Webhook (webhookUrl)
       const channelId = getStringProperty(config, 'channelId', '');
       const message = getStringProperty(config, 'message', '');
-      if (!channelId || !message) {
-        return { ...inputObj, _error: 'Discord: channelId and message are required' };
+      if (!message) {
+        return { ...inputObj, _error: 'Discord: message is required' };
       }
 
       const execContext = createTypedContext();
-      const resolvedChannelId = typeof resolveWithSchema(channelId, execContext, 'string') === 'string'
-        ? (resolveWithSchema(channelId, execContext, 'string') as string)
-        : String(resolveTypedValue(channelId, execContext));
+      const resolvedChannelId = channelId
+        ? (typeof resolveWithSchema(channelId, execContext, 'string') === 'string'
+            ? (resolveWithSchema(channelId, execContext, 'string') as string)
+            : String(resolveTypedValue(channelId, execContext)))
+        : '';
       const resolvedMessage = typeof resolveWithSchema(message, execContext, 'string') === 'string'
         ? (resolveWithSchema(message, execContext, 'string') as string)
         : String(resolveTypedValue(message, execContext));
 
-      // Token from config.botToken or vault key "discord"
-      let botToken = getStringProperty(config, 'botToken', '') || getStringProperty(config, 'token', '');
-      if (!botToken) {
+      // Bot token: strip "Bot " prefix if already present (prevents double-prefix 401)
+      let rawBotToken = getStringProperty(config, 'botToken', '') || getStringProperty(config, 'token', '');
+      if (!rawBotToken) {
         try {
           const { retrieveCredential } = await import('../core/utils/credential-retriever');
           const userIdsToTry: string[] = [];
@@ -13549,40 +14288,76 @@ export async function executeNodeLegacy(
           if (currentUserId && currentUserId !== userId) userIdsToTry.push(currentUserId);
           for (const uid of userIdsToTry) {
             const found = await retrieveCredential({ userId: uid, workflowId, nodeId: node.id, nodeType: type }, 'discord');
-            if (found) { botToken = found; break; }
+            if (found) { rawBotToken = found; break; }
           }
         } catch {
           // ignore
         }
       }
+      // Strip "Bot " prefix if user accidentally included it in the stored token
+      const botToken = rawBotToken.startsWith('Bot ') ? rawBotToken.slice(4).trim() : rawBotToken.trim();
 
-      if (!botToken) {
-        return { ...inputObj, _error: 'Discord: bot token not found. Connect Discord or provide botToken.' };
-      }
+      // Webhook URL fallback: injected via mergeRuntimeCredentials from discord_webhook connections
+      const webhookUrl = getStringProperty(config, 'webhookUrl', '') || getStringProperty(config, 'headerName', '');
 
-      try {
-        const resp = await fetch(`https://discord.com/api/v10/channels/${encodeURIComponent(resolvedChannelId)}/messages`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bot ${botToken}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ content: resolvedMessage }),
-        });
-        const data = await resp.json().catch(() => null);
-        if (!resp.ok) {
-          return { ...inputObj, _error: `Discord send failed (${resp.status})`, _errorDetails: data };
+      // Path 1: Bot API (requires botToken + channelId)
+      if (botToken && resolvedChannelId) {
+        try {
+          const resp = await fetch(`https://discord.com/api/v10/channels/${encodeURIComponent(resolvedChannelId)}/messages`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bot ${botToken}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ content: resolvedMessage }),
+          });
+          const data = await resp.json().catch(() => null);
+          if (!resp.ok) {
+            return { ...inputObj, _error: `Discord send failed (${resp.status})`, _errorDetails: data };
+          }
+          return { ...inputObj, success: true, discord: data };
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          return { ...inputObj, _error: `Discord error: ${msg}` };
         }
-        return { ...inputObj, success: true, discord: data };
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        return { ...inputObj, _error: `Discord error: ${msg}` };
       }
+
+      // Path 2: Webhook API (requires webhookUrl, no channelId needed)
+      if (webhookUrl && webhookUrl.startsWith('https://discord.com/api/webhooks/')) {
+        try {
+          const resp = await fetch(webhookUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: resolvedMessage }),
+          });
+          const text = await resp.text().catch(() => '');
+          if (!resp.ok) {
+            return { ...inputObj, _error: `Discord webhook send failed (${resp.status})`, _errorDetails: text };
+          }
+          // Discord webhook returns 204 No Content on success (empty body by design)
+          return {
+            ...inputObj,
+            success: true,
+            sent: true,
+            message: resolvedMessage,
+            discord: { status: resp.status, delivered: true, mode: 'webhook' },
+          };
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          return { ...inputObj, _error: `Discord webhook error: ${msg}` };
+        }
+      }
+
+      // Neither path available
+      if (!botToken) {
+        return { ...inputObj, _error: 'Discord: Connect a Discord Bot Token credential, then select it in the Properties Panel.' };
+      }
+      return { ...inputObj, _error: 'Discord: channelId is required when using Bot API. Add your Discord channel ID in the Properties Panel.' };
     }
 
     case 'discord_webhook': {
-      let webhookUrl = getStringProperty(config, 'webhookUrl', '');
-      const message = getStringProperty(config, 'message', '');
+      let webhookUrl = getStringProperty(config, 'webhookUrl', '') || getStringProperty(config, 'headerName', '');
+      const message = getStringProperty(config, 'message', '') || getStringProperty(config, 'content', '');
 
       if (!webhookUrl) {
         const stored = await retrieveDashboardCredential({
@@ -13591,10 +14366,10 @@ export async function executeNodeLegacy(
           workflowId,
           nodeId: node.id,
           nodeType: type,
-          key: 'discord',
+          key: 'discord_webhook',
         });
         const parsed = parseCredentialValue(stored);
-        webhookUrl = parsed.webhookUrl || parsed.url || parsed.value || stored || '';
+        webhookUrl = parsed.webhookUrl || parsed.headerName || parsed.url || parsed.value || stored || '';
       }
 
       if (!webhookUrl || !message) {
@@ -13618,7 +14393,14 @@ export async function executeNodeLegacy(
         if (!resp.ok) {
           return { ...inputObj, _error: `Discord webhook failed (${resp.status})`, _errorDetails: text };
         }
-        return { ...inputObj, success: true, discord_webhook: { status: resp.status, response: text } };
+        // Discord webhook returns 204 No Content on success (empty body by design)
+        return {
+          ...inputObj,
+          success: true,
+          sent: true,
+          message: resolvedMessage,
+          discord_webhook: { status: resp.status, delivered: true },
+        };
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         return { ...inputObj, _error: `Discord webhook error: ${msg}` };
@@ -13925,33 +14707,114 @@ export async function executeNodeLegacy(
     }
 
     case 'date_time': {
-      // Date Time - minimal helpers: now, add, format (ISO)
       const operation = getStringProperty(config, 'operation', 'now').toLowerCase();
       const execContext = createTypedContext();
       const inputDateRaw = (config as any).date || (config as any).input || '';
+
+      const toMs = (amt: number, unit: string): number => {
+        const u = unit.toLowerCase();
+        if (u.startsWith('sec')) return amt * 1000;
+        if (u.startsWith('hour')) return amt * 3600_000;
+        if (u.startsWith('day')) return amt * 86_400_000;
+        if (u.startsWith('week')) return amt * 7 * 86_400_000;
+        if (u.startsWith('month')) return amt * 30 * 86_400_000;
+        if (u.startsWith('year')) return amt * 365 * 86_400_000;
+        return amt * 60_000; // minutes default
+      };
+
+      if (operation === 'now') {
+        const tz = getStringProperty(config, 'timezone', '').trim();
+        const now = new Date();
+        const formatted = tz
+          ? new Intl.DateTimeFormat('sv-SE', { timeZone: tz, dateStyle: 'short', timeStyle: 'medium' }).format(now).replace(' ', 'T')
+          : now.toISOString();
+        return { ...inputObj, datetime: formatted, timestamp: now.getTime() };
+      }
+
       const baseDate = inputDateRaw
         ? new Date(String(resolveTypedValue(String(inputDateRaw), execContext)))
         : new Date();
       if (Number.isNaN(baseDate.getTime())) {
-        return { ...inputObj, _error: 'DateTime: invalid date' };
+        return { ...inputObj, _error: 'DateTime: invalid date — provide a valid ISO date string in the date field' };
       }
-      if (operation === 'now') {
-        return { ...inputObj, datetime: new Date().toISOString() };
-      }
-      if (operation === 'add') {
-        const amount = Number((config as any).amount ?? 0);
-        const unit = String((config as any).unit ?? 'minutes').toLowerCase();
-        const ms =
-          unit.startsWith('sec') ? amount * 1000 :
-          unit.startsWith('hour') ? amount * 3600_000 :
-          unit.startsWith('day') ? amount * 86_400_000 :
-          amount * 60_000; // minutes default
-        return { ...inputObj, datetime: new Date(baseDate.getTime() + ms).toISOString() };
-      }
+
       if (operation === 'format') {
-        return { ...inputObj, datetime: baseDate.toISOString() };
+        const fmt = getStringProperty(config, 'format', 'ISO').toUpperCase();
+        const tz = getStringProperty(config, 'timezone', '').trim();
+        let result: string;
+        if (fmt === 'TIMESTAMP') {
+          result = String(baseDate.getTime());
+        } else if (fmt === 'LOCALE') {
+          const locale = getStringProperty(config, 'locale', 'en-US').trim();
+          result = baseDate.toLocaleString(locale, tz ? { timeZone: tz } : undefined);
+        } else if (fmt === 'CUSTOM') {
+          const pattern = getStringProperty(config, 'customFormat', '').trim();
+          result = pattern
+            .replace('YYYY', String(baseDate.getFullYear()))
+            .replace('MM', String(baseDate.getMonth() + 1).padStart(2, '0'))
+            .replace('DD', String(baseDate.getDate()).padStart(2, '0'))
+            .replace('HH', String(baseDate.getHours()).padStart(2, '0'))
+            .replace('mm', String(baseDate.getMinutes()).padStart(2, '0'))
+            .replace('ss', String(baseDate.getSeconds()).padStart(2, '0'));
+        } else {
+          result = tz
+            ? new Intl.DateTimeFormat('sv-SE', { timeZone: tz, dateStyle: 'short', timeStyle: 'medium' }).format(baseDate).replace(' ', 'T')
+            : baseDate.toISOString();
+        }
+        return { ...inputObj, datetime: result };
       }
-      return { ...inputObj, _error: `DateTime: unsupported operation ${operation}` };
+
+      if (operation === 'add' || operation === 'subtract') {
+        const rawVal = (config as any).value ?? (config as any).amount ?? 0;
+        const amount = Number(String(resolveTypedValue(String(rawVal), execContext)));
+        const unit = String((config as any).unit ?? 'minutes');
+        const delta = operation === 'subtract' ? -toMs(amount, unit) : toMs(amount, unit);
+        return { ...inputObj, datetime: new Date(baseDate.getTime() + delta).toISOString() };
+      }
+
+      if (operation === 'diff') {
+        const endDateRaw = (config as any).endDate || (config as any).date2 || '';
+        if (!endDateRaw) return { ...inputObj, _error: 'DateTime diff: endDate (or date2) is required' };
+        const endDate = new Date(String(resolveTypedValue(String(endDateRaw), execContext)));
+        if (Number.isNaN(endDate.getTime())) return { ...inputObj, _error: 'DateTime diff: endDate is not a valid date' };
+        const diffMs = endDate.getTime() - baseDate.getTime();
+        const unit = String((config as any).unit ?? 'minutes').toLowerCase();
+        let diff: number;
+        if (unit.startsWith('sec')) diff = diffMs / 1000;
+        else if (unit.startsWith('hour')) diff = diffMs / 3600_000;
+        else if (unit.startsWith('day')) diff = diffMs / 86_400_000;
+        else if (unit.startsWith('week')) diff = diffMs / (7 * 86_400_000);
+        else diff = diffMs / 60_000;
+        return { ...inputObj, diff: Math.round(diff * 1000) / 1000, diffMs, unit };
+      }
+
+      if (operation === 'converttimezone' || operation === 'convert_timezone') {
+        const targetTz = getStringProperty(config, 'timezone', '').trim();
+        if (!targetTz) return { ...inputObj, _error: 'DateTime convertTimezone: timezone is required' };
+        const converted = new Intl.DateTimeFormat('sv-SE', {
+          timeZone: targetTz,
+          year: 'numeric', month: '2-digit', day: '2-digit',
+          hour: '2-digit', minute: '2-digit', second: '2-digit',
+        }).format(baseDate).replace(' ', 'T');
+        return { ...inputObj, datetime: converted, timezone: targetTz };
+      }
+
+      if (operation === 'gettimezoneinfo' || operation === 'get_timezone_info') {
+        const tz = getStringProperty(config, 'timezone', Intl.DateTimeFormat().resolvedOptions().timeZone).trim();
+        const parts = new Intl.DateTimeFormat('en-US', {
+          timeZone: tz, timeZoneName: 'longOffset',
+        }).formatToParts(baseDate);
+        const offsetStr = parts.find(p => p.type === 'timeZoneName')?.value ?? '';
+        const longParts = new Intl.DateTimeFormat('en-US', {
+          timeZone: tz, timeZoneName: 'long',
+        }).formatToParts(baseDate);
+        const longName = longParts.find(p => p.type === 'timeZoneName')?.value ?? '';
+        const match = offsetStr.match(/GMT([+-]\d{2}:\d{2})?/);
+        const offset = match ? (match[1] ?? '+00:00') : '+00:00';
+        return { ...inputObj, timezone: tz, offset, longName, isoDate: baseDate.toISOString() };
+      }
+
+      return { ...inputObj, _error: `DateTime: unsupported operation "${operation}". Supported: now, format, add, subtract, diff, convertTimezone, getTimezoneInfo` };
     }
 
     case 'csv': {
@@ -13963,10 +14826,14 @@ export async function executeNodeLegacy(
         const csvStr = getStringProperty(config, 'csv', '');
         const resolved = resolveTypedValue(csvStr, execContext);
         const text = String(resolved || '');
+        const delimiterRaw = getStringProperty(config, 'delimiter', ',');
+        const delimiter = delimiterRaw === '\\t' ? '\t' : (delimiterRaw || ',');
+        const hasHeader = getBooleanProperty(config, 'hasHeader', true);
         const lines = text.split(/\r?\n/).filter(l => l.trim().length > 0);
         if (lines.length === 0) return { ...inputObj, items: [], rows: [] };
-        const headers = lines[0].split(',').map(h => h.trim());
-        const rows = lines.slice(1).map(line => line.split(','));
+        const firstRow = lines[0].split(delimiter).map(h => h.trim());
+        const headers = hasHeader ? firstRow : firstRow.map((_, index) => String(index));
+        const rows = (hasHeader ? lines.slice(1) : lines).map(line => line.split(delimiter));
         const items = rows.map(cols => {
           const obj: any = {};
           headers.forEach((h, i) => (obj[h] = (cols[i] ?? '').trim()));
@@ -13991,21 +14858,461 @@ export async function executeNodeLegacy(
     }
 
     case 'xml': {
-      // XML - minimal passthrough parse placeholder (no external lib in deps)
-      const xmlStr = getStringProperty(config, 'xml', '');
-      if (!xmlStr) return { ...inputObj, _error: 'XML: xml is required' };
-      const execContext = createTypedContext();
-      const resolved = resolveTypedValue(xmlStr, execContext);
-      return { ...inputObj, xml: String(resolved), _warning: 'XML parsing not implemented; returned raw xml string.' };
+      const xmlOperation = getStringProperty(config, 'operation', 'parse').toLowerCase();
+      const xmlExecCtx = createTypedContext();
+      const xmlRaw = getStringProperty(config, 'xml', '');
+      const xmlStr = String(resolveTypedValue(xmlRaw, xmlExecCtx) || '');
+      if (!xmlStr) return { ...inputObj, _error: 'XML: xml field is required' };
+
+      const maxSize = Number(getStringProperty(config, 'maxSize', '5242880') || 5242880);
+      if (Buffer.byteLength(xmlStr) > maxSize) {
+        return { ...inputObj, _error: `XML: input exceeds maxSize (${maxSize} bytes)` };
+      }
+
+      try {
+        const { XMLParser, XMLValidator } = await import('fast-xml-parser');
+
+        if (xmlOperation === 'validate') {
+          const result = XMLValidator.validate(xmlStr, { allowBooleanAttributes: true });
+          if (result === true) {
+            return { ...inputObj, valid: true, errors: [] };
+          }
+          return { ...inputObj, valid: false, errors: [{ message: (result as any)?.err?.msg ?? 'Invalid XML', line: (result as any)?.err?.line }] };
+        }
+
+        const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_', parseAttributeValue: true });
+        const parsed = parser.parse(xmlStr);
+
+        if (xmlOperation === 'parse') {
+          return { ...inputObj, data: parsed, success: true };
+        }
+
+        if (xmlOperation === 'extract') {
+          const xpath = getStringProperty(config, 'xpath', '').trim();
+          if (!xpath) return { ...inputObj, _error: 'XML extract: xpath field is required', data: parsed };
+          // Walk the parsed object using a dot-path (simplified xpath: /root/child → root.child)
+          const parts = xpath.replace(/^\//, '').split('/').filter(Boolean);
+          let current: any = parsed;
+          for (const part of parts) {
+            if (current == null) break;
+            current = current[part];
+          }
+          return { ...inputObj, result: current ?? null, xpath, data: parsed, success: current != null };
+        }
+
+        return { ...inputObj, _error: `XML: unsupported operation "${xmlOperation}". Supported: parse, extract, validate` };
+      } catch (e) {
+        return { ...inputObj, _error: `XML error: ${e instanceof Error ? e.message : String(e)}` };
+      }
     }
 
     case 'html': {
-      // HTML - minimal passthrough parse placeholder (no external lib in deps)
-      const htmlStr = getStringProperty(config, 'html', '');
-      if (!htmlStr) return { ...inputObj, _error: 'HTML: html is required' };
-      const execContext = createTypedContext();
-      const resolved = resolveTypedValue(htmlStr, execContext);
-      return { ...inputObj, html: String(resolved), _warning: 'HTML parsing not implemented; returned raw html string.' };
+      const htmlOperation = getStringProperty(config, 'operation', 'parse').toLowerCase();
+      const htmlExecCtx = createTypedContext();
+      const htmlRaw = getStringProperty(config, 'html', '') || getStringProperty(config, 'content', '');
+      const htmlStr = String(resolveTypedValue(htmlRaw, htmlExecCtx) || '');
+      if (!htmlStr) return { ...inputObj, _error: 'HTML: html (or content) field is required' };
+
+      try {
+        const cheerio = await import('cheerio');
+        const $ = cheerio.load(htmlStr);
+
+        if (htmlOperation === 'totext' || htmlOperation === 'to_text') {
+          return { ...inputObj, text: $('body').text().trim(), success: true };
+        }
+
+        if (htmlOperation === 'extract') {
+          const selector = getStringProperty(config, 'selector', '').trim();
+          if (!selector) return { ...inputObj, _error: 'HTML extract: selector field is required' };
+          const elements: string[] = [];
+          $(selector).each((_: number, el: any) => { elements.push($(el).text().trim()); });
+          return { ...inputObj, results: elements, count: elements.length, success: true };
+        }
+
+        if (htmlOperation === 'parse') {
+          const result: Record<string, string> = {};
+          $('meta').each((_: number, el: any) => {
+            const name = $(el).attr('name') || $(el).attr('property') || '';
+            const content = $(el).attr('content') || '';
+            if (name) { result[name] = content; }
+          });
+          return { ...inputObj, title: $('title').text(), meta: result, body: $('body').html() ?? '', success: true };
+        }
+
+        return { ...inputObj, _error: `HTML: unsupported operation "${htmlOperation}". Supported: parse, extract, toText` };
+      } catch (e) {
+        return { ...inputObj, _error: `HTML error: ${e instanceof Error ? e.message : String(e)}` };
+      }
+    }
+
+    case 'crypto': {
+      const cryptoOperation = getStringProperty(config, 'operation', '').toLowerCase();
+      const cryptoExecCtx = createTypedContext();
+      const cryptoInput = String(resolveTypedValue(getStringProperty(config, 'input', ''), cryptoExecCtx) || '');
+      const algorithm = (getStringProperty(config, 'algorithm', 'SHA-256') || 'SHA-256').replace(/-/g, '').toLowerCase();
+
+      try {
+        const nodeCrypto = await import('crypto');
+
+        switch (cryptoOperation) {
+          case 'hash': {
+            if (!cryptoInput) return { ...inputObj, _error: 'crypto hash: input is required' };
+            const hash = nodeCrypto.createHash(algorithm).update(cryptoInput).digest('hex');
+            return { ...inputObj, hash, algorithm, success: true };
+          }
+          case 'encode_base64': {
+            if (!cryptoInput) return { ...inputObj, _error: 'crypto encode_base64: input is required' };
+            return { ...inputObj, encoded: Buffer.from(cryptoInput).toString('base64'), success: true };
+          }
+          case 'decode_base64': {
+            if (!cryptoInput) return { ...inputObj, _error: 'crypto decode_base64: input is required' };
+            return { ...inputObj, decoded: Buffer.from(cryptoInput, 'base64').toString('utf-8'), success: true };
+          }
+          case 'uuid': {
+            return { ...inputObj, uuid: nodeCrypto.randomUUID(), success: true };
+          }
+          case 'random_string': {
+            const length = Math.max(1, Math.min(256, Number(getStringProperty(config, 'length', '16') || 16)));
+            const charset = getStringProperty(config, 'charset', 'hex').toLowerCase();
+            let randomStr: string;
+            if (charset === 'base64') {
+              randomStr = nodeCrypto.randomBytes(Math.ceil(length * 0.75)).toString('base64').slice(0, length);
+            } else if (charset === 'alphanumeric') {
+              const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+              const bytes = nodeCrypto.randomBytes(length);
+              randomStr = Array.from(bytes).map(b => chars[b % chars.length]).join('');
+            } else {
+              randomStr = nodeCrypto.randomBytes(Math.ceil(length / 2)).toString('hex').slice(0, length);
+            }
+            return { ...inputObj, randomString: randomStr, length, success: true };
+          }
+          case 'hmac': {
+            const secretKey = getStringProperty(config, 'secretKey', '').trim();
+            if (!cryptoInput) return { ...inputObj, _error: 'crypto hmac: input is required' };
+            if (!secretKey) return { ...inputObj, _error: 'crypto hmac: secretKey is required' };
+            const hmac = nodeCrypto.createHmac(algorithm, secretKey).update(cryptoInput).digest('hex');
+            return { ...inputObj, hmac, algorithm, success: true };
+          }
+          default:
+            return { ...inputObj, _error: `crypto: unsupported operation "${cryptoOperation}". Supported: hash, encode_base64, decode_base64, uuid, random_string, hmac` };
+        }
+      } catch (e) {
+        return { ...inputObj, _error: `crypto error: ${e instanceof Error ? e.message : String(e)}` };
+      }
+    }
+
+    case 'pdf': {
+      const pdfOperation = getStringProperty(config, 'operation', 'extractText').toLowerCase();
+      const pdfUrl = getStringProperty(config, 'pdfUrl', '').trim();
+      const maxSizeBytes = Number(getStringProperty(config, 'maxSize', '10485760') || 10485760);
+      if (!pdfUrl) return { ...inputObj, _error: 'pdf: pdfUrl is required' };
+
+      try {
+        let buffer: Buffer;
+        if (pdfUrl.startsWith('data:')) {
+          const commaIdx = pdfUrl.indexOf(',');
+          buffer = Buffer.from(pdfUrl.slice(commaIdx + 1), 'base64');
+        } else {
+          const axios = await import('axios');
+          const resp = await (axios as any).default.get(pdfUrl, { responseType: 'arraybuffer', maxContentLength: maxSizeBytes });
+          buffer = Buffer.from(resp.data);
+        }
+
+        let pdfParse: any;
+        try {
+          pdfParse = (await import('pdf-parse' as any)).default;
+        } catch {
+          return { ...inputObj, _error: 'pdf: pdf-parse package not installed. Run: npm install pdf-parse in the worker directory.' };
+        }
+
+        const data = await pdfParse(buffer);
+
+        if (pdfOperation === 'readmetadata' || pdfOperation === 'read_metadata') {
+          return { ...inputObj, info: data.info, metadata: data.metadata, pages: data.numpages, success: true };
+        }
+
+        return { ...inputObj, text: data.text, pages: data.numpages, info: data.info, success: true };
+      } catch (e) {
+        return { ...inputObj, _error: `pdf error: ${e instanceof Error ? e.message : String(e)}` };
+      }
+    }
+
+    case 'image_manipulation': {
+      const imgOperation = getStringProperty(config, 'operation', 'readMetadata').toLowerCase();
+      const imageUrl = getStringProperty(config, 'imageUrl', '').trim();
+      const maxSizeBytes = Number(getStringProperty(config, 'maxSize', '10485760') || 10485760);
+      if (!imageUrl) return { ...inputObj, _error: 'image_manipulation: imageUrl is required' };
+
+      try {
+        let buffer: Buffer;
+        if (imageUrl.startsWith('data:')) {
+          const commaIdx = imageUrl.indexOf(',');
+          buffer = Buffer.from(imageUrl.slice(commaIdx + 1), 'base64');
+        } else {
+          const axios = await import('axios');
+          const resp = await (axios as any).default.get(imageUrl, { responseType: 'arraybuffer', maxContentLength: maxSizeBytes });
+          buffer = Buffer.from(resp.data);
+        }
+
+        let sharp: any;
+        try {
+          sharp = (await import('sharp' as any)).default;
+        } catch {
+          return { ...inputObj, _error: 'image_manipulation: sharp package not installed. Run: npm install sharp in the worker directory.' };
+        }
+
+        const imgExecCtx = createTypedContext();
+        const width = Number(resolveTypedValue(getStringProperty(config, 'width', '0'), imgExecCtx)) || undefined;
+        const height = Number(resolveTypedValue(getStringProperty(config, 'height', '0'), imgExecCtx)) || undefined;
+        const format = (getStringProperty(config, 'format', 'original') || 'original').toLowerCase();
+
+        if (imgOperation === 'readmetadata' || imgOperation === 'read_metadata') {
+          const meta = await sharp(buffer).metadata();
+          return { ...inputObj, width: meta.width, height: meta.height, format: meta.format, channels: meta.channels, size: buffer.length, success: true };
+        }
+
+        let pipeline = sharp(buffer);
+
+        if (imgOperation === 'resize') {
+          if (!width && !height) return { ...inputObj, _error: 'image_manipulation resize: width or height is required' };
+          pipeline = pipeline.resize(width || null, height || null, { fit: 'inside', withoutEnlargement: false });
+        } else if (imgOperation === 'crop') {
+          const left = Number(getStringProperty(config, 'left', '0')) || 0;
+          const top = Number(getStringProperty(config, 'top', '0')) || 0;
+          if (!width || !height) return { ...inputObj, _error: 'image_manipulation crop: width and height are required' };
+          pipeline = pipeline.extract({ left, top, width, height });
+        } else if (imgOperation === 'convert') {
+          if (format === 'original' || !format) return { ...inputObj, _error: 'image_manipulation convert: format is required (jpeg, png, webp)' };
+        } else {
+          return { ...inputObj, _error: `image_manipulation: unsupported operation "${imgOperation}". Supported: resize, crop, convert, readMetadata` };
+        }
+
+        if (format && format !== 'original') {
+          pipeline = pipeline.toFormat(format as any);
+        }
+
+        const outputBuffer = await pipeline.toBuffer();
+        return { ...inputObj, dataBase64: outputBuffer.toString('base64'), format: format !== 'original' ? format : undefined, success: true };
+      } catch (e) {
+        return { ...inputObj, _error: `image_manipulation error: ${e instanceof Error ? e.message : String(e)}` };
+      }
+    }
+
+    case 'ftp': {
+      const ftpOperation = getStringProperty(config, 'operation', '').toLowerCase();
+      const ftpHost = getStringProperty(config, 'host', '').trim();
+      const ftpPort = Number(getStringProperty(config, 'port', '21') || 21);
+      const ftpUser = getStringProperty(config, 'username', '').trim();
+      const ftpPass = getStringProperty(config, 'password', '').trim();
+      const ftpPath = getStringProperty(config, 'remotePath', '').trim() || '/';
+
+      if (!ftpHost) return { ...inputObj, _error: 'ftp: host is required' };
+      if (!ftpOperation) return { ...inputObj, _error: 'ftp: operation is required (get, put, list, delete)' };
+
+      try {
+        const ftp = await import('basic-ftp');
+        const client = new ftp.Client();
+        client.ftp.verbose = false;
+        await client.access({ host: ftpHost, port: ftpPort, user: ftpUser || 'anonymous', password: ftpPass || 'anonymous' });
+
+        try {
+          if (ftpOperation === 'list') {
+            const items = await client.list(ftpPath);
+            return { ...inputObj, items: items.map(f => ({ name: f.name, size: f.size, type: f.type === 2 ? 'directory' : 'file', date: f.modifiedAt })), count: items.length, success: true };
+          }
+          if (ftpOperation === 'get') {
+            const { PassThrough } = await import('stream');
+            const chunks: Buffer[] = [];
+            const stream = new PassThrough();
+            stream.on('data', (chunk: Buffer) => chunks.push(chunk));
+            await client.downloadTo(stream, ftpPath);
+            const buf = Buffer.concat(chunks);
+            return { ...inputObj, dataBase64: buf.toString('base64'), sizeBytes: buf.length, success: true };
+          }
+          if (ftpOperation === 'put') {
+            const dataBase64 = (getStringProperty(config, 'dataBase64', '') || getStringProperty(config, 'content', '')).trim();
+            if (!dataBase64) return { ...inputObj, _error: 'ftp put: dataBase64 (or content) is required' };
+            const { Readable } = await import('stream');
+            const buf = Buffer.from(dataBase64, 'base64');
+            await client.uploadFrom(Readable.from(buf), ftpPath);
+            return { ...inputObj, success: true, path: ftpPath, sizeBytes: buf.length };
+          }
+          if (ftpOperation === 'delete') {
+            await client.remove(ftpPath);
+            return { ...inputObj, success: true, deleted: true, path: ftpPath };
+          }
+          return { ...inputObj, _error: `ftp: unsupported operation "${ftpOperation}". Supported: get, put, list, delete` };
+        } finally {
+          client.close();
+        }
+      } catch (e) {
+        return { ...inputObj, _error: `ftp error: ${e instanceof Error ? e.message : String(e)}` };
+      }
+    }
+
+    case 'sftp': {
+      const sftpOperation = getStringProperty(config, 'operation', '').toLowerCase();
+      const sftpHost = getStringProperty(config, 'host', '').trim();
+      const sftpPort = Number(getStringProperty(config, 'port', '22') || 22);
+      const sftpUser = getStringProperty(config, 'username', '').trim();
+      const sftpPass = getStringProperty(config, 'password', '').trim();
+      const sftpKey = getStringProperty(config, 'privateKey', '').trim();
+      const sftpPath = getStringProperty(config, 'remotePath', '').trim() || '/';
+
+      if (!sftpHost) return { ...inputObj, _error: 'sftp: host is required' };
+      if (!sftpOperation) return { ...inputObj, _error: 'sftp: operation is required (get, put, list, delete)' };
+
+      try {
+        const SftpClient = (await import('ssh2-sftp-client')).default;
+        const sftp = new SftpClient();
+        const connectOpts: any = { host: sftpHost, port: sftpPort, username: sftpUser };
+        if (sftpKey) connectOpts.privateKey = sftpKey;
+        else connectOpts.password = sftpPass;
+        await sftp.connect(connectOpts);
+
+        try {
+          if (sftpOperation === 'list') {
+            const items = await sftp.list(sftpPath);
+            return { ...inputObj, items: items.map((f: any) => ({ name: f.name, size: f.size, type: f.type === 'd' ? 'directory' : 'file', date: f.modifyTime })), count: items.length, success: true };
+          }
+          if (sftpOperation === 'get') {
+            const buf = await sftp.get(sftpPath) as Buffer;
+            return { ...inputObj, dataBase64: buf.toString('base64'), sizeBytes: buf.length, success: true };
+          }
+          if (sftpOperation === 'put') {
+            const dataBase64 = (getStringProperty(config, 'dataBase64', '') || getStringProperty(config, 'content', '')).trim();
+            if (!dataBase64) return { ...inputObj, _error: 'sftp put: dataBase64 (or content) is required' };
+            const buf = Buffer.from(dataBase64, 'base64');
+            await sftp.put(buf, sftpPath);
+            return { ...inputObj, success: true, path: sftpPath, sizeBytes: buf.length };
+          }
+          if (sftpOperation === 'delete') {
+            await sftp.delete(sftpPath);
+            return { ...inputObj, success: true, deleted: true, path: sftpPath };
+          }
+          return { ...inputObj, _error: `sftp: unsupported operation "${sftpOperation}". Supported: get, put, list, delete` };
+        } finally {
+          await sftp.end();
+        }
+      } catch (e) {
+        return { ...inputObj, _error: `sftp error: ${e instanceof Error ? e.message : String(e)}` };
+      }
+    }
+
+    case 'box': {
+      const boxOperation = (getStringProperty(config, 'operation', '') || '').toLowerCase();
+      // Normalize 'read' → 'download' for consistency
+      const boxOp = boxOperation === 'read' ? 'download' : boxOperation;
+      const boxToken = getStringProperty(config, 'accessToken', '').trim();
+      if (!boxToken) return { ...inputObj, _error: 'box: accessToken is required' };
+
+      const boxBase = 'https://api.box.com/2.0';
+      const boxUpload = 'https://upload.box.com/api/2.0';
+      const boxHeaders = { 'Authorization': `Bearer ${boxToken}` };
+
+      try {
+        if (boxOp === 'list') {
+          const folderId = getStringProperty(config, 'folderId', '0').trim() || '0';
+          const resp = await fetch(`${boxBase}/folders/${folderId}/items?limit=200`, { headers: boxHeaders });
+          const data = await resp.json().catch(() => null);
+          if (!resp.ok) return { ...inputObj, _error: `box list failed (${resp.status})`, _errorDetails: data };
+          const items = (data as any)?.entries ?? [];
+          return { ...inputObj, items, count: items.length, success: true };
+        }
+
+        if (boxOp === 'download') {
+          const fileId = getStringProperty(config, 'fileId', '').trim();
+          if (!fileId) return { ...inputObj, _error: 'box download: fileId is required' };
+          const resp = await fetch(`${boxBase}/files/${fileId}/content`, { headers: boxHeaders });
+          if (!resp.ok) return { ...inputObj, _error: `box download failed (${resp.status})` };
+          const buf = Buffer.from(await resp.arrayBuffer());
+          return { ...inputObj, dataBase64: buf.toString('base64'), sizeBytes: buf.length, success: true };
+        }
+
+        if (boxOp === 'upload') {
+          const folderId = getStringProperty(config, 'folderId', '0').trim() || '0';
+          const fileName = getStringProperty(config, 'fileName', 'upload.bin').trim() || 'upload.bin';
+          const dataBase64 = (getStringProperty(config, 'dataBase64', '') || getStringProperty(config, 'content', '')).trim();
+          if (!dataBase64) return { ...inputObj, _error: 'box upload: dataBase64 (or content) is required' };
+          const buf = Buffer.from(dataBase64, 'base64');
+          const form = new FormData();
+          form.append('attributes', JSON.stringify({ name: fileName, parent: { id: folderId } }));
+          form.append('file', new Blob([buf]), fileName);
+          const resp = await fetch(`${boxUpload}/files/content`, { method: 'POST', headers: boxHeaders, body: form });
+          const data = await resp.json().catch(() => null);
+          if (!resp.ok) return { ...inputObj, _error: `box upload failed (${resp.status})`, _errorDetails: data };
+          return { ...inputObj, success: true, file: (data as any)?.entries?.[0] };
+        }
+
+        if (boxOp === 'delete') {
+          const fileId = getStringProperty(config, 'fileId', '').trim();
+          if (!fileId) return { ...inputObj, _error: 'box delete: fileId is required' };
+          const resp = await fetch(`${boxBase}/files/${fileId}`, { method: 'DELETE', headers: boxHeaders });
+          if (!resp.ok && resp.status !== 204) return { ...inputObj, _error: `box delete failed (${resp.status})` };
+          return { ...inputObj, success: true, deleted: true, fileId };
+        }
+
+        return { ...inputObj, _error: `box: unsupported operation "${boxOperation}". Supported: read, upload, list, delete` };
+      } catch (e) {
+        return { ...inputObj, _error: `box error: ${e instanceof Error ? e.message : String(e)}` };
+      }
+    }
+
+    case 'minio': {
+      const minioOperation = getStringProperty(config, 'operation', '').toLowerCase();
+      const minioEndpoint = getStringProperty(config, 'endpoint', '').trim();
+      const minioAccessKey = getStringProperty(config, 'accessKey', '').trim();
+      const minioSecretKey = getStringProperty(config, 'secretKey', '').trim();
+      const minioBucket = getStringProperty(config, 'bucket', '').trim();
+      const minioKey = getStringProperty(config, 'key', '').trim();
+      const minioUseSSL = getStringProperty(config, 'useSSL', 'false') === 'true';
+
+      if (!minioEndpoint) return { ...inputObj, _error: 'minio: endpoint is required' };
+      if (!minioBucket) return { ...inputObj, _error: 'minio: bucket is required' };
+      if (!minioOperation) return { ...inputObj, _error: 'minio: operation is required (get, put, list, delete)' };
+
+      try {
+        const AWS = await import('aws-sdk');
+        const protocol = minioUseSSL ? 'https' : 'http';
+        const s3 = new (AWS as any).S3({
+          endpoint: `${protocol}://${minioEndpoint}`,
+          accessKeyId: minioAccessKey,
+          secretAccessKey: minioSecretKey,
+          s3ForcePathStyle: true,
+          signatureVersion: 'v4',
+        });
+
+        if (minioOperation === 'list') {
+          const prefix = getStringProperty(config, 'prefix', '').trim();
+          const resp = await s3.listObjectsV2({ Bucket: minioBucket, Prefix: prefix || undefined, MaxKeys: 1000 }).promise();
+          const items = (resp.Contents || []).map((o: any) => ({ key: o.Key, size: o.Size, lastModified: o.LastModified }));
+          return { ...inputObj, items, count: items.length, success: true };
+        }
+        if (minioOperation === 'get') {
+          if (!minioKey) return { ...inputObj, _error: 'minio get: key is required' };
+          const resp = await s3.getObject({ Bucket: minioBucket, Key: minioKey }).promise();
+          const body = resp.Body;
+          const buf = Buffer.isBuffer(body) ? body : Buffer.from(body as any);
+          return { ...inputObj, dataBase64: buf.toString('base64'), sizeBytes: buf.length, contentType: resp.ContentType, success: true };
+        }
+        if (minioOperation === 'put') {
+          if (!minioKey) return { ...inputObj, _error: 'minio put: key is required' };
+          const dataBase64 = (getStringProperty(config, 'dataBase64', '') || getStringProperty(config, 'content', '')).trim();
+          if (!dataBase64) return { ...inputObj, _error: 'minio put: dataBase64 (or content) is required' };
+          const buf = Buffer.from(dataBase64, 'base64');
+          await s3.putObject({ Bucket: minioBucket, Key: minioKey, Body: buf }).promise();
+          return { ...inputObj, success: true, bucket: minioBucket, key: minioKey, sizeBytes: buf.length };
+        }
+        if (minioOperation === 'delete') {
+          if (!minioKey) return { ...inputObj, _error: 'minio delete: key is required' };
+          await s3.deleteObject({ Bucket: minioBucket, Key: minioKey }).promise();
+          return { ...inputObj, success: true, deleted: true, bucket: minioBucket, key: minioKey };
+        }
+
+        return { ...inputObj, _error: `minio: unsupported operation "${minioOperation}". Supported: get, put, list, delete` };
+      } catch (e) {
+        return { ...inputObj, _error: `minio error: ${e instanceof Error ? e.message : String(e)}` };
+      }
     }
 
     case 'intuit_smes':
@@ -14968,12 +16275,59 @@ export async function executeNodeLegacy(
 
     case 'hubspot': {
       
-      // ✅ FIX 1: Get credentials - prefer accessToken (Private App token) over apiKey (deprecated)
+      // Get credentials - prefer accessToken (Private App), then token (hubspot_private_app vault field), then apiKey (deprecated)
       let accessToken = getStringProperty(config, 'accessToken', '').trim();
       let apiKey = getStringProperty(config, 'apiKey', '').trim();
-      let token = accessToken || apiKey;
-      const operation = getStringProperty(config, 'operation', 'create').trim();
-      const resource = getStringProperty(config, 'resource', 'contact').trim();
+      let token = accessToken || getStringProperty(config, 'token', '').trim() || apiKey;
+      const normalizeHubSpotOperation = (rawOperation: string) => {
+        const op = rawOperation.trim().toLowerCase().replace(/[_\s-]/g, '');
+        const aliases: Record<string, string> = {
+          getall: 'getmany',
+          list: 'getmany',
+          getmany: 'getmany',
+          batchcreate: 'batchcreate',
+          batchupdate: 'batchupdate',
+          batchdelete: 'batchdelete',
+        };
+        return aliases[op] || op;
+      };
+      const normalizeHubSpotResource = (rawResource: string) => {
+        const key = rawResource.trim().toLowerCase().replace(/[\s-]/g, '_');
+        const aliases: Record<string, string> = {
+          contact: 'contacts',
+          contacts: 'contacts',
+          company: 'companies',
+          companies: 'companies',
+          deal: 'deals',
+          deals: 'deals',
+          ticket: 'tickets',
+          tickets: 'tickets',
+          product: 'products',
+          products: 'products',
+          lineitem: 'line_items',
+          line_item: 'line_items',
+          line_items: 'line_items',
+          quote: 'quotes',
+          quotes: 'quotes',
+          call: 'calls',
+          calls: 'calls',
+          email: 'emails',
+          emails: 'emails',
+          meeting: 'meetings',
+          meetings: 'meetings',
+          note: 'notes',
+          notes: 'notes',
+          task: 'tasks',
+          tasks: 'tasks',
+          owner: 'owners',
+          owners: 'owners',
+          pipeline: 'pipelines',
+          pipelines: 'pipelines',
+        };
+        return aliases[key] || key;
+      };
+      const operation = normalizeHubSpotOperation(getStringProperty(config, 'operation', 'create'));
+      const resource = normalizeHubSpotResource(getStringProperty(config, 'resource', 'contact'));
       let result: any = null;
 
       if (!token) {
@@ -14992,7 +16346,7 @@ export async function executeNodeLegacy(
       }
       
       if (!token) {
-        throw new Error('HubSpot node requires either accessToken (Private App token) or apiKey in config');
+        throw new Error('HubSpot node requires a connected HubSpot credential. Select or create a HubSpot connection for this node.');
       }
       
       // Validate token format (Private App tokens start with 'pat-', API keys are different)
@@ -15044,7 +16398,11 @@ export async function executeNodeLegacy(
             resolvedProperties[key] = value;
           }
         }
-        properties = resolvedProperties;
+        properties = Object.fromEntries(
+          Object.entries(resolvedProperties).filter(([, value]) =>
+            value !== undefined && value !== null && String(value).trim() !== ''
+          )
+        );
         
         // ✅ FIX 3: Validate properties for create/update operations
         if ((operation === 'create' || operation === 'update') && Object.keys(properties).length === 0) {
@@ -15052,14 +16410,24 @@ export async function executeNodeLegacy(
         }
         
         // ✅ FIX 4: Validate required fields for contacts
-        if (operation === 'create' && resource === 'contact') {
+        if (operation === 'create' && resource === 'contacts') {
           if (!properties.email && !properties.firstname && !properties.lastname) {
             console.warn('[HubSpot] Creating contact without email, firstname, or lastname. At least one is recommended.');
           }
         }
       } else if (operation === 'create' || operation === 'update') {
-        // Properties is required for create/update but missing
-        throw new Error(`HubSpot ${operation} operation requires properties field, but it is missing or empty.`);
+        const directPropertyKeys = resource === 'companies'
+          ? ['name', 'domain', 'phone', 'city', 'country', 'industry', 'hs_lead_status']
+          : ['email', 'firstname', 'lastname', 'phone', 'company', 'hs_lead_status', 'favorite_content_topics', 'preferred_channels'];
+        properties = {};
+        for (const key of directPropertyKeys) {
+          const value = getStringProperty(config, key, '').trim();
+          if (value) properties[key] = resolveTypedValue(value, execContext);
+        }
+        if (Object.keys(properties).length === 0) {
+          // Properties is required for create/update but missing
+          throw new Error(`HubSpot ${operation} operation requires properties field, but it is missing or empty.`);
+        }
       }
       
       const baseUrl = 'https://api.hubapi.com';
@@ -15218,6 +16586,107 @@ export async function executeNodeLegacy(
             record: responseData,
             properties: responseData.properties || properties,
           };
+        } else if (operation === 'getmany') {
+          const limit = parseInt(getStringProperty(config, 'limit', '100'), 10) || 100;
+          const after = getStringProperty(config, 'after', '');
+          const params = new URLSearchParams({ limit: String(Math.min(Math.max(limit, 1), 100)) });
+          if (after) params.set('after', after);
+          const url = `${baseUrl}/crm/v3/objects/${resource}?${params.toString()}`;
+          const fetchResponse = await fetch(url, { method: 'GET', headers });
+          const responseText = await fetchResponse.text();
+          if (!fetchResponse.ok) {
+            let errorDetails = responseText;
+            try {
+              const errorJson = JSON.parse(responseText);
+              errorDetails = errorJson.message || errorJson.error || JSON.stringify(errorJson);
+            } catch {}
+            throw new Error(`HubSpot GET_MANY failed (${fetchResponse.status}): ${errorDetails}`);
+          }
+          const responseData = JSON.parse(responseText);
+          result = {
+            results: responseData.results || [],
+            total: responseData.total || (responseData.results || []).length,
+            paging: responseData.paging,
+          };
+        } else if (operation === 'delete') {
+          const id = getStringProperty(config, 'id', '') || getStringProperty(config, 'objectId', '');
+          if (!id) throw new Error('HubSpot delete operation requires id or objectId');
+          const url = `${baseUrl}/crm/v3/objects/${resource}/${id}`;
+          const fetchResponse = await fetch(url, { method: 'DELETE', headers });
+          if (!fetchResponse.ok && fetchResponse.status !== 204) {
+            const responseText = await fetchResponse.text();
+            let errorDetails = responseText;
+            try {
+              const errorJson = JSON.parse(responseText);
+              errorDetails = errorJson.message || errorJson.error || JSON.stringify(errorJson);
+            } catch {}
+            throw new Error(`HubSpot DELETE failed (${fetchResponse.status}): ${errorDetails}`);
+          }
+          result = { id, deleted: true };
+        } else if (operation === 'batchcreate' || operation === 'batchupdate' || operation === 'batchdelete') {
+          const recordsRaw = (config as any).records || (config as any).data || [];
+          let records = recordsRaw;
+          if (typeof recordsRaw === 'string') {
+            const resolved = resolveTypedValue(recordsRaw, execContext);
+            try {
+              records = typeof resolved === 'string' ? JSON.parse(resolved) : resolved;
+            } catch {
+              records = [];
+            }
+          }
+          if (!Array.isArray(records) || records.length === 0) {
+            throw new Error(`HubSpot ${operation} operation requires records array`);
+          }
+          const normalizeBatchRecord = (record: any) => {
+            if (typeof record === 'string') {
+              return { id: record };
+            }
+            if (!record || typeof record !== 'object') {
+              return {};
+            }
+            if (record.properties && typeof record.properties === 'object') {
+              return {
+                ...(record.id ? { id: record.id } : {}),
+                properties: Object.fromEntries(
+                  Object.entries(record.properties).filter(([, value]) =>
+                    value !== undefined && value !== null && String(value).trim() !== ''
+                  )
+                ),
+              };
+            }
+            const { id: recordId, ...plainProperties } = record;
+            return {
+              ...(recordId ? { id: recordId } : {}),
+              properties: Object.fromEntries(
+                Object.entries(plainProperties).filter(([, value]) =>
+                  value !== undefined && value !== null && String(value).trim() !== ''
+                )
+              ),
+            };
+          };
+          records = records.map(normalizeBatchRecord).filter((record: any) => {
+            if (operation === 'batchdelete') return !!record.id;
+            return record.properties && Object.keys(record.properties).length > 0;
+          });
+          if (records.length === 0) {
+            throw new Error(`HubSpot ${operation} operation has no usable records after empty fields were removed`);
+          }
+          const batchOperation = operation === 'batchdelete' ? 'archive' : operation.replace('batch', '').toLowerCase();
+          const url = `${baseUrl}/crm/v3/objects/${resource}/batch/${batchOperation}`;
+          const body = batchOperation === 'archive'
+            ? { inputs: records.map((record: any) => ({ id: typeof record === 'string' ? record : record.id })) }
+            : { inputs: records };
+          const fetchResponse = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+          const responseText = await fetchResponse.text();
+          if (!fetchResponse.ok) {
+            let errorDetails = responseText;
+            try {
+              const errorJson = JSON.parse(responseText);
+              errorDetails = errorJson.message || errorJson.error || JSON.stringify(errorJson);
+            } catch {}
+            throw new Error(`HubSpot ${operation.toUpperCase()} failed (${fetchResponse.status}): ${errorDetails}`);
+          }
+          result = responseText ? JSON.parse(responseText) : { success: true };
         } else if (operation === 'search') {
           // ✅ Search operation
           const searchQuery = getStringProperty(config, 'searchQuery', '');
@@ -15257,7 +16726,7 @@ export async function executeNodeLegacy(
             total: responseData.total || 0,
           };
         } else {
-          throw new Error(`Unsupported HubSpot operation: ${operation}. Supported: create, get, update, search`);
+          throw new Error(`Unsupported HubSpot operation: ${operation}. Supported: create, get, getMany, update, delete, search, batchCreate, batchUpdate, batchDelete`);
         }
       } catch (error) {
         // ✅ FIX 9: Better error handling with full error details
@@ -15308,8 +16777,8 @@ export async function executeNodeLegacy(
           : String(resolveTypedValue(caption, execContext)))
         : '';
 
-      // Resolve token: config.botToken or vault key "telegram"
-      let botToken = getStringProperty(config, 'botToken', '') || getStringProperty(config, 'token', '');
+      // Resolve token: config.botToken, config.apiKey (Telegram vault stores as apiKey), or config.token
+      let botToken = getStringProperty(config, 'botToken', '') || getStringProperty(config, 'apiKey', '') || getStringProperty(config, 'token', '');
       if (!botToken) {
         try {
           const { retrieveCredential } = await import('../core/utils/credential-retriever');
@@ -15638,54 +17107,37 @@ export async function executeNodeLegacy(
     }
 
     case 'youtube': {
-      // YouTube node - minimal token verification + channel discovery
-      const operation = getStringProperty(config, 'operation', 'upload_video').toLowerCase();
-
-      // Token from config.accessToken or vault key "youtube"
-      let accessToken = getStringProperty(config, 'accessToken', '');
-      if (!accessToken) {
-        try {
-          const { retrieveCredential } = await import('../core/utils/credential-retriever');
-          const userIdsToTry: string[] = [];
-          if (userId) userIdsToTry.push(userId);
-          if (currentUserId && currentUserId !== userId) userIdsToTry.push(currentUserId);
-          for (const uid of userIdsToTry) {
-            const found = await retrieveCredential({ userId: uid, workflowId, nodeId: node.id, nodeType: type }, 'youtube');
-            if (found) {
-              accessToken = found;
-              break;
-            }
-          }
-        } catch (e) {
-          // ignore
-        }
-      }
-
-      if (!accessToken) {
-        return { ...inputObj, _error: 'YouTube: access token not found. Connect YouTube or provide accessToken.' };
-      }
-
-      // Always verify token by fetching the authenticated channel
+      // Keep the legacy switch path aligned with the registry-owned YouTube executor.
+      // Some debug/manual paths can still fall back here, so do not use the old raw-token stub.
       try {
-        const resp = await fetch('https://www.googleapis.com/youtube/v3/channels?part=snippet,contentDetails,statistics&mine=true', {
-          headers: { 'Authorization': `Bearer ${accessToken}` },
-        });
-        const data = await resp.json().catch(() => null);
-        if (!resp.ok) {
-          return { ...inputObj, _error: `YouTube token verification failed (${resp.status})`, _errorDetails: data };
+        const { unifiedNodeRegistry } = await import('../core/registry/unified-node-registry');
+        const definition = unifiedNodeRegistry.get('youtube');
+        if (!definition?.execute) {
+          return { ...inputObj, _error: 'YouTube executor is not available.' };
         }
 
-        if (operation === 'upload_video' || operation === 'update_video' || operation === 'create_post') {
-          // Video upload/update needs resumable upload + binary content; not implemented here yet.
+        const execution = await definition.execute({
+          nodeId: node.id,
+          nodeType: 'youtube',
+          config,
+          inputs: inputObj,
+          rawInput: input,
+          upstreamOutputs: new Map(Object.entries(nodeOutputs.getAll())),
+          workflowId,
+          userId,
+          currentUserId,
+          db,
+        });
+
+        if (!execution.success) {
           return {
             ...inputObj,
-            youtube: data,
-            _error: `YouTube operation "${operation}" is not implemented yet in execution engine. Token verified successfully.`,
+            _error: execution.error?.message || 'YouTube operation failed',
+            _errorDetails: execution.error,
           };
         }
 
-        // Fallback: just return channel info
-        return { ...inputObj, success: true, youtube: data };
+        return { ...inputObj, ...(execution.output || {}) };
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         return { ...inputObj, _error: `YouTube error: ${msg}` };
@@ -16691,6 +18143,346 @@ export async function executeNodeLegacy(
         return { success: true, operation, matches: [], upsertedCount: 0 };
       } catch (err: any) {
         return { success: false, operation: config.operation, matches: [], error: err?.message || 'Pinecone error' };
+      }
+    }
+
+    case 'qdrant': {
+      try {
+        const operation = getStringProperty(config, 'operation', 'query');
+        const url = getStringProperty(config, 'url', '').replace(/\/$/, '');
+        const collection = getStringProperty(config, 'collection', '');
+        const apiKey = getStringProperty(config, 'apiKey', '');
+        const limit = (config as any).limit ?? 5;
+        const withPayload = (config as any).withPayload !== false;
+        const id = getStringProperty(config, 'id', '');
+        const payload = (config as any).payload || {};
+        const vector = (config as any).vector;
+
+        if (!url) return { success: false, operation, matches: [], error: 'Qdrant url is required' };
+        if (!collection) return { success: false, operation, matches: [], error: 'Qdrant collection is required' };
+
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (apiKey) headers['api-key'] = apiKey;
+
+        const baseUrl = `${url}/collections/${collection}`;
+        console.log(`[qdrant] operation=${operation} collection=${collection}`);
+
+        // Ensure collection exists before upsert/query (create if missing)
+        const collectionCheck = await fetch(`${url}/collections/${collection}`, { headers });
+        if (!collectionCheck.ok && operation === 'upsert' && Array.isArray(vector) && vector.length > 0) {
+          await fetch(`${url}/collections/${collection}`, {
+            method: 'PUT',
+            headers,
+            body: JSON.stringify({ vectors: { size: vector.length, distance: 'Cosine' } }),
+          });
+        }
+
+        let response: any;
+        if (operation === 'query') {
+          response = await fetch(`${baseUrl}/points/search`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ vector, limit, with_payload: withPayload }),
+          });
+        } else if (operation === 'upsert') {
+          // Resolve id: prefer numeric if parseable, else use string UUID
+          const pointId = id && /^\d+$/.test(id) ? parseInt(id, 10) : (id || 1);
+          response = await fetch(`${baseUrl}/points`, {
+            method: 'PUT',
+            headers,
+            body: JSON.stringify({ points: [{ id: pointId, vector, payload }] }),
+          });
+        } else if (operation === 'delete') {
+          const pointId = id && /^\d+$/.test(id) ? parseInt(id, 10) : id;
+          response = await fetch(`${baseUrl}/points/delete`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ points: [pointId] }),
+          });
+        } else {
+          return { success: false, operation, matches: [], error: `Unsupported operation: ${operation}` };
+        }
+
+        if (!response.ok) {
+          const errorText = await response.text().catch(() => response.statusText);
+          return { success: false, operation, matches: [], error: `Qdrant API error ${response.status}: ${errorText}` };
+        }
+
+        const data: any = await response.json().catch(() => ({}));
+        if (operation === 'query') {
+          return { success: true, operation, matches: data.result || [], upsertedCount: 0 };
+        } else if (operation === 'upsert') {
+          return { success: true, operation, matches: [], upsertedCount: 1 };
+        }
+        return { success: true, operation, matches: [], upsertedCount: 0 };
+      } catch (err: any) {
+        return { success: false, operation: config.operation, matches: [], error: err?.message || 'Qdrant error' };
+      }
+    }
+
+    case 'cohere': {
+      try {
+        const model = getStringProperty(config, 'model', 'command-r-08-2024');
+        const apiKey = getStringProperty(config, 'apiKey', '');
+        const prompt = getStringProperty(config, 'prompt', '');
+        const preamble = getStringProperty(config, 'preamble', '');
+        const temperature = (config as any).temperature ?? 0.7;
+        const maxTokens = (config as any).maxTokens ?? 1024;
+
+        if (!apiKey) return { success: false, response: '', model, finishReason: '', inputTokens: 0, outputTokens: 0, error: 'Cohere apiKey is required' };
+
+        const execContextCH = createTypedContext();
+        const resolvedPromptCH = typeof resolveWithSchema(prompt, execContextCH, 'string') === 'string'
+          ? resolveWithSchema(prompt, execContextCH, 'string') as string
+          : String(resolveTypedValue(prompt, execContextCH));
+
+        // Build effective message — same upstream-injection pattern as other AI nodes
+        const rawUpstreamCH = nodeOutputs.get('input') ?? nodeOutputs.get('$json');
+        const upstreamStrCH = !prompt.includes('{{') ? extractUpstreamStringForPrompt(rawUpstreamCH) : '';
+        const effectiveMessage = upstreamStrCH && upstreamStrCH !== resolvedPromptCH ? upstreamStrCH : (resolvedPromptCH || prompt);
+        const effectivePreamble = upstreamStrCH && upstreamStrCH !== resolvedPromptCH && resolvedPromptCH ? resolvedPromptCH : (preamble || '');
+
+        if (!effectiveMessage) return { success: false, response: '', model, finishReason: '', inputTokens: 0, outputTokens: 0, error: 'prompt is required' };
+
+        console.log(`[cohere] model=${model} message_len=${effectiveMessage.length}`);
+
+        const body: Record<string, unknown> = { model, message: effectiveMessage, temperature, max_tokens: maxTokens };
+        if (effectivePreamble) body.preamble = effectivePreamble;
+
+        const response = await fetch('https://api.cohere.com/v1/chat', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+            'accept': 'application/json',
+          },
+          body: JSON.stringify(body),
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text().catch(() => response.statusText);
+          return { success: false, response: '', model, finishReason: '', inputTokens: 0, outputTokens: 0, error: `Cohere API error ${response.status}: ${errorText}` };
+        }
+
+        const data: any = await response.json();
+        const text = data?.text || '';
+        const finishReason = data?.finish_reason || '';
+        const inputTokens = data?.meta?.tokens?.input_tokens ?? data?.meta?.billed_units?.input_tokens ?? 0;
+        const outputTokens = data?.meta?.tokens?.output_tokens ?? data?.meta?.billed_units?.output_tokens ?? 0;
+
+        return { success: true, response: text, model, finishReason, inputTokens, outputTokens, error: null };
+      } catch (err: any) {
+        return { success: false, response: '', model: config.model || 'command-r-08-2024', finishReason: '', inputTokens: 0, outputTokens: 0, error: err?.message || 'Cohere error' };
+      }
+    }
+
+    case 'huggingface': {
+      try {
+        const model = getStringProperty(config, 'model', 'facebook/bart-large-cnn');
+        const apiKey = getStringProperty(config, 'apiKey', '') || getStringProperty(config, 'token', '');
+        const prompt = getStringProperty(config, 'prompt', '');
+        const maxTokens = Number((config as any).maxTokens ?? 256);
+        const temperature = Number((config as any).temperature ?? 0.7);
+
+        if (!apiKey) return { ...inputObj, success: false, error: 'HuggingFace API token is required' };
+        if (!prompt) return { ...inputObj, success: false, error: 'prompt is required' };
+
+        const hfUrl = `https://router.huggingface.co/hf-inference/models/${encodeURIComponent(model)}`;
+        const hfHeaders = { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' };
+
+        let hfResp = await fetch(hfUrl, {
+          method: 'POST',
+          headers: hfHeaders,
+          body: JSON.stringify({ inputs: prompt, parameters: { max_new_tokens: maxTokens, temperature } }),
+        });
+
+        // Some models (classifiers, tokenizers) reject generation params — retry with bare input
+        if (!hfResp.ok) {
+          const errText = await hfResp.text().catch(() => hfResp.statusText);
+          if (hfResp.status === 400 && errText.includes('max_new_tokens')) {
+            hfResp = await fetch(hfUrl, {
+              method: 'POST',
+              headers: hfHeaders,
+              body: JSON.stringify({ inputs: prompt }),
+            });
+            if (!hfResp.ok) {
+              const err2 = await hfResp.text().catch(() => hfResp.statusText);
+              return { ...inputObj, success: false, error: `HuggingFace API error ${hfResp.status}: ${err2}` };
+            }
+          } else {
+            return { ...inputObj, success: false, error: `HuggingFace API error ${hfResp.status}: ${errText}` };
+          }
+        }
+
+        const hfData: any = await hfResp.json();
+        const firstItem = Array.isArray(hfData) ? hfData[0] : hfData;
+        const generatedText =
+          firstItem?.summary_text ??
+          firstItem?.generated_text ??
+          firstItem?.translation_text ??
+          firstItem?.answer ??
+          firstItem?.sequence ??
+          (Array.isArray(firstItem) ? firstItem[0]?.label : undefined) ??
+          firstItem?.text ??
+          JSON.stringify(firstItem);
+
+        return { ...inputObj, success: true, model, response: generatedText, output: hfData };
+      } catch (err: any) {
+        return { ...inputObj, success: false, error: err?.message || 'HuggingFace error' };
+      }
+    }
+
+    case 'mistral': {
+      try {
+        const apiKey = getStringProperty(config, 'apiKey', '') || getStringProperty(config, 'token', '');
+        const model = getStringProperty(config, 'model', 'mistral-small-latest');
+        const systemPrompt = getStringProperty(config, 'systemPrompt', '');
+        const prompt = getStringProperty(config, 'prompt', '');
+        const temperature = Number((config as any).temperature ?? 0.7);
+        const maxTokens = Number((config as any).maxTokens ?? 1024);
+
+        if (!apiKey) return { ...inputObj, success: false, error: 'Mistral API key is required' };
+        if (!prompt) return { ...inputObj, success: false, error: 'prompt is required' };
+
+        const messages: Array<{ role: string; content: string }> = [];
+        if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
+        messages.push({ role: 'user', content: prompt });
+
+        const mistralResp = await fetch('https://api.mistral.ai/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model, messages, temperature, max_tokens: maxTokens }),
+        });
+
+        if (!mistralResp.ok) {
+          const errText = await mistralResp.text().catch(() => mistralResp.statusText);
+          return { ...inputObj, success: false, error: `Mistral API error ${mistralResp.status}: ${errText}` };
+        }
+
+        const mistralData: any = await mistralResp.json();
+        const response = mistralData?.choices?.[0]?.message?.content ?? '';
+        const inputTokens = mistralData?.usage?.prompt_tokens ?? 0;
+        const outputTokens = mistralData?.usage?.completion_tokens ?? 0;
+
+        return { ...inputObj, success: true, model, response, inputTokens, outputTokens };
+      } catch (err: any) {
+        return { ...inputObj, success: false, error: err?.message || 'Mistral error' };
+      }
+    }
+
+    case 'linear': {
+      try {
+        const apiKey = getStringProperty(config, 'apiKey', '') || getStringProperty(config, 'token', '');
+        const operation = getStringProperty(config, 'operation', 'getIssues');
+        const teamId = getStringProperty(config, 'teamId', '');
+        const issueId = getStringProperty(config, 'issueId', '');
+        const title = getStringProperty(config, 'title', '');
+        const description = getStringProperty(config, 'description', '');
+        const stateId = getStringProperty(config, 'stateId', '');
+        const priority = Number((config as any).priority ?? 0);
+
+        if (!apiKey) return { ...inputObj, success: false, error: 'Linear API key is required' };
+
+        const linearHeaders = { 'Authorization': apiKey, 'Content-Type': 'application/json' };
+
+        let linearQuery = '';
+        let linearVariables: Record<string, unknown> = {};
+
+        if (operation === 'getTeams') {
+          linearQuery = '{ teams { nodes { id name key } } }';
+        } else if (operation === 'createIssue') {
+          linearQuery = 'mutation CreateIssue($input: IssueCreateInput!) { issueCreate(input: $input) { success issue { id title url } } }';
+          linearVariables = { input: { title, description, teamId, stateId: stateId || undefined, priority } };
+        } else if (operation === 'updateIssue') {
+          linearQuery = 'mutation UpdateIssue($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success issue { id title url state { name } } } }';
+          linearVariables = { id: issueId, input: { title: title || undefined, description: description || undefined, stateId: stateId || undefined, priority: priority || undefined } };
+        } else {
+          // getIssues (default)
+          linearQuery = teamId
+            ? '{ issues(filter: { team: { id: { eq: $teamId } } }) { nodes { id title state { name } priority url } } }'
+            : '{ viewer { assignedIssues { nodes { id title state { name } priority url } } } }';
+          if (teamId) linearVariables = { teamId };
+        }
+
+        const linearResp = await fetch('https://api.linear.app/graphql', {
+          method: 'POST',
+          headers: linearHeaders,
+          body: JSON.stringify({ query: linearQuery, variables: linearVariables }),
+        });
+
+        if (!linearResp.ok) {
+          const errText = await linearResp.text().catch(() => linearResp.statusText);
+          return { ...inputObj, success: false, error: `Linear API error ${linearResp.status}: ${errText}` };
+        }
+
+        const linearData: any = await linearResp.json();
+        if (linearData?.errors?.length) {
+          return { ...inputObj, success: false, error: linearData.errors.map((e: any) => e.message).join('; ') };
+        }
+
+        return { ...inputObj, success: true, operation, data: linearData?.data };
+      } catch (err: any) {
+        return { ...inputObj, success: false, error: err?.message || 'Linear error' };
+      }
+    }
+
+    case 'trello': {
+      try {
+        const apiKey = getStringProperty(config, 'apiKey', '');
+        const token = getStringProperty(config, 'token', '');
+        const operation = getStringProperty(config, 'operation', 'getCards');
+        const boardId = getStringProperty(config, 'boardId', '');
+        const listId = getStringProperty(config, 'listId', '');
+        const cardId = getStringProperty(config, 'cardId', '');
+        const cardName = getStringProperty(config, 'cardName', '');
+        const cardDesc = getStringProperty(config, 'cardDesc', '');
+
+        if (!apiKey || !token) return { ...inputObj, success: false, error: 'Trello API key and token are required' };
+
+        const trelloBase = 'https://api.trello.com/1';
+        const trelloAuth = `key=${encodeURIComponent(apiKey)}&token=${encodeURIComponent(token)}`;
+        const trelloHeaders = { 'Content-Type': 'application/json' };
+
+        let trelloUrl = '';
+        let trelloMethod = 'GET';
+        let trelloBody: string | undefined;
+
+        if (operation === 'getBoards') {
+          trelloUrl = `${trelloBase}/members/me/boards?${trelloAuth}&fields=id,name,url`;
+        } else if (operation === 'getLists') {
+          if (!boardId) return { ...inputObj, success: false, error: 'boardId is required for getLists' };
+          trelloUrl = `${trelloBase}/boards/${encodeURIComponent(boardId)}/lists?${trelloAuth}`;
+        } else if (operation === 'getCards') {
+          const target = listId || boardId;
+          if (!target) return { ...inputObj, success: false, error: 'boardId or listId is required for getCards' };
+          trelloUrl = listId
+            ? `${trelloBase}/lists/${encodeURIComponent(listId)}/cards?${trelloAuth}`
+            : `${trelloBase}/boards/${encodeURIComponent(boardId)}/cards?${trelloAuth}`;
+        } else if (operation === 'createCard') {
+          if (!listId) return { ...inputObj, success: false, error: 'listId is required for createCard' };
+          trelloUrl = `${trelloBase}/cards?${trelloAuth}`;
+          trelloMethod = 'POST';
+          trelloBody = JSON.stringify({ name: cardName, desc: cardDesc, idList: listId });
+        } else if (operation === 'updateCard') {
+          if (!cardId) return { ...inputObj, success: false, error: 'cardId is required for updateCard' };
+          trelloUrl = `${trelloBase}/cards/${encodeURIComponent(cardId)}?${trelloAuth}`;
+          trelloMethod = 'PUT';
+          trelloBody = JSON.stringify({ name: cardName || undefined, desc: cardDesc || undefined, idList: listId || undefined });
+        } else {
+          return { ...inputObj, success: false, error: `Unsupported Trello operation: ${operation}` };
+        }
+
+        const trelloResp = await fetch(trelloUrl, { method: trelloMethod, headers: trelloHeaders, body: trelloBody });
+
+        if (!trelloResp.ok) {
+          const errText = await trelloResp.text().catch(() => trelloResp.statusText);
+          return { ...inputObj, success: false, error: `Trello API error ${trelloResp.status}: ${errText}` };
+        }
+
+        const trelloData: any = await trelloResp.json();
+        return { ...inputObj, success: true, operation, data: trelloData };
+      } catch (err: any) {
+        return { ...inputObj, success: false, error: err?.message || 'Trello error' };
       }
     }
 

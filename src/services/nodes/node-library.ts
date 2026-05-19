@@ -1346,8 +1346,16 @@ export class NodeLibrary {
     this.addSchema(this.createNetlifySchema());
     this.addSchema(this.createWorkdaySchema());
     this.addSchema(this.createPineconeSchema());
+    this.addSchema(this.createQdrantSchema());
+    this.addSchema(this.createCohereSchema());
     this.addSchema(this.createLangchainSchema());
     this.addSchema(this.createLightricksSchema());
+
+    // ── New AI/productivity nodes (credential-system backed) ──
+    this.addSchema(this.createHuggingFaceSchema());
+    this.addSchema(this.createMistralSchema());
+    this.addSchema(this.createLinearSchema());
+    this.addSchema(this.createTrelloSchema());
   }
 
   private addSchema(schema: NodeSchema): void {
@@ -1913,6 +1921,7 @@ export class NodeLibrary {
       label: 'PostgreSQL',
       category: 'database',
       description: 'Execute SQL queries on PostgreSQL database',
+      providers: ['postgresql'],
       configSchema: {
         required: ['query'],
         optional: {
@@ -2145,6 +2154,7 @@ export class NodeLibrary {
       label: 'Google Sheets',
       category: 'google',
       description: 'Read, write, append, or update data in Google Sheets',
+      providers: ['google'],
       configSchema: {
         required: ['spreadsheetId', 'operation'],
         optional: {
@@ -2261,6 +2271,7 @@ export class NodeLibrary {
       label: 'Google Docs',
       category: 'google',
       description: 'Read, write, create, or append content in Google Docs documents',
+      providers: ['google'],
       configSchema: {
         required: ['operation'],
         optional: {
@@ -5425,63 +5436,72 @@ export class NodeLibrary {
       label: 'ClickUp',
       category: 'actions',
       description: 'Create, read, and manage ClickUp tasks, lists, spaces, and workspaces.',
+      providers: ['clickup'],
       configSchema: {
-        // Core engine only enforces operation as required; more specific
-        // requirements (listId, taskId, etc.) are handled in the ClickUp UI
-        // and node-specific runtime executor.
         required: ['operation'],
         optional: {
-          apiKey: {
-            type: 'string',
-            description: 'ClickUp API key (required for authentication)',
-            examples: ['pk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'],
-          },
-          credentialId: {
-            type: 'string',
-            description: 'Credential ID reference to stored ClickUp credentials',
-            examples: ['cred_123'],
-          },
           operation: {
             type: 'string',
-            description:
-              'High-level ClickUp operation to perform (e.g. create_task, get_tasks_list, get_tasks_space).',
-            examples: ['create_task', 'get_tasks_list', 'get_tasks_space'],
+            description: 'ClickUp operation to perform',
+            default: 'create_task',
+            options: [
+              { label: 'Create Task',          value: 'create_task' },
+              { label: 'Get Tasks (List)',      value: 'get_tasks_list' },
+              { label: 'Get Task',             value: 'get_task' },
+              { label: 'Update Task',          value: 'update_task' },
+              { label: 'Delete Task',          value: 'delete_task' },
+              { label: 'Add Comment',          value: 'add_comment' },
+              { label: 'Update Task Status',   value: 'update_status' },
+              { label: 'Get Teams/Workspaces', value: 'get_teams' },
+              { label: 'Get Spaces',           value: 'get_spaces' },
+              { label: 'Get Folders',          value: 'get_folders' },
+              { label: 'Get Lists',            value: 'get_lists' },
+            ],
           },
           workspaceId: {
             type: 'string',
-            description:
-              'ClickUp workspace (team) ID. Required for some workspace-scoped operations such as listing tasks across a space or team.',
-            examples: ['9012345678'],
+            description: 'Workspace (team) ID — find it in the workspace URL or via Get Teams',
+            examples: ['90161598841'],
           },
           spaceId: {
             type: 'string',
-            description:
-              'ClickUp space ID. Used when operating on tasks scoped to a space (for example, get_tasks_space).',
-            examples: ['9012345678'],
+            description: 'Space ID — required for Get Spaces tasks; find via Get Spaces',
+            examples: ['90166920916'],
           },
           listId: {
             type: 'string',
-            description:
-              'ClickUp list ID. Required for list-scoped operations such as create_task or get_tasks_list.',
-            examples: ['9012345678'],
+            description: 'List ID — required for create_task and get_tasks_list; find via Get Lists',
+            examples: ['901614760992'],
           },
           taskId: {
             type: 'string',
-            description:
-              'ClickUp task ID. Used when updating, deleting, or fetching a single task (or related entities like comments or time tracking).',
-            examples: ['abc123'],
+            description: 'Task ID — required for get_task, update_task, delete_task, add_comment, update_status',
+            examples: ['86d31vafd'],
           },
           taskName: {
             type: 'string',
-            description:
-              'Name/title for a task when creating it (maps to ClickUp task name).',
+            description: 'Task name/title (required for create_task)',
             examples: ['Follow up with customer', 'Prepare weekly report'],
           },
           taskDescription: {
             type: 'string',
-            description:
-              'Optional detailed markdown description for a task when creating or updating it.',
-            examples: ['### Details\n- Action item 1\n- Action item 2'],
+            description: 'Task description — markdown supported (optional for create_task / update_task)',
+            examples: ['Details:\n- Action item 1\n- Action item 2'],
+          },
+          status: {
+            type: 'string',
+            description: 'Task status (e.g. "to do", "in progress", "complete")',
+            examples: ['to do', 'in progress', 'complete'],
+          },
+          priority: {
+            type: 'number',
+            description: 'Task priority: 1 = urgent, 2 = high, 3 = normal, 4 = low',
+            examples: [1, 2, 3, 4],
+          },
+          commentText: {
+            type: 'string',
+            description: 'Comment text for add_comment operation',
+            examples: ['This has been reviewed and approved.'],
           },
         },
       },
@@ -5607,6 +5627,7 @@ export class NodeLibrary {
       label: 'LinkedIn',
       category: 'social',
       description: 'Post content to LinkedIn, manage LinkedIn profile and company pages',
+      providers: ['linkedin'],
       configSchema: {
         // NOTE: We intentionally do NOT require `text` here because media-only
         // posts are allowed when a mediaUrl is provided. Runtime validation in
@@ -5703,6 +5724,7 @@ export class NodeLibrary {
       label: 'Twitter/X',
       category: 'social',
       description: 'Post tweets, manage Twitter account',
+      providers: ['twitter'],
       configSchema: {
         required: ['resource', 'operation'],
         optional: {
@@ -5715,7 +5737,7 @@ export class NodeLibrary {
           operation: {
             type: 'string',
             description: 'Twitter operation',
-            examples: ['create', 'delete', 'get', 'searchRecent'],
+            examples: ['create', 'delete', 'get', 'getMe', 'recent'],
             default: 'create',
           },
           text: {
@@ -5772,6 +5794,7 @@ export class NodeLibrary {
       label: 'Instagram',
       category: 'social',
       description: 'Post content to Instagram',
+      providers: ['instagram'],
       configSchema: {
         required: ['resource', 'operation'],
         optional: {
@@ -5844,40 +5867,78 @@ export class NodeLibrary {
         optional: {
           operation: {
             type: 'string',
-            description: 'Operation: upload_video, update_video, create_post',
-            examples: ['upload_video', 'update_video', 'create_post'],
-            default: 'upload_video',
-          },
-          videoUrl: {
-            type: 'string',
-            description: 'URL of the video to upload or reference',
-            examples: ['https://example.com/video.mp4'],
+            description: 'Operation: list_my_channels, get_channel, search_videos, get_video_stats, upload_video, update_video_metadata, delete_video',
+            examples: ['list_my_channels', 'search_videos', 'upload_video', 'get_video_stats'],
+            default: 'list_my_channels',
           },
           title: {
             type: 'string',
-            description: 'Video title',
+            description: 'Video title for upload_video or update_video_metadata',
             examples: ['New product demo'],
           },
           description: {
             type: 'string',
-            description: 'Video description or post text',
+            description: 'Video description for upload_video or update_video_metadata',
             examples: ['Check out our latest feature...'],
+          },
+          tags: {
+            type: 'string',
+            description: 'Comma-separated tags for upload_video or update_video_metadata',
+            examples: ['automation, demo'],
+          },
+          videoUrl: {
+            type: 'string',
+            description: 'HTTP/HTTPS URL of the video file to upload',
+            examples: ['https://example.com/video.mp4'],
+          },
+          videoDataBase64: {
+            type: 'string',
+            description: 'Base64-encoded video data for upload_video',
+            examples: ['AAAAIGZ0eXBtcDQy...'],
+          },
+          mimeType: {
+            type: 'string',
+            description: 'Video MIME type for upload_video',
+            examples: ['video/mp4'],
+            default: 'video/mp4',
+          },
+          privacyStatus: {
+            type: 'string',
+            description: 'Privacy status for upload_video: private, unlisted, public',
+            examples: ['private', 'unlisted'],
+            default: 'private',
+          },
+          madeForKids: {
+            type: 'boolean',
+            description: 'Whether uploaded video is made for kids',
+            examples: [false],
+            default: false,
+          },
+          categoryId: {
+            type: 'string',
+            description: 'Optional YouTube category ID for upload_video',
+            examples: ['22'],
+            default: '22',
+          },
+          videoId: {
+            type: 'string',
+            description: 'YouTube video ID for get_video_stats, update_video_metadata, or delete_video',
+            examples: ['dQw4w9WgXcQ'],
+          },
+          query: {
+            type: 'string',
+            description: 'Search query for search_videos',
+            examples: ['workflow automation'],
+          },
+          maxResults: {
+            type: 'number',
+            description: 'Maximum number of YouTube results to return',
+            examples: [10],
           },
           channelId: {
             type: 'string',
-            description: 'YouTube channel ID (optional if default channel is configured)',
+            description: 'YouTube channel ID for get_channel or optional search filtering',
             examples: ['UCxxxxxxxxxxxx'],
-          },
-          // Credential fields (for credential discovery and injection)
-          accessToken: {
-            type: 'string',
-            description: 'OAuth2 Access Token for YouTube (if using OAuth authentication)',
-            examples: ['your-youtube-oauth-token'],
-          },
-          credentialId: {
-            type: 'string',
-            description: 'ID of the stored credential to use',
-            examples: ['youtube_oauth_123'],
           },
         },
       },
@@ -6556,11 +6617,11 @@ export class NodeLibrary {
       category: 'output',
       description: 'Send messages to Discord channels or users via Discord Bot API',
       configSchema: {
-        required: ['channelId', 'message'],
+        required: ['message'],
         optional: {
           channelId: {
             type: 'string',
-            description: 'Discord channel ID',
+            description: 'Discord channel ID (required for Bot Token mode)',
             examples: ['123456789012345678'],
           },
           message: {
@@ -6572,6 +6633,11 @@ export class NodeLibrary {
           botToken: {
             type: 'string',
             description: 'Discord bot token (stored as credential)',
+          },
+          webhookUrl: {
+            type: 'string',
+            description: 'Discord webhook URL — alternative to Bot Token, no channelId needed',
+            examples: ['https://discord.com/api/webhooks/...'],
           },
         },
       },
@@ -6589,7 +6655,7 @@ export class NodeLibrary {
       commonPatterns: [],
       validationRules: [],
       capabilities: ['notification.send', 'discord.send', 'message.send'],
-      providers: ['discord'],
+      providers: ['discord', 'discord_webhook'],
       keywords: [
         'discord', 'discord message', 'discord channel', 'discord server',
         'discord webhook', 'discord bot', 'discord api', 'discord integration'
@@ -7347,22 +7413,17 @@ export class NodeLibrary {
       category: 'ai',
       description: 'OpenAI GPT chat completion (GPT-4, GPT-3.5)',
       configSchema: {
-        required: ['model', 'messages', 'apiKey'],
+        required: ['model', 'prompt'],
         optional: {
           model: {
             type: 'string',
             description: 'Model name',
-            examples: ['gpt-4', 'gpt-3.5-turbo'],
+            examples: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-4', 'gpt-3.5-turbo'],
           },
-          apiKey: {
+          prompt: {
             type: 'string',
-            description: 'OpenAI API key (node-level, required for this node to run)',
-            examples: ['sk-...'],
-          },
-          messages: {
-            type: 'array',
-            description: 'Chat messages',
-            examples: [['{{$json.messages}}']],
+            description: 'User message or prompt to send to OpenAI',
+            examples: ['Summarize {{$json.text}}'],
           },
         },
       },
@@ -7495,7 +7556,7 @@ export class NodeLibrary {
       commonPatterns: [],
       validationRules: [],
       capabilities: ['ai.chat', 'google.completion'],
-      providers: ['google'],
+      providers: ['gemini'],
       keywords: [
         'gemini', 'google gemini', 'gemini ai', 'google ai',
         'gemini model', 'google gemini model', 'gemini chat', 'google gemini chat',
@@ -8330,7 +8391,7 @@ export class NodeLibrary {
       commonPatterns: [],
       validationRules: [],
       capabilities: ['notification.send', 'discord.send'],
-      providers: ['discord'],
+      providers: ['discord_webhook'],
       keywords: [
         'discord webhook', 'discord webhook node', 'webhook discord', 'discord webhook message',
         'discord webhook send', 'send discord webhook', 'discord webhook notification',
@@ -10439,48 +10500,81 @@ export class NodeLibrary {
       configSchema: {
         required: ['operation'],
         optional: {
-          baseUrl: {
-            type: 'string',
-            description: 'Jira base URL (e.g., https://your-domain.atlassian.net)',
-            examples: ['https://mycompany.atlassian.net'],
-          },
-          email: {
-            type: 'string',
-            description: 'Jira account email (for basic auth with API token)',
-            examples: ['user@company.com'],
-          },
-          apiToken: {
-            type: 'string',
-            description: 'Jira API token (optional if stored in vault under key "jira")',
-          },
           operation: {
             type: 'string',
-            description: 'Operation: create, read, update, delete',
-            examples: ['create', 'read', 'update', 'delete'],
+            description: 'Jira operation to perform',
+            default: 'create_issue',
+            options: [
+              { label: 'Create Issue',      value: 'create_issue' },
+              { label: 'Get Issue',         value: 'get_issue' },
+              { label: 'Update Issue',      value: 'update_issue' },
+              { label: 'Delete Issue',      value: 'delete_issue' },
+              { label: 'Search Issues',     value: 'search_issues' },
+              { label: 'Add Comment',       value: 'add_comment' },
+              { label: 'Transition Issue',  value: 'transition_issue' },
+              { label: 'Get Projects',      value: 'get_projects' },
+            ],
           },
-          issueKey: {
+          domain: {
             type: 'string',
-            description: 'Issue key (for read/update/delete)',
-            examples: ['PROJ-123'],
+            description: 'Atlassian domain (without https://)',
+            examples: ['yourcompany.atlassian.net'],
           },
           projectKey: {
             type: 'string',
-            description: 'Project key (create)',
-            examples: ['PROJ'],
+            description: 'Project key — required for create_issue',
+            examples: ['PROJ', 'DEV'],
+          },
+          issueKey: {
+            type: 'string',
+            description: 'Issue key — required for get/update/delete/comment/transition',
+            examples: ['PROJ-123'],
           },
           summary: {
             type: 'string',
-            description: 'Issue summary/title (create)',
+            description: 'Issue title/summary — required for create_issue',
           },
-          descriptionText: {
+          description: {
             type: 'string',
-            description: 'Issue description (create/update)',
+            description: 'Issue description (plain text, converted to ADF automatically)',
           },
           issueType: {
             type: 'string',
-            description: 'Issue type (default: Task)',
-            examples: ['Task', 'Bug', 'Story'],
+            description: 'Issue type — default: Task',
+            examples: ['Task', 'Bug', 'Story', 'Epic'],
             default: 'Task',
+          },
+          priority: {
+            type: 'string',
+            description: 'Issue priority',
+            examples: ['Highest', 'High', 'Medium', 'Low', 'Lowest'],
+          },
+          assignee: {
+            type: 'string',
+            description: 'Assignee account ID (get from Jira user search)',
+          },
+          labels: {
+            type: 'array',
+            description: 'Labels to attach to the issue',
+            examples: [['bug', 'urgent']],
+          },
+          jql: {
+            type: 'string',
+            description: 'JQL query — required for search_issues',
+            examples: ['project = PROJ AND status = "In Progress"'],
+          },
+          maxResults: {
+            type: 'number',
+            description: 'Max results for search_issues (default: 50)',
+            default: 50,
+          },
+          commentBody: {
+            type: 'string',
+            description: 'Comment text — required for add_comment',
+          },
+          transitionId: {
+            type: 'string',
+            description: 'Transition ID — required for transition_issue',
           },
         },
       },
@@ -11512,6 +11606,7 @@ export class NodeLibrary {
       label: 'Calendly',
       category: 'productivity',
       description: 'Fetch events, event types, scheduled meetings, and user info from Calendly.',
+      providers: ['calendly'],
       configSchema: {
         required: ['accessToken', 'operation'],
         optional: {
@@ -11552,6 +11647,7 @@ export class NodeLibrary {
       label: 'Chargebee',
       category: 'payment',
       description: 'Create customers, manage subscriptions, and automate billing with Chargebee.',
+      providers: ['chargebee'],
       configSchema: {
         required: ['operation', 'apiKey', 'site'],
         optional: {
@@ -11595,6 +11691,7 @@ export class NodeLibrary {
       label: 'Typeform',
       category: 'productivity',
       description: 'Retrieve form responses, create forms, and fetch form definitions using Typeform.',
+      providers: ['typeform'],
       configSchema: {
         required: ['operation', 'apiKey'],
         optional: {
@@ -11834,6 +11931,7 @@ export class NodeLibrary {
       label: 'Contentful',
       category: 'cms',
       description: 'Create, read, update, and delete content entries on any Contentful space.',
+      providers: ['contentful'],
       configSchema: {
         required: ['operation', 'spaceId', 'accessToken'],
         optional: {
@@ -11878,6 +11976,7 @@ export class NodeLibrary {
       label: 'WordPress',
       category: 'cms',
       description: 'Create, read, update, and delete posts on a WordPress site via the WordPress REST API.',
+      providers: ['wordpress'],
       configSchema: {
         required: ['operation', 'siteUrl', 'username', 'password'],
         optional: {
@@ -11923,6 +12022,7 @@ export class NodeLibrary {
       label: 'Zendesk',
       category: 'crm',
       description: 'Create, read, update, and delete Zendesk support tickets and manage users.',
+      providers: ['zendesk'],
       configSchema: {
         required: ['operation', 'subdomain', 'email', 'apiToken'],
         optional: {
@@ -11971,6 +12071,7 @@ export class NodeLibrary {
       label: 'Netlify',
       category: 'devops',
       description: 'Deploy sites, manage builds, and query site/deploy data through the Netlify REST API.',
+      providers: ['netlify'],
       configSchema: {
         required: ['resource', 'operation'],
         optional: {
@@ -12022,6 +12123,7 @@ export class NodeLibrary {
       label: 'Workday',
       category: 'http_api',
       description: 'Read and manage Workday HR, staffing, and organizational data through the Workday REST APIs.',
+      providers: ['workday'],
       configSchema: {
         required: ['resource', 'operation'],
         optional: {
@@ -12079,6 +12181,7 @@ export class NodeLibrary {
       label: 'Pinecone',
       category: 'database',
       description: 'Upsert, query, and delete vectors in a Pinecone vector database index.',
+      providers: ['pinecone'],
       configSchema: {
         required: ['operation', 'index'],
         optional: {
@@ -12116,12 +12219,101 @@ export class NodeLibrary {
     };
   }
 
+  private createQdrantSchema(): NodeSchema {
+    return {
+      type: 'qdrant',
+      label: 'Qdrant',
+      category: 'database',
+      description: 'Upsert, query, and delete vectors in a Qdrant vector database collection.',
+      providers: ['qdrant'],
+      configSchema: {
+        required: ['operation', 'url', 'collection'],
+        optional: {
+          operation: {
+            type: 'string', description: 'Action to perform', default: 'query',
+            options: [
+              { label: 'Upsert', value: 'upsert' },
+              { label: 'Query',  value: 'query' },
+              { label: 'Delete', value: 'delete' },
+            ],
+          },
+          url: { type: 'string', description: 'Qdrant cluster endpoint URL', default: '' },
+          collection: { type: 'string', description: 'Qdrant collection name', default: '' },
+          apiKey: { type: 'string', description: 'Qdrant API key', default: '' },
+          vector: { type: 'array', description: 'Embedding array of floats', default: [] },
+          limit: { type: 'number', description: 'Nearest-neighbor results count', default: 5 },
+          id: { type: 'string', description: 'Point ID for upsert / delete', default: '' },
+          payload: { type: 'object', description: 'Key-value metadata for upsert', default: {} },
+          withPayload: { type: 'boolean', description: 'Include payload in query results', default: true },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: ['User wants to store or query vectors', 'User mentions Qdrant or vector similarity search'],
+        whenNotToUse: ['Relational database queries', 'User mentions Pinecone'],
+        keywords: ['qdrant', 'vector', 'embeddings', 'similarity', 'semantic search', 'rag'],
+        useCases: ['Upsert embedding', 'Query nearest neighbors', 'Delete vector'],
+        intentDescription: 'Qdrant vector database integration for AI/ML workflows.',
+        intentCategories: ['database', 'vector', 'ai', 'embeddings', 'rag'],
+      },
+      commonPatterns: [
+        { name: 'query_vectors', description: 'Query nearest neighbors', config: { operation: 'query', url: '{{$credentials.qdrant.url}}', collection: 'my-collection', apiKey: '{{$credentials.qdrant.apiKey}}', vector: '{{$json.embedding}}', limit: 5 } },
+      ],
+      validationRules: [
+        { field: 'operation', validator: (v: any) => ['upsert','query','delete'].includes(v), errorMessage: 'Invalid operation' },
+      ],
+    };
+  }
+
+  private createCohereSchema(): NodeSchema {
+    return {
+      type: 'cohere',
+      label: 'Cohere',
+      category: 'ai',
+      description: 'Send prompts to Cohere Command models and generate AI text responses.',
+      providers: ['cohere'],
+      configSchema: {
+        required: ['model', 'prompt'],
+        optional: {
+          model: {
+            type: 'string', description: 'Cohere model to use', default: 'command-r-08-2024',
+            options: [
+              { label: 'Command R7B (fast)',    value: 'command-r7b-12-2024' },
+              { label: 'Command R (balanced)',  value: 'command-r-08-2024' },
+              { label: 'Command R+ (powerful)', value: 'command-r-plus-08-2024' },
+              { label: 'Command Nightly (dev)', value: 'command-nightly' },
+            ],
+          },
+          prompt:      { type: 'string', description: 'User message to send', default: '' },
+          preamble:    { type: 'string', description: 'System-level persona instruction', default: '' },
+          apiKey:      { type: 'string', description: 'Cohere API key', default: '' },
+          temperature: { type: 'number', description: 'Sampling temperature [0–2]', default: 0.7 },
+          maxTokens:   { type: 'number', description: 'Max tokens to generate', default: 1024 },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: ['User wants to generate text with Cohere', 'User mentions Cohere or Command model'],
+        whenNotToUse: ['User mentions GPT, Claude, or Gemini'],
+        keywords: ['cohere', 'command', 'llm', 'text generation', 'ai', 'nlp'],
+        useCases: ['Generate text', 'Summarize content', 'Answer questions', 'Classify text'],
+        intentDescription: 'Cohere AI text generation using Command models.',
+        intentCategories: ['ai', 'llm', 'text-generation'],
+      },
+      commonPatterns: [
+        { name: 'generate_text', description: 'Generate a response from a prompt', config: { model: 'command', apiKey: '{{$credentials.cohere.apiKey}}', prompt: 'Summarize the following: {{$json.text}}' } },
+      ],
+      validationRules: [
+        { field: 'model', validator: (v: any) => ['command','command-light','command-r','command-r-plus'].includes(v), errorMessage: 'Invalid Cohere model' },
+      ],
+    };
+  }
+
   private createLangchainSchema(): NodeSchema {
     return {
       type: 'langchain',
       label: 'LangChain',
       category: 'ai',
       description: 'Orchestrate AI chains and agents using LangChain with configurable LLM providers and tools.',
+      providers: ['openai'],
       configSchema: {
         required: ['operation', 'prompt'],
         optional: {
@@ -12210,6 +12402,173 @@ export class NodeLibrary {
     };
   }
 
+  private createHuggingFaceSchema(): NodeSchema {
+    return {
+      type: 'huggingface',
+      label: 'Hugging Face',
+      category: 'ai',
+      description: 'Run inference against any Hugging Face model via the Inference API.',
+      providers: ['huggingface'],
+      configSchema: {
+        required: ['model', 'prompt'],
+        optional: {
+          model: {
+            type: 'string',
+            description: 'Hugging Face model ID (hf-inference provider) — all options below are tested and working',
+            default: 'facebook/bart-large-cnn',
+            options: [
+              { label: 'BART Large CNN — Summarize long text', value: 'facebook/bart-large-cnn' },
+              { label: 'DistilBART CNN — Fast summarization', value: 'sshleifer/distilbart-cnn-12-6' },
+              { label: 'Helsinki EN→FR — Translate English to French', value: 'Helsinki-NLP/opus-mt-en-fr' },
+              { label: 'Helsinki EN→DE — Translate English to German', value: 'Helsinki-NLP/opus-mt-en-de' },
+              { label: 'Helsinki EN→ES — Translate English to Spanish', value: 'Helsinki-NLP/opus-mt-en-es' },
+            ],
+          },
+          prompt: { type: 'string', description: 'Input text prompt', default: '' },
+          maxTokens: { type: 'number', description: 'Max new tokens to generate', default: 256 },
+          temperature: { type: 'number', description: 'Sampling temperature (0–1)', default: 0.7 },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: ['User mentions Hugging Face', 'User wants to run a custom open-source model', 'User references HuggingFace or transformers'],
+        whenNotToUse: ['User wants GPT-4, Claude, or Gemini'],
+        keywords: ['huggingface', 'hf', 'transformers', 'inference api', 'open source llm'],
+        useCases: ['Text generation', 'Classification', 'Custom model inference'],
+        intentDescription: 'Hugging Face Inference API for running open-source models.',
+        intentCategories: ['ai', 'llm', 'text-generation', 'ml'],
+      },
+      commonPatterns: [
+        { name: 'summarize_text', description: 'Summarize text using BART', config: { model: 'facebook/bart-large-cnn', prompt: '{{$json.text}}' } },
+        { name: 'translate_to_french', description: 'Translate text to French', config: { model: 'Helsinki-NLP/opus-mt-en-fr', prompt: '{{$json.text}}' } },
+      ],
+      validationRules: [],
+    };
+  }
+
+  private createMistralSchema(): NodeSchema {
+    return {
+      type: 'mistral',
+      label: 'Mistral AI',
+      category: 'ai',
+      description: 'Generate text and chat completions using Mistral AI models.',
+      providers: ['mistral'],
+      configSchema: {
+        required: ['model', 'prompt'],
+        optional: {
+          model: {
+            type: 'string', description: 'Mistral model to use', default: 'mistral-small-latest',
+            options: [
+              { label: 'Mistral Small (fast)', value: 'mistral-small-latest' },
+              { label: 'Mistral Medium', value: 'mistral-medium-latest' },
+              { label: 'Mistral Large (powerful)', value: 'mistral-large-latest' },
+              { label: 'Codestral (code)', value: 'codestral-latest' },
+            ],
+          },
+          systemPrompt: { type: 'string', description: 'System instruction that sets the AI behavior and persona (optional)', default: '' },
+          prompt: { type: 'string', description: 'User message to send to the model', default: '' },
+          temperature: { type: 'number', description: 'Sampling temperature (0–1)', default: 0.7 },
+          maxTokens: { type: 'number', description: 'Maximum tokens in response', default: 1024 },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: ['User mentions Mistral', 'User wants a fast European LLM'],
+        whenNotToUse: ['User mentions GPT, Claude, or Gemini'],
+        keywords: ['mistral', 'mistral ai', 'llm', 'text generation', 'codestral'],
+        useCases: ['Chat completion', 'Text generation', 'Code generation'],
+        intentDescription: 'Mistral AI text generation API.',
+        intentCategories: ['ai', 'llm', 'text-generation'],
+      },
+      commonPatterns: [
+        { name: 'chat_completion', description: 'Send a message and get a response', config: { model: 'mistral-small-latest', prompt: '{{$json.message}}' } },
+      ],
+      validationRules: [],
+    };
+  }
+
+  private createLinearSchema(): NodeSchema {
+    return {
+      type: 'linear',
+      label: 'Linear',
+      category: 'productivity',
+      description: 'Manage issues, projects, and teams in Linear issue tracker.',
+      providers: ['linear'],
+      configSchema: {
+        required: ['operation'],
+        optional: {
+          operation: {
+            type: 'string', description: 'Operation to perform', default: 'getIssues',
+            options: [
+              { label: 'Get Issues', value: 'getIssues' },
+              { label: 'Create Issue', value: 'createIssue' },
+              { label: 'Update Issue', value: 'updateIssue' },
+              { label: 'Get Teams', value: 'getTeams' },
+            ],
+          },
+          teamId: { type: 'string', description: 'Team ID (for issue operations)', default: '' },
+          issueId: { type: 'string', description: 'Issue ID (for update)', default: '' },
+          title: { type: 'string', description: 'Issue title', default: '' },
+          description: { type: 'string', description: 'Issue description (markdown)', default: '' },
+          stateId: { type: 'string', description: 'Workflow state ID', default: '' },
+          priority: { type: 'number', description: 'Priority: 0=No priority, 1=Urgent, 2=High, 3=Medium, 4=Low', default: 0 },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: ['User mentions Linear', 'User wants to manage engineering issues or sprints'],
+        whenNotToUse: ['User mentions Jira, Trello, or Asana'],
+        keywords: ['linear', 'issue tracker', 'engineering', 'sprint', 'backlog'],
+        useCases: ['Create issue', 'List issues', 'Update issue status', 'Get teams'],
+        intentDescription: 'Linear issue tracker integration for engineering teams.',
+        intentCategories: ['productivity', 'project-management', 'engineering'],
+      },
+      commonPatterns: [
+        { name: 'create_issue', description: 'Create a new issue in Linear', config: { operation: 'createIssue', title: '{{$json.title}}', description: '{{$json.description}}' } },
+      ],
+      validationRules: [],
+    };
+  }
+
+  private createTrelloSchema(): NodeSchema {
+    return {
+      type: 'trello',
+      label: 'Trello',
+      category: 'productivity',
+      description: 'Manage Trello boards, lists, and cards for visual project management.',
+      providers: ['trello'],
+      configSchema: {
+        required: ['operation'],
+        optional: {
+          operation: {
+            type: 'string', description: 'Operation to perform', default: 'getCards',
+            options: [
+              { label: 'Get Cards', value: 'getCards' },
+              { label: 'Create Card', value: 'createCard' },
+              { label: 'Update Card', value: 'updateCard' },
+              { label: 'Get Boards', value: 'getBoards' },
+              { label: 'Get Lists', value: 'getLists' },
+            ],
+          },
+          boardId: { type: 'string', description: 'Board ID', default: '' },
+          listId: { type: 'string', description: 'List ID (for card operations)', default: '' },
+          cardId: { type: 'string', description: 'Card ID (for update)', default: '' },
+          cardName: { type: 'string', description: 'Card name', default: '' },
+          cardDesc: { type: 'string', description: 'Card description', default: '' },
+        },
+      },
+      aiSelectionCriteria: {
+        whenToUse: ['User mentions Trello', 'User wants to manage boards or cards'],
+        whenNotToUse: ['User mentions Linear or Jira'],
+        keywords: ['trello', 'board', 'card', 'kanban', 'list'],
+        useCases: ['Create card', 'List cards', 'Get boards', 'Update card'],
+        intentDescription: 'Trello Kanban board and card management.',
+        intentCategories: ['productivity', 'project-management'],
+      },
+      commonPatterns: [
+        { name: 'create_card', description: 'Create a new Trello card', config: { operation: 'createCard', cardName: '{{$json.title}}', cardDesc: '{{$json.description}}' } },
+      ],
+      validationRules: [],
+    };
+  }
+
   /**
    * Register virtual node types (aliases)
    *
@@ -12219,7 +12578,7 @@ export class NodeLibrary {
    * - "gmail" → "google_gmail" (via resolver)
    * - "mail" → "email" (via resolver)
    * - "ai" → "ai_service" (via resolver)
-   * 
+   *
    * This ensures:
    * - Only canonical types exist in the registry
    * - No duplicate nodes can be created

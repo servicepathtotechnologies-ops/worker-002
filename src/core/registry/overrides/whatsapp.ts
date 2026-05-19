@@ -59,7 +59,7 @@ export function overrideWhatsapp(
     ...def,
     type: 'whatsapp',
     label: 'WhatsApp',
-    category: 'communication',
+    category: 'output',
     description: 'Send messages, manage contacts and conversations via WhatsApp Business API',
     icon: '💬',
     version: '1.0.0',

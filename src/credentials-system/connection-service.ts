@@ -43,6 +43,24 @@ function mapConnection(row: any): ConnectionRecord {
   };
 }
 
+function normalizeCredentialPayload(
+  definition: CredentialTypeDefinition,
+  credentials: Record<string, unknown>,
+): Record<string, unknown> {
+  if (definition.id !== 'openai_api_key') return credentials;
+
+  const token =
+    typeof credentials.token === 'string' && credentials.token.trim()
+      ? credentials.token.trim()
+      : typeof credentials.apiKey === 'string' && credentials.apiKey.trim()
+        ? credentials.apiKey.trim()
+        : credentials.token;
+
+  const normalized = { ...credentials, token };
+  delete (normalized as Record<string, unknown>).apiKey;
+  return normalized;
+}
+
 export class ConnectionService {
   listCredentialTypes(): CredentialTypeDefinition[] {
     return credentialTypeDefinitions.map((definition) => ({
@@ -121,27 +139,19 @@ export class ConnectionService {
   }): Promise<ConnectionRecord> {
     const definition = getCredentialType(input.credentialTypeId);
     if (!definition) throw new Error(`Unknown credential type: ${input.credentialTypeId}`);
-    this.validateCredentials(definition, input.credentials);
-
-    const existing = await this.findCanonicalConnection(input.userId, definition.id);
-    if (existing) {
-      throw new ConnectionApiError(
-        409,
-        'CONNECTION_ALREADY_EXISTS',
-        'Already connected. Disconnect first to connect another account.',
-      );
-    }
+    const normalizedCredentials = normalizeCredentialPayload(definition, input.credentials);
+    this.validateCredentials(definition, normalizedCredentials);
 
     const id = randomUUID();
     const rows = await queryAsService(
       `INSERT INTO connections (
-         id, user_id, name, credential_type_id, provider, auth_type, encrypted_credentials,
-         status, metadata, expires_at, created_at, updated_at
-       )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', $8::jsonb, $9, NOW(), NOW())
-       RETURNING id, user_id, name, credential_type_id, provider, auth_type, status, metadata,
-                 expires_at, revoked_at, replaced_by_connection_id, external_account_id,
-                 external_account_email, last_tested_at, last_used_at, created_at, updated_at`,
+           id, user_id, name, credential_type_id, provider, auth_type, encrypted_credentials,
+           status, metadata, expires_at, created_at, updated_at
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', $8::jsonb, $9, NOW(), NOW())
+         RETURNING id, user_id, name, credential_type_id, provider, auth_type, status, metadata,
+                   expires_at, revoked_at, replaced_by_connection_id, external_account_id,
+                   external_account_email, last_tested_at, last_used_at, created_at, updated_at`,
       [
         id,
         input.userId,
@@ -149,7 +159,7 @@ export class ConnectionService {
         definition.id,
         definition.provider,
         definition.authType,
-        encryptJson(input.credentials),
+        encryptJson(normalizedCredentials),
         JSON.stringify(input.metadata || {}),
         input.expiresAt || null,
       ],
@@ -173,7 +183,10 @@ export class ConnectionService {
     }
     const definition = getCredentialType(existing.credentialTypeId);
     if (!definition) throw new Error(`Unknown credential type: ${existing.credentialTypeId}`);
-    const credentials = patch.credentials ? { ...existing.credentials, ...patch.credentials } : existing.credentials;
+    const credentials = normalizeCredentialPayload(
+      definition,
+      patch.credentials ? { ...existing.credentials, ...patch.credentials } : existing.credentials,
+    );
     this.validateCredentials(definition, credentials);
 
     const rows = await queryAsService(
@@ -328,6 +341,12 @@ export class ConnectionService {
     }
     const definition = getCredentialType(connection.credentialTypeId);
     if (!definition?.testRequest) return { ok: true, status: 200, message: 'No test request configured' };
+    if (connection.status === 'error') {
+      await queryAsService(
+        `UPDATE connections SET status = 'active', updated_at = NOW() WHERE user_id = $1 AND id = $2`,
+        [userId, id],
+      );
+    }
 
     const { AuthInjectionEngine } = await import('./execution-auth');
     const request = await new AuthInjectionEngine(this).injectIntoRequest(
@@ -340,11 +359,19 @@ export class ConnectionService {
         body: definition.testRequest.body,
       },
     );
-    const response = await fetch(request.url, {
-      method: request.method,
-      headers: request.headers,
-      body: request.body ? JSON.stringify(request.body) : undefined,
-    });
+    let response: Response;
+    try {
+      response = await fetch(request.url, {
+        method: request.method,
+        headers: request.headers,
+        body: request.body ? JSON.stringify(request.body) : undefined,
+      });
+    } catch {
+      if (definition.id === 'openai_api_key') {
+        return { ok: false, status: 503, message: 'OpenAI could not be reached.' };
+      }
+      throw new ConnectionApiError(503, 'CONNECTION_TEST_NETWORK_ERROR', 'Connection provider could not be reached.');
+    }
     const successStatuses = definition.testRequest.successStatus || [200, 201, 204];
     const ok = successStatuses.includes(response.status);
     await queryAsService(
@@ -352,6 +379,12 @@ export class ConnectionService {
       [userId, id, ok ? 'active' : 'error'],
     );
     await this.audit(userId, id, 'connection.tested', { ok, status: response.status });
+    if (definition.id === 'openai_api_key' && !ok) {
+      const message = response.status === 401 || response.status === 403
+        ? 'OpenAI rejected this API key.'
+        : 'OpenAI could not be reached.';
+      return { ok, status: response.status, message };
+    }
     return { ok, status: response.status, message: ok ? 'Connection test succeeded' : 'Connection test failed' };
   }
 

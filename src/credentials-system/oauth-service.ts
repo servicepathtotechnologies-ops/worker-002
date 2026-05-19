@@ -38,14 +38,6 @@ export class OAuthService {
         error.code = 'CONNECTION_TYPE_MISMATCH';
         throw error;
       }
-    } else {
-      const existing = await connectionService.findCanonicalConnection(input.userId, definition.id);
-      if (existing) {
-        const error = new Error('Already connected. Disconnect first to connect another account.') as Error & { statusCode?: number; code?: string };
-        error.statusCode = 409;
-        error.code = 'CONNECTION_ALREADY_EXISTS';
-        throw error;
-      }
     }
     const { clientId, redirectUri } = oauthClient(definition);
     const state = base64Url(24);
@@ -103,11 +95,17 @@ export class OAuthService {
     );
     const state = rows[0];
     if (!state) throw new Error('Invalid or expired OAuth state');
-    await queryAsService(`UPDATE oauth_states SET consumed_at = NOW() WHERE id = $1`, [state.id]);
 
     const definition = getCredentialType(state.credential_type_id);
     if (!definition?.oauth2) throw new Error('OAuth state references an unknown credential type');
+
+    console.info(`[OAuth callback] credTypeId=${state.credential_type_id} provider=${definition.provider} redirect_uri=${state.redirect_uri} pkce=${definition.oauth2.pkce} tokenAuthMethod=${definition.oauth2.tokenAuthMethod ?? 'body'} codeVerifierLen=${String(state.code_verifier ?? '').length}`);
+
+    // Exchange the code BEFORE marking the state consumed.
+    // If the exchange fails (e.g. invalid_grant), the state remains unconsumed for diagnostics.
+    // The authorization code is single-use at the provider level regardless.
     const token = await this.exchangeCode(definition, input.code, state.code_verifier, state.redirect_uri);
+    await queryAsService(`UPDATE oauth_states SET consumed_at = NOW() WHERE id = $1`, [state.id]);
     const scopes = Array.isArray(state.scopes) ? state.scopes : JSON.parse(state.scopes || '[]');
     const result = await handleOAuthCallback({
       provider: definition.provider,
@@ -136,15 +134,25 @@ export class OAuthService {
     if (!refreshToken) throw new Error('OAuth connection has no refresh token');
 
     const { clientId, clientSecret } = oauthClient(definition);
+    const useBasicAuth = definition.oauth2.tokenAuthMethod === 'basic';
+
     const params = new URLSearchParams({
       grant_type: 'refresh_token',
       refresh_token: refreshToken,
-      client_id: clientId,
-      client_secret: clientSecret,
+      ...(!useBasicAuth && { client_id: clientId, client_secret: clientSecret }),
     });
+
+    const refreshHeaders: Record<string, string> = {
+      Accept: 'application/json',
+      'Content-Type': 'application/x-www-form-urlencoded',
+    };
+    if (useBasicAuth) {
+      refreshHeaders.Authorization = `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`;
+    }
+
     const response = await fetch(definition.oauth2.tokenUrl, {
       method: 'POST',
-      headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
+      headers: refreshHeaders,
       body: params,
     });
     const payload = await response.json() as Record<string, unknown>;
@@ -162,11 +170,15 @@ export class OAuthService {
 
   private async exchangeCode(definition: CredentialTypeDefinition, code: string, verifier: string, redirectUri: string): Promise<Record<string, unknown>> {
     const { clientId, clientSecret } = oauthClient(definition);
+    const useBasicAuth = definition.oauth2?.tokenAuthMethod === 'basic';
+
     const params = new URLSearchParams({
       grant_type: 'authorization_code',
       code,
       redirect_uri: redirectUri,
-      client_id: clientId,
+      // RFC 6749 §2.3: MUST NOT use more than one auth method per request.
+      // When using HTTP Basic auth, credentials are in the Authorization header — do not also send client_id in the body.
+      ...(!useBasicAuth && { client_id: clientId }),
     });
     if (definition.oauth2?.pkce !== false) {
       params.set('code_verifier', verifier);
@@ -176,14 +188,22 @@ export class OAuthService {
       Accept: 'application/json',
       'Content-Type': 'application/x-www-form-urlencoded',
     };
-    if (definition.oauth2?.tokenAuthMethod === 'basic') {
+    if (useBasicAuth) {
       headers.Authorization = `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`;
     } else {
       params.set('client_secret', clientSecret);
     }
 
+    // Diagnostic logging — shows exact request params sent to provider's token endpoint.
+    const diagParams: Record<string, string> = {};
+    for (const [k, v] of params.entries()) diagParams[k] = k === 'code_verifier' ? `${v.slice(0, 8)}…` : v;
+    console.info(`[OAuth exchangeCode] provider=${definition.provider} tokenUrl=${definition.oauth2!.tokenUrl}`);
+    console.info(`[OAuth exchangeCode] params=${JSON.stringify(diagParams)}`);
+    console.info(`[OAuth exchangeCode] useBasicAuth=${useBasicAuth} hasAuthHeader=${!!headers.Authorization} hasPkce=${params.has('code_verifier')}`);
+
     const response = await fetch(definition.oauth2!.tokenUrl, { method: 'POST', headers, body: params });
     const payload = await response.json() as Record<string, unknown>;
+    console.info(`[OAuth exchangeCode] response status=${response.status} body=${JSON.stringify(payload)}`);
     if (!response.ok) throw new Error(`OAuth token exchange failed: ${JSON.stringify(payload)}`);
     return payload;
   }
@@ -260,18 +280,6 @@ export class OAuthService {
         throw error;
       }
       return connectionService.updateConnection(input.userId, input.connectionId, {
-        credentials,
-        status: 'active',
-        expiresAt,
-        metadata: { ...existing.metadata, ...metadata },
-        externalAccountId: external.id,
-        externalAccountEmail: external.email,
-      });
-    }
-
-    const existing = await connectionService.findCanonicalConnection(input.userId, input.definition.id);
-    if (existing) {
-      return connectionService.updateConnection(input.userId, existing.id, {
         credentials,
         status: 'active',
         expiresAt,
