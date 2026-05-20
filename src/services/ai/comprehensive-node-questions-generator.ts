@@ -439,17 +439,6 @@ export function generateComprehensiveNodeQuestions(
     nodeOrderMap.set(node.id, index);
   });
   
-  // Define node type priority for ordering (lower = earlier)
-  const getNodeTypePriority = (nodeType: string): number => {
-    const def = unifiedNodeRegistry.get(nodeType);
-    const cat = def?.category;
-    if (cat === 'trigger' || nodeType.includes('trigger')) return 0;
-    if (cat === 'logic') return 1;
-    if (cat === 'ai') return 2;
-    if (cat === 'data' || cat === 'communication') return 3;
-    return 4;
-  };
-  
   // ✅ CRITICAL: Deduplicate questions by fieldName within each node
   // This prevents the same field from being asked multiple times (e.g., as both credential and configuration)
   const seenQuestionKeys = new Map<string, ComprehensiveNodeQuestion>(); // nodeId_fieldName -> question
@@ -510,30 +499,25 @@ export function generateComprehensiveNodeQuestions(
     nodeQuestionsMap.set(nodeId, questions);
   }
 
-  // Sort all questions: first by node order, then by askOrder within each node
+  // Sort all questions: primary by node position in workflow (LLM-generated order), then askOrder within each node.
+  // Node type priority heuristic is intentionally NOT used as the primary sort — the workflow.nodes array
+  // already contains the correct semantic order from the LLM and must not be overridden by category guesses.
   allQuestions.sort((a, b) => {
-    // First, compare by node type priority
-    const aPriority = getNodeTypePriority(a.nodeType);
-    const bPriority = getNodeTypePriority(b.nodeType);
-    if (aPriority !== bPriority) {
-      return aPriority - bPriority;
-    }
-    
-    // If same node type priority, compare by node position in workflow
+    // Primary: preserve LLM-generated node order from workflow.nodes array
     const aNodeOrder = nodeOrderMap.get(a.nodeId) ?? 999;
     const bNodeOrder = nodeOrderMap.get(b.nodeId) ?? 999;
     if (aNodeOrder !== bNodeOrder) {
       return aNodeOrder - bNodeOrder;
     }
-    
-    // If same node, sort by askOrder
+
+    // Within same node: sort by askOrder
     if (a.askOrder !== b.askOrder) {
       return a.askOrder - b.askOrder;
     }
-    
-    // If same askOrder, prioritize credentials, then operations, then configuration
-    const categoryOrder = { credential: 0, resource: 1, operation: 2, configuration: 3 };
-    return categoryOrder[a.category] - categoryOrder[b.category];
+
+    // Same askOrder: credentials first, then operations, then configuration
+    const categoryOrder: Record<string, number> = { credential: 0, resource: 1, operation: 2, configuration: 3 };
+    return (categoryOrder[a.category] ?? 3) - (categoryOrder[b.category] ?? 3);
   });
 
   console.log(`[ComprehensiveQuestions] ✅ Generated ${allQuestions.length} total questions (after deduplication) for ${workflow.nodes.length} nodes`);

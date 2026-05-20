@@ -122,27 +122,41 @@ export class AIInputResolver {
    * AI analyzes context and generates appropriate input.
    */
   async resolveInput(context: InputResolutionContext): Promise<ResolvedInput> {
-    // Runtime AI resolution is always enabled — no env flag required.
-    // Fields marked runtime_ai in _fillMode are resolved here using upstream context + user intent.
-    const { previousOutput, nodeInputSchema, userIntent, nodeType, nodeLabel } = context;
+    const MAX_ATTEMPTS = 2;
+    let lastError: Error | undefined;
 
-    // Step 1: Determine resolution mode based on node input schema
-    const mode = this.determineResolutionMode(nodeInputSchema, nodeType, previousOutput);
-    
-    // Step 2: Build AI prompt for input resolution
-    const prompt = this.buildResolutionPrompt(context, mode);
-    
-    // Step 3: Call AI to generate input (inputSchema passed for future structured-output use)
-    const aiResponse = await this.callAIForInputResolution(prompt, mode, nodeInputSchema);
-    
-    // Step 4: Validate and normalize AI response against schema
-    const validatedInput = this.validateAndNormalize(aiResponse, nodeInputSchema, mode);
-    
-    return {
-      mode,
-      value: validatedInput,
-      explanation: `AI-generated input for ${nodeLabel || nodeType} based on previous output and user intent`,
-    };
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      try {
+        const { nodeInputSchema, nodeType, nodeLabel } = context;
+        const mode = this.determineResolutionMode(nodeInputSchema, nodeType, context.previousOutput);
+
+        const retryContext: InputResolutionContext =
+          attempt > 0
+            ? {
+                ...context,
+                retryRequiredFields: Object.keys(nodeInputSchema).filter(
+                  (k) => nodeInputSchema[k].required !== false
+                ),
+              }
+            : context;
+
+        const prompt = this.buildResolutionPrompt(retryContext, mode);
+        const aiResponse = await this.callAIForInputResolution(prompt, mode, nodeInputSchema);
+        const validatedInput = this.validateAndNormalize(aiResponse, nodeInputSchema, mode);
+
+        return {
+          mode,
+          value: validatedInput,
+          explanation: `AI-generated input for ${nodeLabel || nodeType} (attempt ${attempt + 1})`,
+        };
+      } catch (err: any) {
+        lastError = err;
+        console.warn(
+          `[AIInputResolver] Attempt ${attempt + 1}/${MAX_ATTEMPTS} failed: ${err.message}`
+        );
+      }
+    }
+    throw lastError;
   }
   
   /**
@@ -246,21 +260,42 @@ SPECIAL INSTRUCTIONS FOR HTTP REQUEST NODE:
     const schemaKeys = Object.keys(nodeInputSchema || {});
     const hasBodyField = schemaKeys.some((k) => k.toLowerCase() === 'body');
     const hasSubjectField = schemaKeys.some((k) => k.toLowerCase() === 'subject');
-    if (hasBodyField && hasSubjectField) {
-      // Detect whether upstream is tabular / structured data (Google Sheets, DB query, CSV, etc.)
-      const isTabularUpstream =
-        previousOutput !== null &&
-        previousOutput !== undefined &&
-        typeof previousOutput === 'object' &&
-        !Array.isArray(previousOutput) &&
-        (
-          'rows' in (previousOutput as object) ||
-          'count' in (previousOutput as object) ||
-          'headers' in (previousOutput as object) ||
-          'items' in (previousOutput as object) ||
-          'records' in (previousOutput as object)
-        );
+    const hasTextContentField = schemaKeys.some((k) => {
+      const fl = k.toLowerCase();
+      return (
+        fl.includes('text') ||
+        fl.includes('content') ||
+        fl.includes('prompt') ||
+        fl.includes('message') ||
+        fl.includes('body') ||
+        fl.includes('input') ||
+        fl.includes('summary')
+      );
+    });
 
+    // Detect whether upstream is tabular / structured data (Google Sheets, DB query, CSV, etc.)
+    // Unwrap array upstreams (e.g. Google Sheets returns [{rows:[...], headers:[...]}])
+    const upstreamObj =
+      Array.isArray(previousOutput) &&
+      previousOutput.length > 0 &&
+      typeof previousOutput[0] === 'object'
+        ? previousOutput[0]
+        : previousOutput;
+
+    const isTabularUpstream =
+      upstreamObj !== null &&
+      upstreamObj !== undefined &&
+      typeof upstreamObj === 'object' &&
+      !Array.isArray(upstreamObj) &&
+      (
+        'rows' in (upstreamObj as object) ||
+        'count' in (upstreamObj as object) ||
+        'headers' in (upstreamObj as object) ||
+        'items' in (upstreamObj as object) ||
+        'records' in (upstreamObj as object)
+      );
+
+    if (hasBodyField && hasSubjectField) {
       const tabularInstruction = isTabularUpstream ? `
 STRUCTURED / TABULAR DATA UPSTREAM — you MUST write a real analysis, not a template:
 - The previous output contains tabular data (rows of records with field names and values).
@@ -282,6 +317,14 @@ DELIVERABLE CONTENT (email / message nodes — schema has subject + body):
 - "subject" MUST be a short subject line (under 100 characters). Derive it from the user intent or the first phrase of the content — not a full paragraph.
 - "body" MUST be substantive, ready-to-send email text. NEVER output instructions, configurations, or bracket placeholders like [Insert X here].
 - Do NOT output sentences like "The node has been configured to send" or "Please provide recipients".${tabularInstruction}`;
+    } else if (isTabularUpstream && hasTextContentField) {
+      specialInstructions += `
+
+TABULAR DATA UPSTREAM — write real analysis, not a template:
+- The previous output contains tabular data (rows of records). Use the actual field names and values shown in "Previous Node Output" above.
+- Your response for the text/content field MUST contain SPECIFIC findings: row count, column names, category breakdowns, top values by numeric field, date ranges, etc.
+- ABSOLUTELY FORBIDDEN: bracket placeholders [Insert here], template references {{...}}, or generic sentences like "the data shows records".
+- The text you produce will be used directly as input to this node. Make it concrete, specific, and ready-to-use.`;
     }
 
     const aliasHints: string[] = [];
@@ -342,7 +385,9 @@ IMPORTANT:
 - Do NOT include explanations or markdown
 - Output ONLY the resolved input value (JSON or text per mode)
 - Ensure the output matches the target schema exactly
-- If previous output is empty/null, generate appropriate default based on intent`;
+- If previous output is empty/null, generate appropriate default based on intent
+- NEVER output template references like {{$json.field}}, {{...}}, or any handlebars/mustache syntax — embed the ACTUAL VALUES from the previous output data shown above directly into your response
+- If you want to reference upstream data, read its value from the "Previous Node Output" section above and include that value literally in your output`;
   }
   
   /**
@@ -395,8 +440,45 @@ IMPORTANT:
       
       // Parse response based on mode
       if (mode === 'message') {
-        // Plain text - return as-is
-        return response.content.trim();
+        let content = response.content.trim();
+
+        // Strip markdown code blocks the LLM sometimes wraps output in
+        if (content.startsWith('```')) {
+          content = content
+            .replace(/^```(?:json|text|markdown)?\n?/i, '')
+            .replace(/\n?```\s*$/i, '')
+            .trim();
+        }
+
+        // If LLM returned a JSON object despite being in message mode, extract the text field
+        if (content.startsWith('{')) {
+          try {
+            const parsed = JSON.parse(content);
+            if (parsed && typeof parsed === 'object') {
+              const textFields = ['text', 'message', 'content', 'body', 'prompt', 'response', 'summary'];
+              for (const field of textFields) {
+                if (
+                  typeof parsed[field] === 'string' &&
+                  parsed[field].trim() &&
+                  !parsed[field].includes('{{')
+                ) {
+                  return parsed[field];
+                }
+              }
+            }
+          } catch {
+            // Not JSON — continue with the raw content
+          }
+        }
+
+        // If value still contains {{...}} template references, throw to trigger retry
+        if (content.includes('{{')) {
+          throw new Error(
+            `[AIInputResolver] LLM returned a template reference instead of actual content. Retrying. Preview: ${content.substring(0, 120)}`
+          );
+        }
+
+        return content;
       } else {
         // JSON mode - parse JSON
         try {

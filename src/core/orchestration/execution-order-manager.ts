@@ -117,27 +117,28 @@ class ExecutionOrderManagerImpl implements ExecutionOrderManager {
       }
     }
     
-    // ✅ TIER 2: Use registry-driven category ordering (SECONDARY FALLBACK)
-    // ✅ IMPROVEMENT: When edges exist, prefer topological sort over category sort.
-    // Category sort is blind to branching topology — it places database_write (category=database)
-    // before if_else (category=logic) even when database_write is a branch TARGET of if_else.
+    // ✅ TIER 2: Edge-aware ordering — only fires when edges already exist.
+    // When edges exist: topological sort first (respects actual wiring), category sort as cycle fallback.
+    // When NO edges exist: input node array IS the LLM-generated semantic order — trust it directly.
+    // Category sort is intentionally skipped for edgeless workflows because the heuristic (ai:4 > google:5)
+    // destroys the correct data-flow order the LLM already computed (e.g. google_sheets before text_summarizer).
     if (edges.length > 0) {
       const topoResult = this.buildOrderFromTopology(workflow);
       if (topoResult && topoResult.nodeIds.length === nodes.length) {
         console.log(`[ExecutionOrderManager] ✅ TIER 2: Using edge-topology order (${topoResult.nodeIds.length} nodes)`);
         return topoResult;
       }
-    }
-    const tier2Result = this.buildOrderFromCategories(workflow);
-    if (tier2Result.nodeIds.length === nodes.length) {
-      console.log(`[ExecutionOrderManager] ✅ TIER 2: Using registry-driven category order (${tier2Result.nodeIds.length} nodes)`);
-      return tier2Result;
-    } else {
+      const tier2Result = this.buildOrderFromCategories(workflow);
+      if (tier2Result.nodeIds.length === nodes.length) {
+        console.log(`[ExecutionOrderManager] ✅ TIER 2: Using registry-driven category order (${tier2Result.nodeIds.length} nodes)`);
+        return tier2Result;
+      }
       console.warn(`[ExecutionOrderManager] ⚠️  TIER 2: Category order incomplete (${tier2Result.nodeIds.length}/${nodes.length} nodes), falling back to TIER 3`);
     }
-    
-    // ✅ TIER 3: Preserve node array order (LAST RESORT)
-    // DSL compiler already creates nodes in correct order: trigger → data → transformation → output
+
+    // ✅ TIER 3: Preserve node array order.
+    // LLM and DSL compiler both produce nodes in correct semantic order: trigger → data → transform → output.
+    // Used for all edgeless workflows (initial confirm build) and as final fallback.
     console.log(`[ExecutionOrderManager] ✅ TIER 3: Using node array order (${nodes.length} nodes)`);
     return this.buildOrderFromNodeArray(workflow);
   }
@@ -817,6 +818,11 @@ class ExecutionOrderManagerImpl implements ExecutionOrderManager {
       auth: 1,
       flow: 2,
       microsoft: 5,
+      social_media: 5,    // normalized from 'social' — Instagram, Twitter, LinkedIn
+      authentication: 1,  // same tier as auth
+      storage: 5,         // cloud storage (S3, Google Drive)
+      payment: 5,         // Stripe and payment processors
+      cms: 5,             // Notion, WordPress content management
     };
     
     // Sort nodes by category priority, with log_output always last
@@ -986,11 +992,12 @@ export const executionOrderManager: ExecutionOrderManager = new ExecutionOrderMa
 (function validateCategoryPriorityCoverage() {
   // The canonical priority map (must match buildOrderFromCategories exactly)
   const KNOWN_PRIORITIES: Record<string, number> = {
-    trigger: 0, data: 1, auth: 1, logic: 2, flow: 2,
+    trigger: 0, data: 1, auth: 1, authentication: 1, logic: 2, flow: 2,
     http_api: 3, database: 3, file: 3, queue: 3, cache: 3,
     ai: 4, transformation: 4,
     output: 5, communication: 5, google: 5, crm: 5, social: 5,
-    devops: 5, ecommerce: 5, productivity: 5, microsoft: 5,
+    social_media: 5, devops: 5, ecommerce: 5, productivity: 5, microsoft: 5,
+    storage: 5, payment: 5, cms: 5,
     utility: 6,
   };
   try {

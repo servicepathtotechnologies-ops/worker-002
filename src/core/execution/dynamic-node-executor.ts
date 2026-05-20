@@ -75,6 +75,8 @@ export function looksPlaceholderLikeValue(value: unknown): boolean {
   // Node ID accidentally injected by property population AI (e.g. "node_176fee7c-2227-495e-b91f-822b4332f068")
   // This happens when PP AI confuses a workflow node ID with content for a text/message field.
   if (/^node_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.trim())) return true;
+  // Handlebars/template references the AI sometimes generates instead of actual values
+  if (/\{\{[^}]+\}\}/.test(value)) return true;
   return (
     t.includes('process the workflow') ||
     t.includes('using the configured nodes') ||
