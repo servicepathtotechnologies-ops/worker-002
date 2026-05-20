@@ -10,11 +10,6 @@ function renderTemplate(template: string, values: Record<string, unknown>): stri
   });
 }
 
-function expiresSoon(expiresAt: string | null, refreshBeforeSeconds: number): boolean {
-  if (!expiresAt) return false;
-  return new Date(expiresAt).getTime() - Date.now() <= refreshBeforeSeconds * 1000;
-}
-
 export class AuthInjectionEngine {
   constructor(private readonly connections: ConnectionService = connectionService) {}
 
@@ -23,18 +18,9 @@ export class AuthInjectionEngine {
     const definition = getCredentialType(connection.credentialTypeId);
     if (!definition) throw new Error(`Unknown credential type: ${connection.credentialTypeId}`);
 
-    if (connection.status === 'expired' && !(definition.authType === 'oauth2' && definition.refresh?.enabled)) {
-      throw new Error('Reconnect required.');
+    if (connection.status !== 'active') {
+      throw new Error(`Connection is not available (status: ${connection.status}). Please reconnect.`);
     }
-    if (connection.status !== 'active' && connection.status !== 'expired') {
-      throw new Error(`Connection is not ready: ${connection.status}`);
-    }
-
-    const readyConnection = definition.authType === 'oauth2' && definition.refresh?.enabled && (
-      connection.status === 'expired' || expiresSoon(connection.expiresAt, definition.refresh.refreshBeforeSeconds)
-    )
-      ? await this.refreshOAuthConnection(context.userId, connection.id)
-      : connection;
 
     const headers = { ...(request.headers || {}) };
     const url = new URL(request.url);
@@ -44,13 +30,13 @@ export class AuthInjectionEngine {
 
     for (const rule of definition.injection) {
       if (rule.target === 'header' && rule.name) {
-        headers[renderTemplate(rule.name, readyConnection.credentials)] = renderTemplate(rule.valueTemplate, readyConnection.credentials);
+        headers[renderTemplate(rule.name, connection.credentials)] = renderTemplate(rule.valueTemplate, connection.credentials);
       }
       if (rule.target === 'query' && rule.name) {
-        url.searchParams.set(renderTemplate(rule.name, readyConnection.credentials), renderTemplate(rule.valueTemplate, readyConnection.credentials));
+        url.searchParams.set(renderTemplate(rule.name, connection.credentials), renderTemplate(rule.valueTemplate, connection.credentials));
       }
       if (rule.target === 'basic_auth') {
-        const raw = renderTemplate(rule.valueTemplate, readyConnection.credentials);
+        const raw = renderTemplate(rule.valueTemplate, connection.credentials);
         headers.Authorization = `Basic ${Buffer.from(raw).toString('base64')}`;
       }
     }
@@ -77,12 +63,6 @@ export class AuthInjectionEngine {
       headers: Object.fromEntries(response.headers.entries()),
       data,
     };
-  }
-
-  private async refreshOAuthConnection(userId: string, connectionId: string) {
-    const { oauthService } = await import('./oauth-service');
-    await oauthService.refreshConnection(userId, connectionId);
-    return this.connections.getDecryptedConnection(userId, connectionId);
   }
 }
 

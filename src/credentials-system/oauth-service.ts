@@ -131,7 +131,10 @@ export class OAuthService {
     const definition = getCredentialType(connection.credentialTypeId);
     if (!definition?.oauth2) throw new Error('Connection is not OAuth2');
     const refreshToken = String(connection.credentials.refresh_token || '');
-    if (!refreshToken) throw new Error('OAuth connection has no refresh token');
+    if (!refreshToken) {
+      await connectionService.deleteConnection(userId, connectionId).catch(() => {});
+      throw new Error('OAuth connection has no refresh token');
+    }
 
     const { clientId, clientSecret } = oauthClient(definition);
     const useBasicAuth = definition.oauth2.tokenAuthMethod === 'basic';
@@ -156,7 +159,10 @@ export class OAuthService {
       body: params,
     });
     const payload = await response.json() as Record<string, unknown>;
-    if (!response.ok) throw new Error(`OAuth refresh failed: ${JSON.stringify(payload)}`);
+    if (!response.ok) {
+      await connectionService.deleteConnection(userId, connectionId).catch(() => {});
+      throw new Error(`OAuth refresh failed: ${JSON.stringify(payload)}`);
+    }
     const expiresAt = typeof payload.expires_in === 'number'
       ? new Date(Date.now() + payload.expires_in * 1000).toISOString()
       : connection.expiresAt;

@@ -17,10 +17,7 @@ export class ConnectionApiError extends Error {
 }
 
 function mapConnection(row: any): ConnectionRecord {
-  const storedStatus = row.status;
-  const status = row.expires_at && new Date(row.expires_at).getTime() <= Date.now() && storedStatus === 'active'
-    ? 'expired'
-    : storedStatus;
+  const status = row.status;
 
   return {
     id: row.id,
@@ -82,15 +79,18 @@ export class ConnectionService {
   }
 
   async listConnections(userId: string): Promise<ConnectionRecord[]> {
-    await queryAsService(
-      `UPDATE connections
-       SET status = 'expired', updated_at = NOW()
+    const expiredRows = await queryAsService(
+      `SELECT id FROM connections
        WHERE user_id = $1
-         AND status = 'active'
-         AND expires_at IS NOT NULL
-         AND expires_at <= NOW()`,
+         AND (
+           status = 'expired'
+           OR (status = 'active' AND expires_at IS NOT NULL AND expires_at <= NOW())
+         )`,
       [userId],
     );
+    for (const row of expiredRows) {
+      await this.deleteConnection(userId, row.id);
+    }
 
     const rows = await queryAsService(
       `SELECT id, user_id, name, credential_type_id, provider, auth_type, status, metadata,
@@ -112,15 +112,9 @@ export class ConnectionService {
        FROM connections
        WHERE user_id = $1
          AND credential_type_id = $2
-         AND status <> 'revoked'
+         AND status = 'active'
+         AND (expires_at IS NULL OR expires_at > NOW())
        ORDER BY
-         CASE
-           WHEN status = 'active' AND (expires_at IS NULL OR expires_at > NOW()) THEN 0
-           WHEN status = 'active' THEN 1
-           WHEN status = 'error' THEN 2
-           WHEN status = 'expired' THEN 3
-           ELSE 4
-         END,
          last_used_at DESC NULLS LAST,
          updated_at DESC NULLS LAST
        LIMIT 1`,
@@ -336,9 +330,6 @@ export class ConnectionService {
 
   async testConnection(userId: string, id: string): Promise<{ ok: boolean; status: number; message: string }> {
     const connection = await this.getDecryptedConnection(userId, id);
-    if (connection.status === 'expired') {
-      throw new ConnectionApiError(409, 'CONNECTION_EXPIRED', 'Reconnect required.');
-    }
     const definition = getCredentialType(connection.credentialTypeId);
     if (!definition?.testRequest) return { ok: true, status: 200, message: 'No test request configured' };
     if (connection.status === 'error') {

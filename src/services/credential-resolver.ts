@@ -132,12 +132,14 @@ async function refreshCredential(row: CredentialRow, requiredScopes: string[], a
 
   if (!refreshToken) {
     await markCredentialInactive(row.id, context);
+    await deleteConnectionByUnifiedCredentialId(row.id, row.user_id);
     throw new CredentialExpiredError(context);
   }
 
   const oauth = getOAuthDefinition(provider);
   if (!oauth) {
     await markCredentialInactive(row.id, context);
+    await deleteConnectionByUnifiedCredentialId(row.id, row.user_id);
     throw new CredentialRefreshError({ ...context, causeMessage: 'No OAuth refresh configuration found' });
   }
 
@@ -163,6 +165,7 @@ async function refreshCredential(row: CredentialRow, requiredScopes: string[], a
   const response = await fetch(oauth.tokenUrl, { method: 'POST', headers, body });
   if (!response.ok) {
     await markCredentialInactive(row.id, context);
+    await deleteConnectionByUnifiedCredentialId(row.id, row.user_id);
     throw new CredentialExpiredError({ ...context, causeMessage: await response.text().catch(() => response.statusText) });
   }
 
@@ -170,6 +173,7 @@ async function refreshCredential(row: CredentialRow, requiredScopes: string[], a
   const accessToken = String(tokenResponse.access_token || '');
   if (!accessToken) {
     await markCredentialInactive(row.id, context);
+    await deleteConnectionByUnifiedCredentialId(row.id, row.user_id);
     throw new CredentialRefreshError({ ...context, causeMessage: 'Refresh response did not include access_token' });
   }
 
@@ -224,6 +228,26 @@ async function markCredentialInactive(
     [id],
     context,
   );
+}
+
+async function deleteConnectionByUnifiedCredentialId(ucId: string, userId: string): Promise<void> {
+  try {
+    const rows = await queryCredentialStore<{ id: string }>(
+      `SELECT c.id
+       FROM connections c
+       JOIN unified_credentials uc ON uc.user_id = c.user_id AND uc.provider = c.provider
+       WHERE uc.id = $1 AND c.user_id = $2 AND c.status <> 'revoked'
+       LIMIT 1`,
+      [ucId, userId],
+      { userId, provider: '', requiredScopes: [], resolverStep: 'delete_by_uc_id' },
+    );
+    if (rows[0]) {
+      const { connectionService } = await import('../credentials-system/connection-service');
+      await connectionService.deleteConnection(userId, rows[0].id);
+    }
+  } catch {
+    // Best-effort — do not surface deletion errors to the caller
+  }
 }
 
 export async function resolveCredential(input: ResolveCredentialInput): Promise<ResolvedCredential> {

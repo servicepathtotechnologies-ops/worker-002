@@ -568,11 +568,8 @@ async function injectSelectedConnectionCredentials(params: {
           error: `Connection "${connection.name}" is a ${connection.credentialTypeId} credential, but this node requires ${Array.from(acceptedCredentialTypes).join(', ')}.`,
         };
       }
-      if (connection.status === 'expired') {
-        return { config: nextConfig, error: `Connection "${connection.name}" is expired. Reconnect before executing this workflow.` };
-      }
       if (connection.status !== 'active') {
-        return { config: nextConfig, error: `Connection "${connection.name}" is ${connection.status}. Select an active connection.` };
+        return { config: nextConfig, error: `Connection "${connection.name}" is not active. Please reconnect before executing this workflow.` };
       }
       nextConfig = mergeRuntimeCredentials(nextConfig, connection.credentials);
       await connectionService.markUsed(ownerUserId, connectionId);
@@ -635,11 +632,8 @@ async function resolveOpenAiApiKeyForNode(params: {
     if (connection.provider !== 'openai' || connection.credentialTypeId !== 'openai_api_key') {
       return { error: 'Selected connection is not an OpenAI API Key connection.' };
     }
-    if (connection.status === 'expired') {
-      return { error: `OpenAI connection "${connection.name}" is expired. Reconnect before executing this workflow.` };
-    }
     if (connection.status !== 'active') {
-      return { error: `OpenAI connection "${connection.name}" is ${connection.status}. Select an active connection.` };
+      return { error: `OpenAI connection "${connection.name}" is not active. Please reconnect before executing this workflow.` };
     }
 
     const apiKey =
@@ -673,11 +667,8 @@ async function resolveGeminiApiKeyForNode(params: {
       if (connection.provider !== 'gemini' || connection.credentialTypeId !== 'gemini_api_key') {
         return { error: 'Selected connection is not a Gemini API Key connection.' };
       }
-      if (connection.status === 'expired') {
-        return { error: `Gemini connection "${connection.name}" is expired. Reconnect before executing this workflow.` };
-      }
       if (connection.status !== 'active') {
-        return { error: `Gemini connection "${connection.name}" is ${connection.status}. Select an active connection.` };
+        return { error: `Gemini connection "${connection.name}" is not active. Please reconnect before executing this workflow.` };
       }
       const apiKey = getStringProperty(connection.credentials, 'apiKey', '').trim();
       if (!apiKey) {

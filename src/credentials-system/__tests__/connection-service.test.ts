@@ -13,31 +13,27 @@ describe('ConnectionService', () => {
     queryAsService.mockReset();
   });
 
-  it('marks expired active connections before listing', async () => {
-    queryAsService
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([
-        {
-          id: 'conn-1',
-          user_id: 'user-1',
-          name: 'Expired OAuth',
-          credential_type_id: 'google_oauth2',
-          provider: 'google',
-          auth_type: 'oauth2',
-          status: 'expired',
-          metadata: {},
-          expires_at: new Date(Date.now() - 1000).toISOString(),
-          last_tested_at: null,
-          last_used_at: null,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        },
-      ]);
+  it('deletes expired connections and excludes them from the returned list', async () => {
+    // Call 1: SELECT expired rows — returns one expired connection id
+    queryAsService.mockResolvedValueOnce([{ id: 'conn-1' }]);
+    // Call 2: deleteConnection — SELECT provider
+    queryAsService.mockResolvedValueOnce([{ provider: 'google' }]);
+    // Remaining calls: cascade DELETEs + audit + final SELECT — all return empty
+    queryAsService.mockResolvedValue([]);
 
     const result = await new ConnectionService().listConnections('user-1');
 
-    expect(queryAsService.mock.calls[0][0]).toContain("SET status = 'expired'");
-    expect(result[0].status).toBe('expired');
+    // First query must SELECT expired rows (not UPDATE them)
+    const firstQuery: string = queryAsService.mock.calls[0][0];
+    expect(firstQuery).not.toContain('SET status');
+    expect(firstQuery).toContain("status = 'expired'");
+    // The cascade DELETE must have been called
+    const deleteCall = queryAsService.mock.calls.find(
+      (c: string[]) => c[0].includes('DELETE FROM connections'),
+    );
+    expect(deleteCall).toBeDefined();
+    // Expired connection must NOT appear in the final list
+    expect(result).toHaveLength(0);
   });
 
   it('allows multiple live connections for the same credential type', async () => {
