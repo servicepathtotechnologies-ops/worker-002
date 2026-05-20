@@ -59,6 +59,7 @@ RULES:
 4. Units are ordered by execution sequence (trigger first, then subsequent steps).
 5. Do NOT include any node names, node type strings, or implementation details — describe intent only.
 6. Do NOT pre-select or suggest specific nodes — that happens in a later stage.
+7. The "semanticRole" field MUST be exactly one of the six values listed above: "trigger", "data_source", "communication", "transformation", "output", "logic". Node catalog categories (such as "social_media", "output", "triggers", "crm", "devops", "google", "productivity", etc.) are NOT valid semanticRole values and must NEVER be used as a semanticRole.
 
 CRITICAL RULE — BRANCHING WORKFLOWS (switch / if-else):
 When the user's prompt describes conditional routing (e.g. "if X do A, if Y do B", "route by status", "switch on role"), you MUST:

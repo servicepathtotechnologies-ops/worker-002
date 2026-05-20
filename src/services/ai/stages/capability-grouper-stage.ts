@@ -40,17 +40,35 @@ const TEMPERATURE = 0.1;
  * This filter makes the category constraint deterministic regardless of LLM output.
  */
 const SEMANTIC_ROLE_ALLOWED_CATEGORIES: Record<string, string[]> = {
-  // Strict: only exact-category matches make sense for these roles
-  trigger: ['trigger'],
+  // trigger: only real trigger-category nodes (registry stores these as 'triggers', plural)
+  trigger: ['trigger', 'triggers'],
+
+  // logic: only branching/control-flow nodes
   logic: ['logic'],
-  communication: ['communication'],
-  // Relaxed: output nodes can be CRM writes, DB writes, sheets, file storage, etc. — all 'data'
-  // also messaging services (communication) and AI-powered write nodes
-  output: ['communication', 'data', 'ai', 'transformation', 'utility'],
-  // Relaxed: data sources include CRM reads, DB reads, file reads, spreadsheet reads
-  data_source: ['data', 'communication', 'ai', 'transformation', 'utility'],
-  // Medium: transformation uses AI models, data processing, and some data nodes
-  transformation: ['transformation', 'ai', 'data'],
+
+  // communication: anything that sends a message, post, or notification
+  // 'output' = slack/email/discord; 'social_media' = instagram/twitter/linkedin;
+  // 'google' = gmail; 'crm'/'productivity' = CRM messaging, Notion, etc.
+  communication: ['communication', 'output', 'social_media', 'google', 'crm', 'productivity'],
+
+  // output: write/send to any external system — broadly permissive
+  output: [
+    'communication', 'output', 'social_media',
+    'data', 'ai', 'utility',
+    'google', 'crm', 'productivity',
+    'database', 'devops', 'ecommerce', 'payment', 'cms', 'storage', 'http_api',
+  ],
+
+  // data_source: read from any external system — broadly permissive
+  data_source: [
+    'data', 'communication', 'output', 'social_media',
+    'ai', 'utility', 'google', 'crm', 'productivity',
+    'database', 'devops', 'ecommerce', 'payment', 'cms', 'storage', 'http_api',
+  ],
+
+  // transformation: data processing and AI enrichment
+  // 'transformation' normalizes to 'data' in registry, so include both
+  transformation: ['transformation', 'data', 'ai', 'utility'],
 };
 
 function filterBySemanticRole(nodeTypes: string[], semanticRole: UseCaseUnit['semanticRole']): string[] {

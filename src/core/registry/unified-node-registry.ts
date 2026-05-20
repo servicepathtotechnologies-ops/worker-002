@@ -878,8 +878,8 @@ export class UnifiedNodeRegistry implements INodeRegistry {
 
     // Direct pass-through for categories that already match frontend IDs
     const directMap: Record<string, ReturnType<typeof this.normalizeNodeCategory>> = {
-      'triggers': 'triggers',
-      'trigger': 'triggers',
+      'triggers': 'trigger',
+      'trigger': 'trigger',
       'ai': 'ai',
       'logic': 'logic',
       'flow': 'logic',
@@ -933,7 +933,7 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     if (isCommunication) return 'output';
 
     const triggerTypes = ['trigger', 'schedule', 'webhook', 'interval', 'form_trigger', 'chat_trigger', 'error_trigger', 'workflow_trigger'];
-    if (triggerTypes.some(t => nodeType.includes(t))) return 'triggers';
+    if (triggerTypes.some(t => nodeType.includes(t))) return 'trigger';
 
     const aiTypes = ['ai_chat_model', 'ai_agent', 'ai_service', 'ollama', 'openai', 'gpt', 'claude', 'gemini', 'text_summarizer', 'sentiment_analyzer', 'chat_model', 'memory'];
     if (aiTypes.some(a => nodeType.includes(a)) || tags.some((t: string) => ['ai', 'llm', 'agent'].includes(t))) return 'ai';
