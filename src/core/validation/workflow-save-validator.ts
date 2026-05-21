@@ -86,6 +86,8 @@ interface WorkflowEdge {
 /** full: legacy save-time fixes; configOnly: preserve topology (attach-inputs / attach-credentials) */
 export interface NormalizeWorkflowForSaveOptions {
   structuralMode?: 'full' | 'configOnly' | 'post_freeze_readonly';
+  /** Migration keys already applied to this workflow — used to skip re-running idempotent migrations */
+  alreadyApplied?: string[];
 }
 
 function hasDirectedCycle(nodes: WorkflowNode[], edges: WorkflowEdge[]): boolean {
@@ -409,6 +411,7 @@ export function normalizeWorkflowForSave(
   const structuralMode = options?.structuralMode ?? 'full';
   const configOnly = structuralMode === 'configOnly';
   const postFreezeReadonly = structuralMode === 'post_freeze_readonly';
+  const alreadyAppliedSet = new Set<string>(options?.alreadyApplied ?? []);
 
   // Post-freeze readonly mode: never mutate workflow shape/config.
   if (postFreezeReadonly) {
@@ -465,14 +468,18 @@ export function normalizeWorkflowForSave(
     const config = { ...(node.data?.config || {}) };
 
     // Canonicalize If/Else config using the shared contract normalizer.
-    if (nodeType === 'if_else') {
+    const ifelseMigKey = `ifelse_canonicalize_${node.id}`;
+    if (nodeType === 'if_else' && !alreadyAppliedSet.has(ifelseMigKey)) {
       const before = JSON.stringify(config);
       const normalized = normalizeIfElseConfig(config as Record<string, unknown>);
       const after = JSON.stringify(normalized);
       Object.assign(config, normalized);
       if (before !== after) {
-        migrationsApplied.push(`Canonicalized If/Else node "${node.data?.label || node.id}" conditions`);
+        migrationsApplied.push(ifelseMigKey);
+        console.log(`[NormalizeWorkflow] Applied migration: ${ifelseMigKey}`);
       }
+    } else if (nodeType === 'if_else' && alreadyAppliedSet.has(ifelseMigKey)) {
+      console.log(`[NormalizeWorkflow] Skipped migration (already applied): ${ifelseMigKey}`);
     }
 
     return {
@@ -584,11 +591,15 @@ export function normalizeWorkflowForSave(
           const caseIndex = parseInt(positionalMatch[1], 10) - 1;
           const semanticHandle = switchCasePorts[caseIndex];
           if (semanticHandle) {
-            e.sourceHandle = semanticHandle;
-            (e as any).type = semanticHandle;
-            migrationsApplied.push(
-              `migrated_switch_handle_${sourceId}_case_${caseIndex + 1}_to_${semanticHandle}`
-            );
+            const switchMigKey = `migrated_switch_handle_${sourceId}_case_${caseIndex + 1}_to_${semanticHandle}`;
+            if (!alreadyAppliedSet.has(switchMigKey)) {
+              e.sourceHandle = semanticHandle;
+              (e as any).type = semanticHandle;
+              migrationsApplied.push(switchMigKey);
+              console.log(`[NormalizeWorkflow] Applied migration: ${switchMigKey}`);
+            } else {
+              console.log(`[NormalizeWorkflow] Skipped migration (already applied): ${switchMigKey}`);
+            }
           } else {
             // Keep positional values only as migration fallback when switch config is not hydrated.
             e.sourceHandle = current;
@@ -664,16 +675,20 @@ export function normalizeWorkflowForSave(
     const c = (cfg as { cases?: unknown }).cases;
     return Array.isArray(c) && c.length > 0;
   });
-  if (!configOnly && hasSwitchWithCases) {
+  const switchReconcileMigKey = 'reconciled_switch_graph';
+  if (!configOnly && hasSwitchWithCases && !alreadyAppliedSet.has(switchReconcileMigKey)) {
     try {
       const wf: Workflow = { nodes: finalNodes as any, edges: finalEdges as any };
       const rec = unifiedGraphOrchestrator.reconcileWorkflow(wf);
       finalNodes = rec.workflow.nodes as any;
       finalEdges = rec.workflow.edges as any;
-      migrationsApplied.push('reconciled_switch_graph');
+      migrationsApplied.push(switchReconcileMigKey);
+      console.log(`[NormalizeWorkflow] Applied migration: ${switchReconcileMigKey}`);
     } catch (e) {
       console.warn('[NormalizeWorkflow] switch reconcile skipped:', e);
     }
+  } else if (!configOnly && hasSwitchWithCases && alreadyAppliedSet.has(switchReconcileMigKey)) {
+    console.log(`[NormalizeWorkflow] Skipped migration (already applied): ${switchReconcileMigKey}`);
   }
 
   // ✅ TELEMETRY: Structured logging for normalization fixes

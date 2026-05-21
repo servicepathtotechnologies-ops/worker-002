@@ -285,8 +285,19 @@ async function runCommitSetupWorkflow(
     }
   }
 
-  const normalizedForCommit = normalizeWorkflowForSave(candidate.nodes, candidate.edges, { structuralMode: 'configOnly' });
-  const metadata = metadataWithPendingMarker((workflow as any).metadata, false);
+  const existingMigrationsForCommit: string[] = (workflow as any)?.metadata?.appliedMigrations ?? [];
+  const normalizedForCommit = normalizeWorkflowForSave(candidate.nodes, candidate.edges, {
+    structuralMode: 'configOnly',
+    alreadyApplied: existingMigrationsForCommit,
+  });
+  const allMigrationsAfterCommit = Array.from(new Set([
+    ...existingMigrationsForCommit,
+    ...normalizedForCommit.migrationsApplied,
+  ]));
+  const metadata = {
+    ...metadataWithPendingMarker((workflow as any).metadata, false),
+    appliedMigrations: allMigrationsAfterCommit,
+  };
   const { data: updated, error: updateError } = await db
     .from('workflows')
     .update({

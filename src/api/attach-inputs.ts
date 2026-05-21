@@ -661,8 +661,10 @@ async function runAttachInputsPipeline(req: Request, res: Response): Promise<{ s
 
     // âœ… CRITICAL: Config-only save normalization (preserve topology)
     const { normalizeWorkflowForSave: normalizeWorkflow } = await import('../core/validation/workflow-save-validator');
+    const existingAppliedMigrations: string[] = (workflow as any)?.metadata?.appliedMigrations ?? [];
     const normalizedBeforeClone = normalizeWorkflow(workflowGraph.nodes, workflowGraph.edges, {
       structuralMode: isConfigFrozen ? 'post_freeze_readonly' : 'configOnly',
+      alreadyApplied: existingAppliedMigrations,
     });
     
     // âœ… DEBUG: Log node IDs AFTER normalization to verify deduplication
@@ -1544,11 +1546,37 @@ async function runAttachInputsPipeline(req: Request, res: Response): Promise<{ s
           '',
       },
     } as any;
+    // Snapshot existing credentialId values before materialization — they must survive the pipeline
+    const credentialIdSnapshot = new Map<string, unknown>();
+    for (const node of (structuralInput.nodes ?? [])) {
+      const cid = (node as any)?.data?.config?.credentialId;
+      if (cid !== undefined && cid !== null && cid !== '') {
+        credentialIdSnapshot.set(String((node as any).id ?? ''), cid);
+      }
+    }
+
     const materializedWorkflow = isPostFreezeReadonly
       ? structuralInput
       : (hydrateRequiredConfigFromRegistryDefaults(
           applyStructuralIntentAlignment(materializeStructuralFields(structuralInput as any) as any) as any
         ) as any);
+
+    // Restore any credentialIds that materialization cleared, unless the incoming payload explicitly blanked them
+    if (!isPostFreezeReadonly && credentialIdSnapshot.size > 0) {
+      const explicitCredentialClears = new Set<string>(
+        Object.keys(cleanInputs).filter(k => k.toLowerCase().includes('credentialid') && cleanInputs[k] === '')
+      );
+      for (const node of (materializedWorkflow.nodes ?? [])) {
+        const nodeId = String((node as any)?.id ?? '');
+        const saved = credentialIdSnapshot.get(nodeId);
+        if (saved && !explicitCredentialClears.has(nodeId)) {
+          const cfg = (node as any)?.data?.config;
+          if (cfg && (cfg.credentialId === undefined || cfg.credentialId === '' || cfg.credentialId === null)) {
+            cfg.credentialId = saved;
+          }
+        }
+      }
+    }
 
     let metadataToPersist: Record<string, unknown> = {
       ...((workflow as any)?.metadata || {}),
@@ -1566,10 +1594,18 @@ async function runAttachInputsPipeline(req: Request, res: Response): Promise<{ s
     }
 
     const structuralDiagnostics = getStructuralDiagnostics(materializedWorkflow as any);
+    // Accumulate migrations from both normalization passes for idempotency tracking
+    const accumulatedMigrations: string[] = [
+      ...existingAppliedMigrations,
+      ...normalizedBeforeClone.migrationsApplied,
+    ];
     const finalNormalizedForSave = normalizeBeforeSave(
       materializedWorkflow.nodes,
       materializedWorkflow.edges,
-      { structuralMode: isConfigFrozen ? 'post_freeze_readonly' : 'configOnly' }
+      {
+        structuralMode: isConfigFrozen ? 'post_freeze_readonly' : 'configOnly',
+        alreadyApplied: accumulatedMigrations,
+      }
     );
     
     if (finalNormalizedForSave.migrationsApplied.length > 0) {
@@ -1847,8 +1883,14 @@ async function runAttachInputsPipeline(req: Request, res: Response): Promise<{ s
       attachInputsPositionSnapshot
     );
     const edgesToSave = finalNormalizedGraph.edges;
+    // Persist all migrations applied across both normalization passes for future idempotency
+    const allAppliedMigrations = Array.from(new Set([
+      ...accumulatedMigrations,
+      ...finalNormalizedForSave.migrationsApplied,
+    ]));
     metadataToPersist = {
       ...metadataToPersist,
+      appliedMigrations: allAppliedMigrations,
       lastAttachInputs: {
         payloadHash: attachPayloadHash,
         topologyFingerprint: fingerprintWorkflowTopology(nodesToSave, edgesToSave).fingerprint,

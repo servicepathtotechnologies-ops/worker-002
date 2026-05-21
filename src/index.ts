@@ -1113,9 +1113,14 @@ app.get('/api/workflows/:workflowId/last-resolved-inputs', asyncHandler(async (r
     return res.status(404).json({ error: 'Workflow not found' });
   }
 
-  const { isSetupPending, setupPendingResponse } = await import('./api/workflow-setup-lifecycle');
+  const { isSetupPending } = await import('./api/workflow-setup-lifecycle');
   if (isSetupPending(workflow)) {
-    return res.status(409).json(setupPendingResponse(workflowId));
+    return res.status(200).json({
+      workflowId,
+      values: {},
+      executionCountScanned: 0,
+      setupPending: true,
+    });
   }
 
   const { data: executions, error: executionsError } = await db

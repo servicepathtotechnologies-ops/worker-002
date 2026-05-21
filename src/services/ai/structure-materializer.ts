@@ -427,6 +427,7 @@ export function materializeStructuralFields(
       const formFieldsStale =
         isFormLikeNodeType(nodeType) &&
         fieldName === 'fields' &&
+        fillMode['fields'] !== 'buildtime_ai_once' &&
         formFieldsEffectivelyMissing(current, workflow, combinedIntentText);
       if (missingBase || formFieldsStale) {
         const intentDerived = deriveStructuralValueFromIntent(nodeType, fieldName, intentText, workflow);

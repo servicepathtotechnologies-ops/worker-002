@@ -20,6 +20,7 @@ const RESERVED_KEYS = new Set(['input', 'json', '$json', 'data', 'meta', 'files'
 
 function toSnakeCase(value: string): string {
   return value
+    .replace(/([A-Z])/g, '_$1')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '');

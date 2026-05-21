@@ -437,7 +437,7 @@ export function formFieldsMissingReferencedKeys(
   if (needed.size === 0) return false;
   const have = new Set<string>();
   for (const f of fields || []) {
-    const k = String((f as any).key || (f as any).name || '').trim();
+    const k = String((f as any).key || (f as any).name || (f as any).id || '').trim();
     if (k) have.add(normalizeFieldKey(k));
   }
   for (const n of needed) {
