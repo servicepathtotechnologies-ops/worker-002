@@ -1200,7 +1200,8 @@ export class WorkflowDSLCompiler {
         const upstreamTypeForSwitch = upstreamNodeForSwitch
           ? (upstreamNodeForSwitch.type || upstreamNodeForSwitch.data?.type || '')
           : undefined;
-        const switchPlanResult = planSwitchCasesFromPrompt(originalPrompt, upstreamTypeForSwitch);
+        const upstreamConfigForSwitch = upstreamNodeForSwitch?.data?.config as Record<string, any> | undefined;
+        const switchPlanResult = planSwitchCasesFromPrompt(originalPrompt, upstreamTypeForSwitch, undefined, upstreamConfigForSwitch);
         const extractedCaseValues = new Set<string>(switchPlanResult.cases.map((c: any) => c.value));
         
         console.log(`[WorkflowDSLCompiler] 🔍 Extracted ${extractedCaseValues.size} case value(s) from prompt: ${Array.from(extractedCaseValues).join(', ')}`);

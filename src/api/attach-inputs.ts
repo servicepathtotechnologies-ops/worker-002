@@ -9,7 +9,7 @@
  * 2. Backend generates workflow graph
  * 3. Backend returns graph + required inputs + required credentials
  * 4. Frontend shows unified configuration modal
- * 5. User submits inputs â†’ THIS ENDPOINT
+ * 5. User submits inputs â†' THIS ENDPOINT
  * 6. Backend injects inputs into nodes
  * 7. Frontend calls attach-credentials
  * 8. Auto-run workflow
@@ -19,8 +19,8 @@
  * writable through this endpoint so AI-built and user-edited fields persist (no protected-config 409).
  *
  * Field-plane aligned keys (see ctrl_checks `wizard-types.ts`):
- * - `mode_<nodeId>_<fieldName>` â†’ `data.config._fillMode[fieldName]`
- * - `unlock_<nodeId>_<fieldName>` â†’ `data.config._ownershipUnlock[fieldName]` (registry unlockable credential fields only)
+ * - `mode_<nodeId>_<fieldName>` â†' `data.config._fillMode[fieldName]`
+ * - `unlock_<nodeId>_<fieldName>` â†' `data.config._ownershipUnlock[fieldName]` (registry unlockable credential fields only)
  * - Prefixed comprehensive ids: `cred_`, `input_`, `config_`, `resource_`, `op_` + `<nodeId>_<fieldName>`
  */
 
@@ -559,7 +559,7 @@ async function runAttachInputsPipeline(req: Request, res: Response): Promise<{ s
         edgeCount: baselineTopologyFingerprint.edgeKeysSorted.length,
       });
       if (isPostFreezeReadonly) {
-        console.log('[AttachInputs] ðŸ”’ Post-freeze readonly mode enabled');
+        console.log('[AttachInputs] Post-freeze readonly mode enabled');
       }
       
       // âœ… DEBUG: Log node IDs AFTER normalization
@@ -736,6 +736,9 @@ async function runAttachInputsPipeline(req: Request, res: Response): Promise<{ s
       const existingConfig = node.data?.config || {};
       const config = { ...existingConfig };
       let updated = false;
+      // Fields explicitly set via config_/op_/ownership_ keys in this request.
+      // The legacy-template clearing block must not overwrite values set in the same batch.
+      const explicitlySetInBatch = new Set<string>();
       const modeFieldsApplied: string[] = [];
       const modeFieldsUnknown: string[] = [];
       const unifiedDefForNode = unifiedNodeRegistry.get(nodeType);
@@ -890,6 +893,9 @@ async function runAttachInputsPipeline(req: Request, res: Response): Promise<{ s
         for (const fieldName of Object.keys(def.inputSchema)) {
           const mode = resolveEffectiveFieldFillMode(fieldName, def.inputSchema, config as Record<string, any>);
           if (mode !== 'runtime_ai') continue;
+          // Never clear a value that was explicitly set by this request batch — the
+          // user confirmed it in the Field Ownership step and it must reach the workflow.
+          if (explicitlySetInBatch.has(fieldName)) continue;
           const current = config[fieldName];
           if (typeof current === 'string' && current.includes('{{')) {
             config[fieldName] = '';
@@ -1077,7 +1083,7 @@ async function runAttachInputsPipeline(req: Request, res: Response): Promise<{ s
               }
             }
             
-            // Registry-driven alias (e.g. Slack text â†’ message via inputSchema.aliasOf)
+            // Registry-driven alias (e.g. Slack text â†' message via inputSchema.aliasOf)
             const aliasFieldDef = unifiedDefForNode?.inputSchema?.[fieldName];
             const aliasTarget = resolveAliasTargetFieldName(fieldName, aliasFieldDef as any);
             if (aliasTarget) {
@@ -1085,7 +1091,9 @@ async function runAttachInputsPipeline(req: Request, res: Response): Promise<{ s
               if (cur === undefined || cur === null || cur === '') {
                 (config as any)[aliasTarget] = value;
                 updated = true;
-                console.log(`[AttachInputs] Mapped alias '${fieldName}' â†’ '${aliasTarget}' for node ${node.id} (${nodeType})`);
+                explicitlySetInBatch.add(aliasTarget);
+                explicitlySetInBatch.add(fieldName);
+                console.log(`[AttachInputs] Mapped alias '${fieldName}' â†' '${aliasTarget}' for node ${node.id} (${nodeType})`);
                 continue;
               }
             }
@@ -1114,8 +1122,10 @@ async function runAttachInputsPipeline(req: Request, res: Response): Promise<{ s
               if (existingValue !== value) {
                 config[fieldName] = value;
                 updated = true;
+                explicitlySetInBatch.add(fieldName);
                 console.log(`[AttachInputs] Applied ${fieldName} to node ${node.id} (${nodeType}) - ${existingValue ? 'updated' : 'set'}`);
               } else {
+                explicitlySetInBatch.add(fieldName);
                 console.log(`[AttachInputs] Field ${fieldName} unchanged for node ${node.id} (${nodeType})`);
               }
             } else {
@@ -1264,7 +1274,7 @@ async function runAttachInputsPipeline(req: Request, res: Response): Promise<{ s
                 if (cur === undefined || cur === null || cur === '') {
                   (config as any)[nestedAliasTarget] = fieldValue;
                   updated = true;
-                  console.log(`[AttachInputs] Mapped alias '${fieldName}' â†’ '${nestedAliasTarget}' for node ${node.id} (${nodeType}) (nested)`);
+                  console.log(`[AttachInputs] Mapped alias '${fieldName}' â†' '${nestedAliasTarget}' for node ${node.id} (${nodeType}) (nested)`);
                   continue;
                 }
               }
@@ -1402,20 +1412,12 @@ async function runAttachInputsPipeline(req: Request, res: Response): Promise<{ s
       edges: updatedEdges, // Use updated edges
     };
 
-    // âœ… CRITICAL: Normalize workflow BEFORE validation to fix duplicate triggers and structure issues
-    const { validateWorkflowForSave, normalizeWorkflowForSave } = await import('../core/validation/workflow-save-validator');
-    
-    // Normalize the workflow (config-only: no trigger stripping / switch reconcile)
-    const preNormalized = normalizeWorkflowForSave(nodesAfterReplacement, updatedEdges, {
-      structuralMode: isConfigFrozen ? 'post_freeze_readonly' : 'configOnly',
-    });
-    
-    if (preNormalized.migrationsApplied.length > 0) {
-      console.log('[AttachInputs] ðŸ”„ Pre-validation normalization applied:', preNormalized.migrationsApplied);
-    }
-    
-    // Validate the normalized workflow (should pass now since normalization fixed issues)
-    const saveValidation = validateWorkflowForSave(preNormalized.nodes, preNormalized.edges, {
+    // Validate workflow structure after input injection.
+    // The first normalization pass (pre-clone, line ~664) already canonicalized structure.
+    // Re-normalizing here would mutate user-approved config values set by the injection phase.
+    const { validateWorkflowForSave } = await import('../core/validation/workflow-save-validator');
+
+    const saveValidation = validateWorkflowForSave(nodesAfterReplacement, updatedEdges, {
       buildManifest: (workflow as any)?.metadata?.buildManifest,
       freezeBoundary: (workflow as any)?.metadata?.freezeBoundary,
     });
@@ -1453,10 +1455,10 @@ async function runAttachInputsPipeline(req: Request, res: Response): Promise<{ s
       console.warn('[AttachInputs] Validation warnings (non-blocking):', saveValidation.warnings);
     }
     
-    // Use normalized nodes/edges for rest of processing
+    // Use injected nodes/edges for rest of processing
     const normalizedWorkflow = {
-      nodes: preNormalized.nodes,
-      edges: preNormalized.edges,
+      nodes: nodesAfterReplacement,
+      edges: updatedEdges,
     };
     
     // âœ… CRITICAL: Relax validation - only validate structure, not required fields
@@ -1774,8 +1776,8 @@ async function runAttachInputsPipeline(req: Request, res: Response): Promise<{ s
     }
     
     // âœ… PHASE PIPELINE: Determine the correct next phase after successful input attachment.
-    // ready_for_ownership â†’ signals attach-credentials that freeze boundary is established.
-    // ready_for_execution â†’ no credentials needed, workflow is ready.
+    // ready_for_ownership â†' signals attach-credentials that freeze boundary is established.
+    // ready_for_execution â†' no credentials needed, workflow is ready.
     let nextStatus = 'active';
     let nextPhase = 'ready_for_ownership'; // Default: structure frozen, credentials stage can start
     const readiness = await workflowLifecycleManager.validateExecutionReady(finalNormalizedGraph as any, userId);
@@ -2006,7 +2008,7 @@ async function runAttachInputsPipeline(req: Request, res: Response): Promise<{ s
       };
     }
 
-    console.log('[AttachInputs] ðŸ’¾ Saving workflow with normalized structure:', {
+    console.log('[AttachInputs] Saving workflow with normalized structure:', {
       nodeCount: nodesToSave.length,
       edgeCount: edgesToSave.length,
       triggerNodes: nodesToSave.filter(n => {

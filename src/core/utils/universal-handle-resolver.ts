@@ -17,6 +17,7 @@
 
 import { unifiedNodeRegistry } from '../registry/unified-node-registry';
 import { unifiedNormalizeNodeTypeString } from './unified-node-type-normalizer';
+import { extractSwitchCasePortNames } from './branching-node-ports';
 
 export interface HandleResolutionResult {
   handle: string;
@@ -50,11 +51,12 @@ export class UniversalHandleResolver {
   resolveSourceHandle(
     nodeType: string,
     explicitHandle?: string,
-    connectionType?: 'true' | 'false' | 'main' | 'case_1' | 'case_2' | string
+    connectionType?: 'true' | 'false' | 'main' | 'case_1' | 'case_2' | string,
+    nodeConfig?: Record<string, any>
   ): HandleResolutionResult {
     const normalizedType = unifiedNormalizeNodeTypeString(nodeType);
     const nodeDef = unifiedNodeRegistry.get(normalizedType);
-    
+
     if (!nodeDef) {
       return {
         handle: 'output', // Fallback
@@ -62,8 +64,16 @@ export class UniversalHandleResolver {
         reason: `Node type ${nodeType} not found in registry`
       };
     }
-    
-    const validPorts = nodeDef.outgoingPorts || [];
+
+    // For switch nodes: static outgoingPorts = ['output'] doesn't include semantic case handles.
+    // Derive the valid ports from config.cases at resolution time.
+    let validPorts = nodeDef.outgoingPorts || [];
+    if (normalizedType === 'switch' && nodeConfig) {
+      const dynamicPorts = extractSwitchCasePortNames(nodeConfig);
+      if (dynamicPorts.length > 0) {
+        validPorts = [...dynamicPorts, 'output'];
+      }
+    }
     
     // ✅ PRIORITY 1: Use explicit handle if provided and valid
     if (explicitHandle && validPorts.includes(explicitHandle)) {
@@ -205,11 +215,16 @@ export class UniversalHandleResolver {
   }
   
   /**
-   * Get all valid source handles for a node type
+   * Get all valid source handles for a node type.
+   * For switch nodes, pass nodeConfig to get the dynamic case ports.
    */
-  getValidSourceHandles(nodeType: string): string[] {
+  getValidSourceHandles(nodeType: string, nodeConfig?: Record<string, any>): string[] {
     const normalizedType = unifiedNormalizeNodeTypeString(nodeType);
     const nodeDef = unifiedNodeRegistry.get(normalizedType);
+    if (normalizedType === 'switch' && nodeConfig) {
+      const dynamicPorts = extractSwitchCasePortNames(nodeConfig);
+      if (dynamicPorts.length > 0) return [...dynamicPorts, 'output'];
+    }
     return nodeDef?.outgoingPorts || [];
   }
   

@@ -160,13 +160,21 @@ export async function setupDraftWorkflowHandler(req: Request, res: Response) {
   return res.json({ success: true, workflowId: data.id, workflow: data, validation });
 }
 
-export async function commitSetupWorkflowHandler(req: Request, res: Response) {
+// Deduplicate concurrent commit-setup calls for the same workflow.
+// Each workflowId maps to the promise of the in-progress handler so that later
+// concurrent callers wait for the first one and return the same result instead of
+// all racing to write conflicting DB snapshots.
+const commitSetupInFlight = new Map<string, Promise<{ statusCode: number; body: unknown }>>();
+
+async function runCommitSetupWorkflow(
+  req: Request
+): Promise<{ statusCode: number; body: unknown }> {
   const db = getDbClient();
   let userId: string;
   try {
     userId = await requireUserId(req);
   } catch (authError: any) {
-    return res.status(401).json(authError);
+    return { statusCode: 401, body: authError };
   }
 
   const { workflowId } = req.params;
@@ -177,10 +185,10 @@ export async function commitSetupWorkflowHandler(req: Request, res: Response) {
     .single();
 
   if (error || !workflow) {
-    return res.status(404).json({ error: 'Workflow not found', workflowId });
+    return { statusCode: 404, body: { error: 'Workflow not found', workflowId } };
   }
   if ((workflow as any).user_id !== userId) {
-    return res.status(403).json({ error: 'Forbidden', workflowId });
+    return { statusCode: 403, body: { error: 'Forbidden', workflowId } };
   }
 
   const graph = resolveWorkflowGraphState(workflow as any);
@@ -197,34 +205,30 @@ export async function commitSetupWorkflowHandler(req: Request, res: Response) {
       (readiness.missingCredentials?.length ?? 0) > 0;
 
     if (!credentialOnlyFailure) {
-      // Structural error — hard block, do not commit
       const errorSummary = readiness.errors?.length
         ? readiness.errors.join(' | ')
         : 'Workflow setup is incomplete';
-      return res.status(409).json({
+      return { statusCode: 409, body: {
         code: 'WORKFLOW_SETUP_INCOMPLETE',
         error: 'Workflow setup is incomplete',
         message: errorSummary,
         workflowId,
         details: readiness,
-      });
+      }};
     }
 
-    // Soft commit: structurally valid but credentials still missing.
-    // Mark setup_completed = true so all workflow-page API calls work, keep phase
-    // as ready_for_ownership so WorkflowConnectionGate shows the credential prompt.
     const wasSetupPendingSoft = isSetupPending(workflow);
     if (wasSetupPendingSoft) {
       await subscriptionService.ensureFreeSubscription(userId);
       const canCreateWorkflow = await subscriptionService.canCreateWorkflow(userId);
       if (!canCreateWorkflow) {
         const usage = await subscriptionService.getSubscriptionUsage(userId);
-        return res.status(403).json({
+        return { statusCode: 403, body: {
           code: 'WORKFLOW_LIMIT_EXCEEDED',
           error: 'Workflow Limit Exceeded',
           message: `You've reached your workflow limit (${usage.workflowLimit}). Upgrade your plan to create more workflows.`,
           details: usage,
-        });
+        }};
       }
     }
 
@@ -244,7 +248,7 @@ export async function commitSetupWorkflowHandler(req: Request, res: Response) {
       .eq('id', workflowId);
 
     if (softUpdateError) {
-      return res.status(500).json({ error: 'Failed to commit workflow setup', message: softUpdateError.message });
+      return { statusCode: 500, body: { error: 'Failed to commit workflow setup', message: softUpdateError.message } };
     }
 
     const cacheClientSoft = await getCacheRedisClient(process.env.REDIS_URL || 'redis://redis:6379');
@@ -256,13 +260,13 @@ export async function commitSetupWorkflowHandler(req: Request, res: Response) {
       await subscriptionService.incrementWorkflowCount(userId);
     }
 
-    return res.json({
+    return { statusCode: 200, body: {
       success: true,
       workflowId,
       credentialsPending: true,
       missingCredentials: readiness.missingCredentials,
       phase: 'ready_for_ownership',
-    });
+    }};
   }
 
   const wasSetupPending = isSetupPending(workflow);
@@ -272,15 +276,16 @@ export async function commitSetupWorkflowHandler(req: Request, res: Response) {
     const canCreateWorkflow = await subscriptionService.canCreateWorkflow(userId);
     if (!canCreateWorkflow) {
       const usage = await subscriptionService.getSubscriptionUsage(userId);
-      return res.status(403).json({
+      return { statusCode: 403, body: {
         code: 'WORKFLOW_LIMIT_EXCEEDED',
         error: 'Workflow Limit Exceeded',
         message: `You've reached your workflow limit (${usage.workflowLimit}). Upgrade your plan to create more workflows.`,
         details: usage,
-      });
+      }};
     }
   }
 
+  const normalizedForCommit = normalizeWorkflowForSave(candidate.nodes, candidate.edges, { structuralMode: 'configOnly' });
   const metadata = metadataWithPendingMarker((workflow as any).metadata, false);
   const { data: updated, error: updateError } = await db
     .from('workflows')
@@ -292,9 +297,9 @@ export async function commitSetupWorkflowHandler(req: Request, res: Response) {
       setup_stage: 'complete',
       setup_completed_at: new Date().toISOString(),
       metadata,
-      graph: buildSyncedGraphPayload(candidate.nodes, candidate.edges, metadata),
-      nodes: candidate.nodes,
-      edges: candidate.edges,
+      graph: buildSyncedGraphPayload(normalizedForCommit.nodes, normalizedForCommit.edges, metadata),
+      nodes: normalizedForCommit.nodes,
+      edges: normalizedForCommit.edges,
       updated_at: new Date().toISOString(),
     } as any)
     .eq('id', workflowId)
@@ -302,12 +307,9 @@ export async function commitSetupWorkflowHandler(req: Request, res: Response) {
     .single();
 
   if (updateError) {
-    return res.status(500).json({ error: 'Failed to commit workflow setup', message: updateError.message });
+    return { statusCode: 500, body: { error: 'Failed to commit workflow setup', message: updateError.message } };
   }
 
-  // Bust Redis cache so the next workflow fetch gets fresh data with setup_completed = true.
-  // The workflowId lives in query params so we can't predict the cache key hash — we clear
-  // all /api/db/workflows:* entries. Safe: TTL is short and commit is a rare operation.
   const cacheClient = await getCacheRedisClient(process.env.REDIS_URL || 'redis://redis:6379');
   if (cacheClient) {
     await invalidateWorkflowDbCache(cacheClient).catch(() => {});
@@ -317,12 +319,43 @@ export async function commitSetupWorkflowHandler(req: Request, res: Response) {
     await subscriptionService.incrementWorkflowCount(userId);
   }
 
-  return res.json({
+  return { statusCode: 200, body: {
     success: true,
     workflowId,
     workflow: updated,
-    status: updated.status,
-    phase: updated.phase,
+    status: (updated as any).status,
+    phase: (updated as any).phase,
     ready: true,
-  });
+  }};
+}
+
+export async function commitSetupWorkflowHandler(req: Request, res: Response) {
+  const { workflowId } = req.params;
+
+  if (!workflowId) {
+    return res.status(400).json({ error: 'Missing workflowId' });
+  }
+
+  if (commitSetupInFlight.has(workflowId)) {
+    const result = await commitSetupInFlight.get(workflowId)!;
+    return res.status(result.statusCode as number).json(result.body);
+  }
+
+  let resolveDedup!: (v: { statusCode: number; body: unknown }) => void;
+  const dedupPromise = new Promise<{ statusCode: number; body: unknown }>(
+    (r) => (resolveDedup = r)
+  );
+  commitSetupInFlight.set(workflowId, dedupPromise);
+
+  try {
+    const result = await runCommitSetupWorkflow(req);
+    resolveDedup(result);
+    return res.status(result.statusCode as number).json(result.body);
+  } catch (err: any) {
+    const errResult = { statusCode: 500, body: { error: 'commit-setup failed', message: err?.message } };
+    resolveDedup(errResult);
+    return res.status(500).json(errResult.body);
+  } finally {
+    commitSetupInFlight.delete(workflowId);
+  }
 }

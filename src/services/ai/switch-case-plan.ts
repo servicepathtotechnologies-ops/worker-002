@@ -23,8 +23,27 @@ export interface SwitchCasePlanResult {
 /**
  * Prefer output field names from registry outputSchema for routing; fallback by node type heuristics.
  */
-export function getDiscriminantFieldForUpstreamType(upstreamNodeType: string | undefined): string {
+export function getDiscriminantFieldForUpstreamType(
+  upstreamNodeType: string | undefined,
+  upstreamConfig?: Record<string, any>
+): string {
   const t = unifiedNormalizeNodeTypeString(upstreamNodeType || '');
+
+  // For form nodes: the outputSchema is generic. Real field names live in config.fields[].name.
+  // Prefer a field whose name contains a routing-signal word (status, type, category, etc.).
+  if (t === 'form' && upstreamConfig) {
+    const fields: Array<{ name?: string }> =
+      Array.isArray(upstreamConfig.fields) ? upstreamConfig.fields : [];
+    const routingWords = ['status', 'type', 'category', 'state', 'kind', 'class', 'tier', 'level'];
+    for (const word of routingWords) {
+      const hit = fields.find(f => f.name?.toLowerCase().includes(word));
+      if (hit?.name) return hit.name;
+    }
+    const first = fields.find(f => f.name && f.name !== 'message');
+    if (first?.name) return first.name;
+    if (fields[0]?.name) return fields[0].name;
+  }
+
   const def = unifiedNodeRegistry.get(t);
   const props = def?.outputSchema?.properties as Record<string, unknown> | undefined;
   if (props && typeof props === 'object') {
@@ -183,9 +202,10 @@ function extractEnumeratedCasesFromPrompt(prompt: string): string[] {
 export function planSwitchCasesFromPrompt(
   originalPrompt: string,
   upstreamNodeType: string | undefined,
-  intent?: StructuredIntent
+  intent?: StructuredIntent,
+  upstreamConfig?: Record<string, any>
 ): SwitchCasePlanResult {
-  const discriminantField = getDiscriminantFieldForUpstreamType(upstreamNodeType);
+  const discriminantField = getDiscriminantFieldForUpstreamType(upstreamNodeType, upstreamConfig);
   const expressionTemplate = `{{$json.${discriminantField}}}`;
 
   const cases: SwitchCasePlanCase[] = [];

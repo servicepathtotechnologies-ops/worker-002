@@ -69,8 +69,44 @@ function stringsMatchCase(a: string, b: string): boolean {
   return x.toLowerCase() === y.toLowerCase();
 }
 
-function stableSortOutgoingEdges(edges: WorkflowEdge[]): WorkflowEdge[] {
-  return [...edges].sort((a, b) => a.id.localeCompare(b.id));
+/**
+ * Sort outgoing switch edges so their order matches the case declaration order in config.
+ * Edges whose branchName/sourceHandle matches caseValues[i] are placed at position i.
+ * Unrecognized edges are appended after the known ones in stable UUID order.
+ */
+function sortEdgesByCaseOrder(
+  edges: WorkflowEdge[],
+  caseValues: string[]
+): WorkflowEdge[] {
+  const getSemanticLabel = (e: WorkflowEdge): string =>
+    String(
+      (e as any).branchName ??
+      (e as any).data?.branchName ??
+      e.sourceHandle ??
+      e.type ??
+      ''
+    ).trim();
+
+  const known: (WorkflowEdge | null)[] = new Array(caseValues.length).fill(null);
+  const unknown: WorkflowEdge[] = [];
+
+  for (const e of edges) {
+    const label = getSemanticLabel(e);
+    const idx = label ? caseValues.findIndex(cv => stringsMatchCase(cv, label)) : -1;
+    if (idx !== -1 && known[idx] === null) {
+      known[idx] = e;
+    } else {
+      unknown.push(e);
+    }
+  }
+
+  const result: WorkflowEdge[] = [];
+  for (let i = 0; i < caseValues.length; i++) {
+    if (known[i] !== null) result.push(known[i]!);
+  }
+  unknown.sort((a, b) => a.id.localeCompare(b.id));
+  result.push(...unknown);
+  return result;
 }
 
 function coerceSwitchNumber(expressionValue: unknown, matchedCase: string | null): number | undefined {
@@ -106,12 +142,14 @@ export function resolveWinningSwitchEdgeId(options: {
   expressionValue?: unknown;
 }): string | null {
   const { switchNode, allEdges, matchedCase, expressionValue } = options;
-  const outEdges = stableSortOutgoingEdges(allEdges.filter(e => e.source === switchNode.id));
-  if (outEdges.length === 0) return null;
-
   const caseValues = orderedSwitchCaseValues(
     (switchNode.data?.config || {}) as Record<string, unknown>
   );
+  const outEdges = sortEdgesByCaseOrder(
+    allEdges.filter(e => e.source === switchNode.id),
+    caseValues
+  );
+  if (outEdges.length === 0) return null;
   const switchOutStr =
     matchedCase != null && matchedCase !== undefined ? String(matchedCase) : '';
   const switchOutNum = coerceSwitchNumber(expressionValue, matchedCase);

@@ -2102,7 +2102,8 @@ export class ProductionWorkflowBuilder {
 
           // ✅ UNIVERSAL FIX: Use planSwitchCasesFromPrompt exclusively — no hardcoded fallback patterns.
           // All case extraction is intent-driven via switch-case-plan.ts (registry-driven, no hardcoding).
-          const plan = planSwitchCasesFromPrompt(originalPrompt, upstreamType, intent);
+          const upstreamConfig = sourceNode?.data?.config as Record<string, any> | undefined;
+          const plan = planSwitchCasesFromPrompt(originalPrompt, upstreamType, intent, upstreamConfig);
           const switchCases: Array<{ value: string; label: string }> = plan.cases.map(c => ({ ...c }));
           const caseToNodeMapping: Map<string, string> = new Map();
 

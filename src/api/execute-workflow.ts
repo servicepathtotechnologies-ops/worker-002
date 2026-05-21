@@ -13382,7 +13382,36 @@ export async function executeNodeLegacy(
             c.value.toLowerCase() === expressionValueStr.toLowerCase() && expressionValueStr.length > 0
         );
 
-      const matchedCase = matched ? matched.value : null;
+      let matchedCase = matched ? matched.value : null;
+      let recoveredViaField: string | undefined;
+
+      // If the primary expression evaluation failed (resolves to null/empty), attempt
+      // field-name recovery: extract the intended field from the expression, try its
+      // snake_case <-> camelCase variants, and use the first variant whose value
+      // matches one of the case values. This handles AI-generated expressions that
+      // used the wrong casing (e.g. paymentStatus vs payment_status) without requiring
+      // the user to recreate the workflow.
+      if (matchedCase === null && cases.length > 0 && expressionValueStr === '') {
+        const exprFieldMatch = expression.match(/\$json\.([a-zA-Z_$][\w$]*)/);
+        if (exprFieldMatch) {
+          const base = exprFieldMatch[1];
+          const snakeVariant = base.replace(/([A-Z])/g, '_$1').toLowerCase().replace(/^_/, '');
+          const camelVariant = base.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
+          for (const candidate of Array.from(new Set([base, snakeVariant, camelVariant]))) {
+            if (!(candidate in originalInputObj)) continue;
+            const raw = (originalInputObj as Record<string, unknown>)[candidate];
+            if (typeof raw !== 'string' || !raw.trim()) continue;
+            const trimmed = raw.trim();
+            const caseMatch = cases.find(c => c.value.toLowerCase() === trimmed.toLowerCase());
+            if (caseMatch) {
+              matchedCase = caseMatch.value;
+              recoveredViaField = candidate;
+              console.log(`[Switch] Expression '${expression}' resolved to empty — recovered case '${matchedCase}' via field '${candidate}'`);
+              break;
+            }
+          }
+        }
+      }
 
       // ✅ CORE ARCHITECTURE FIX: Return full input data with routing metadata
       // Switch nodes MUST forward ALL input data to the selected branch
@@ -13392,7 +13421,8 @@ export async function executeNodeLegacy(
         expression,
         expressionValue,
         matchedCase,
-        matchedLabel: matched?.label,
+        ...(recoveredViaField ? { _switchRecoveredVia: recoveredViaField } : {}),
+        matchedLabel: matched?.label ?? (matchedCase ? cases.find(c => c.value === matchedCase)?.label : undefined),
         // Convenience: expose for logs/debugging
         result: matchedCase,
       };
@@ -18828,7 +18858,7 @@ export default async function executeWorkflowHandler(req: Request, res: Response
     const { normalizeWorkflowForSave } = await import('../core/validation/workflow-save-validator');
     const originalNodes = (workflow.nodes || []) as WorkflowNode[];
     const originalEdges = (workflow.edges || []) as WorkflowEdge[];
-    const normalized = normalizeWorkflowForSave(originalNodes, originalEdges);
+    const normalized = normalizeWorkflowForSave(originalNodes, originalEdges, { structuralMode: 'configOnly' });
     
     // ✅ CRITICAL: Apply graph linearization (enforce single-trigger, single-chain)
     // This ensures workflows with multiple triggers or fan-out are converted to linear chains
