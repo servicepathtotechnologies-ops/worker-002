@@ -192,15 +192,76 @@ export async function commitSetupWorkflowHandler(req: Request, res: Response) {
   const readiness = await workflowLifecycleManager.validateExecutionReady(candidate as any, userId);
 
   if (!readiness.ready) {
-    const errorSummary = readiness.errors?.length
-      ? readiness.errors.join(' | ')
-      : 'Workflow setup is incomplete';
-    return res.status(409).json({
-      code: 'WORKFLOW_SETUP_INCOMPLETE',
-      error: 'Workflow setup is incomplete',
-      message: errorSummary,
+    const credentialOnlyFailure =
+      readiness.structurallyValid === true &&
+      (readiness.missingCredentials?.length ?? 0) > 0;
+
+    if (!credentialOnlyFailure) {
+      // Structural error — hard block, do not commit
+      const errorSummary = readiness.errors?.length
+        ? readiness.errors.join(' | ')
+        : 'Workflow setup is incomplete';
+      return res.status(409).json({
+        code: 'WORKFLOW_SETUP_INCOMPLETE',
+        error: 'Workflow setup is incomplete',
+        message: errorSummary,
+        workflowId,
+        details: readiness,
+      });
+    }
+
+    // Soft commit: structurally valid but credentials still missing.
+    // Mark setup_completed = true so all workflow-page API calls work, keep phase
+    // as ready_for_ownership so WorkflowConnectionGate shows the credential prompt.
+    const wasSetupPendingSoft = isSetupPending(workflow);
+    if (wasSetupPendingSoft) {
+      await subscriptionService.ensureFreeSubscription(userId);
+      const canCreateWorkflow = await subscriptionService.canCreateWorkflow(userId);
+      if (!canCreateWorkflow) {
+        const usage = await subscriptionService.getSubscriptionUsage(userId);
+        return res.status(403).json({
+          code: 'WORKFLOW_LIMIT_EXCEEDED',
+          error: 'Workflow Limit Exceeded',
+          message: `You've reached your workflow limit (${usage.workflowLimit}). Upgrade your plan to create more workflows.`,
+          details: usage,
+        });
+      }
+    }
+
+    const softMetadata = metadataWithPendingMarker((workflow as any).metadata, false);
+    const { error: softUpdateError } = await db
+      .from('workflows')
+      .update({
+        status: 'active',
+        phase: 'ready_for_ownership',
+        confirmed: true,
+        setup_completed: true,
+        setup_stage: 'credentials_pending',
+        setup_completed_at: new Date().toISOString(),
+        metadata: softMetadata,
+        updated_at: new Date().toISOString(),
+      } as any)
+      .eq('id', workflowId);
+
+    if (softUpdateError) {
+      return res.status(500).json({ error: 'Failed to commit workflow setup', message: softUpdateError.message });
+    }
+
+    const cacheClientSoft = await getCacheRedisClient(process.env.REDIS_URL || 'redis://redis:6379');
+    if (cacheClientSoft) {
+      await invalidateWorkflowDbCache(cacheClientSoft).catch(() => {});
+    }
+
+    if (wasSetupPendingSoft) {
+      await subscriptionService.incrementWorkflowCount(userId);
+    }
+
+    return res.json({
+      success: true,
       workflowId,
-      details: readiness,
+      credentialsPending: true,
+      missingCredentials: readiness.missingCredentials,
+      phase: 'ready_for_ownership',
     });
   }
 

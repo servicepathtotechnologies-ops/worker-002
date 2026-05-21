@@ -60,7 +60,15 @@ const DOCS_SRC = path.join(REPO_ROOT, 'ctrl_checks', 'src', 'docs-content');
 
 const { nodeDocManifest } = loadTsData(path.join(DOCS_SRC, 'manifest.ts'));
 const { nodeContentOverrides } = loadTsData(path.join(DOCS_SRC, 'node-content-overrides.ts'));
-const { credentialSteps } = loadTsData(path.join(DOCS_SRC, 'credential-steps.ts'));
+const { credentialSteps, getCredentialSteps } = loadTsData(path.join(DOCS_SRC, 'credential-steps.ts'));
+
+// Load per-node field content bible (node+operation+field specific helpText)
+let NODE_FIELD_CONTENT = {};
+const nodeFieldContentPath = path.join(DOCS_SRC, 'node-field-content.ts');
+if (fs.existsSync(nodeFieldContentPath)) {
+  const nfcModule = loadTsData(nodeFieldContentPath);
+  NODE_FIELD_CONTENT = nfcModule.NODE_FIELD_CONTENT || {};
+}
 
 // ── Output paths ──────────────────────────────────────────────────────────────
 const NODES_OUT = path.join(DOCS_SRC, 'nodes');
@@ -144,21 +152,21 @@ const OFFICIAL_DOCS = {
 
 // ── Credential type map (slug → credentialSteps key) ─────────────────────────
 const CREDENTIAL_TYPE_MAP = {
-  google_gmail: 'Google Credential',
-  google_sheets: 'Google Credential',
-  google_drive: 'Google Credential',
-  google_calendar: 'Google Credential',
-  google_contacts: 'Google Credential',
-  google_bigquery: 'Google Credential',
-  google_doc: 'Google Credential',
-  google_tasks: 'Google Credential',
-  google_cloud_storage: 'Google Credential',
+  google_gmail: 'Gmail OAuth',
+  google_sheets: 'Google Sheets OAuth',
+  google_drive: 'Google Drive OAuth',
+  google_calendar: 'Google Calendar OAuth',
+  google_contacts: 'Google OAuth',
+  google_bigquery: 'Google OAuth',
+  google_doc: 'Google Docs OAuth',
+  google_tasks: 'Google OAuth',
+  google_cloud_storage: 'Google Cloud Storage Credential',
   youtube: 'Google Credential',
   google_gemini: 'Google Gemini API Key',
   openai_gpt: 'OpenAI API Key',
   anthropic_claude: 'Anthropic API Key',
-  slack_message: 'Slack Credential',
-  slack_webhook: 'Slack Credential',
+  slack_message: 'Slack OAuth',
+  slack_webhook: 'Slack Webhook URL',
   discord: 'Discord Bot Token',
   discord_webhook: 'Discord Bot Token',
   telegram: 'Telegram Bot Token',
@@ -273,6 +281,7 @@ function exampleFor(key, field) {
   if (lower.includes('email')) return 'user@example.com';
   if (lower.includes('url') || lower.includes('endpoint')) return 'https://api.example.com';
   if (lower.includes('id')) return 'abc123';
+  if (lower === 'contacts') return '[{"name":{"formatted_name":"Alice Kumar","first_name":"Alice"},"phones":[{"phone":"+919876543210","type":"MOBILE"}]}]';
   if (field.type === 'number') return '10';
   if (field.type === 'boolean') return 'false';
   if (field.type === 'object') return '{"key":"value"}';
@@ -280,8 +289,295 @@ function exampleFor(key, field) {
   return undefined;
 }
 
+function operationConditionMatches(condition, opValue) {
+  if (!condition || condition.field !== 'operation') return false;
+  if (Object.prototype.hasOwnProperty.call(condition, 'equals')) {
+    return Array.isArray(condition.equals)
+      ? condition.equals.includes(opValue)
+      : condition.equals === opValue;
+  }
+  if (Object.prototype.hasOwnProperty.call(condition, 'notEquals')) {
+    return Array.isArray(condition.notEquals)
+      ? !condition.notEquals.includes(opValue)
+      : condition.notEquals !== opValue;
+  }
+  return false;
+}
+
+function guideText(parts) {
+  return parts.filter(Boolean).join('\n');
+}
+
+function dynamicTip(key, fieldType) {
+  if (fieldType === 'boolean' || fieldType === 'select') return null;
+  return `Tip: To use data from an earlier node, type {{$json.${key}}} or pick the value from the data picker.`;
+}
+
+function deriveHelpText(key, field, fieldType, context = {}) {
+  const lower = key.toLowerCase();
+  const label = toDisplayName(key);
+  const plainLabel = label.toLowerCase();
+  const description = field.description || `${label} for this node.`;
+  const nodeName = context.displayName || toDisplayName(context.slug || 'node');
+  const opName = context.opName || toDisplayName(context.opValue || 'execute');
+  const opContext = `${nodeName} / ${opName}`;
+
+  // ── 1. Check content bible: exact node + operation + field match ──────────
+  const slug = context.slug || '';
+  const opValue = context.opValue || 'default';
+  const exactMatch = NODE_FIELD_CONTENT?.[slug]?.[opValue]?.[key];
+  if (exactMatch) return exactMatch;
+
+  // ── 2. Check content bible: node-level wildcard (all operations) ──────────
+  const wildcardMatch = NODE_FIELD_CONTENT?.[slug]?.['*']?.[key];
+  if (wildcardMatch) return wildcardMatch;
+
+  // ── 3. Fall through to generic rules below ────────────────────────────────
+
+  if (lower === 'operation') {
+    return guideText([
+      `What this field is: Operation chooses the exact action ${nodeName} will perform.`,
+      `How to fill it: Pick the action that matches your goal for this ${nodeName} step. Use the choices shown in this node, not examples from another service.`,
+      `Example: In ${nodeName}, choose "${opName}" when you want this node to run the ${opName.toLowerCase()} action.`,
+      'Output: The operation result becomes the data available to the next workflow node.',
+    ]);
+  }
+  if (lower === 'resource') {
+    return guideText([
+      `What this field is: Resource chooses the kind of ${nodeName} item this node works with.`,
+      `How to fill it: Pick the service object you want, such as contact, company, deal, message, file, row, issue, or another choice shown by ${nodeName}.`,
+      `Example: In ${nodeName}, pick the type of record you want to work with, such as contact, message, order, or another type shown in this node.`,
+      'Tip: Choose the resource first, then choose the operation that should happen to that resource.',
+    ]);
+  }
+  if (context.slug === 'hubspot' && lower === 'properties') {
+    return guideText([
+      `What this field is: HubSpot properties are the fields CtrlChecks sends when ${opName.toLowerCase()} runs for the selected HubSpot resource.`,
+      'Where to find property names: In HubSpot, open Settings -> Properties, choose the object type, and copy the internal property name.',
+      'Contact example: {"email":"alice@example.com","firstname":"Alice","lastname":"Kumar","phone":"+919876543210"}',
+      'Deal example: {"dealname":"Website redesign","amount":"25000","pipeline":"default","dealstage":"appointmentscheduled"}',
+      'Dynamic example: {"email":"{{$json.email}}","firstname":"{{$json.firstName}}"}',
+      'Common mistake: Use HubSpot internal names such as firstname, not only the visible label such as First name.',
+    ]);
+  }
+  if ((context.slug === 'whatsapp' || context.slug === 'whatsapp_cloud') && lower === 'contacts') {
+    return guideText([
+      `What this field is: Contact data that WhatsApp sends as a contact card during ${opContext}.`,
+      'How to fill it: Provide a JSON array of contact objects with name and phone information.',
+      'Example: [{"name":{"formatted_name":"Alice Kumar","first_name":"Alice"},"phones":[{"phone":"+919876543210","type":"MOBILE"}]}]',
+      'What the user sees: The recipient receives a WhatsApp contact card they can save on their phone.',
+    ]);
+  }
+  if (lower.includes('spreadsheetid') || lower.includes('sheetid')) {
+    return guideText([
+      `What this field is: This is the unique Google Sheet file ID used by ${opContext}.`,
+      'Where to find it: Open the Google Sheet and copy the long text between /d/ and /edit in the browser URL.',
+      'Format: https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit',
+      'Example: 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms',
+    ]);
+  }
+  if (lower.includes('url') || lower === 'endpoint' || lower.includes('webhook')) {
+    return guideText([
+      `What this field is: ${description} for ${opContext}.`,
+      `How to fill it: Paste the full web address ${nodeName} should use, starting with https:// whenever possible.`,
+      'Example: https://api.example.com/customers',
+      dynamicTip(key, fieldType),
+    ]);
+  }
+  if (lower.includes('email') || lower === 'to' || lower.includes('recipient')) {
+    return guideText([
+      `What this field is: The email address that ${nodeName} should use for ${plainLabel}.`,
+      'How to fill it: Type one email address, or multiple addresses separated by commas if the field supports several recipients.',
+      'Example: alice@example.com',
+      'Dynamic example: {{$json.email}} uses the email value from an earlier node.',
+    ]);
+  }
+  if (lower.includes('channel')) {
+    return guideText([
+      `What this field is: The channel or conversation where ${nodeName} sends or reads data during ${opName}.`,
+      'Where to find it: Open the service, choose the channel/conversation, and copy its visible name or ID from details.',
+      'Example: #alerts or C01234567',
+    ]);
+  }
+  if (lower.includes('token') || lower.includes('apikey') || lower.includes('api_key') || lower.includes('secret')) {
+    return guideText([
+      `What this field is: A private key or token that lets CtrlChecks access ${nodeName}.`,
+      `Where to get it: Open the ${nodeName} dashboard, go to API Keys, Developers, Apps, or Settings, then create or copy the key/token.`,
+      'Important: Keep this value private. Do not paste it into normal text fields unless the node specifically asks for it.',
+      'Example format: sk_live_..., xoxb-..., or token_...',
+    ]);
+  }
+  if (lower.includes('query') || lower.includes('filter') || lower === 'where') {
+    return guideText([
+      `What this field is: ${description} for ${opContext}.`,
+      `How to fill it: Enter the search, filter, SQL, or API query that tells ${nodeName} which records to return or affect.`,
+      'Leave it blank only when you really want all available records and the node allows it.',
+      'Example: status = active or from:billing@example.com',
+      dynamicTip(key, fieldType),
+    ]);
+  }
+  if (lower.includes('body') || lower.includes('text') || lower.includes('message') ||
+      lower.includes('content') || lower === 'prompt' || fieldType === 'textarea') {
+    return guideText([
+      `What this field is: ${description} for ${opContext}.`,
+      `How to fill it: Type the message, prompt, or content you want ${nodeName} to send or process.`,
+      'Example: Hello {{$json.name}}, your report is ready.',
+      'Tip: Anything inside {{ }} can come from an earlier workflow step.',
+    ]);
+  }
+  if (lower.endsWith('id') || lower.includes('id')) {
+    return guideText([
+      `What this field is: ${description} for ${opContext}.`,
+      `Where to find it: Open the item in ${nodeName} and copy its ID from the URL, details page, API response, or earlier node output.`,
+      'Example: abc123, cus_123, msg_123, or C01234567',
+      dynamicTip(key, fieldType),
+    ]);
+  }
+  if (lower.includes('range')) {
+    return guideText([
+      'What this field is: The exact cells in a spreadsheet that this node should read or write.',
+      'Format: Use A1 notation: Sheet1!A1:D100 means columns A to D, rows 1 to 100 on Sheet1.',
+      'Example: Sheet1!A2:D500',
+      'Tip: Leave it blank only if the node documentation says it can use the whole sheet.',
+    ]);
+  }
+  if (lower.includes('sheet')) {
+    return guideText([
+      `What this field is: The spreadsheet sheet or tab used for ${plainLabel}.`,
+      'Where to find it: Open the spreadsheet and copy the tab name shown at the bottom, such as Sheet1 or Customers.',
+      'Example: Sheet1',
+    ]);
+  }
+  if (fieldType === 'json') {
+    return guideText([
+      `What this field is: ${description} for ${opContext}.`,
+      `How to fill it: Enter valid JSON in the format ${nodeName} expects. Use { } for one object, or [ ] for a list.`,
+      'Example object: {"name":"Alice","email":"alice@example.com"}',
+      'Example list: [{"name":"Alice"},{"name":"Bob"}]',
+      dynamicTip(key, fieldType),
+    ]);
+  }
+  if (fieldType === 'number') {
+    return guideText([
+      `What this field is: A number used for ${plainLabel} in ${opContext}.`,
+      'How to fill it: Type digits only unless the field description says decimals are allowed.',
+      'Example: 10',
+      dynamicTip(key, fieldType),
+    ]);
+  }
+  if (fieldType === 'boolean') {
+    return guideText([
+      `What this field is: An on/off choice for ${plainLabel} in ${opContext}.`,
+      'How to fill it: Turn it on for Yes/True, or off for No/False.',
+      `Example: Turn it on only when you want ${nodeName} to use this optional behavior.`,
+    ]);
+  }
+  if (fieldType === 'select' || field.options?.length) {
+    return guideText([
+      `What this field is: A list of allowed choices for ${plainLabel} in ${opContext}.`,
+      `How to fill it: Pick the option that matches what ${nodeName} should do. Do not type a custom value unless the UI allows it.`,
+      field.options?.length ? `Available choices: ${field.options.map((o) => `${o.label} (${o.value})`).join(', ')}.` : null,
+    ]);
+  }
+  return guideText([
+    `What this field is: ${description} for ${opContext}.`,
+    `How to fill it: Enter the ${plainLabel} value requested by ${nodeName}, or map it from the previous workflow step.`,
+    dynamicTip(key, fieldType),
+  ]);
+}
+
+function placeholderFor(key, field, fieldType, ex) {
+  if (ex !== undefined) return ex;
+  const lower = key.toLowerCase();
+  if (lower === 'operation') return 'Select an operation';
+  if (lower.includes('spreadsheetid') || lower.includes('sheetid')) return '1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms';
+  if (lower.includes('sheetname')) return 'Sheet1';
+  if (lower.includes('range')) return 'Sheet1!A1:D100';
+  if (lower.includes('channel')) return '#alerts or C01234567';
+  if (lower.includes('email') || lower === 'to' || lower.includes('recipient')) return 'alice@example.com';
+  if (lower.includes('url') || lower === 'endpoint' || lower.includes('webhook')) return 'https://api.example.com/data';
+  if (lower.includes('token')) return 'token_...';
+  if (lower.includes('apikey') || lower.includes('api_key')) return 'sk_...';
+  if (lower.includes('query')) return 'status = active';
+  if (lower.includes('body')) return '{"name":"{{$json.name}}"}';
+  if (lower === 'contacts') return '[{"name":{"formatted_name":"Alice Kumar","first_name":"Alice"},"phones":[{"phone":"+919876543210","type":"MOBILE"}]}]';
+  if (lower.includes('text') || lower.includes('message')) return 'Hello {{$json.name}}';
+  if (lower === 'prompt') return 'Summarize {{$json.text}}';
+  if (lower.includes('subject')) return 'Welcome, {{$json.name}}';
+  if (lower.includes('table')) return 'customers';
+  if (lower.includes('id')) return 'abc123';
+  if (fieldType === 'number') return '10';
+  if (fieldType === 'boolean') return 'false';
+  if (fieldType === 'json') return '{"key":"value"}';
+  return `Enter ${toDisplayName(key)}`;
+}
+
+function isStructurallyEssential(slug, opValue, key, field) {
+  if (field.default !== undefined && field.default !== null && field.default !== '') return false;
+  const lower = key.toLowerCase();
+  if (lower.includes('credential') || lower.includes('apikey') || lower.includes('api_key') ||
+      lower.includes('token') || lower.includes('secret') || lower.includes('password')) return false;
+
+  const specialRequired = {
+    http_request: {
+      GET: ['url'],
+      POST: ['url', 'body'],
+      PUT: ['url', 'body'],
+      PATCH: ['url', 'body'],
+      DELETE: ['url'],
+    },
+    postgresql: {
+      query: ['query'],
+      insert: ['table', 'data'],
+      update: ['table', 'data'],
+      delete: ['table'],
+    },
+    google_sheets: {
+      read: ['spreadsheetId'],
+      write: ['spreadsheetId', 'range', 'values'],
+      append: ['spreadsheetId', 'range', 'values'],
+      update: ['spreadsheetId', 'range', 'values'],
+    },
+    slack_message: {
+      default: ['channel', 'text'],
+    },
+    linkedin: {
+      create_post: ['text'],
+      post: ['text'],
+      create_post_media: ['mediaUrl'],
+      delete_post: ['postId'],
+    },
+    anthropic_claude: {
+      default: ['prompt'],
+    },
+  };
+  const opReq = specialRequired[slug]?.[opValue] || specialRequired[slug]?.default || [];
+  if (opReq.includes(key)) return true;
+
+  return ['url', 'query', 'prompt', 'subject', 'body', 'message', 'text', 'table', 'data', 'values']
+    .includes(lower);
+}
+
+function specialOperationsFor(slug) {
+  if (slug === 'http_request') {
+    return ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map((v) => ({ name: v, value: v }));
+  }
+  if (slug === 'postgresql') {
+    return [
+      { name: 'Query', value: 'query' },
+      { name: 'Insert', value: 'insert' },
+      { name: 'Update', value: 'update' },
+      { name: 'Delete', value: 'delete' },
+    ];
+  }
+  return null;
+}
+
 /** Detect operations for a multi-op node from the `operation` field. */
-function getOperations(schema) {
+function getOperations(schema, slug) {
+  const special = specialOperationsFor(slug);
+  if (special) return special;
+
   const opField = schema.configSchema.optional && schema.configSchema.optional.operation;
   if (!opField) return [{ name: 'Execute', value: 'default' }];
 
@@ -315,39 +611,110 @@ function getOperations(schema) {
  *  - Key is in configSchema.required[]
  *  - requiredIf.field==='operation' && equals===opValue
  */
-function getFieldsForOperation(schema, opValue) {
+function getFieldsForOperation(schema, opValue, slug, displayName, opName) {
   const { required: requiredList, optional } = schema.configSchema;
   const isSingleOp = opValue === 'default';
   const fields = [];
 
+  const specialAllowed = {
+    http_request: {
+      GET: ['url', 'method', 'headers', 'qs', 'timeout', 'retryOnFail', 'maxRetries'],
+      POST: ['url', 'method', 'headers', 'body', 'qs', 'timeout', 'retryOnFail', 'maxRetries'],
+      PUT: ['url', 'method', 'headers', 'body', 'qs', 'timeout', 'retryOnFail', 'maxRetries'],
+      PATCH: ['url', 'method', 'headers', 'body', 'qs', 'timeout', 'retryOnFail', 'maxRetries'],
+      DELETE: ['url', 'method', 'headers', 'qs', 'timeout', 'retryOnFail', 'maxRetries'],
+    },
+    postgresql: {
+      query: ['connectionString', 'query', 'parameters'],
+      insert: ['connectionString', 'table', 'data'],
+      update: ['connectionString', 'table', 'data', 'where'],
+      delete: ['connectionString', 'table', 'where'],
+    },
+    google_sheets: {
+      read: ['spreadsheetId', 'sheetName', 'range', 'outputFormat'],
+      write: ['spreadsheetId', 'sheetName', 'range', 'values'],
+      append: ['spreadsheetId', 'sheetName', 'range', 'values'],
+      update: ['spreadsheetId', 'sheetName', 'range', 'values'],
+    },
+    google_gmail: {
+      send: ['recipientEmails', 'subject', 'body', 'from'],
+      get: ['messageId'],
+      list: ['query', 'maxResults'],
+      search: ['query', 'maxResults'],
+    },
+    slack_message: {
+      default: ['channel', 'text', 'blocks', 'username', 'iconEmoji'],
+    },
+    anthropic_claude: {
+      default: ['model', 'prompt', 'messages'],
+    },
+    hubspot: {
+      get: ['resource', 'operation', 'id', 'objectId'],
+      getMany: ['resource', 'operation', 'limit', 'after'],
+      create: ['resource', 'operation', 'properties'],
+      update: ['resource', 'operation', 'id', 'objectId', 'properties'],
+      delete: ['resource', 'operation', 'id', 'objectId'],
+      search: ['resource', 'operation', 'searchQuery', 'limit', 'after'],
+      batchCreate: ['resource', 'operation', 'properties'],
+      batchUpdate: ['resource', 'operation', 'properties'],
+      batchDelete: ['resource', 'operation', 'id', 'objectId'],
+    },
+    whatsapp: {
+      sendText: ['resource', 'operation', 'phoneNumberId', 'businessAccountId', 'to', 'text', 'message', 'previewUrl'],
+      sendMedia: ['resource', 'operation', 'phoneNumberId', 'businessAccountId', 'to', 'mediaType', 'mediaUrl', 'mediaId', 'caption'],
+      sendLocation: ['resource', 'operation', 'phoneNumberId', 'businessAccountId', 'to', 'latitude', 'longitude', 'locationName', 'address'],
+      sendContact: ['resource', 'operation', 'phoneNumberId', 'businessAccountId', 'to', 'contacts'],
+      sendReaction: ['resource', 'operation', 'phoneNumberId', 'businessAccountId', 'to', 'messageId', 'emoji'],
+      sendTemplate: ['resource', 'operation', 'phoneNumberId', 'businessAccountId', 'to', 'templateName', 'language', 'templateComponents'],
+      sendInteractiveButtons: ['resource', 'operation', 'phoneNumberId', 'businessAccountId', 'to', 'bodyText', 'headerText', 'footerText', 'buttons'],
+      sendInteractiveList: ['resource', 'operation', 'phoneNumberId', 'businessAccountId', 'to', 'bodyText', 'headerText', 'footerText', 'buttonText', 'sections'],
+      sendInteractiveCTA: ['resource', 'operation', 'phoneNumberId', 'businessAccountId', 'to', 'bodyText', 'headerText', 'footerText', 'ctaUrl'],
+      markAsRead: ['resource', 'operation', 'phoneNumberId', 'messageId'],
+    },
+    whatsapp_cloud: {
+      sendText: ['resource', 'operation', 'phoneNumberId', 'to', 'text', 'message'],
+      sendMedia: ['resource', 'operation', 'phoneNumberId', 'to', 'mediaUrl'],
+      sendLocation: ['resource', 'operation', 'phoneNumberId', 'to', 'latitude', 'longitude', 'locationName', 'address'],
+      sendContact: ['resource', 'operation', 'phoneNumberId', 'to', 'contacts'],
+      sendReaction: ['resource', 'operation', 'phoneNumberId', 'to', 'messageId', 'emoji'],
+      sendTemplate: ['resource', 'operation', 'phoneNumberId', 'to', 'templateName', 'language', 'templateComponents'],
+    },
+  };
+  const allowedKeys = specialAllowed[slug]?.[opValue] || specialAllowed[slug]?.default || null;
+
   for (const [key, field] of Object.entries(optional)) {
     if (key === 'credentialId' || key === 'operation') continue;
+    if (allowedKeys && !allowedKeys.includes(key)) continue;
 
     const reqIfOp = field.requiredIf && field.requiredIf.field === 'operation';
     const visIfOp = field.visibleIf && field.visibleIf.field === 'operation';
 
     if (!isSingleOp) {
-      if (reqIfOp && field.requiredIf.equals !== undefined && field.requiredIf.equals !== opValue) continue;
-      if (visIfOp && field.visibleIf.equals !== opValue) continue;
+      if (reqIfOp && !operationConditionMatches(field.requiredIf, opValue)) continue;
+      if (visIfOp && !operationConditionMatches(field.visibleIf, opValue)) continue;
     }
 
     const isRequired =
       requiredList.includes(key) ||
-      (reqIfOp && field.requiredIf.equals === opValue);
+      (reqIfOp && operationConditionMatches(field.requiredIf, opValue)) ||
+      (field.requiredIf && !reqIfOp) ||
+      isStructurallyEssential(slug, opValue, key, field);
 
     const ex = exampleFor(key, field);
+    const fieldType = inferFieldType(key, field);
 
     const fieldDoc = {
       name: toDisplayName(key),
       internalKey: key,
-      type: inferFieldType(key, field),
+      type: fieldType,
       required: isRequired,
       description: field.description || `${toDisplayName(key)} for this node.`,
+      helpText: deriveHelpText(key, field, fieldType, { slug, displayName, opValue, opName }),
+      placeholder: placeholderFor(key, field, fieldType, ex),
     };
 
     if (ex !== undefined) {
       fieldDoc.example = ex;
-      fieldDoc.placeholder = ex;
     }
 
     if (field.default !== undefined && field.default !== null && field.default !== '') {
@@ -372,6 +739,42 @@ function getFieldsForOperation(schema, opValue) {
     fields.push(fieldDoc);
   }
 
+  if (slug === 'postgresql' && opValue !== 'query') {
+    const syntheticFields = {
+      table: { type: 'string', description: 'Database table name' },
+      data: { type: 'object', description: 'Row data to write as JSON' },
+      where: { type: 'object', description: 'Filter condition for update/delete' },
+    };
+    for (const key of (specialAllowed.postgresql[opValue] || []).filter((k) => !fields.some((f) => f.internalKey === k))) {
+      const field = syntheticFields[key];
+      if (!field) continue;
+      const fieldType = inferFieldType(key, field);
+      fields.push({
+        name: toDisplayName(key),
+        internalKey: key,
+        type: fieldType,
+        required: isStructurallyEssential(slug, opValue, key, field),
+        description: field.description,
+        helpText: deriveHelpText(key, field, fieldType, { slug, displayName, opValue, opName }),
+        placeholder: placeholderFor(key, field, fieldType),
+      });
+    }
+  }
+
+  if (slug === 'anthropic_claude' && !fields.some((f) => f.internalKey === 'prompt')) {
+    const field = { type: 'string', description: 'Prompt to send to Claude' };
+    const fieldType = inferFieldType('prompt', field);
+    fields.push({
+      name: 'Prompt',
+      internalKey: 'prompt',
+      type: fieldType,
+      required: true,
+      description: field.description,
+      helpText: deriveHelpText('prompt', field, fieldType, { slug, displayName, opValue, opName }),
+      placeholder: placeholderFor('prompt', field, fieldType),
+    });
+  }
+
   return fields;
 }
 
@@ -380,14 +783,67 @@ function buildOutputExample(slug, opValue) {
   // Check content overrides first
   const override = (nodeContentOverrides[slug] && nodeContentOverrides[slug][opValue]) ||
     (nodeContentOverrides[slug] && nodeContentOverrides[slug]['default']);
-  if (override && override.outputExample) return override.outputExample;
+  if (override && override.outputExample && !isPlaceholderOutput(override.outputExample)) return override.outputExample;
+
+  const specialExamples = {
+    linkedin: {
+      create_post: { id: 'urn:li:share:1234567890', lifecycleState: 'PUBLISHED', visibility: 'PUBLIC' },
+      post: { id: 'urn:li:share:1234567890', lifecycleState: 'PUBLISHED', visibility: 'PUBLIC' },
+      get_posts: { elements: [{ id: 'urn:li:share:1234567890', text: 'New product update', visibility: 'PUBLIC' }], count: 1 },
+      delete_post: { deleted: true, id: 'urn:li:share:1234567890' },
+    },
+    google_gmail: {
+      send: { messageId: '18abc123def', threadId: '18abc123', labelIds: ['SENT'] },
+      get: { id: '18abc123def', threadId: '18abc123', subject: 'Welcome', from: 'team@example.com', body: 'Hello Alice' },
+      list: { messages: [{ id: '18abc123def', threadId: '18abc123', snippet: 'Welcome...' }], resultSizeEstimate: 1 },
+      search: { messages: [{ id: '18abc999def', threadId: '18abc999', snippet: 'Invoice...' }], resultSizeEstimate: 1 },
+    },
+    google_sheets: {
+      read: { rows: [{ Name: 'Alice', Email: 'alice@example.com' }], count: 1 },
+      write: { spreadsheetId: '1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms', updatedRange: 'Sheet1!A1:D2', updatedRows: 1 },
+      append: { spreadsheetId: '1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms', updates: { updatedRange: 'Sheet1!A2:D2', updatedRows: 1 } },
+      update: { spreadsheetId: '1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms', updatedRange: 'Sheet1!A2:D2', updatedCells: 4 },
+    },
+    http_request: {
+      GET: { status: 200, body: { id: 1 }, headers: { 'content-type': 'application/json' } },
+      POST: { status: 201, body: { id: 1, created: true }, headers: { 'content-type': 'application/json' } },
+      PUT: { status: 200, body: { id: 1, updated: true }, headers: { 'content-type': 'application/json' } },
+      PATCH: { status: 200, body: { id: 1, patched: true }, headers: { 'content-type': 'application/json' } },
+      DELETE: { status: 204, body: null, headers: {} },
+    },
+    postgresql: {
+      query: { rows: [{ id: 1, name: 'Alice' }], rowCount: 1 },
+      insert: { rows: [{ id: 1, name: 'Alice' }], rowCount: 1 },
+      update: { rows: [{ id: 1, status: 'active' }], rowCount: 1 },
+      delete: { rowCount: 1 },
+    },
+    slack_message: {
+      default: { ok: true, ts: '1234567890.123456', channel: 'C01234567' },
+    },
+    stripe: {
+      charge: { id: 'ch_1abc', amount: 2000, currency: 'usd', status: 'succeeded' },
+      create_charge: { id: 'ch_1abc', amount: 2000, currency: 'usd', status: 'succeeded' },
+    },
+    anthropic_claude: {
+      default: { id: 'msg_01ABC', type: 'message', role: 'assistant', content: [{ type: 'text', text: 'Here is the answer.' }], model: 'claude-3-5-sonnet-latest' },
+    },
+  };
+  const special = specialExamples[slug]?.[opValue] || specialExamples[slug]?.default;
+  if (special) return special;
 
   // Fall back to NODE_OUTPUT_SCHEMAS
   const schema = NODE_OUTPUT_SCHEMAS[slug];
-  if (!schema) return { success: true, data: {} };
+  if (!schema) return {
+    success: true,
+    operation: opValue,
+    data: { id: 'item_123', status: 'completed' },
+  };
 
   const type = schema.type;
-  if (type === 'string') return { result: 'Operation completed successfully.', text: '' };
+  if (type === 'string') {
+    const text = exampleTextForStringOutput(slug, opValue);
+    return { text, length: text.length };
+  }
   if (type === 'void') return {};
   if (type === 'array') {
     return [{ id: '1', name: 'Example item', createdAt: '2025-01-15T09:00:00Z' }];
@@ -402,7 +858,16 @@ function buildOutputExample(slug, opValue) {
     return example;
   }
 
-  return { success: true, data: {} };
+  return { success: true, operation: opValue, data: { id: 'item_123', status: 'completed' } };
+}
+
+function isPlaceholderOutput(outputExample) {
+  return !!(
+    outputExample &&
+    typeof outputExample === 'object' &&
+    !Array.isArray(outputExample) &&
+    outputExample.result === 'Operation completed successfully.'
+  );
 }
 
 function defaultValForType(field, type) {
@@ -418,35 +883,99 @@ function defaultValForType(field, type) {
   return '';
 }
 
+function exampleTextForStringOutput(slug, opValue) {
+  const key = `${slug}:${opValue}`;
+  const examples = {
+    'ai_agent:default': 'The order is ready to ship and the customer has been notified.',
+    'date_time:calculate': '2025-01-22T09:00:00.000Z',
+    'date_time:extract': 'Wednesday, January 15, 2025 at 09:00 UTC',
+    'facebook:default': 'Post published to the selected Facebook page.',
+    'google_gemini:default': 'Here is a concise summary of the uploaded document.',
+    'html:extract': 'Alice Smith',
+    'html:clean': 'Clean page text without scripts, styles, or markup.',
+    'linkedin:create_post_media': 'Media post published with image attachment.',
+    'linkedin:create_article': 'Article draft created and ready for review.',
+    'linkedin:{{$json.operation}}': 'LinkedIn operation completed with provider result data.',
+    'ollama:default': 'Local model generated a response for the prompt.',
+    'openai_gpt:default': 'Here is the generated response from the selected model.',
+    'twitter:create': 'Tweet published successfully.',
+    'twitter:delete': 'Tweet deleted successfully.',
+    'twitter:getMe': 'Authenticated account: @ctrlchecks',
+    'twitter:recent': 'Latest tweet: Product update is now live.',
+    'xml:extract': 'Extracted value from the selected XML path.',
+  };
+  return examples[key] || `Example ${toDisplayName(slug)} output for downstream workflow steps.`;
+}
+
 function buildOutputDescription(slug, opValue) {
   const override = (nodeContentOverrides[slug] && nodeContentOverrides[slug][opValue]) ||
     (nodeContentOverrides[slug] && nodeContentOverrides[slug]['default']);
-  if (override && override.outputDescription) return override.outputDescription;
+  if (override && override.outputDescription && !/operation completed successfully/i.test(override.outputDescription)) return override.outputDescription;
 
   const example = buildOutputExample(slug, opValue);
   if (Array.isArray(example)) {
     return 'Returns an array of result objects. Access individual fields via {{$json.fieldName}} in downstream nodes.';
   }
   return Object.keys(example)
-    .map((k) => `${k}: Value returned by this node.`)
+    .map((k) => `${k}: ${describeOutputKey(k)}.`)
     .join('\n');
+}
+
+function describeOutputKey(key) {
+  const lower = key.toLowerCase();
+  if (lower === 'id' || lower.endsWith('id')) return 'Unique identifier returned by the service';
+  if (lower.includes('status') || lower.includes('state')) return 'Current state of the requested action';
+  if (lower === 'rows' || lower === 'messages' || lower === 'elements' || lower === 'data') return 'Returned records from the service';
+  if (lower.includes('count') || lower.includes('size')) return 'Number of records affected or returned';
+  if (lower === 'body') return 'Parsed response body';
+  if (lower === 'headers') return 'Response headers';
+  if (lower === 'ok' || lower === 'success') return 'Whether the service accepted the request';
+  if (lower === 'ts') return 'Provider timestamp that also acts as a message identifier';
+  if (lower.includes('range')) return 'Spreadsheet range affected by the operation';
+  return 'Value returned by this operation';
 }
 
 function buildUsageExample(slug, displayName, opValue, opName, fields) {
   const override = (nodeContentOverrides[slug] && nodeContentOverrides[slug][opValue]) ||
     (nodeContentOverrides[slug] && nodeContentOverrides[slug]['default']);
-  if (override && override.usageExample) return override.usageExample;
+  if (override && override.usageExample && !isGenericScenario(override.usageExample.scenario)) return override.usageExample;
 
   const inputValues = {};
   for (const f of fields.slice(0, 5)) {
     inputValues[f.name] = f.example || '';
   }
 
-  return {
-    scenario: `Use ${displayName} to ${opName.toLowerCase()} in a workflow.`,
-    inputValues,
-    expectedOutput: `The node executes ${opName.toLowerCase()} and exposes its result for downstream nodes.`,
+  const subject = humanizeOperation(opName);
+  const specialScenarios = {
+    'linkedin:create_post': 'Publish a social update after a new blog post is detected via RSS feed',
+    'linkedin:post': 'Publish a social update after a new blog post is detected via RSS feed',
+    'google_gmail:send': 'Send a welcome email after a new user form submission',
+    'google_sheets:read': 'Fetch customer records from a CRM export sheet before sending a campaign',
+    'if_else:default': 'Route orders over $100 to premium fulfillment, under $100 to standard',
+    'http_request:GET': 'Fetch product details from an external REST API before updating a record',
+    'http_request:POST': 'Submit a completed lead form to an external CRM endpoint',
+    'postgresql:query': 'Load customer records from PostgreSQL before generating a weekly report',
+    'postgresql:insert': 'Save a new order row after a checkout webhook is received',
+    'slack_message:default': 'Alert the operations channel when a deployment or workflow run completes',
+    'anthropic_claude:default': 'Summarize a long support ticket before creating an agent handoff note',
   };
+  return {
+    scenario: specialScenarios[`${slug}:${opValue}`] ||
+      `Process incoming ${displayName} data with ${subject} after a related upstream event is received`,
+    inputValues,
+    expectedOutput: `${displayName} returns structured ${subject} data that downstream nodes can reference with {{$json.fieldName}}.`,
+  };
+}
+
+function isGenericScenario(scenario) {
+  return !scenario || /^Use .+ to .+ in a workflow\.?$/i.test(scenario);
+}
+
+function humanizeOperation(value) {
+  return String(value || 'execute')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/_/g, ' ')
+    .toLowerCase();
 }
 
 function getCredentialType(slug) {
@@ -483,17 +1012,19 @@ function buildNodeDoc(item) {
   const schema = nodeLib.getSchema(slug);
 
   const credType = getCredentialType(slug);
-  const credGuide = credType !== 'None' ? credentialSteps[credType] : null;
+  const credGuide = credType !== 'None'
+    ? (credentialSteps[credType] || (typeof getCredentialSteps === 'function' ? getCredentialSteps(credType) : null))
+    : credentialSteps.None;
   const hasAuth = credType !== 'None';
 
   const externalDocsUrl = OFFICIAL_DOCS[slug] || 'https://docs.ctrlchecks.com';
-  const operations = schema ? getOperations(schema) : [{ name: 'Execute', value: 'default' }];
+  const operations = schema ? getOperations(schema, slug) : [{ name: 'Execute', value: 'default' }];
 
   const operationDocs = operations.map(({ name, value }) => {
     const override = (nodeContentOverrides[slug] && nodeContentOverrides[slug][value]) ||
       (nodeContentOverrides[slug] && nodeContentOverrides[slug]['default']);
 
-    const fields = schema ? getFieldsForOperation(schema, value) : [];
+    const fields = schema ? getFieldsForOperation(schema, value, slug, displayName, name) : [];
 
     return {
       name,

@@ -2544,6 +2544,7 @@ export class WorkflowLifecycleManager {
     ready: boolean;
     errors: string[];
     missingCredentials: string[];
+    structurallyValid: boolean;
     validationIssues?: Array<Record<string, unknown>>;
   }> {
     console.log('[WorkflowLifecycle] Validating workflow execution readiness...');
@@ -2597,6 +2598,9 @@ export class WorkflowLifecycleManager {
     if (structuralReadiness.errors.length > 0) {
       errors.push(...structuralReadiness.errors);
     }
+
+    // Capture before credential errors are added so callers can distinguish structural vs credential failures
+    const structurallyValid = errors.length === 0;
 
     // ✅ CRITICAL: Check credentials with vault lookup
     const credentialDiscovery = await credentialDiscoveryPhase.discoverCredentials(workflow, userId);
@@ -2694,6 +2698,7 @@ export class WorkflowLifecycleManager {
       ready: errors.length === 0,
       errors,
       missingCredentials: missingCredentialMessages, // Return string array, not CredentialRequirement[]
+      structurallyValid,
       validationIssues,
     };
   }
