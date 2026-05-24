@@ -16,7 +16,9 @@ export function getCredentialVaultMetaForField(
   nodeType: string,
   fieldName: string
 ): CredentialVaultMeta | undefined {
-  const canonical = nodeLibrary.getCanonicalType(nodeType);
+  const canonical = typeof (nodeLibrary as any).getCanonicalType === 'function'
+    ? (nodeLibrary as any).getCanonicalType(nodeType)
+    : nodeType;
   const connector = connectorRegistry.getConnectorByNodeType(canonical);
   if (!connector) return undefined;
 
@@ -61,4 +63,26 @@ export function getCredentialVaultMetaForField(
   const vk = String(cc.vaultKey || '').trim();
   if (!vk) return undefined;
   return { vaultKey: vk, credentialId: vk };
+}
+
+export function getPrimaryCredentialFieldForNode(
+  nodeType: string
+): (CredentialVaultMeta & { fieldName: string; displayName?: string }) | undefined {
+  const canonical = typeof (nodeLibrary as any).getCanonicalType === 'function'
+    ? (nodeLibrary as any).getCanonicalType(nodeType)
+    : nodeType;
+  const connector = connectorRegistry.getConnectorByNodeType(canonical);
+  if (!connector) return undefined;
+  const cc = connector.credentialContract;
+  const fieldName =
+    cc.credentialFieldName ||
+    (cc.type === 'webhook' ? 'webhookUrl' : cc.type === 'api_key' ? 'apiKey' : cc.type === 'oauth' ? 'credentialId' : 'credential');
+  const vk = String(cc.vaultKey || '').trim();
+  if (!vk) return undefined;
+  return {
+    fieldName,
+    vaultKey: vk,
+    credentialId: vk,
+    displayName: cc.displayName,
+  };
 }

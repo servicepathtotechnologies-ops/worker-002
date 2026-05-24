@@ -11,6 +11,7 @@ import type { NodeSchema } from '../../../services/nodes/node-library';
 import { executeViaLegacyExecutor } from '../unified-node-registry-legacy-adapter';
 import { extractSwitchCasePortNames } from '../../utils/branching-node-ports';
 import { resolveEffectiveFieldFillMode } from '../../utils/fill-mode-resolver';
+import { stripSystemKeys } from '../../execution/system-key-filter';
 
 const switchMigrations: NodeMigration[] = [
   {
@@ -156,42 +157,36 @@ export function overrideSwitch(
         schema,
         hooks: {
           beforeExecute: (prepared) => {
-            const mergedInput: Record<string, unknown> = {
-              ...(typeof prepared.executionInput === 'object' && prepared.executionInput !== null
-                ? prepared.executionInput
-                : {}),
-            };
-
-            context.upstreamOutputs.forEach((output) => {
-              if (output && typeof output === 'object' && !Array.isArray(output)) {
-                Object.assign(mergedInput, output as Record<string, unknown>);
-              }
-            });
-
-            return { executionInput: mergedInput };
+            // Use the clean upstream business payload (rawInput) instead of merging
+            // all upstreamOutputs — that merge brought in audit/observability keys
+            // like nodeId, nodeType, rollout, kpis that polluted downstream nodes.
+            const cleanUpstream = context.rawInput != null &&
+              typeof context.rawInput === 'object' &&
+              !Array.isArray(context.rawInput)
+              ? stripSystemKeys(context.rawInput as Record<string, unknown>)
+              : {};
+            const configInputs = typeof prepared.executionInput === 'object' && prepared.executionInput !== null
+              ? prepared.executionInput as Record<string, unknown>
+              : {};
+            return { executionInput: { ...cleanUpstream, ...configInputs } };
           },
         },
       });
 
       if (result.success && result.output) {
         const outObj = result.output as any;
-        const inputObj = context.inputs as any;
-
-        const finalOutput = {
-          ...(typeof inputObj === 'object' && inputObj !== null ? inputObj : {}),
-          ...(typeof outObj === 'object' && outObj !== null ? outObj : {}),
-        };
-
-        if (outObj.matchedCase !== undefined) {
-          finalOutput.matchedCase = outObj.matchedCase;
-        }
+        // Do NOT spread context.inputs (routing config: cases, rules, expression, routingType) —
+        // that would push switch routing config into downstream nodes as if it were business data.
+        const finalOutput = typeof outObj === 'object' && outObj !== null ? { ...outObj } : {};
+        const routing = finalOutput.__routing as Record<string, unknown> | undefined;
+        const matchedCase = routing?.matchedCase ?? outObj.matchedCase ?? null;
 
         return {
           success: true,
           output: finalOutput,
           metadata: {
-            branch: outObj.matchedCase || null,
-            caseMatched: outObj.matchedCase !== null && outObj.matchedCase !== undefined,
+            branch: matchedCase || null,
+            caseMatched: matchedCase !== null && matchedCase !== undefined,
           },
         };
       }

@@ -58,6 +58,8 @@ import { decryptToken } from '../core/utils/token-encryption';
 import { retrieveCredential } from '../core/utils/credential-retriever';
 import { readAcknowledgedHttpResponse } from '../core/http/acknowledged-response';
 import { connectionService } from '../credentials-system/connection-service';
+import { stripSystemKeys, stripRoutingMeta } from '../core/execution/system-key-filter';
+import { geminiWalletService } from '../services/ai/gemini-wallet-service';
 
 const EXECUTION_RUNTIME_MARKER = 'runtime-marker-2026-03-20-v1';
 
@@ -611,7 +613,7 @@ async function resolveOpenAiApiKeyForNode(params: {
   config: Record<string, unknown>;
   userId?: string;
   currentUserId?: string;
-}): Promise<{ apiKey?: string; error?: string }> {
+}): Promise<{ apiKey?: string; error?: string; walletUserId?: string }> {
   const ownerUserId = params.userId || params.currentUserId;
   const selectedConnectionId = getConnectionRefForProvider(params.node, params.config, 'openai');
   if (!selectedConnectionId) {
@@ -656,7 +658,7 @@ async function resolveGeminiApiKeyForNode(params: {
   config: Record<string, unknown>;
   userId?: string;
   currentUserId?: string;
-}): Promise<{ apiKey?: string; error?: string }> {
+}): Promise<{ apiKey?: string; error?: string; walletUserId?: string; code?: string }> {
   const ownerUserId = params.userId || params.currentUserId;
   const selectedConnectionId = getConnectionRefForProvider(params.node, params.config, 'gemini');
 
@@ -688,6 +690,16 @@ async function resolveGeminiApiKeyForNode(params: {
     getStringProperty(params.config, 'accessToken', '') ||
     getStringProperty(params.config, 'token', '');
   if (inlineKey.trim()) return { apiKey: inlineKey.trim() };
+
+  const walletUserId = ownerUserId;
+  const wallet = await geminiWalletService.getActiveWallet(walletUserId).catch(() => null);
+  if (wallet?.apiKey) {
+    return { apiKey: wallet.apiKey, walletUserId: wallet.userId };
+  }
+  const blockingError = await geminiWalletService.getBlockingError(walletUserId).catch(() => null);
+  if (blockingError) {
+    return { error: blockingError.message, code: blockingError.code, walletUserId: walletUserId };
+  }
 
   return {}; // caller falls back to process.env.GEMINI_API_KEY via LLMAdapter
 }
@@ -5927,7 +5939,24 @@ export async function executeNodeLegacy(
       } else {
         messagesGG.push({ role: 'user', content: resolvedPrompt });
       }
-      const response = await llmAdapter.chat('gemini', messagesGG, { model, apiKey });
+      let response;
+      try {
+        response = await llmAdapter.chat('gemini', messagesGG, { model, apiKey });
+      } catch (error) {
+        if (geminiResolved.walletUserId) {
+          const walletError = await geminiWalletService.recordFailure(geminiResolved.walletUserId, error, 'workflow-execution', model);
+          return { success: false, error: walletError.message, code: walletError.code };
+        }
+        throw error;
+      }
+      if (geminiResolved.walletUserId) {
+        await geminiWalletService.recordSuccess({
+          userId: geminiResolved.walletUserId,
+          model: response.model || model,
+          source: 'workflow-execution',
+          usage: response.usage,
+        }).catch(() => {});
+      }
 
       return {
         response: response.content,
@@ -6004,12 +6033,32 @@ export async function executeNodeLegacy(
       messages.push({ role: 'user', content: effectiveUserMessage });
 
       // ✅ Use Gemini with GEMINI_API_KEY from config
-      const { config: appConfig } = await import('../core/config');
-      const response = await llmAdapter.chat(provider, messages, { 
-        model, 
-        temperature,
-        apiKey: appConfig.geminiApiKey,
-      });
+      const geminiResolved = await resolveGeminiApiKeyForNode({ node, config, userId, currentUserId });
+      if (geminiResolved.error) {
+        return { ...inputObj, _error: geminiResolved.error };
+      }
+      let response;
+      try {
+        response = await llmAdapter.chat(provider, messages, {
+          model,
+          temperature,
+          apiKey: geminiResolved.apiKey,
+        });
+      } catch (error) {
+        if (geminiResolved.walletUserId) {
+          const walletError = await geminiWalletService.recordFailure(geminiResolved.walletUserId, error, 'workflow-execution', model);
+          return { ...inputObj, _error: walletError.message, code: walletError.code };
+        }
+        throw error;
+      }
+      if (geminiResolved.walletUserId) {
+        await geminiWalletService.recordSuccess({
+          userId: geminiResolved.walletUserId,
+          model: response.model || model,
+          source: 'workflow-execution',
+          usage: response.usage,
+        }).catch(() => {});
+      }
 
       if (responseFormat === 'json') {
         // Best-effort JSON parse; fall back to raw text if invalid
@@ -6603,6 +6652,15 @@ export async function executeNodeLegacy(
       }
       model = chatModelConfig.model || getStringProperty(config, 'model', 'gemini-2.5-flash');
       apiKey = chatModelConfig.apiKey || process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY || process.env.GEMINI_API_KEY;
+      const geminiResolvedForAgent = provider === 'gemini'
+        ? await resolveGeminiApiKeyForNode({ node, config, userId, currentUserId })
+        : null;
+      if (geminiResolvedForAgent?.error) {
+        return { ...inputObj, _error: geminiResolvedForAgent.error };
+      }
+      if (geminiResolvedForAgent?.apiKey) {
+        apiKey = geminiResolvedForAgent.apiKey;
+      }
       
       // Build messages array
       const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
@@ -6673,7 +6731,17 @@ export async function executeNodeLegacy(
           response = await Promise.race([llmPromise, timeoutPromise]) as any;
           break;
         } catch (error) {
-          lastError = error instanceof Error ? error : new Error(String(error));
+          if (geminiResolvedForAgent?.walletUserId) {
+            const walletError = await geminiWalletService.recordFailure(
+              geminiResolvedForAgent.walletUserId,
+              error,
+              'workflow-execution',
+              model,
+            );
+            lastError = walletError;
+          } else {
+            lastError = error instanceof Error ? error : new Error(String(error));
+          }
           attempts++;
           if (attempts > retryCount) {
             throw lastError;
@@ -6685,6 +6753,14 @@ export async function executeNodeLegacy(
       
       if (!response) {
         throw lastError || new Error('Failed to get response from LLM');
+      }
+      if (geminiResolvedForAgent?.walletUserId) {
+        await geminiWalletService.recordSuccess({
+          userId: geminiResolvedForAgent.walletUserId,
+          model: response.model || model,
+          source: 'workflow-execution',
+          usage: response.usage,
+        }).catch(() => {});
       }
       
       // Process tool calls if enabled and tools are available
@@ -13413,18 +13489,21 @@ export async function executeNodeLegacy(
         }
       }
 
-      // ✅ CORE ARCHITECTURE FIX: Return full input data with routing metadata
-      // Switch nodes MUST forward ALL input data to the selected branch
-      // This ensures downstream nodes receive the complete data structure
+      // Return only user business data. Strip system/metadata keys and routing internals.
+      // Routing decision is stored under __routing (__ prefix = auto-filtered from downstream).
+      const businessData = stripRoutingMeta(
+        stripSystemKeys(originalInputObj as Record<string, unknown>)
+      );
+
       return {
-        ...originalInputObj,  // ✅ Preserve ALL input fields (items, rows, headers, values, etc.)
-        expression,
-        expressionValue,
-        matchedCase,
-        ...(recoveredViaField ? { _switchRecoveredVia: recoveredViaField } : {}),
-        matchedLabel: matched?.label ?? (matchedCase ? cases.find(c => c.value === matchedCase)?.label : undefined),
-        // Convenience: expose for logs/debugging
-        result: matchedCase,
+        ...businessData,  // user-submitted fields only (e.g. payment_amount, payment_status)
+        __routing: {      // routing decision in __ namespace — filtered from downstream context
+          matchedCase,
+          matchedLabel: matched?.label ?? (matchedCase ? cases.find(c => c.value === matchedCase)?.label : undefined),
+          expression,
+          expressionValue,
+          ...(recoveredViaField ? { recoveredVia: recoveredViaField } : {}),
+        },
       };
     }
 
@@ -20746,10 +20825,14 @@ export default async function executeWorkflowHandler(req: Request, res: Response
 
           if (nodeType === 'switch' && typeof output === 'object' && output !== null) {
             const outputObj = output as Record<string, unknown>;
+            // Routing metadata is stored under __routing to keep it out of downstream data flow.
+            const routing = outputObj.__routing as Record<string, unknown> | undefined;
+            const matchedCaseVal = routing?.matchedCase ?? outputObj.matchedCase;
             switchResults[node.id] =
-              outputObj.matchedCase !== undefined ? (outputObj.matchedCase as string | null) : null;
-            if (outputObj.expressionValue !== undefined) {
-              switchExpressionValues[node.id] = outputObj.expressionValue;
+              matchedCaseVal !== undefined ? (matchedCaseVal as string | null) : null;
+            const expressionValResult = routing?.expressionValue ?? outputObj.expressionValue;
+            if (expressionValResult !== undefined) {
+              switchExpressionValues[node.id] = expressionValResult;
             }
           }
 

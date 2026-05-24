@@ -1,5 +1,6 @@
 import type { NodeExecutionContext, NodeExecutionResult } from '../types/unified-node-contract';
 import type { NodeSchema } from '../../services/nodes/node-library';
+import { stripSystemKeys } from '../execution/system-key-filter';
 
 export type LegacyAdapterPrepared = {
   nodeOutputs: any;
@@ -115,20 +116,28 @@ export async function executeViaLegacyExecutor(args: {
     // Import legacy executor directly (bypasses dynamic executor to avoid loop).
     const { executeNodeLegacy } = await import('../../api/execute-workflow');
 
-    // Create nodeOutputs cache from upstream outputs
+    // Create nodeOutputs cache from upstream outputs.
+    // Strip system/audit keys universally so NO override's beforeExecute hook can
+    // accidentally merge observability metadata into downstream business data.
     const { LRUNodeOutputsCache } = await import('../cache/lru-node-outputs-cache');
     const nodeOutputs = new LRUNodeOutputsCache(100, false);
     context.upstreamOutputs.forEach((output, nodeId) => {
-      nodeOutputs.set(nodeId, output, true);
+      const clean = typeof output === 'object' && output !== null && !Array.isArray(output)
+        ? stripSystemKeys(output as Record<string, unknown>)
+        : output;
+      nodeOutputs.set(nodeId, clean, true);
     });
 
-    // ✅ CRITICAL FIX: Store rawInput as 'input' in cache for {{input.*}} template resolution
-    // This ensures templates like {{input.response.subject}} resolve correctly for ALL nodes
+    // Store rawInput as 'input'/'$json'/'json' for template resolution.
+    // Strip system keys here so ALL legacy-path nodes get clean upstream context
+    // without needing to do it individually in their own beforeExecute hooks.
     if (context.rawInput !== undefined && context.rawInput !== null) {
-      nodeOutputs.set('input', context.rawInput, true);
-      // Also set as $json for backward compatibility
-      nodeOutputs.set('$json', context.rawInput, true);
-      nodeOutputs.set('json', context.rawInput, true);
+      const cleanRaw = typeof context.rawInput === 'object' && !Array.isArray(context.rawInput)
+        ? stripSystemKeys(context.rawInput as Record<string, unknown>)
+        : context.rawInput;
+      nodeOutputs.set('input', cleanRaw, true);
+      nodeOutputs.set('$json', cleanRaw, true);
+      nodeOutputs.set('json', cleanRaw, true);
     }
 
     // Universal template resolution (single source of truth)

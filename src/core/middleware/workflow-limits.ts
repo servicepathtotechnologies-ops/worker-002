@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { subscriptionService } from '../../services/subscription-service';
 import { AuthenticatedRequest } from './subscription-auth';
+import { geminiWalletService } from '../../services/ai/gemini-wallet-service';
 
 export interface WorkflowLimitRequest extends AuthenticatedRequest {
   workflowLimitCheck?: {
@@ -10,6 +11,24 @@ export interface WorkflowLimitRequest extends AuthenticatedRequest {
     planName: string;
     remainingWorkflows: number;
   };
+}
+
+function sendWalletBlocked(res: Response, wallet: { status: string; lastErrorMessage?: string | null }) {
+  const code =
+    wallet.status === 'quota_exceeded'
+      ? 'GEMINI_WALLET_LIMIT_EXCEEDED'
+      : wallet.status === 'invalid'
+        ? 'GEMINI_WALLET_INVALID'
+        : 'GEMINI_WALLET_PROVIDER_ERROR';
+  const statusCode = wallet.status === 'quota_exceeded' ? 402 : wallet.status === 'error' ? 503 : 400;
+  return res.status(statusCode).json({
+    success: false,
+    error: 'Gemini Wallet Needs Attention',
+    message: wallet.lastErrorMessage || 'Replace your Gemini API key or turn off wallet mode and choose a plan.',
+    code,
+    walletStatus: wallet.status,
+    actions: ['replace_gemini_key', 'deactivate_wallet']
+  });
 }
 
 /**
@@ -27,6 +46,20 @@ export const checkWorkflowLimit = async (req: WorkflowLimitRequest, res: Respons
     
     // Ensure user has a subscription
     await subscriptionService.ensureFreeSubscription(req.user.id);
+    const wallet = await geminiWalletService.getState(req.user.id).catch(() => null);
+    if (wallet?.subscriptionFrozen) {
+      req.workflowLimitCheck = {
+        canCreate: true,
+        currentCount: 0,
+        limit: Number.MAX_SAFE_INTEGER,
+        planName: 'Gemini Wallet',
+        remainingWorkflows: Number.MAX_SAFE_INTEGER
+      };
+      return next();
+    }
+    if (wallet?.enabled && wallet.hasKey && ['invalid', 'quota_exceeded', 'error'].includes(wallet.status)) {
+      return sendWalletBlocked(res, wallet);
+    }
     
     // Check if user can create workflow
     const canCreate = await subscriptionService.canCreateWorkflow(req.user.id);
@@ -367,6 +400,13 @@ export const requireWorkflowCapacityForAi = async (req: WorkflowLimitRequest, re
     }
 
     await subscriptionService.ensureFreeSubscription(req.user.id);
+    const wallet = await geminiWalletService.getState(req.user.id).catch(() => null);
+    if (wallet?.subscriptionFrozen) {
+      return next();
+    }
+    if (wallet?.enabled && wallet.hasKey && ['invalid', 'quota_exceeded', 'error'].includes(wallet.status)) {
+      return sendWalletBlocked(res, wallet);
+    }
     const usage = await subscriptionService.getSubscriptionUsage(req.user.id);
 
     if (usage.remainingWorkflows <= 0) {

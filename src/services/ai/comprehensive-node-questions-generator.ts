@@ -33,8 +33,13 @@ import {
   shouldUseSelectForExplicitOptions,
 } from '../../core/utils/schema-field-control';
 import { getInputControlMetadata } from '../../core/utils/schema-input-control';
-import { getCredentialVaultMetaForField } from '../../core/utils/credential-field-vault-meta';
+import { getCredentialVaultMetaForField, getPrimaryCredentialFieldForNode } from '../../core/utils/credential-field-vault-meta';
 import { computeFieldRequiredBeforeExecution } from '../../core/validation/registry-field-contract';
+import {
+  analyzeSelectedWorkflowIntelligence,
+  type SelectedWorkflowIntelligence,
+} from '../../core/utils/selected-workflow-intelligence';
+import type { FieldRelevanceResult } from '../../core/types/unified-node-contract';
 
 export interface ComprehensiveNodeQuestion {
   id: string;
@@ -96,11 +101,50 @@ export interface ComprehensiveNodeQuestion {
   isUnlockableCredential?: boolean;
   /** Current value from node.data.config (stringified for objects/arrays); for wizard pre-fill. */
   defaultValue?: string;
+  /** Universal selected-workflow relevance for this exact node field. */
+  fieldRelevance?: FieldRelevanceResult;
   /**
    * Vault key for filterCredentialQuestions / attach-credentials (connector registry).
    * Must align with credential discovery `credentialId` / `vaultKey` (e.g. slack + webhookUrl field).
    */
   credential?: { vaultKey: string; credentialId?: string };
+}
+
+function annotateQuestionsWithSelectedWorkflowIntelligence(
+  questions: ComprehensiveNodeQuestion[],
+  intelligence: SelectedWorkflowIntelligence
+): ComprehensiveNodeQuestion[] {
+  return questions.map((q) => {
+    const relevance = intelligence.nodes.find((node) => node.nodeId === q.nodeId)?.fields[q.fieldName];
+    if (!relevance) return q;
+    return {
+      ...q,
+      fieldRelevance: relevance,
+      required: q.required || relevance.relevance === 'required',
+    };
+  });
+}
+
+function filterQuestionsBySelectedWorkflowIntelligence(
+  questions: ComprehensiveNodeQuestion[],
+): ComprehensiveNodeQuestion[] {
+  return questions.filter((q) => {
+    if (q.category === 'credential') return true;
+    if (!q.fieldRelevance) return true;
+    return q.fieldRelevance.shouldShowInOwnership !== false;
+  });
+}
+
+function shouldHidePassiveStructuralField(
+  nodeCategory: string | undefined,
+  fieldName: string,
+  fieldDef: any,
+  config: Record<string, any>,
+): boolean {
+  if (!fieldDef || !isStructuralOwnership(fieldName, fieldDef)) return false;
+  if (config._fillMode?.[fieldName] !== undefined) return false;
+  if (nodeCategory === 'logic' || nodeCategory === 'flow') return false;
+  return /(condition|conditions|case|cases|expression|rule|rules)$/i.test(fieldName);
 }
 
 export interface NodeQuestionsResult {
@@ -126,8 +170,18 @@ function addMissingInputSchemaQuestionsForOwnership(
     for (const fieldName of Object.keys(inputSchema)) {
       const key = `${node.id}_${fieldName}`;
       if (byKey.has(key)) continue;
-      byKey.add(key);
       const fieldDef = inputSchema[fieldName] as any;
+      const vaultMeta = getCredentialVaultMetaForField(nodeType, fieldName);
+      const credentialOwned = !!vaultMeta || isCredentialOwnership(fieldName, fieldDef);
+      const mode = resolveEffectiveFieldFillMode(fieldName, inputSchema, (node.data?.config || {}) as Record<string, any>);
+      const config = (node.data?.config || {}) as Record<string, any>;
+      const hasExplicitFillMode = config._fillMode?.[fieldName] !== undefined;
+      const valueIsEmpty = isEmptyValue(config[fieldName]);
+
+      if (!credentialOwned && shouldHidePassiveStructuralField(def.category, fieldName, fieldDef, config)) continue;
+      if (!credentialOwned && mode === 'runtime_ai' && !hasExplicitFillMode && !valueIsEmpty) continue;
+
+      byKey.add(key);
       const control = getInputControlMetadata(fieldName, fieldDef);
       const mergedType = control.inputType === 'json' ? 'textarea' : control.inputType;
       added.push({
@@ -138,7 +192,7 @@ function addMissingInputSchemaQuestionsForOwnership(
         nodeType,
         nodeLabel,
         fieldName,
-        category: 'configuration',
+        category: credentialOwned ? 'credential' : 'configuration',
         required: false,
         askOrder: 99,
         options: control.options,
@@ -148,7 +202,8 @@ function addMissingInputSchemaQuestionsForOwnership(
         supportsRuntimeAI: fieldDef?.fillMode?.supportsRuntimeAI !== false,
         supportsBuildtimeAI: fieldDef?.fillMode?.supportsBuildtimeAI !== false,
         role: fieldDef?.role,
-        ownershipClass: fieldDef?.ownership,
+        ownershipClass: credentialOwned ? 'credential' : fieldDef?.ownership,
+        credential: vaultMeta,
       });
     }
   }
@@ -215,17 +270,22 @@ function annotateQuestionsForOwnershipUi(
     const config = (node.data?.config || {}) as Record<string, any>;
 
     const fieldDef = inputSchema?.[q.fieldName];
+    const vaultMeta = getCredentialVaultMetaForField(nodeType, q.fieldName);
     const isCredentialRow =
       q.category === 'credential' ||
+      !!vaultMeta ||
       (!!fieldDef && isCredentialOwnership(q.fieldName, fieldDef));
 
     if (isCredentialRow) {
+      next.category = 'credential';
+      next.ownershipClass = 'credential';
+      next.credential = next.credential || vaultMeta;
       if (!inputSchema || !fieldDef) {
         next.ownershipUiMode = 'locked';
         next.ownershipLockReason = 'vault_or_oauth';
         return next;
       }
-      const policy = fieldDef.credentialTogglePolicy ?? 'locked';
+      const policy = fieldDef.credentialTogglePolicy ?? (vaultMeta ? 'unlockable' : 'locked');
       const unlocked = policy === 'unlockable' && config._ownershipUnlock?.[q.fieldName] === true;
       if (!unlocked) {
         next.ownershipUiMode = 'locked';
@@ -319,6 +379,7 @@ export function generateComprehensiveNodeQuestions(
   const allQuestions: ComprehensiveNodeQuestion[] = [];
   const nodeQuestionsMap = new Map<string, ComprehensiveNodeQuestion[]>();
   const isFullConfigurationMode = options.mode === 'full_configuration';
+  const selectedIntelligence = analyzeSelectedWorkflowIntelligence(workflow as any);
 
   console.log(`[ComprehensiveQuestions] 🚀 START: Generating questions for ${workflow.nodes.length} nodes`);
   console.log(`[ComprehensiveQuestions] Workflow nodes:`, workflow.nodes.map(n => ({ id: n.id, type: unifiedNormalizeNodeType(n), label: n.data?.label })));
@@ -476,12 +537,17 @@ export function generateComprehensiveNodeQuestions(
     : deduplicatedQuestions;
   const ownershipAnnotated = annotateQuestionsForOwnershipUi(mergedForOwnership, workflow);
   const ownershipFilteredQuestions = attachDefaultValuesFromConfig(ownershipAnnotated, workflow);
+  const relevanceAnnotated = annotateQuestionsWithSelectedWorkflowIntelligence(
+    ownershipFilteredQuestions,
+    selectedIntelligence
+  );
+  const relevanceFilteredQuestions = filterQuestionsBySelectedWorkflowIntelligence(relevanceAnnotated);
   allQuestions.length = 0;
-  allQuestions.push(...ownershipFilteredQuestions);
+  allQuestions.push(...relevanceFilteredQuestions);
   
   // ✅ CRITICAL: Update nodeQuestionsMap with deduplicated questions
   const deduplicatedNodeQuestionsMap = new Map<string, ComprehensiveNodeQuestion[]>();
-  for (const question of ownershipFilteredQuestions) {
+  for (const question of relevanceFilteredQuestions) {
     if (!deduplicatedNodeQuestionsMap.has(question.nodeId)) {
       deduplicatedNodeQuestionsMap.set(question.nodeId, []);
     }
@@ -742,7 +808,8 @@ function generateCredentialQuestions(
     }
 
     const unifiedField = unifiedNodeRegistry.get(nodeType)?.inputSchema?.[fieldName];
-    const isCredentialField = !!unifiedField && isCredentialOwnership(fieldName, unifiedField);
+    const vaultMeta = getCredentialVaultMetaForField(nodeType, fieldName);
+    const isCredentialField = !!vaultMeta || (!!unifiedField && isCredentialOwnership(fieldName, unifiedField));
 
     if (isCredentialField) {
       // ✅ CRITICAL: Skip if we've already seen this field (prevent duplicates)
@@ -894,6 +961,32 @@ function generateCredentialQuestions(
           console.log(`[ComprehensiveQuestions] ✅ Added credential question for ${nodeType}.${fieldName} (type: ${questionType}, nodeId: ${nodeId})`);
         }
       }
+    }
+  }
+
+  const primaryCredential = getPrimaryCredentialFieldForNode(nodeType);
+  if (primaryCredential && !seenFieldNames.has(primaryCredential.fieldName)) {
+    const existingQuestion = questions.find((q) => q.fieldName === primaryCredential.fieldName);
+    const existingValue = config[primaryCredential.fieldName];
+    if (!existingQuestion && isEmptyValue(existingValue)) {
+      seenFieldNames.add(primaryCredential.fieldName);
+      questions.push({
+        id: `cred_${nodeId}_${primaryCredential.fieldName}`,
+        text: `What ${primaryCredential.displayName || primaryCredential.fieldName} should "${nodeLabel}" use?`,
+        type: primaryCredential.fieldName.toLowerCase().includes('credential') ? 'credential' : 'password',
+        nodeId,
+        nodeType,
+        nodeLabel,
+        fieldName: primaryCredential.fieldName,
+        category: 'credential',
+        required: true,
+        askOrder: 0.5,
+        description: `Credential required for ${nodeLabel} node`,
+        credential: {
+          vaultKey: primaryCredential.vaultKey,
+          credentialId: primaryCredential.credentialId,
+        },
+      });
     }
   }
 
@@ -1328,6 +1421,16 @@ function generateConfigurationQuestions(
       if (orderedFd && isCredentialOwnership(qDef.field, orderedFd)) {
         continue;
       }
+      if (orderedFd && shouldHidePassiveStructuralField(unifiedForOrdered?.category, qDef.field, orderedFd, config as Record<string, any>)) {
+        continue;
+      }
+      if (orderedFd && unifiedForOrdered?.inputSchema) {
+        const mode = resolveEffectiveFieldFillMode(qDef.field, unifiedForOrdered.inputSchema, config as Record<string, any>);
+        const hasExplicitFillMode = config._fillMode?.[qDef.field] !== undefined;
+        if (mode === 'runtime_ai' && !hasExplicitFillMode && !isEmptyValue(config[qDef.field])) {
+          continue;
+        }
+      }
 
       // Check if field is already populated
       const fieldValue = config[qDef.field];
@@ -1424,6 +1527,16 @@ function generateConfigurationQuestions(
       const cfgFd = unifiedForConfig?.inputSchema?.[fieldName];
       if (cfgFd && isCredentialOwnership(fieldName, cfgFd)) {
         continue;
+      }
+      if (cfgFd && shouldHidePassiveStructuralField(unifiedForConfig?.category, fieldName, cfgFd, config as Record<string, any>)) {
+        continue;
+      }
+      if (cfgFd && unifiedForConfig?.inputSchema) {
+        const mode = resolveEffectiveFieldFillMode(fieldName, unifiedForConfig.inputSchema, config as Record<string, any>);
+        const hasExplicitFillMode = config._fillMode?.[fieldName] !== undefined;
+        if (mode === 'runtime_ai' && !hasExplicitFillMode && !isEmptyValue(config[fieldName])) {
+          continue;
+        }
       }
 
       const fieldValue = config[fieldName];

@@ -3,6 +3,7 @@
 // Based on the comprehensive guide
 
 import { getNodeOutputSchema, getNodeOutputType } from '../../core/types/node-output-types';
+import type { FieldIntelligence } from '../../core/types/unified-node-contract';
 
 export interface NodeCapability {
   inputType: 'text' | 'array' | 'object' | ('text' | 'array' | 'object')[]; // What data types this node accepts
@@ -62,6 +63,11 @@ export interface ConfigField {
     supportsRuntimeAI?: boolean;
     supportsBuildtimeAI?: boolean;
   };
+  /**
+   * Optional explicit field intelligence. When omitted, UnifiedNodeRegistry
+   * infers conservative runtime/default/risk metadata for every field.
+   */
+  fieldIntelligence?: FieldIntelligence;
 }
 
 export interface AISelectionCriteria {

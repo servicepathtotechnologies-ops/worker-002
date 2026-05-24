@@ -30,6 +30,7 @@ import { unifiedGraphOrchestrator } from '../core/orchestration/unified-graph-or
 import type { WorkflowNode } from '../core/types/ai-types';
 import { compileSummaryV2FromWorkflow } from '../services/ai/summary-v2-compiler';
 import { validateSummaryV2 } from '../core/validation/summary-v2-validator';
+import { GeminiWalletError } from '../services/ai/gemini-wallet-service';
 
 const pipeline = new WorkflowGenerationPipeline();
 
@@ -518,6 +519,17 @@ export default async function generateWorkflow(req: Request, res: Response): Pro
     });
   } catch (error: any) {
     const message = error instanceof Error ? error.message : String(error);
+    if (error instanceof GeminiWalletError) {
+      res.status(error.code === 'GEMINI_WALLET_PROVIDER_ERROR' ? 503 : 402).json({
+        success: false,
+        error: error.code,
+        code: error.code,
+        message,
+        walletStatus: error.walletStatus,
+        correlationId,
+      });
+      return;
+    }
     console.error('[GenerateWorkflow] Unhandled error:', message, error?.stack);
     res.status(500).json({
       success: false,

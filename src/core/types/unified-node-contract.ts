@@ -16,6 +16,87 @@ import type { FieldHelpCategory } from '../utils/field-help-metadata';
 
 export type FieldFillMode = 'manual_static' | 'runtime_ai' | 'buildtime_ai_once';
 export type FieldOwnershipClass = 'structural' | 'value' | 'credential';
+export type FieldImportanceLevel = 'required' | 'conditionally_required' | 'recommended' | 'optional' | 'advanced';
+export type FieldEmptyValueMeaning = 'unset' | 'zero' | 'empty_string' | 'null' | 'invalid' | 'provider_default';
+export type FieldValidationHintTrigger =
+  | 'missing'
+  | 'empty'
+  | 'zero'
+  | 'invalid_type'
+  | 'use_case_mismatch';
+export type FieldRelevanceLevel = 'required' | 'recommended' | 'optional' | 'advanced' | 'not_applicable';
+export type FieldRelevanceSource = 'registry' | 'operation_contract' | 'dependency_rule' | 'behavior_test' | 'inferred';
+export type FieldRiskLevel = 'none' | 'low' | 'medium' | 'high';
+
+export interface FieldRelevanceResult {
+  relevance: FieldRelevanceLevel;
+  shouldAskUser: boolean;
+  shouldShowInOwnership: boolean;
+  reason: string;
+  riskIfEmpty?: FieldRiskLevel;
+  suggestedValue?: unknown;
+  source: FieldRelevanceSource;
+  /** Guidance-ready semantic role inferred from registry metadata and field shape. */
+  fieldRole?: string;
+  /** Selected operation context for this field, when the node has operation-like behavior. */
+  operationRole?: string;
+  /** Plain-language summary of the immediate upstream dependency for this field/node. */
+  upstreamDependency?: string;
+  /** Plain-language summary of the immediate downstream dependency for this field/node. */
+  downstreamDependency?: string;
+  /** What happens when this field is missing or empty for the selected workflow. */
+  emptyBehavior?: string;
+  /** Why an incorrect value changes execution, routing, data, or output quality. */
+  wrongValueRisk?: string;
+  /** Direct user action guidance for the current relevance result. */
+  userAction?: string;
+  /** Internal QA signals used by coverage reports and guidance quality tests. */
+  guidanceQualitySignals?: {
+    specificity: 'strong' | 'partial' | 'fallback';
+    usesStructuredMetadata: boolean;
+    usesInferenceFallback: boolean;
+    missingFacts?: string[];
+    warnings?: string[];
+  };
+}
+
+export interface FieldIntelligence {
+  /** Plain-language purpose of the field inside the node. */
+  purpose: string;
+  /** Runtime truth: what the executor/provider does when this field is absent, empty, or defaulted. */
+  runtimeBehavior?: {
+    whenMissing?: string;
+    whenEmpty?: string;
+    backendDefault?: unknown;
+    emptyValueMeaning?: FieldEmptyValueMeaning;
+  };
+  /** Product-level importance, distinct from bare schema required/optional. */
+  importance?: {
+    base: FieldImportanceLevel;
+    dangerousIfEmpty?: boolean;
+    dangerousIfWrong?: boolean;
+    dependsOnUseCase?: boolean;
+  };
+  /** User-safe defaults the AI may recommend when the backend default is not product-safe. */
+  safeDefaults?: Array<{
+    value: unknown;
+    when: string;
+    reason: string;
+  }>;
+  /** Use-case-sensitive guidance for generation, validation, and setup UI. */
+  useCaseNotes?: Array<{
+    when: string;
+    importance: 'required' | 'recommended' | 'optional';
+    guidance: string;
+  }>;
+  /** Registry-backed warnings/errors that should be raised before execution. */
+  validationHints?: Array<{
+    severity: 'error' | 'warning' | 'info';
+    when: FieldValidationHintTrigger;
+    message: string;
+    suggestedValue?: unknown;
+  }>;
+}
 
 export interface NodeInputField {
   type: 'string' | 'number' | 'boolean' | 'array' | 'object' | 'json' | 'expression';
@@ -90,6 +171,8 @@ export interface NodeInputField {
   docsUrl?: string;
   /** Optional example string shown in guides (non-secret placeholder). */
   exampleValue?: string;
+  /** Universal field-level behavior and risk metadata used by guidance, validation, and AI resolution. */
+  fieldIntelligence?: FieldIntelligence;
   /**
    * UI hints for schema-driven Properties panel and GET /api/node-definitions.
    * Populated from NodeLibrary field definitions (options, requiredIf); not used for execution.

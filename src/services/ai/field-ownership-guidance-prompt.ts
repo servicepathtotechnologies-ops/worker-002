@@ -8,6 +8,9 @@ export type FieldOwnershipGuidanceSections = {
   nextStepExpectations: string;
 };
 
+import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
+import { buildFieldGuidanceDescription } from '../../core/utils/node-field-intelligence';
+
 type GuideContext = {
   selectedField?: { nodeId?: string; fieldName?: string } | null;
   selectedRow?: Record<string, unknown> | null;
@@ -91,19 +94,40 @@ export function buildDeterministicFieldOwnershipGuidance(question: string, conte
   const nodeLabel = text(row.nodeLabel) || text((node as any)?.data?.label) || text((node as any)?.label) || text(row.nodeType) || 'this node';
   const nodeType = text(row.nodeType) || text((node as any)?.type) || text((node as any)?.data?.type);
   const operation = text(ctx.operation) || text((node as any)?.data?.config?.operation) || text((node as any)?.data?.config?.action) || 'the selected';
+  const registryField = nodeType ? unifiedNodeRegistry.get(nodeType)?.inputSchema?.[fieldName] : undefined;
+  const effectiveSchema = { ...schema, ...(registryField || {}) } as Record<string, unknown>;
+  const registryDescription = registryField
+    ? buildFieldGuidanceDescription({
+        nodeType,
+        nodeLabel,
+        fieldName,
+        field: {
+          ...registryField,
+          label: text(row.label) || fieldName,
+          selectedMode: text(row.effectiveMode) || text(row.selectedMode),
+          supportsRuntimeAI: bool(row.supportsRuntimeAI, registryField.fillMode?.supportsRuntimeAI !== false),
+          supportsBuildtimeAI: bool(row.supportsBuildtimeAI, registryField.fillMode?.supportsBuildtimeAI !== false),
+          fieldRelevance: (row as any).fieldRelevance,
+        },
+        workflowGoal: text(ctx.prompt),
+        operation,
+        fieldRelevance: (row as any).fieldRelevance,
+      })
+    : null;
   const required = bool(row.required, bool(schema.required, false));
   const supportsRuntime = bool(row.supportsRuntimeAI, bool((schema as any).fillMode?.supportsRuntimeAI, true));
   const supportsBuild = bool(row.supportsBuildtimeAI, bool((schema as any).fillMode?.supportsBuildtimeAI, true));
   const currentMode = text(row.effectiveMode) || text(row.selectedMode) || text(row.fillModeDefault) || 'manual_static';
   const ownershipClass = text(row.ownershipClass) || text((schema as any).ownership) || text((schema as any).helpCategory);
-  const purpose = inferFieldPurpose(fieldName, row, schema, operation);
-  const where = inferWhereToGet(fieldName, row, schema, nodeLabel);
+  const purpose = registryDescription?.what || inferFieldPurpose(fieldName, row, effectiveSchema, operation);
+  const where = inferWhereToGet(fieldName, row, effectiveSchema, nodeLabel);
   const isCredential = ownershipClass === 'credential' || text((schema as any).role).includes('credential') || /api[_-]?key|token|secret|credential/i.test(fieldName);
   const modeLabel = modeText(currentMode);
   const operationPhrase = operation && operation !== 'the selected' ? ` for the "${operation}" operation` : '';
 
   return {
     whatThisFieldDoes:
+      registryDescription?.what ||
       `${fieldName} on ${nodeLabel}${nodeType ? ` (${nodeType})` : ''} ${purpose.charAt(0).toLowerCase()}${purpose.slice(1)} It is used${operationPhrase}. Current recommendation: ${modeLabel}.`,
     ifYouChooseYou:
       isCredential
@@ -118,14 +142,16 @@ export function buildDeterministicFieldOwnershipGuidance(question: string, conte
         ? 'AI fills this during each workflow run from live input and previous node output. Use it only when the value should be dynamic, not for stable secrets or account IDs.'
         : 'AI runtime is not supported for this field. Keep it as You or AI build if build-time generation is available.',
     isActuallyRequired:
-      required
+      registryDescription?.needed ||
+      (required
         ? 'Yes. This field must be resolved before the node can run successfully.'
-        : 'No. This field is optional for this operation unless your workflow logic specifically depends on it.',
+        : 'No. This field is optional for this operation unless your workflow logic specifically depends on it.'),
     whereToGetValue: where,
     nextStepExpectations:
-      isCredential
+      registryDescription?.dataImpact ||
+      (isCredential
         ? 'After field ownership, go to Credentials and connect the provider account or paste the secret into the vault. The workflow runner will inject it securely at execution time.'
-        : 'After field ownership, manual fields appear in the configuration/credentials flow. AI build fields are generated during setup; AI runtime fields are resolved when the workflow executes.',
+        : 'After field ownership, manual fields appear in the configuration/credentials flow. AI build fields are generated during setup; AI runtime fields are resolved when the workflow executes.'),
   };
 }
 

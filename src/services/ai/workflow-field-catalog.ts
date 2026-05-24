@@ -15,6 +15,7 @@ export interface WorkflowFieldCatalogEntry {
   fillModeDefault?: string;
   supportsRuntimeAI?: boolean;
   supportsBuildtimeAI?: boolean;
+  fieldIntelligence?: unknown;
   currentValue?: unknown;
 }
 
@@ -51,6 +52,7 @@ export function buildWorkflowFieldCatalog(workflow: Workflow): WorkflowFieldCata
         fillModeDefault: fieldDef.fillMode?.default,
         supportsRuntimeAI: !!fieldDef.fillMode?.supportsRuntimeAI,
         supportsBuildtimeAI: !!fieldDef.fillMode?.supportsBuildtimeAI,
+        fieldIntelligence: fieldDef.fieldIntelligence,
         currentValue: currentConfig[fieldName],
       });
     }
@@ -58,4 +60,3 @@ export function buildWorkflowFieldCatalog(workflow: Workflow): WorkflowFieldCata
 
   return entries;
 }
-

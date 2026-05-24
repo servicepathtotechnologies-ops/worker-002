@@ -2,6 +2,7 @@ import { getDbClient } from '../core/database/aws-db-client';
 import { getDbPool } from '../core/database/db-pool';
 import { config } from '../core/config';
 import type { PoolClient } from 'pg';
+import { geminiWalletService } from './ai/gemini-wallet-service';
 
 export interface SubscriptionPlan {
   id: string;
@@ -81,7 +82,11 @@ export class SubscriptionService {
     const client = await getDbPool().connect();
     try {
       const result = await client.query(
-        `SELECT COUNT(*)::int AS count FROM public.workflows WHERE user_id = $1 AND COALESCE(setup_completed, true) = true`,
+        `SELECT COUNT(*)::int AS count
+         FROM public.workflows
+         WHERE user_id = $1
+           AND COALESCE(setup_completed, true) = true
+           AND COALESCE(quota_source, 'subscription') = 'subscription'`,
         [userId]
       );
       return Number(result.rows[0]?.count || 0);
@@ -582,6 +587,9 @@ export class SubscriptionService {
    */
   async canCreateWorkflow(userId: string): Promise<boolean> {
     try {
+      if (await geminiWalletService.isActive(userId)) {
+        return true;
+      }
       const usage = await this.getSubscriptionUsage(userId);
       return usage.workflowsUsed < usage.workflowLimit;
     } catch (error: any) {

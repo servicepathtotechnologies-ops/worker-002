@@ -2,7 +2,6 @@
 
 import { geminiOrchestrator } from './gemini-orchestrator';
 import { LLMAdapter } from '../../shared/llm-adapter';
-import { config } from '../../core/config';
 
 export interface TextGenerationOptions {
   model?: string;
@@ -57,11 +56,8 @@ export class AIAdapter {
     messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>,
     options: { model?: string; temperature?: number } = {}
   ): Promise<string> {
-    const apiKey = config.geminiApiKey;
-    if (!apiKey) throw new Error('GEMINI_API_KEY not configured');
     const response = await llmAdapter.chat('gemini', messages, {
       model: options.model || 'gemini-2.5-flash',
-      apiKey,
       temperature: options.temperature ?? 0.7,
     });
     return response.content;

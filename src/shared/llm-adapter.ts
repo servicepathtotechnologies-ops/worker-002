@@ -2,6 +2,8 @@
 // Unified interface for LLM providers (OpenAI, Claude, Gemini). Ollama removed; use Gemini.
 
 import { recordLlmUsage } from '../core/ai/build-usage-context';
+import { getGeminiWalletContext } from '../services/ai/gemini-wallet-context';
+import { geminiWalletService } from '../services/ai/gemini-wallet-service';
 
 export interface LLMMessage {
   role: 'system' | 'user' | 'assistant';
@@ -64,20 +66,45 @@ export class LLMAdapter {
     options: LLMOptions
   ): Promise<LLMResponse> {
     const effectiveProvider = provider === 'ollama' ? 'gemini' : provider;
-    const apiKey = options.apiKey || (effectiveProvider === 'gemini' ? process.env.GEMINI_API_KEY : undefined);
+    let walletUserId: string | undefined;
+    let apiKey = options.apiKey;
+    if (!apiKey && effectiveProvider === 'gemini') {
+      const contextUserId = getGeminiWalletContext()?.userId;
+      const wallet = await geminiWalletService.getActiveWallet(contextUserId).catch(() => null);
+      if (wallet?.apiKey) {
+        walletUserId = wallet.userId;
+        apiKey = wallet.apiKey;
+      } else {
+        const blockingError = await geminiWalletService.getBlockingError(contextUserId).catch(() => null);
+        if (blockingError) throw blockingError;
+      }
+    }
+    apiKey = apiKey || (effectiveProvider === 'gemini' ? process.env.GEMINI_API_KEY : undefined);
     let result: LLMResponse;
-    switch (effectiveProvider) {
-      case 'openai':
-        result = await this.chatOpenAI(messages, options);
-        break;
-      case 'claude':
-        result = await this.chatClaude(messages, options);
-        break;
-      case 'gemini':
-        result = await this.chatGemini(messages, { ...options, apiKey: apiKey || options.apiKey });
-        break;
-      default:
-        throw new Error(`Unsupported provider: ${provider}`);
+    try {
+      switch (effectiveProvider) {
+        case 'openai':
+          result = await this.chatOpenAI(messages, options);
+          break;
+        case 'claude':
+          result = await this.chatClaude(messages, options);
+          break;
+        case 'gemini':
+          result = await this.chatGemini(messages, { ...options, apiKey: apiKey || options.apiKey });
+          break;
+        default:
+          throw new Error(`Unsupported provider: ${provider}`);
+      }
+    } catch (error) {
+      if (walletUserId) {
+        throw await geminiWalletService.recordFailure(
+          walletUserId,
+          error,
+          options.usageStage || 'LLMAdapter.chat',
+          options.model,
+        );
+      }
+      throw error;
     }
     if (result.usage) {
       recordLlmUsage({
@@ -87,6 +114,14 @@ export class LLMAdapter {
         stage: options.usageStage,
         source: 'LLMAdapter.chat',
       });
+    }
+    if (walletUserId && effectiveProvider === 'gemini') {
+      await geminiWalletService.recordSuccess({
+        userId: walletUserId,
+        model: result.model || options.model,
+        source: options.usageStage || 'LLMAdapter.chat',
+        usage: result.usage,
+      }).catch(() => {});
     }
     return result;
   }

@@ -255,16 +255,10 @@ export class GeminiOrchestrator {
     },
     maxRetries: number = 3
   ): Promise<any> {
-    const apiKey = config.geminiApiKey;
-    if (!apiKey) {
-      throw new Error('GEMINI_API_KEY is not configured. Please set it in your environment variables.');
-    }
-
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         const response = await this.llmAdapter.chat('gemini', messages, {
           model,
-          apiKey,
           temperature: options.temperature ?? 0.7,
           maxTokens: options.maxTokens,
           stream: options.stream,

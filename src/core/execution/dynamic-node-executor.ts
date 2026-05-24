@@ -28,6 +28,7 @@ import { universalNodeAIContext } from '../../services/ai/universal-node-ai-cont
 import { aiFieldDetector } from '../../services/ai/ai-field-detector';
 import { normalizeRuntimePayload } from '../runtime/runtime-input-adapter';
 import { validateResolvedInput, guaranteeInputForSchema } from './input-guarantee';
+import { stripSystemKeys, stripRoutingMeta } from './system-key-filter';
 import { buildEffectiveFillModes, isMeaningfulStaticValue } from '../utils/fill-mode-resolver';
 import {
   isEffectivelyEmptyUpstreamPayload,
@@ -720,10 +721,22 @@ export async function executeNodeDynamically(
 
   // Store effective input as input/json for execution conveniences. Template resolution
   // still uses templateResolutionNodeOutputs so $json remains the immediate upstream payload.
+  // For branching nodes, $json/json must only contain clean upstream business data — NOT the
+  // merged routing config (expression, cases, matchedCase, etc.) that effectiveInput carries.
   if (effectiveInput !== undefined && effectiveInput !== null) {
     nodeOutputs.set('input', effectiveInput, true);
-    nodeOutputs.set('$json', effectiveInput, true);
-    nodeOutputs.set('json', effectiveInput, true);
+    if (definition.isBranching === true) {
+      // Forward only the clean upstream payload so downstream nodes see real business data.
+      const up =
+        typeof upstreamPayload === 'object' && upstreamPayload !== null && !Array.isArray(upstreamPayload)
+          ? stripRoutingMeta(upstreamPayload as Record<string, unknown>)
+          : {};
+      nodeOutputs.set('$json', up, true);
+      nodeOutputs.set('json', up, true);
+    } else {
+      nodeOutputs.set('$json', effectiveInput, true);
+      nodeOutputs.set('json', effectiveInput, true);
+    }
   }
 
   // âœ… CRITICAL FIX: Merge AI-generated inputs back into config for UI display
@@ -935,9 +948,17 @@ async function resolveInputsWithAI(
     }
   }
 
+  // Strip system/audit metadata keys before using previousOutput as AI context.
+  // This prevents runtimeResolutionAudit objects and routing internals from being
+  // treated as real upstream business data by the AI resolver and key-alias matcher.
+  if (previousOutput !== undefined && previousOutput !== null) {
+    const stripped = stripSystemKeys(previousOutput);
+    previousOutput = Object.keys(stripped).length > 0 ? stripped : undefined;
+  }
+
   // Store previous output globally for body mapping (and node id for registry-driven narrative pick).
   (global as any).lastPreviousOutput = previousOutput;
-  
+
   // User intent from currentWorkflowIntent set at execution start in execute-workflow (single source for this run).
   const userIntent = (global as any).currentWorkflowIntent || 'Process workflow data';
   

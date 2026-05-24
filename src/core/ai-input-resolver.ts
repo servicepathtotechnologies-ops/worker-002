@@ -22,8 +22,9 @@
  * - Universal runtime behavior
  */
 
-import { NodeInputSchema } from './types/unified-node-contract';
+import { FieldRelevanceResult, NodeInputSchema } from './types/unified-node-contract';
 import { LLMAdapter } from '../shared/llm-adapter';
+import { summarizeFieldIntelligenceForPrompt } from './utils/node-field-intelligence';
 
 const PREVIOUS_OUTPUT_PREVIEW_BUDGET = 2000;
 const MAX_ARRAY_SAMPLE_ITEMS = 8;
@@ -89,6 +90,8 @@ export interface InputResolutionContext {
     nodes: Array<{ type: string; label: string }>;
     edges: Array<{ source: string; target: string }>;
   };
+  /** Optional selected-workflow relevance facts for this target node's fields. */
+  fieldRelevance?: Record<string, FieldRelevanceResult>;
   /** When set, this is a retry after validation failure; prompt will include required fields that must be present. */
   retryRequiredFields?: string[];
 }
@@ -216,6 +219,8 @@ export class AIInputResolver {
     const previousOutputStr = compactForAiPrompt(previousOutput);
     
     const schemaStr = JSON.stringify(nodeInputSchema, null, 2);
+    const fieldIntelligenceStr = JSON.stringify(summarizeFieldIntelligenceForPrompt(nodeInputSchema), null, 2);
+    const fieldRelevanceStr = JSON.stringify(context.fieldRelevance || {}, null, 2);
     
     let modeInstructions = '';
     switch (mode) {
@@ -365,6 +370,12 @@ ${previousOutputStr}
 TARGET NODE INPUT SCHEMA (your output keys must match these field names):
 ${schemaStr}
 
+TARGET NODE FIELD INTELLIGENCE (authoritative runtime/default/risk guidance):
+${fieldIntelligenceStr}
+
+TARGET NODE FIELD RELEVANCE (authoritative selected-workflow applicability):
+${fieldRelevanceStr}
+
 ${modeInstructions}
 ${specialInstructions}
 
@@ -376,7 +387,8 @@ REQUIREMENTS:
 1. Analyze the KEY NAMES in the previous output (they can be anything: number, value, number.1, number.list, etc.).
 2. Map those keys/values to the target node's input schema field names.
 3. Produce the JSON that the present node requires so its input fields get the correct values and no errors occur.
-4. Format according to the resolution mode above.
+4. Use the FIELD INTELLIGENCE to avoid unsafe empty/default values. Do not omit fields marked required, conditionally_required, recommended, dangerousIfEmpty, or dangerousIfWrong when the user intent depends on them.
+5. Format according to the resolution mode above.
 
 OUTPUT FORMAT:
 ${this.getOutputFormatInstructions(mode)}

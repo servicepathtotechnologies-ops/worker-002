@@ -20,6 +20,7 @@ import { unifiedGraphOrchestrator } from '../../../core/orchestration/unified-gr
 import { logger } from '../../../core/logger';
 import type { Workflow } from '../../../core/types/ai-types';
 import type { NodeCatalogText } from '../node-catalog-builder';
+import { validateWorkflowNodeIntelligence } from '../../../core/utils/node-field-intelligence';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -211,7 +212,15 @@ async function processValidationResult(
     };
   }
 
-  const warningIssues = parsed.issues.filter((i) => i.severity === 'warning');
+  const intelligenceIssues: ValidationIssue[] = validateWorkflowNodeIntelligence(currentWorkflow).map((issue) => ({
+    severity: issue.severity === 'error' ? 'warning' : 'warning',
+    description: `${issue.nodeLabel || issue.nodeType}.${issue.fieldName}: ${issue.reason}`,
+    suggestedFix:
+      issue.suggestedValue !== undefined
+        ? `Use suggested value ${JSON.stringify(issue.suggestedValue)} or provide an explicit value.`
+        : 'Review the node field intelligence and provide a safe value.',
+  }));
+  const warningIssues = [...parsed.issues.filter((i) => i.severity === 'warning'), ...intelligenceIssues];
   const durationMs = Date.now() - startedAt;
 
   logger.info({
@@ -252,8 +261,16 @@ function runOrchestratorSafetyNet(
     logger.error({ event: 'ai_pipeline_stage_error', stage: 'validation', correlationId, error: 'ORCHESTRATOR_VALIDATION_FAILED', errors: orchestratorResult.errors });
     return { ok: false, code: 'ORCHESTRATOR_VALIDATION_FAILED', workflow, validationIssues: structuralIssues, durationMs: Date.now() - startedAt };
   }
-  logger.info({ event: 'ai_pipeline_stage_end', stage: 'validation', correlationId, outputSummary: 'status=pass (orchestrator fallback)', durationMs: Date.now() - startedAt });
-  return { ok: true, workflow, validationIssues: [], durationMs: Date.now() - startedAt, llmCall: { model, temperature, promptTokens, completionTokens } };
+  const intelligenceIssues: ValidationIssue[] = validateWorkflowNodeIntelligence(workflow).map((issue) => ({
+    severity: 'warning',
+    description: `${issue.nodeLabel || issue.nodeType}.${issue.fieldName}: ${issue.reason}`,
+    suggestedFix:
+      issue.suggestedValue !== undefined
+        ? `Use suggested value ${JSON.stringify(issue.suggestedValue)} or provide an explicit value.`
+        : 'Review the node field intelligence and provide a safe value.',
+  }));
+  logger.info({ event: 'ai_pipeline_stage_end', stage: 'validation', correlationId, outputSummary: `status=pass (orchestrator fallback), warnings=${intelligenceIssues.length}`, durationMs: Date.now() - startedAt });
+  return { ok: true, workflow, validationIssues: intelligenceIssues, durationMs: Date.now() - startedAt, llmCall: { model, temperature, promptTokens, completionTokens } };
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

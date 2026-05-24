@@ -41,6 +41,7 @@ import {
 } from '../utils/field-help-metadata';
 import type { FieldHelpCategory } from '../utils/field-help-metadata';
 import { classifyFieldOwnership, isCredentialOwnership } from '../utils/field-ownership';
+import { buildFieldIntelligence } from '../utils/node-field-intelligence';
 import type { Workflow } from '../types/ai-types';
 import { enrichCredentialSchema } from '../../credentials-system/credential-requirements';
 
@@ -669,6 +670,7 @@ export class UnifiedNodeRegistry implements INodeRegistry {
           fillMode: (optionalField as any)?.fillMode ?? getDefaultFillMode(fieldName, type),
           role: inferRole(fieldName, type),
           essentialForExecution: inferEssentialForExecution(true, fieldName),
+          fieldIntelligence: (optionalField as any)?.fieldIntelligence,
           ...(ui ? { ui } : {}),
         };
       }
@@ -690,6 +692,7 @@ export class UnifiedNodeRegistry implements INodeRegistry {
             fillMode: (fieldDef as any).fillMode ?? getDefaultFillMode(fieldName, type),
             role: inferRole(fieldName, type),
             essentialForExecution: inferEssentialForExecution(false, fieldName),
+            fieldIntelligence: (fieldDef as any).fieldIntelligence,
             ...(ui ? { ui } : {}),
           };
         }
@@ -712,6 +715,11 @@ export class UnifiedNodeRegistry implements INodeRegistry {
           fd.exampleValue = first;
         }
       }
+      fd.fieldIntelligence = buildFieldIntelligence({
+        nodeType: schema.type,
+        fieldName,
+        field: fd,
+      });
     }
 
     // Extract output schema

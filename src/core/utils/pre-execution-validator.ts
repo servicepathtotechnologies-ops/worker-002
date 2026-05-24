@@ -9,6 +9,7 @@
  */
 
 import { nodeDefinitionRegistry } from '../types/node-definition';
+import { validateWorkflowNodeIntelligence, type NodeFieldIntelligenceIssue } from './node-field-intelligence';
 
 export interface MissingField {
   fieldName: string;
@@ -26,6 +27,7 @@ export interface ConfigIssue {
 export interface ConfigValidationResult {
   valid: boolean;
   issues: ConfigIssue[];
+  validationIssues?: NodeFieldIntelligenceIssue[];
   /** Flat list in the format ai-error-guidance.ts expects for GuidedStatusCard */
   missingInputs: Array<{ fieldName: string; nodeLabel: string; description: string }>;
 }
@@ -89,5 +91,13 @@ export function validateWorkflowConfig(
     })),
   );
 
-  return { valid: issues.length === 0, issues, missingInputs };
+  const intelligenceIssues = validateWorkflowNodeIntelligence({ nodes: nodes as any, edges: [] });
+  const blockingIntelligenceIssues = intelligenceIssues.filter((issue) => issue.severity === 'error');
+
+  return {
+    valid: issues.length === 0 && blockingIntelligenceIssues.length === 0,
+    issues,
+    validationIssues: intelligenceIssues,
+    missingInputs,
+  };
 }

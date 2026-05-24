@@ -175,6 +175,7 @@ export class LRUNodeOutputsCache {
   getAll(): Record<string, unknown> {
     const result: Record<string, unknown> = {};
     this.cache.forEach((entry, key) => {
+      if (key.startsWith('__')) return; // skip internal audit/observability entries
       result[key] = entry.value;
     });
     return result;
@@ -206,6 +207,7 @@ export class LRUNodeOutputsCache {
 
     for (const [key, entry] of this.cache.entries()) {
       if (exclude.has(key)) continue;
+      if (key.startsWith('__')) continue; // skip internal audit/observability entries
       const ts = entry.setTimestamp ?? entry.timestamp;
       // Use >= so equal timestamps break ties by Map insertion order (last set wins).
       if (ts >= newestTs) {
@@ -229,6 +231,7 @@ export class LRUNodeOutputsCache {
     const entries: Array<{ key: string; value: unknown; ts: number }> = [];
     for (const [key, entry] of this.cache.entries()) {
       if (exclude.has(key)) continue;
+      if (key.startsWith('__')) continue; // skip internal audit/observability entries
       entries.push({ key, value: entry.value, ts: entry.setTimestamp ?? entry.timestamp });
     }
     return entries.sort((a, b) => b.ts - a.ts).map(({ key, value }) => ({ key, value }));

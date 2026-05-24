@@ -3,6 +3,7 @@ import { subscriptionService } from '../services/subscription-service';
 import { AuthenticatedRequest } from '../core/middleware/subscription-auth';
 import { getDbClient } from '../core/database/aws-db-client';
 import { queryAsService } from '../core/database/db-pool';
+import { geminiWalletService } from '../services/ai/gemini-wallet-service';
 
 async function ensureUserExists(userId: string, email: string): Promise<void> {
   const db = getDbClient();
@@ -27,6 +28,9 @@ export async function getCurrentSubscription(req: AuthenticatedRequest, res: Res
 
     const subscription = await subscriptionService.getUserSubscription(req.user.id);
     const usage = await subscriptionService.getSubscriptionUsage(req.user.id);
+    const wallet = await geminiWalletService.getState(req.user.id).catch(() => null);
+    const subscriptionFrozen = Boolean(wallet?.subscriptionFrozen);
+    const walletNeedsAttention = Boolean(wallet?.enabled && wallet.hasKey && ['invalid', 'quota_exceeded', 'error'].includes(wallet.status));
 
     if (!subscription) {
       return res.status(404).json({
@@ -54,8 +58,16 @@ export async function getCurrentSubscription(req: AuthenticatedRequest, res: Res
         workflowLimit: usage.workflowLimit,
         remainingWorkflows: usage.remainingWorkflows,
         utilizationPercentage: usage.utilizationPercentage,
-        canCreateWorkflow: usage.remainingWorkflows > 0
-      }
+        canCreateWorkflow: subscriptionFrozen || usage.remainingWorkflows > 0
+      },
+      billingMode: subscriptionFrozen ? 'gemini_wallet' : 'subscription',
+      subscriptionFrozen,
+      walletStatus: wallet?.status || 'empty',
+      freezeMessage: subscriptionFrozen
+        ? 'Your Gemini API key wallet is active. Subscription workflow quota is frozen while your key is used.'
+        : walletNeedsAttention
+          ? (wallet?.lastErrorMessage || 'Your Gemini API key wallet needs attention. Replace the key or turn off wallet mode and choose a plan.')
+          : null,
     });
   } catch (error: any) {
     console.error('[SubscriptionAPI] getCurrentSubscription error:', error);
@@ -288,12 +300,17 @@ export async function adminGetUsers(req: AuthenticatedRequest, res: Response) {
          s.started_at AS subscription_started_at,
          s.expires_at AS subscription_expires_at,
          sp.name AS plan_name,
-         sp.workflow_limit AS plan_workflow_limit
+         sp.workflow_limit AS plan_workflow_limit,
+         w.enabled AS wallet_enabled,
+         w.status AS wallet_status,
+         w.last_used_at AS wallet_last_used_at
        FROM users u
        LEFT JOIN subscriptions s
          ON s.id = u.subscription_id
        LEFT JOIN subscription_plans sp
          ON sp.id = s.plan_id
+       LEFT JOIN user_ai_wallet_settings w
+         ON w.user_id = u.id::text AND w.provider = 'gemini'
        WHERE ($1 = '' OR u.email ILIKE $2)
        ORDER BY u.created_at DESC
        LIMIT $3
@@ -326,6 +343,12 @@ export async function adminGetUsers(req: AuthenticatedRequest, res: Response) {
               expiresAt: user.subscription_expires_at
             }
           : null
+        ,
+        wallet: {
+          enabled: Boolean(user.wallet_enabled),
+          status: user.wallet_status || 'empty',
+          lastUsedAt: user.wallet_last_used_at || null
+        }
       })),
       pagination: {
         page,

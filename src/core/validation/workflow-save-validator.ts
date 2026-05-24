@@ -20,6 +20,7 @@ import { normalizeWorkflowFormFieldIdentities } from '../utils/form-field-identi
 import { isEmptyConfigValue } from './registry-field-contract';
 import { validateIfElseConditionsAgainstUpstreamForm } from '../orchestration/form-ifelse-binding';
 import { extractSwitchCasePortNames } from '../utils/branching-node-ports';
+import { validateWorkflowNodeIntelligence } from '../utils/node-field-intelligence';
 
 // Workflow types (inline to avoid circular dependencies)
 interface WorkflowNode {
@@ -363,6 +364,16 @@ export function validateWorkflowForSave(
     metadata: {},
   } as Workflow);
   errors.push(...ifElseFormBinding.errors);
+
+  const intelligenceIssues = validateWorkflowNodeIntelligence({ nodes: nodes as any, edges: edges as any });
+  for (const issue of intelligenceIssues) {
+    const message = `Node "${issue.nodeLabel || issue.nodeId}" (${issue.nodeType}) field "${issue.fieldName}": ${issue.reason}`;
+    if (issue.severity === 'error') {
+      errors.push(message);
+    } else {
+      warnings.push(message);
+    }
+  }
 
   // 4. Check for cycles (basic check - full cycle detection would require DFS)
   const hasIncomingEdges = new Set(edges.map(e => e.target));

@@ -218,10 +218,20 @@ import {
 import { salesforceAuthorizeHandler, salesforceCallbackHandler } from './api/oauth-salesforce';
 import { createRazorpayOrder, verifyRazorpayPayment, getSubscriptionPlans } from './api/payments-razorpay';
 import { getCurrentSubscription, cancelSubscription, getSubscriptionHistory, adminGetUsers, adminUpgradeUser } from './api/subscriptions';
+import {
+  activateGeminiWalletHandler,
+  deactivateGeminiWalletHandler,
+  deleteGeminiWalletHandler,
+  getGeminiWalletHandler,
+  saveGeminiWalletHandler,
+  testGeminiWalletHandler,
+} from './api/ai-wallet';
 import { securityHeaders, subscriptionRateLimit, validateSubscriptionInput, developmentModeHeaders, requestLogger } from './core/middleware/security';
 import { authenticateUser, requireAdmin, optionalAuth, requireRole, requireSubscriptionPlan } from './core/middleware/subscription-auth';
 import { subscriptionLogger, paymentLogger, adminLogger } from './core/middleware/subscription-logging';
 import { checkWorkflowLimitEndpoint, requireWorkflowCapacityForAi } from './core/middleware/workflow-limits';
+import { geminiWalletContextMiddleware } from './core/middleware/gemini-wallet-context-middleware';
+import { geminiWalletService } from './services/ai/gemini-wallet-service';
 import { distributedRateLimit } from './core/middleware/distributed-rate-limit';
 import { tracingMiddleware } from './core/observability/distributed-tracing';
 import { metricsHandler, requestMetricsMiddleware } from './middleware/highScaleMetrics';
@@ -845,6 +855,7 @@ app.get('/api/subscriptions/plans',
 app.get('/api/subscriptions/current', 
   subscriptionLogger('get-current'),
   asyncHandler(authenticateUser), 
+  asyncHandler(geminiWalletContextMiddleware),
   asyncHandler(getCurrentSubscription)
 );
 app.post('/api/subscriptions/cancel', 
@@ -855,9 +866,18 @@ app.post('/api/subscriptions/cancel',
 );
 app.get('/api/subscriptions/history', 
   subscriptionLogger('get-history'),
-  asyncHandler(authenticateUser), 
+  asyncHandler(authenticateUser),
+  asyncHandler(geminiWalletContextMiddleware),
   asyncHandler(getSubscriptionHistory)
 );
+
+// Gemini BYOK wallet API
+app.get('/api/ai-wallet/gemini', asyncHandler(authenticateUser), asyncHandler(geminiWalletContextMiddleware), asyncHandler(getGeminiWalletHandler));
+app.put('/api/ai-wallet/gemini', asyncHandler(authenticateUser), asyncHandler(geminiWalletContextMiddleware), asyncHandler(saveGeminiWalletHandler));
+app.post('/api/ai-wallet/gemini/test', asyncHandler(authenticateUser), asyncHandler(geminiWalletContextMiddleware), asyncHandler(testGeminiWalletHandler));
+app.post('/api/ai-wallet/gemini/activate', asyncHandler(authenticateUser), asyncHandler(geminiWalletContextMiddleware), asyncHandler(activateGeminiWalletHandler));
+app.post('/api/ai-wallet/gemini/deactivate', asyncHandler(authenticateUser), asyncHandler(geminiWalletContextMiddleware), asyncHandler(deactivateGeminiWalletHandler));
+app.delete('/api/ai-wallet/gemini', asyncHandler(authenticateUser), asyncHandler(geminiWalletContextMiddleware), asyncHandler(deleteGeminiWalletHandler));
 
 // Razorpay payment endpoints (test/live based on key pair)
 app.post('/api/payments/razorpay/create-order', 
@@ -1011,14 +1031,15 @@ app.post(
     windowMs: 60_000,
   }),
   asyncHandler(authenticateUser),
+  asyncHandler(geminiWalletContextMiddleware),
   asyncHandler(requireWorkflowCapacityForAi),
   asyncHandler(generateWorkflowRoute)
 );
 
 // Capability-Based Node Selection Flow (3-phase pipeline)
-app.post('/api/capability-selection/analyze', asyncHandler(authenticateUser), asyncHandler(requireWorkflowCapacityForAi), asyncHandler(analyzeCapabilitySelection));
-app.post('/api/capability-selection/generate', asyncHandler(authenticateUser), asyncHandler(requireWorkflowCapacityForAi), asyncHandler(generateCapabilityWorkflow));
-app.post('/api/capability-selection/confirm', asyncHandler(authenticateUser), asyncHandler(requireWorkflowCapacityForAi), asyncHandler(confirmCapabilityWorkflow));
+app.post('/api/capability-selection/analyze', asyncHandler(authenticateUser), asyncHandler(geminiWalletContextMiddleware), asyncHandler(requireWorkflowCapacityForAi), asyncHandler(analyzeCapabilitySelection));
+app.post('/api/capability-selection/generate', asyncHandler(authenticateUser), asyncHandler(geminiWalletContextMiddleware), asyncHandler(requireWorkflowCapacityForAi), asyncHandler(generateCapabilityWorkflow));
+app.post('/api/capability-selection/confirm', asyncHandler(authenticateUser), asyncHandler(geminiWalletContextMiddleware), asyncHandler(requireWorkflowCapacityForAi), asyncHandler(confirmCapabilityWorkflow));
 console.log('🎯 Capability Selection API available at /api/capability-selection/{analyze,generate,confirm}');
 
 // Smart Planner–Driven Workflow Orchestration (planner decides WHAT, system decides HOW)
@@ -1031,6 +1052,7 @@ app.post(
     windowMs: 60_000,
   }),
   asyncHandler(authenticateUser),
+  asyncHandler(geminiWalletContextMiddleware),
   asyncHandler(requireWorkflowCapacityForAi),
   asyncHandler(smartPlannerGenerate)
 );
@@ -1441,6 +1463,8 @@ console.log('💬 Chatbot page routes available at /workflows/:workflowId/page, 
 // AI Gateway - Unified AI Services
 app.use(
   '/api/ai',
+  asyncHandler(optionalAuth),
+  asyncHandler(geminiWalletContextMiddleware),
   distributedRateLimit({
     endpointKey: 'ai-gateway',
     perUserLimit: 120,
@@ -1470,10 +1494,12 @@ app.post('/api/ai/generate', distributedRateLimit({
   perUserLimit: 25,
   globalLimit: 500,
   windowMs: 60_000,
-}), asyncHandler(async (req: Request, res: Response) => {
+}), asyncHandler(optionalAuth), asyncHandler(geminiWalletContextMiddleware), asyncHandler(async (req: Request, res: Response) => {
   const { prompt, model, system, temperature, max_tokens } = req.body;
   if (!prompt) return res.status(400).json({ success: false, error: 'Prompt is required' });
-  if (!config.geminiApiKey) return res.status(503).json({ success: false, error: 'GEMINI_API_KEY not configured' });
+  if (!config.geminiApiKey && !(await geminiWalletService.isActive((req as any).user?.id).catch(() => false))) {
+    return res.status(503).json({ success: false, error: 'GEMINI_API_KEY not configured' });
+  }
   const result = await geminiOrchestrator.processRequest('chat-generation', prompt, {
     model: model || 'gemini-2.5-flash',
     temperature,
@@ -1488,13 +1514,14 @@ app.post('/api/ai/chat', distributedRateLimit({
   perUserLimit: 40,
   globalLimit: 800,
   windowMs: 60_000,
-}), asyncHandler(async (req: Request, res: Response) => {
+}), asyncHandler(optionalAuth), asyncHandler(geminiWalletContextMiddleware), asyncHandler(async (req: Request, res: Response) => {
   const { messages, model, temperature } = req.body;
   if (!messages || !Array.isArray(messages)) return res.status(400).json({ success: false, error: 'Messages array is required' });
-  if (!config.geminiApiKey) return res.status(503).json({ success: false, error: 'GEMINI_API_KEY not configured' });
+  if (!config.geminiApiKey && !(await geminiWalletService.isActive((req as any).user?.id).catch(() => false))) {
+    return res.status(503).json({ success: false, error: 'GEMINI_API_KEY not configured' });
+  }
   const response = await aiLlmAdapter.chat('gemini', messages, {
     model: model || 'gemini-2.5-flash',
-    apiKey: config.geminiApiKey,
     temperature: temperature ?? 0.7,
   });
   res.json({ success: true, result: { content: response.content, usage: response.usage } });

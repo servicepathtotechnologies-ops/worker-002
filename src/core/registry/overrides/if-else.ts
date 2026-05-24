@@ -15,6 +15,7 @@ import {
   normalizeIfElseConfig,
   validateCanonicalIfElseConditions,
 } from '../../utils/if-else-conditions';
+import { stripSystemKeys, stripRoutingMeta } from '../../execution/system-key-filter';
 
 export function overrideIfElse(def: UnifiedNodeDefinition, schema: NodeSchema): UnifiedNodeDefinition {
   const baseValidate = def.validateConfig.bind(def);
@@ -83,29 +84,36 @@ export function overrideIfElse(def: UnifiedNodeDefinition, schema: NodeSchema): 
             const preparedConfig = normalizeIfElseConfig(
               (prepared.mergedConfig || {}) as Record<string, unknown>
             );
-            const mergedInput: Record<string, unknown> = {
-              ...(typeof prepared.executionInput === 'object' && prepared.executionInput !== null
-                ? prepared.executionInput
-                : {}),
-            };
-
-            context.upstreamOutputs.forEach((output) => {
-              if (output && typeof output === 'object' && !Array.isArray(output)) {
-                Object.assign(mergedInput, output as Record<string, unknown>);
-              }
-            });
-
-            return { executionInput: mergedInput, mergedConfig: preparedConfig };
+            // Use the clean upstream business payload (rawInput) instead of merging
+            // all upstreamOutputs — that merge brought in audit/observability keys
+            // like nodeId, nodeType, rollout, kpis that polluted downstream nodes.
+            const cleanUpstream = context.rawInput != null &&
+              typeof context.rawInput === 'object' &&
+              !Array.isArray(context.rawInput)
+              ? stripSystemKeys(context.rawInput as Record<string, unknown>)
+              : {};
+            const configInputs = typeof prepared.executionInput === 'object' && prepared.executionInput !== null
+              ? prepared.executionInput as Record<string, unknown>
+              : {};
+            return { executionInput: { ...cleanUpstream, ...configInputs }, mergedConfig: preparedConfig };
           },
         },
       });
 
       if (result.success && result.output) {
         const outObj = result.output as any;
-        const inputObj = context.inputs as any;
+
+        // Forward clean upstream business data to downstream nodes.
+        // Do NOT spread context.inputs (if_else routing config: conditions, combineOperation) —
+        // that would push branching config into downstream nodes as if it were business data.
+        const cleanUpstream = context.rawInput != null &&
+          typeof context.rawInput === 'object' &&
+          !Array.isArray(context.rawInput)
+          ? stripRoutingMeta(stripSystemKeys(context.rawInput as Record<string, unknown>))
+          : {};
 
         const finalOutput = {
-          ...(typeof inputObj === 'object' && inputObj !== null ? inputObj : {}),
+          ...cleanUpstream,
           ...(typeof outObj === 'object' && outObj !== null ? outObj : {}),
         };
 

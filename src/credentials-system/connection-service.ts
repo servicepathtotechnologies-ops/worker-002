@@ -101,7 +101,12 @@ export class ConnectionService {
        ORDER BY updated_at DESC`,
       [userId],
     );
-    return rows.map(mapConnection);
+    return rows
+      .map(mapConnection)
+      .filter((connection) => {
+        const metadata = connection.metadata || {};
+        return metadata.walletManaged !== true && metadata.hiddenFromConnections !== true;
+      });
   }
 
   async findCanonicalConnection(userId: string, credentialTypeId: string): Promise<ConnectionRecord | null> {

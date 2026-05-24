@@ -12,6 +12,7 @@ import { ErrorCode } from '../core/utils/error-codes';
 import type { WorkflowBuildManifestV1 } from '../core/types/workflow-build-manifest';
 import { buildSyncedGraphPayload } from './workflow-graph-state';
 import { subscriptionService } from '../services/subscription-service';
+import { geminiWalletService } from '../services/ai/gemini-wallet-service';
 
 interface WorkflowNode {
   id: string;
@@ -229,8 +230,9 @@ export default async function saveWorkflowHandler(req: Request, res: Response) {
 
       savedWorkflow = data;
     } else {
+      const walletActive = await geminiWalletService.isActive(authenticatedUserId).catch(() => false);
       await subscriptionService.ensureFreeSubscription(authenticatedUserId);
-      const canCreateWorkflow = await subscriptionService.canCreateWorkflow(authenticatedUserId);
+      const canCreateWorkflow = walletActive || await subscriptionService.canCreateWorkflow(authenticatedUserId);
       if (!canCreateWorkflow) {
         const usage = await subscriptionService.getSubscriptionUsage(authenticatedUserId);
         return res.status(403).json({
@@ -249,7 +251,7 @@ export default async function saveWorkflowHandler(req: Request, res: Response) {
       // Create new workflow
       const { data, error } = await db
         .from('workflows')
-        .insert(workflowData)
+        .insert({ ...workflowData, quota_source: walletActive ? 'gemini_wallet' : 'subscription' })
         .select()
         .single();
 
@@ -263,7 +265,9 @@ export default async function saveWorkflowHandler(req: Request, res: Response) {
       }
 
       savedWorkflow = data;
-      await subscriptionService.incrementWorkflowCount(authenticatedUserId);
+      if (!walletActive) {
+        await subscriptionService.incrementWorkflowCount(authenticatedUserId);
+      }
     }
 
     // 🆕 VERSIONING: Create version after successful save

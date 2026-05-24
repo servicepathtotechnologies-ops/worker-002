@@ -8,6 +8,7 @@ import { aiPerformanceMonitor } from '../services/ai/performance-monitor';
 import { config } from '../core/config';
 import { LLMAdapter } from '../shared/llm-adapter';
 import { unifiedGraphOrchestrator } from '../core/orchestration/unified-graph-orchestrator';
+import { unifiedNodeRegistry } from '../core/registry/unified-node-registry';
 import type { AiEditorRequest, AiEditorResponse } from '../core/types/ai-editor-contracts';
 import type { Workflow } from '../core/types/ai-types';
 import { WorkflowVersioning } from '../services/ai/workflow-versioning';
@@ -19,18 +20,97 @@ import {
   type FieldOwnershipGuidanceSections,
 } from '../services/ai/field-ownership-guidance-prompt';
 import {
+  buildFieldGuidanceDescription,
+  mergeGuidanceWithDeterministic,
+  type FieldGuidanceDescription,
+} from '../core/utils/node-field-intelligence';
+import {
   resolveAiEditorPrincipal,
   requireCapability,
   fetchWorkflowLifecyclePhase,
   canApplyForPhase,
 } from '../services/ai/ai-editor-rbac';
 import { logAiEditorEvent, hashDiff, readAiEditorAuditForWorkflow } from '../services/ai/ai-editor-audit';
+import { GeminiWalletError, geminiWalletService } from '../services/ai/gemini-wallet-service';
 
 const router = Router();
 const llmAdapter = new LLMAdapter();
 const aiEditorVersioning = new WorkflowVersioning();
 const guideResponseCache = new Map<string, { expiresAt: number; guidance: FieldOwnershipGuidanceSections }>();
 const GUIDE_CACHE_TTL_MS = 10 * 60 * 1000;
+
+async function hasGeminiAccess(req: Request): Promise<boolean> {
+  if (config.geminiApiKey) return true;
+  const userId = (req as any).user?.id;
+  return geminiWalletService.isActive(userId).catch(() => false);
+}
+
+function enrichFieldForGuidance(nodeType: string, rawField: any): any {
+  const def = unifiedNodeRegistry.get(nodeType);
+  const registryField = def?.inputSchema?.[String(rawField?.fieldName || '')];
+  return {
+    ...(registryField || {}),
+    ...(rawField || {}),
+    description: rawField?.description || registryField?.description || '',
+    fieldType: rawField?.fieldType || registryField?.type || 'string',
+    supportsRuntimeAI: rawField?.supportsRuntimeAI ?? registryField?.fillMode?.supportsRuntimeAI ?? true,
+    supportsBuildtimeAI: rawField?.supportsBuildtimeAI ?? registryField?.fillMode?.supportsBuildtimeAI ?? true,
+    fillModeDefault: rawField?.fillModeDefault || registryField?.fillMode?.default || 'manual_static',
+    ownership: rawField?.ownership || registryField?.ownership || '',
+    fieldIntelligence: registryField?.fieldIntelligence || rawField?.fieldIntelligence,
+    fieldRelevance: rawField?.fieldRelevance,
+  };
+}
+
+function buildDeterministicFieldDescriptions(args: {
+  nodeType: string;
+  nodeLabel: string;
+  workflowOverview?: string;
+  operation?: string;
+  fields: any[];
+}): Record<string, FieldGuidanceDescription> {
+  const descriptions: Record<string, FieldGuidanceDescription> = {};
+  for (const rawField of args.fields) {
+    const fieldName = String(rawField?.fieldName || '');
+    if (!fieldName) continue;
+    const enriched = enrichFieldForGuidance(args.nodeType, rawField);
+    descriptions[fieldName] = buildFieldGuidanceDescription({
+      nodeType: args.nodeType,
+      nodeLabel: args.nodeLabel,
+      fieldName,
+      field: {
+        ...enriched,
+        label: rawField?.label || fieldName,
+        selectedMode: rawField?.selectedMode,
+        fieldEnabled: rawField?.fieldEnabled,
+        fieldRelevance: rawField?.fieldRelevance,
+      },
+      workflowGoal: args.workflowOverview,
+      operation: args.operation,
+      fieldRelevance: rawField?.fieldRelevance,
+    });
+  }
+  return descriptions;
+}
+
+function sendAiGatewayError(res: Response, error: unknown) {
+  if (error instanceof GeminiWalletError) {
+    const status =
+      error.code === 'GEMINI_WALLET_LIMIT_EXCEEDED'
+        ? 402
+        : error.code === 'GEMINI_WALLET_PROVIDER_ERROR'
+          ? 503
+          : 400;
+    return res.status(status).json({
+      success: false,
+      error: error.message,
+      code: error.code,
+      walletStatus: error.walletStatus,
+      actions: ['replace_gemini_key', 'deactivate_wallet'],
+    });
+  }
+  return res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+}
 
 let initialized = false;
 
@@ -65,7 +145,7 @@ router.post('/chatbot/message', async (req: Request, res: Response) => {
     res.json({ success: true, ...response, sessionId: session });
   } catch (error) {
     console.error('Chatbot error:', error);
-    res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+    sendAiGatewayError(res, error);
   }
 });
 
@@ -121,7 +201,7 @@ router.post('/field-ownership-guide', async (req: Request, res: Response) => {
       }
     }
 
-    if (!config.geminiApiKey) {
+    if (!(await hasGeminiAccess(req))) {
       return res.status(200).json({ success: true, guidance: deterministicGuidance });
     }
 
@@ -165,7 +245,11 @@ router.post('/field-ownership-guide', async (req: Request, res: Response) => {
     }
 
     const guidance = parsed && Object.values(parsed).every((v) => v.trim().length > 0)
-      ? parsed
+      ? {
+          ...parsed,
+          whatThisFieldDoes: deterministicGuidance.whatThisFieldDoes || parsed.whatThisFieldDoes,
+          isActuallyRequired: deterministicGuidance.isActuallyRequired,
+        }
       : deterministicGuidance;
     guideResponseCache.set(cacheKey, { expiresAt: Date.now() + GUIDE_CACHE_TTL_MS, guidance });
 
@@ -195,7 +279,7 @@ router.post('/node-description', async (req: Request, res: Response) => {
       nodeNarrative ||
       `This ${nodeLabel} node performs its function as part of the automated workflow.`;
 
-    if (!config.geminiApiKey) {
+    if (!(await hasGeminiAccess(req))) {
       return res.status(200).json({ success: true, description: fallback });
     }
 
@@ -262,6 +346,7 @@ router.post('/field-descriptions', async (req: Request, res: Response) => {
         supportsBuildtimeAI: boolean;
         fillModeDefault: string;
         ownership?: string;
+        fieldRelevance?: unknown;
       }>;
     };
 
@@ -269,8 +354,17 @@ router.post('/field-descriptions', async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: 'nodeType, nodeLabel, and fields are required' });
     }
 
-    if (!config.geminiApiKey) {
-      return res.status(200).json({ success: true, descriptions: {} });
+    const enrichedFields = fields.map((f) => enrichFieldForGuidance(nodeType, f));
+    const deterministicDescriptions = buildDeterministicFieldDescriptions({
+      nodeType,
+      nodeLabel,
+      workflowOverview,
+      operation: undefined,
+      fields: enrichedFields,
+    });
+
+    if (!(await hasGeminiAccess(req))) {
+      return res.status(200).json({ success: true, descriptions: deterministicDescriptions, deterministic: true });
     }
 
     const contextLines = [
@@ -281,10 +375,10 @@ router.post('/field-descriptions', async (req: Request, res: Response) => {
       .filter(Boolean)
       .join('\n');
 
-    const fieldsText = fields
+    const fieldsText = enrichedFields
       .map(
         (f) =>
-          `- fieldName: "${f.fieldName}", label: "${f.label}", type: ${f.fieldType}, docs: "${f.description || ''}", example: "${f.example || ''}", required: ${f.required !== false}, enabledNow: ${f.fieldEnabled === true}, currentOwner: "${f.selectedMode || 'manual_static'}", supportsAIBuild: ${f.supportsBuildtimeAI}, supportsAIRun: ${f.supportsRuntimeAI}`
+          `- fieldName: "${f.fieldName}", label: "${f.label}", type: ${f.fieldType}, docs: "${f.description || ''}", example: "${f.example || ''}", required: ${f.required !== false}, enabledNow: ${f.fieldEnabled === true}, currentOwner: "${f.selectedMode || 'manual_static'}", supportsAIBuild: ${f.supportsBuildtimeAI}, supportsAIRun: ${f.supportsRuntimeAI}, intelligence: ${JSON.stringify(f.fieldIntelligence || {})}, relevance: ${JSON.stringify(f.fieldRelevance || {})}`
       )
       .join('\n');
 
@@ -294,6 +388,11 @@ ${contextLines}
 Node: "${nodeLabel}" (type: ${nodeType})
 
 Important: do NOT summarize the whole node. Each answer must explain only the exact input field named by fieldName, using the workflow goal and user's request. Keep it simple enough for a beginner.
+
+Authoritative registry guidance:
+${JSON.stringify(deterministicDescriptions, null, 2)}
+
+You may make the wording friendlier, but do not contradict the registry guidance. In particular, do not say a field can be left empty when the registry marks it dangerousIfEmpty or provides an empty/zero warning.
 
 For each field below, generate a JSON object. Each field needs:
 - "what": 1 plain sentence explaining what this exact input field controls in this workflow use case. Use the docs text only to stay accurate.
@@ -341,7 +440,12 @@ Rules: No technical jargon. Under 35 words per key (needed may use up to 2 sente
       // fall through to empty descriptions
     }
 
-    res.json({ success: true, descriptions });
+    const merged: Record<string, FieldGuidanceDescription> = {};
+    for (const [fieldName, deterministic] of Object.entries(deterministicDescriptions)) {
+      merged[fieldName] = mergeGuidanceWithDeterministic(deterministic, descriptions[fieldName] as any);
+    }
+
+    res.json({ success: true, descriptions: merged });
   } catch (error) {
     console.error('Field descriptions error:', error);
     res.status(200).json({ success: true, descriptions: {} });
@@ -381,12 +485,30 @@ router.post('/field-walk-step', async (req: Request, res: Response) => {
         supportsBuildtimeAI: boolean;
         fillModeDefault: string;
         ownership?: string;
+        fieldRelevance?: unknown;
       };
     };
 
     if (!nodeType || !nodeLabel || !field?.fieldName) {
       return res.status(400).json({ success: false, error: 'nodeType, nodeLabel, and field.fieldName are required' });
     }
+
+    const enrichedField = enrichFieldForGuidance(nodeType, field);
+    const deterministicDescription = buildFieldGuidanceDescription({
+      nodeType,
+      nodeLabel,
+      fieldName: field.fieldName,
+      field: {
+        ...enrichedField,
+        label: field.label || field.fieldName,
+        selectedMode: field.selectedMode,
+        fieldEnabled: field.fieldEnabled,
+        fieldRelevance: (field as any).fieldRelevance,
+      },
+      workflowGoal: workflowOverview,
+      operation: undefined,
+      fieldRelevance: (field as any).fieldRelevance as any,
+    });
 
     // -- Check DB cache first --
     if (workflowId && nodeId) {
@@ -402,15 +524,19 @@ router.post('/field-walk-step', async (req: Request, res: Response) => {
           .maybeSingle();
 
         if (cached?.description) {
-          return res.json({ success: true, description: cached.description, fromCache: true });
+          return res.json({
+            success: true,
+            description: mergeGuidanceWithDeterministic(deterministicDescription, cached.description as any),
+            fromCache: true,
+          });
         }
       } catch {
         // DB cache miss or error — fall through to Gemini
       }
     }
 
-    if (!config.geminiApiKey) {
-      return res.json({ success: true, description: null });
+    if (!(await hasGeminiAccess(req))) {
+      return res.json({ success: true, description: deterministicDescription, deterministic: true });
     }
 
     const contextLines = [
@@ -421,8 +547,8 @@ router.post('/field-walk-step', async (req: Request, res: Response) => {
       .filter(Boolean)
       .join('\n');
 
-    const f = field;
-    const fieldLine = `- fieldName: "${f.fieldName}", label: "${f.label}", type: ${f.fieldType}, docs: "${f.description || ''}", example: "${f.example || ''}", required: ${f.required !== false}, enabledNow: ${f.fieldEnabled === true}, currentOwner: "${f.selectedMode || 'manual_static'}", supportsAIBuild: ${f.supportsBuildtimeAI}, supportsAIRun: ${f.supportsRuntimeAI}`;
+    const f = enrichedField;
+    const fieldLine = `- fieldName: "${f.fieldName}", label: "${f.label}", type: ${f.fieldType}, docs: "${f.description || ''}", example: "${f.example || ''}", required: ${f.required !== false}, enabledNow: ${f.fieldEnabled === true}, currentOwner: "${f.selectedMode || 'manual_static'}", supportsAIBuild: ${f.supportsBuildtimeAI}, supportsAIRun: ${f.supportsRuntimeAI}, intelligence: ${JSON.stringify(f.fieldIntelligence || {})}, relevance: ${JSON.stringify(f.fieldRelevance || {})}`;
 
     const aiPrompt = `You explain workflow automation field settings to non-technical users (business owners, students, HR managers).
 
@@ -430,6 +556,11 @@ ${contextLines}
 Node: "${nodeLabel}" (type: ${nodeType})
 
 Important: do NOT summarize the whole node. Your answer must explain only the exact input field named by fieldName, using the workflow goal and user's request. Keep it simple enough for a beginner.
+
+Authoritative registry guidance:
+${JSON.stringify(deterministicDescription, null, 2)}
+
+You may make the wording friendlier, but do not contradict the registry guidance. In particular, do not say the field can be left empty when the registry marks it dangerousIfEmpty or provides an empty/zero warning.
 
 For the field below, generate a JSON object with keys:
 - "what": 1 plain sentence explaining what this exact input field controls in this workflow use case.
@@ -464,8 +595,10 @@ Rules: No technical jargon. Under 35 words per key (needed may use up to 2 sente
       // fall through
     }
 
+    const finalDescription = mergeGuidanceWithDeterministic(deterministicDescription, description as any);
+
     // -- Write to DB cache --
-    if (description && workflowId && nodeId) {
+    if (finalDescription && workflowId && nodeId) {
       try {
         const db = getDbClient();
         await db
@@ -475,7 +608,7 @@ Rules: No technical jargon. Under 35 words per key (needed may use up to 2 sente
               workflow_id: workflowId,
               node_id: nodeId,
               field_name: field.fieldName,
-              description,
+              description: finalDescription,
               expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
             },
             { onConflict: 'workflow_id,node_id,field_name', ignoreDuplicates: false }
@@ -485,7 +618,7 @@ Rules: No technical jargon. Under 35 words per key (needed may use up to 2 sente
       }
     }
 
-    res.json({ success: true, description, fromCache: false });
+    res.json({ success: true, description: finalDescription, fromCache: false });
   } catch (error) {
     console.error('Field walk-step error:', error);
     res.status(200).json({ success: true, description: null });
@@ -585,7 +718,7 @@ router.post('/editor/suggest', async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: 'workflow with nodes[] and edges[] is required' });
     }
 
-    if (!config.geminiApiKey) {
+    if (!(await hasGeminiAccess(req))) {
       return res.status(503).json({ success: false, error: 'GEMINI_API_KEY not configured' });
     }
 
@@ -627,10 +760,7 @@ router.post('/editor/suggest', async (req: Request, res: Response) => {
     });
   } catch (error) {
     console.error('AI Editor suggest error:', error);
-    res.status(500).json({
-      success: false,
-      error: error instanceof Error ? error.message : 'Unknown error',
-    });
+    sendAiGatewayError(res, error);
   }
 });
 
@@ -762,10 +892,7 @@ router.post('/editor/apply', async (req: Request, res: Response) => {
     });
   } catch (error) {
     console.error('AI Editor apply error:', error);
-    res.status(500).json({
-      success: false,
-      error: error instanceof Error ? error.message : 'Unknown error',
-    });
+    sendAiGatewayError(res, error);
   }
 });
 
@@ -879,7 +1006,7 @@ router.post('/editor/analyze', async (req: Request, res: Response) => {
       body.prompt,
     ].join('\n');
 
-    if (!config.geminiApiKey) {
+    if (!(await hasGeminiAccess(req))) {
       return res.status(503).json({
         success: false,
         error: 'GEMINI_API_KEY not configured',
@@ -937,10 +1064,7 @@ router.post('/editor/analyze', async (req: Request, res: Response) => {
     });
   } catch (error) {
     console.error('AI Editor analyze error:', error);
-    res.status(500).json({
-      success: false,
-      error: error instanceof Error ? error.message : 'Unknown error',
-    });
+    sendAiGatewayError(res, error);
   }
 });
 
@@ -1039,7 +1163,7 @@ router.post('/builder/generate-from-prompt', async (req: Request, res: Response)
     }
   } catch (error) {
     console.error('Workflow generation error:', error);
-    res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+    sendAiGatewayError(res, error);
   }
 });
 
@@ -1063,7 +1187,7 @@ router.post('/ollama/generate', async (req: Request, res: Response) => {
     });
     res.json({ success: true, result: typeof result === 'string' ? { content: result } : result });
   } catch (error) {
-    res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+    sendAiGatewayError(res, error);
   }
 });
 
@@ -1071,17 +1195,15 @@ router.post('/ollama/chat', async (req: Request, res: Response) => {
   try {
     const { model, messages, options } = req.body;
     if (!messages || !Array.isArray(messages)) return res.status(400).json({ error: 'Messages array is required' });
-    const apiKey = config.geminiApiKey;
-    if (!apiKey) return res.status(503).json({ success: false, error: 'GEMINI_API_KEY not configured' });
+    if (!(await hasGeminiAccess(req))) return res.status(503).json({ success: false, error: 'GEMINI_API_KEY not configured' });
     const response = await llmAdapter.chat('gemini', messages, {
       model: model || 'gemini-2.5-flash',
-      apiKey,
       temperature: options?.temperature ?? 0.7,
       maxTokens: options?.max_tokens,
     });
     res.json({ success: true, result: { content: response.content, usage: response.usage } });
   } catch (error) {
-    res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+    sendAiGatewayError(res, error);
   }
 });
 

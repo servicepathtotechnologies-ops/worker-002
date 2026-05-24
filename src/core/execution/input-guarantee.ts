@@ -10,6 +10,7 @@
 import type { NodeInputSchema, NodeInputField, FieldFillMode } from '../types/unified-node-contract';
 import { convertToType, type FieldType } from '../utils/type-converter';
 import { isStructuralOwnership } from '../utils/field-ownership';
+import { stripSystemKeys } from './system-key-filter';
 
 /** Key aliases: expected key -> candidate keys in previous output (same as runtime-input-adapter). */
 const KEY_ALIASES: Record<string, string[]> = {
@@ -115,7 +116,10 @@ export function validateResolvedInput(
  */
 export function guaranteeInputForSchema(options: GuaranteeInputOptions): Record<string, any> {
   const { resolved, previousOutput, inputSchema, requiredInputs, mappingMetadata, fieldFillModes } = options;
-  const prev = previousOutput != null && typeof previousOutput === 'object' ? (previousOutput as Record<string, unknown>) : {};
+  // Strip system/audit metadata keys so they cannot be matched to node input fields.
+  // Without this, keys like `nodeId`, `nodeType`, `result` get mapped to `from`, `body`, `subject` etc.
+  const rawPrev = previousOutput != null && typeof previousOutput === 'object' ? (previousOutput as Record<string, unknown>) : {};
+  const prev = stripSystemKeys(rawPrev);
   const out = { ...resolved };
 
   const schemaKeys = Object.keys(inputSchema);

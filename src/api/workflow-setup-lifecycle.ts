@@ -4,6 +4,7 @@ import { normalizeWorkflowForSave, validateWorkflowForSave } from '../core/valid
 import { buildSyncedGraphPayload, resolveWorkflowGraphState } from './workflow-graph-state';
 import { workflowLifecycleManager } from '../services/workflow-lifecycle-manager';
 import { subscriptionService } from '../services/subscription-service';
+import { geminiWalletService } from '../services/ai/gemini-wallet-service';
 import { getCacheRedisClient, invalidateWorkflowDbCache } from '../middleware/redisGetCache';
 
 export function isSetupPending(workflow: any): boolean {
@@ -218,9 +219,10 @@ async function runCommitSetupWorkflow(
     }
 
     const wasSetupPendingSoft = isSetupPending(workflow);
+    const walletActiveSoft = await geminiWalletService.isActive(userId).catch(() => false);
     if (wasSetupPendingSoft) {
       await subscriptionService.ensureFreeSubscription(userId);
-      const canCreateWorkflow = await subscriptionService.canCreateWorkflow(userId);
+      const canCreateWorkflow = walletActiveSoft || await subscriptionService.canCreateWorkflow(userId);
       if (!canCreateWorkflow) {
         const usage = await subscriptionService.getSubscriptionUsage(userId);
         return { statusCode: 403, body: {
@@ -243,6 +245,7 @@ async function runCommitSetupWorkflow(
         setup_stage: 'credentials_pending',
         setup_completed_at: new Date().toISOString(),
         metadata: softMetadata,
+        quota_source: walletActiveSoft ? 'gemini_wallet' : 'subscription',
         updated_at: new Date().toISOString(),
       } as any)
       .eq('id', workflowId);
@@ -256,7 +259,7 @@ async function runCommitSetupWorkflow(
       await invalidateWorkflowDbCache(cacheClientSoft).catch(() => {});
     }
 
-    if (wasSetupPendingSoft) {
+    if (wasSetupPendingSoft && !walletActiveSoft) {
       await subscriptionService.incrementWorkflowCount(userId);
     }
 
@@ -270,10 +273,11 @@ async function runCommitSetupWorkflow(
   }
 
   const wasSetupPending = isSetupPending(workflow);
+  const walletActive = await geminiWalletService.isActive(userId).catch(() => false);
 
   if (wasSetupPending) {
     await subscriptionService.ensureFreeSubscription(userId);
-    const canCreateWorkflow = await subscriptionService.canCreateWorkflow(userId);
+    const canCreateWorkflow = walletActive || await subscriptionService.canCreateWorkflow(userId);
     if (!canCreateWorkflow) {
       const usage = await subscriptionService.getSubscriptionUsage(userId);
       return { statusCode: 403, body: {
@@ -308,6 +312,7 @@ async function runCommitSetupWorkflow(
       setup_stage: 'complete',
       setup_completed_at: new Date().toISOString(),
       metadata,
+      quota_source: walletActive ? 'gemini_wallet' : 'subscription',
       graph: buildSyncedGraphPayload(normalizedForCommit.nodes, normalizedForCommit.edges, metadata),
       nodes: normalizedForCommit.nodes,
       edges: normalizedForCommit.edges,
@@ -326,7 +331,7 @@ async function runCommitSetupWorkflow(
     await invalidateWorkflowDbCache(cacheClient).catch(() => {});
   }
 
-  if (wasSetupPending) {
+  if (wasSetupPending && !walletActive) {
     await subscriptionService.incrementWorkflowCount(userId);
   }
 
