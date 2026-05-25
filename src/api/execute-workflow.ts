@@ -198,7 +198,7 @@ interface ExecutionLog {
   output?: unknown;
   error?: string;
   resolvedInputs?: Record<string, unknown>;
-  resolvedInputSources?: Record<string, 'static_config' | 'template' | 'deterministic_runtime' | 'runtime_ai'>;
+  resolvedInputSources?: Record<string, string>;
 }
 
 export interface ScheduleWiseNodeParams {

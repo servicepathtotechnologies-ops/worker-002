@@ -90,6 +90,11 @@ export interface InputResolutionContext {
     nodes: Array<{ type: string; label: string }>;
     edges: Array<{ source: string; target: string }>;
   };
+  runtimeLineage?: {
+    triggerOutput?: any;
+    lastSuccessfulBusinessOutput?: any;
+    allAvailableOutputs?: any;
+  };
   /** Optional selected-workflow relevance facts for this target node's fields. */
   fieldRelevance?: Record<string, FieldRelevanceResult>;
   /** When set, this is a retry after validation failure; prompt will include required fields that must be present. */
@@ -137,9 +142,10 @@ export class AIInputResolver {
           attempt > 0
             ? {
                 ...context,
-                retryRequiredFields: Object.keys(nodeInputSchema).filter(
-                  (k) => nodeInputSchema[k].required !== false
-                ),
+                retryRequiredFields:
+                  context.retryRequiredFields && context.retryRequiredFields.length > 0
+                    ? context.retryRequiredFields
+                    : Object.keys(nodeInputSchema).filter((k) => nodeInputSchema[k].required !== false),
               }
             : context;
 
@@ -221,6 +227,7 @@ export class AIInputResolver {
     const schemaStr = JSON.stringify(nodeInputSchema, null, 2);
     const fieldIntelligenceStr = JSON.stringify(summarizeFieldIntelligenceForPrompt(nodeInputSchema), null, 2);
     const fieldRelevanceStr = JSON.stringify(context.fieldRelevance || {}, null, 2);
+    const runtimeLineageStr = JSON.stringify(context.runtimeLineage || {}, null, 2);
     
     let modeInstructions = '';
     switch (mode) {
@@ -375,6 +382,9 @@ ${fieldIntelligenceStr}
 
 TARGET NODE FIELD RELEVANCE (authoritative selected-workflow applicability):
 ${fieldRelevanceStr}
+
+FULL WORKFLOW LINEAGE (use when previous output is empty, failed, or missing needed fields):
+${runtimeLineageStr}
 
 ${modeInstructions}
 ${specialInstructions}

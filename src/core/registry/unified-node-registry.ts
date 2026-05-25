@@ -419,13 +419,14 @@ export class UnifiedNodeRegistry implements INodeRegistry {
       try {
         const baseDefinition = this.convertNodeLibrarySchemaToUnified(schema);
         const overridden = applyNodeDefinitionOverrides(baseDefinition, schema);
+        const reconciled = this.applyDeclarativeRuntimeMetadata(overridden, baseDefinition);
         // ✅ Universal fix: overrides can change inputSchema ownership/helpCategory.
         // Credential schema must be derived from the final (post-override) inputSchema,
         // otherwise the UI may ask twice (config + credential) for the same field.
-        const extractedCredentialSchema = this.extractCredentialSchema(schema, overridden.inputSchema);
+        const extractedCredentialSchema = this.extractCredentialSchema(schema, reconciled.inputSchema);
         const definition: UnifiedNodeDefinition = {
-          ...overridden,
-          credentialSchema: this.mergeCredentialSchema(overridden.credentialSchema, extractedCredentialSchema),
+          ...reconciled,
+          credentialSchema: this.mergeCredentialSchema(reconciled.credentialSchema, extractedCredentialSchema),
         };
         this.register(definition);
       } catch (error: any) {
@@ -444,10 +445,11 @@ export class UnifiedNodeRegistry implements INodeRegistry {
           console.log(`[UnifiedNodeRegistry] 🔄 Attempting explicit registration of log_output...`);
           const baseDefinition = this.convertNodeLibrarySchemaToUnified(logOutputSchema);
           const overridden = applyNodeDefinitionOverrides(baseDefinition, logOutputSchema);
-          const extractedCredentialSchema = this.extractCredentialSchema(logOutputSchema, overridden.inputSchema);
+          const reconciled = this.applyDeclarativeRuntimeMetadata(overridden, baseDefinition);
+          const extractedCredentialSchema = this.extractCredentialSchema(logOutputSchema, reconciled.inputSchema);
           const definition: UnifiedNodeDefinition = {
-            ...overridden,
-            credentialSchema: this.mergeCredentialSchema(overridden.credentialSchema, extractedCredentialSchema),
+            ...reconciled,
+            credentialSchema: this.mergeCredentialSchema(reconciled.credentialSchema, extractedCredentialSchema),
           };
           this.register(definition);
           console.log(`[UnifiedNodeRegistry] ✅ Successfully registered log_output after retry`);
@@ -484,6 +486,29 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     }
   }
   
+  private applyDeclarativeRuntimeMetadata(
+    definition: UnifiedNodeDefinition,
+    declarativeDefinition: UnifiedNodeDefinition
+  ): UnifiedNodeDefinition {
+    const inputSchema: NodeInputSchema = { ...definition.inputSchema };
+
+    for (const [fieldName, declarativeField] of Object.entries(declarativeDefinition.inputSchema || {})) {
+      const existingField = inputSchema[fieldName];
+      if (!existingField) continue;
+
+      const hasRuntimeContract = !!declarativeField.runtimeContract;
+      if (!hasRuntimeContract) continue;
+
+      inputSchema[fieldName] = {
+        ...existingField,
+        ...(declarativeField.fillMode ? { fillMode: declarativeField.fillMode } : {}),
+        ...(declarativeField.runtimeContract ? { runtimeContract: declarativeField.runtimeContract } : {}),
+      };
+    }
+
+    return { ...definition, inputSchema };
+  }
+
   /**
    * Convert NodeLibrary schema to UnifiedNodeDefinition
    * This is a bridge function for backward compatibility
@@ -671,6 +696,7 @@ export class UnifiedNodeRegistry implements INodeRegistry {
           role: inferRole(fieldName, type),
           essentialForExecution: inferEssentialForExecution(true, fieldName),
           fieldIntelligence: (optionalField as any)?.fieldIntelligence,
+          runtimeContract: (optionalField as any)?.runtimeContract,
           ...(ui ? { ui } : {}),
         };
       }
@@ -693,6 +719,7 @@ export class UnifiedNodeRegistry implements INodeRegistry {
             role: inferRole(fieldName, type),
             essentialForExecution: inferEssentialForExecution(false, fieldName),
             fieldIntelligence: (fieldDef as any).fieldIntelligence,
+            runtimeContract: (fieldDef as any).runtimeContract,
             ...(ui ? { ui } : {}),
           };
         }

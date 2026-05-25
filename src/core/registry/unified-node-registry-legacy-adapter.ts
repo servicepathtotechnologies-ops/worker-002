@@ -154,10 +154,10 @@ export async function executeViaLegacyExecutor(args: {
     const mergedConfig = { ...filteredBaseConfig, ...filteredConfig } as Record<string, any>;
     const inputSources =
       context && typeof (context as any).resolvedInputSources === 'object'
-        ? ((context as any).resolvedInputSources as Record<string, 'static_config' | 'template' | 'deterministic_runtime' | 'runtime_ai'>)
+        ? ((context as any).resolvedInputSources as Record<string, string>)
         : {};
     for (const [fieldName, value] of Object.entries(context.inputs || {})) {
-      if (inputSources[fieldName] === 'runtime_ai') {
+      if (inputSources[fieldName] === 'runtime_ai' || inputSources[fieldName] === 'deterministic_runtime') {
         mergedConfig[fieldName] = value;
         continue;
       }

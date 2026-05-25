@@ -18,6 +18,29 @@ export type FieldFillMode = 'manual_static' | 'runtime_ai' | 'buildtime_ai_once'
 export type FieldOwnershipClass = 'structural' | 'value' | 'credential';
 export type FieldImportanceLevel = 'required' | 'conditionally_required' | 'recommended' | 'optional' | 'advanced';
 export type FieldEmptyValueMeaning = 'unset' | 'zero' | 'empty_string' | 'null' | 'invalid' | 'provider_default';
+export type RuntimeInputSource =
+  | 'static_config'
+  | 'template'
+  | 'deterministic_runtime'
+  | 'runtime_ai'
+  | 'credential'
+  | 'system';
+export type RuntimeValidationFormat =
+  | 'non_empty'
+  | 'email_list'
+  | 'a1_range'
+  | 'row_values'
+  | 'object_payload'
+  | 'conditions'
+  | 'switch_cases'
+  | 'code';
+export type RuntimeRepairStrategy =
+  | 'extract_email'
+  | 'object_to_row_values'
+  | 'clear_invalid_optional'
+  | 'derive_title'
+  | 'derive_body'
+  | 'derive_condition';
 export type FieldValidationHintTrigger =
   | 'missing'
   | 'empty'
@@ -98,6 +121,30 @@ export interface FieldIntelligence {
   }>;
 }
 
+export interface RuntimeFieldContract {
+  /** Whether runtime AI is allowed to create this value when the field is runtime-owned. */
+  aiGeneratable?: boolean;
+  /** Protected values are never invented by runtime AI. */
+  protected?: boolean;
+  /** The field is required when a sibling field has a matching value. */
+  requiredWhen?: Array<{ field: string; equals?: unknown; notEquals?: unknown }>;
+  /**
+   * At least one field in the same group must be meaningfully present when the
+   * selected operation makes the group required.
+   */
+  requiredGroup?: string;
+  /** Generic validation formats interpreted by the universal runtime engine. */
+  validation?: {
+    format?: RuntimeValidationFormat;
+    formats?: RuntimeValidationFormat[];
+    allowEmpty?: boolean;
+  };
+  /** Generic repair strategies interpreted by the universal runtime engine. */
+  repair?: RuntimeRepairStrategy[];
+  /** Examples that should be treated as invalid/placeholder values. */
+  invalidExamples?: unknown[];
+}
+
 export interface NodeInputField {
   type: 'string' | 'number' | 'boolean' | 'array' | 'object' | 'json' | 'expression';
   description: string;
@@ -173,6 +220,8 @@ export interface NodeInputField {
   exampleValue?: string;
   /** Universal field-level behavior and risk metadata used by guidance, validation, and AI resolution. */
   fieldIntelligence?: FieldIntelligence;
+  /** Universal runtime generation, validation, and repair contract for this field. */
+  runtimeContract?: RuntimeFieldContract;
   /**
    * UI hints for schema-driven Properties panel and GET /api/node-definitions.
    * Populated from NodeLibrary field definitions (options, requiredIf); not used for execution.

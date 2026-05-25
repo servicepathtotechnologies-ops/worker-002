@@ -18,7 +18,7 @@
 
 import { unifiedNodeRegistry } from '../registry/unified-node-registry';
 import type { UnifiedNodeDefinition } from '../types/unified-node-contract';
-import { NodeExecutionContext, NodeExecutionResult, FieldFillMode, NodeInputField } from '../types/unified-node-contract';
+import { NodeExecutionContext, NodeExecutionResult, FieldFillMode, NodeInputField, RuntimeInputSource } from '../types/unified-node-contract';
 import { WorkflowNode, Workflow } from '../../core/types/ai-types';
 import { LRUNodeOutputsCache } from '../cache/lru-node-outputs-cache';
 import type { DbClient } from '@db/db-js';
@@ -42,6 +42,11 @@ import { fillMissingTitleLikeRuntimeAiFields } from './runtime-ai-title-backfill
 import { applyInputAliasesFromSchema } from './apply-input-aliases';
 import { isCredentialOwnership } from '../utils/field-ownership';
 import { applyDeterministicFieldContracts } from './field-contract-engine';
+import {
+  enforceRuntimeFieldContracts,
+  isRuntimeEmptyValue,
+  RuntimeFieldAuditEntry,
+} from './runtime-field-contract';
 import { config as runtimeConfig } from '../config';
 import { verifyAndRepairNodeOutput } from '../../services/ai/ai-output-verifier';
 
@@ -167,12 +172,16 @@ interface UniversalContractParams {
 
 interface UniversalContractResult {
   resolvedInputs: Record<string, any>;
-  inputSources: Record<string, 'static_config' | 'template' | 'deterministic_runtime' | 'runtime_ai'>;
+  inputSources: Record<string, RuntimeInputSource>;
   runtimeFieldsAudit: string[];
   resolvedRuntimeFieldsAudit: string[];
   missingRuntimeFieldsAudit: string[];
   outputFallbackUsed: boolean;
   outputFallbackReason?: string;
+  validationErrors: string[];
+  validationWarnings: string[];
+  contractRepairs: string[];
+  fieldAudit: RuntimeFieldAuditEntry[];
 }
 
 function isSensitiveInputField(fieldName: string): boolean {
@@ -239,11 +248,7 @@ function createTemplateResolutionCache(
 }
 
 function isMeaningfulValueForResolution(value: unknown): boolean {
-  if (value === null || value === undefined) return false;
-  if (typeof value === 'string') return value.trim().length > 0;
-  if (Array.isArray(value)) return value.length > 0;
-  if (typeof value === 'object') return Object.keys(value as Record<string, unknown>).length > 0;
-  return true;
+  return !isRuntimeEmptyValue(value);
 }
 
 function runtimeAutofillEnabled(): boolean {
@@ -267,6 +272,38 @@ function pickSchemaFields(inputSchema: Record<string, any>, fieldNames: string[]
 
 function findMissingFields(resolved: Record<string, any>, fields: string[]): string[] {
   return fields.filter((fieldName) => !isMeaningfulValueForResolution(resolved?.[fieldName]));
+}
+
+function containsRuntimeError(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  if (Array.isArray(value)) return value.some(containsRuntimeError);
+  return typeof (value as Record<string, unknown>)._error === 'string';
+}
+
+function buildRuntimeLineage(nodeOutputs: LRUNodeOutputsCache, upstreamPayload: unknown): {
+  triggerOutput?: unknown;
+  lastSuccessfulBusinessOutput?: unknown;
+  allAvailableOutputs: Record<string, unknown>;
+} {
+  const all = nodeOutputs.getAll() as Record<string, unknown>;
+  const allAvailableOutputs: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(all)) {
+    if (key.startsWith('__')) continue;
+    allAvailableOutputs[key] = value;
+  }
+  const entries = Object.entries(allAvailableOutputs);
+  const triggerEntry = entries.find(([key]) => key === 'trigger' || key.toLowerCase().includes('trigger'));
+  const successful = [...entries].reverse().find(([, value]) => {
+    if (value == null || containsRuntimeError(value)) return false;
+    return !isEffectivelyEmptyUpstreamPayload(value) && !isUpstreamNarrativelyThinForRuntimeAi(value);
+  });
+  return {
+    triggerOutput: triggerEntry?.[1],
+    lastSuccessfulBusinessOutput:
+      successful?.[1] ??
+      (!containsRuntimeError(upstreamPayload) ? upstreamPayload : undefined),
+    allAvailableOutputs,
+  };
 }
 
 function firstLineTitle(value: unknown, fallback: string): string {
@@ -607,6 +644,14 @@ export async function executeNodeDynamically(
     };
   }
 
+  if (contractResult.validationErrors.length > 0 && (universalFlags.strictValidation || !universalFlags.auditOnly)) {
+    return {
+      _error: `Runtime input contract validation failed: ${contractResult.validationErrors.join('; ')}`,
+      _validationErrors: contractResult.validationErrors,
+      _nodeType: nodeType,
+    };
+  }
+
   // Deterministic runtime fill-mode observability for debugging and rollout KPIs.
   try {
     const effectiveFillModesForSchema = Object.fromEntries(
@@ -648,6 +693,10 @@ export async function executeNodeDynamically(
           fallbackPublishRate: contractResult.outputFallbackUsed ? 1 : 0,
         },
         schemaValidationFailures: contractResult.missingRuntimeFieldsAudit.map((f) => `missing:${f}`),
+        fieldAudit: contractResult.fieldAudit,
+        validationErrors: contractResult.validationErrors,
+        validationWarnings: contractResult.validationWarnings,
+        repairs: contractResult.contractRepairs,
         canonicalizationIssues: [],
         capturedAt: new Date().toISOString(),
       },
@@ -659,7 +708,7 @@ export async function executeNodeDynamically(
 
   // Capture resolved runtime inputs for execution observability without leaking secrets.
   // This is used by execution detail views and "last runtime value" previews in UI.
-  let resolvedInputSources: Record<string, 'static_config' | 'template' | 'deterministic_runtime' | 'runtime_ai'> = {};
+  let resolvedInputSources: Record<string, RuntimeInputSource> = {};
   try {
     resolvedInputSources = {};
     for (const fieldName of Object.keys(resolvedInputs || {})) {
@@ -752,12 +801,17 @@ export async function executeNodeDynamically(
       continue;
     }
     const currentValue = mergedConfig[fieldName];
+    const source = contractResult.inputSources[fieldName] || 'static_config';
+    if (source === 'runtime_ai' || source === 'deterministic_runtime') {
+      mergedConfig[fieldName] = aiValue;
+      console.log(`[DynamicExecutor] Merged ${source} value for ${fieldName} into config`);
+      continue;
+    }
     // Only merge if current value is empty/undefined/null
     if (!currentValue ||
         (typeof currentValue === 'string' && currentValue.trim() === '') ||
         (typeof currentValue === 'object' && Object.keys(currentValue).length === 0)) {
       mergedConfig[fieldName] = aiValue;
-      const source = contractResult.inputSources[fieldName] || 'static_config';
       console.log(`[DynamicExecutor] Merged ${source} value for ${fieldName} into config`);
     }
   }
@@ -1010,6 +1064,7 @@ async function resolveInputsWithAI(
       nodeType,
       nodeLabel,
       retryRequiredFields,
+      runtimeLineage: buildRuntimeLineage(nodeOutputs, previousOutput),
     });
 
     if (logVerboseAiResolution) {
@@ -1076,7 +1131,11 @@ async function resolveNodeInputsUniversalContract(
   let missingRuntimeFieldsAudit: string[] = [];
   let outputFallbackUsed = false;
   let outputFallbackReason: string | undefined;
-  let inputSources: Record<string, 'static_config' | 'template' | 'deterministic_runtime' | 'runtime_ai'> = {};
+  let inputSources: Record<string, RuntimeInputSource> = {};
+  let validationErrors: string[] = [];
+  let validationWarnings: string[] = [];
+  let contractRepairs: string[] = [];
+  let fieldAudit: RuntimeFieldAuditEntry[] = [];
   let resolvedInputs: Record<string, any> = resolveInputsFromConfig(
     runtimeInputSchema,
     migratedConfig as Record<string, any>,
@@ -1128,6 +1187,19 @@ async function resolveNodeInputsUniversalContract(
         );
       }
     }
+
+    const initialContractPass = enforceRuntimeFieldContracts(resolvedInputs, inputSources, {
+      inputSchema: runtimeInputSchema,
+      config: migratedConfig as Record<string, unknown>,
+      effectiveFillModes,
+      upstreamPayload,
+      allOutputs: nodeOutputs.getAll() as Record<string, unknown>,
+      workflowIntent: rawWorkflowIntent,
+    });
+    resolvedInputs = initialContractPass.resolvedInputs as Record<string, any>;
+    inputSources = initialContractPass.inputSources;
+    validationWarnings.push(...initialContractPass.warnings);
+    contractRepairs.push(...initialContractPass.repairs);
 
     for (const fieldName of allRuntimeFields) {
       if (isMeaningfulValueForResolution(resolvedInputs[fieldName]) && inputSources[fieldName] !== 'static_config' && inputSources[fieldName] !== 'template') {
@@ -1264,6 +1336,8 @@ async function resolveNodeInputsUniversalContract(
       }
     );
     resolvedInputs = contractResult.resolvedInputs as Record<string, any>;
+    validationWarnings.push(...contractResult.warnings);
+    contractRepairs.push(...contractResult.repairs);
 
     for (const fieldName of Object.keys(runtimeInputSchema)) {
       const mode = effectiveFillModes[fieldName];
@@ -1284,6 +1358,21 @@ async function resolveNodeInputsUniversalContract(
     }
 
     applyInputAliasesFromSchema(resolvedInputs as Record<string, unknown>, runtimeInputSchema as Record<string, any>);
+
+    const finalContractPass = enforceRuntimeFieldContracts(resolvedInputs, inputSources, {
+      inputSchema: runtimeInputSchema,
+      config: migratedConfig as Record<string, unknown>,
+      effectiveFillModes,
+      upstreamPayload,
+      allOutputs: nodeOutputs.getAll() as Record<string, unknown>,
+      workflowIntent: rawWorkflowIntent,
+    });
+    resolvedInputs = finalContractPass.resolvedInputs as Record<string, any>;
+    inputSources = finalContractPass.inputSources;
+    validationErrors = finalContractPass.errors;
+    validationWarnings.push(...finalContractPass.warnings);
+    contractRepairs.push(...finalContractPass.repairs);
+    fieldAudit = finalContractPass.audit;
 
     const resolvedRuntimeFields = runtimeFields.filter((fieldName) =>
       isMeaningfulValueForResolution((resolvedInputs as Record<string, any>)?.[fieldName])
@@ -1332,6 +1421,10 @@ async function resolveNodeInputsUniversalContract(
     missingRuntimeFieldsAudit,
     outputFallbackUsed,
     outputFallbackReason,
+    validationErrors,
+    validationWarnings,
+    contractRepairs,
+    fieldAudit,
   };
 }
 

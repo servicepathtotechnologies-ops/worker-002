@@ -3,7 +3,7 @@
 // Based on the comprehensive guide
 
 import { getNodeOutputSchema, getNodeOutputType } from '../../core/types/node-output-types';
-import type { FieldIntelligence } from '../../core/types/unified-node-contract';
+import type { FieldIntelligence, RuntimeFieldContract } from '../../core/types/unified-node-contract';
 
 export interface NodeCapability {
   inputType: 'text' | 'array' | 'object' | ('text' | 'array' | 'object')[]; // What data types this node accepts
@@ -68,6 +68,8 @@ export interface ConfigField {
    * infers conservative runtime/default/risk metadata for every field.
    */
   fieldIntelligence?: FieldIntelligence;
+  /** Universal runtime generation/validation/repair metadata. */
+  runtimeContract?: RuntimeFieldContract;
 }
 
 export interface AISelectionCriteria {
@@ -1768,7 +1770,7 @@ export class NodeLibrary {
             type: 'string',
             description: 'Full URL to request',
             examples: ['https://api.example.com/data', '{{$json.apiUrl}}/users'],
-            fillMode: { default: 'buildtime_ai_once', supportsRuntimeAI: true, supportsBuildtimeAI: true },
+            fillMode: { default: 'runtime_ai', supportsRuntimeAI: true, supportsBuildtimeAI: true },
           },
           method: {
             type: 'string',
@@ -2170,12 +2172,14 @@ export class NodeLibrary {
             examples: ['read', 'write', 'append', 'update'],
             default: 'read',
             fillMode: { default: 'manual_static', supportsRuntimeAI: false, supportsBuildtimeAI: true },
+            runtimeContract: { protected: true, validation: { format: 'non_empty' } },
           },
           spreadsheetId: {
             type: 'string',
             description: 'Google Sheets spreadsheet ID (from URL: /d/SPREADSHEET_ID/edit)',
             examples: ['1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms'],
             fillMode: { default: 'manual_static', supportsRuntimeAI: false, supportsBuildtimeAI: false },
+            runtimeContract: { protected: true, validation: { format: 'non_empty' } },
           },
           sheetName: {
             type: 'string',
@@ -2188,6 +2192,12 @@ export class NodeLibrary {
             description: 'Cell range (e.g., A1:D100, leave empty for all used cells)',
             examples: ['A1:D100', 'A1:Z', ''],
             fillMode: { default: 'manual_static', supportsRuntimeAI: false, supportsBuildtimeAI: true },
+            runtimeContract: {
+              protected: true,
+              validation: { format: 'a1_range', allowEmpty: true },
+              repair: ['clear_invalid_optional'],
+              invalidExamples: ['https://drive.google.com/file/d/example/view'],
+            },
           },
           outputFormat: {
             type: 'string',
@@ -2199,12 +2209,33 @@ export class NodeLibrary {
           values: {
             type: 'array',
             description: 'Data to write/append (for write/append operations)',
-            fillMode: { default: 'manual_static', supportsRuntimeAI: false, supportsBuildtimeAI: true },
+            fillMode: { default: 'runtime_ai', supportsRuntimeAI: true, supportsBuildtimeAI: true },
+            runtimeContract: {
+              aiGeneratable: true,
+              requiredWhen: [
+                { field: 'operation', equals: 'append' },
+                { field: 'operation', equals: 'write' },
+                { field: 'operation', equals: 'update' },
+              ],
+              requiredGroup: 'google_sheets_write_payload',
+              validation: { format: 'row_values' },
+              repair: ['object_to_row_values'],
+            },
           },
           data: {
             type: 'object',
             description: 'Data object to write/append (alternative to values array)',
-            fillMode: { default: 'manual_static', supportsRuntimeAI: false, supportsBuildtimeAI: true },
+            fillMode: { default: 'runtime_ai', supportsRuntimeAI: true, supportsBuildtimeAI: true },
+            runtimeContract: {
+              aiGeneratable: true,
+              requiredWhen: [
+                { field: 'operation', equals: 'append' },
+                { field: 'operation', equals: 'write' },
+                { field: 'operation', equals: 'update' },
+              ],
+              requiredGroup: 'google_sheets_write_payload',
+              validation: { format: 'object_payload' },
+            },
           },
         },
       },
@@ -2423,7 +2454,7 @@ export class NodeLibrary {
             description: 'Variable value (supports template expressions like {{input.field}})',
             examples: ['Hello World', '{{input.name}}', '{{$json.data}}'],
             default: '',
-            fillMode: { default: 'buildtime_ai_once', supportsRuntimeAI: true, supportsBuildtimeAI: true },
+            fillMode: { default: 'runtime_ai', supportsRuntimeAI: true, supportsBuildtimeAI: true },
           },
           // Legacy support: also accept 'values' array format
           values: {
@@ -2544,6 +2575,12 @@ export class NodeLibrary {
             type: 'string',
             description: 'Optional JavaScript code for the function',
             examples: ['return { ...$json, processed: true };'],
+            fillMode: { default: 'runtime_ai', supportsRuntimeAI: true, supportsBuildtimeAI: true },
+            runtimeContract: {
+              aiGeneratable: true,
+              requiredWhen: [{ field: 'description', notEquals: '' }],
+              validation: { format: 'code' },
+            },
           },
           timeout: {
             type: 'number',
@@ -2766,6 +2803,12 @@ export class NodeLibrary {
               [{ field: '$json.age', operator: 'greater_than_or_equal', value: 18 }],
               [{ field: '$json.status', operator: 'equals', value: 'active' }],
             ],
+            fillMode: { default: 'runtime_ai', supportsRuntimeAI: true, supportsBuildtimeAI: true },
+            runtimeContract: {
+              aiGeneratable: true,
+              validation: { format: 'conditions' },
+              repair: ['derive_condition'],
+            },
           },
           combineOperation: {
             type: 'string',
@@ -2819,7 +2862,11 @@ export class NodeLibrary {
             description:
               'Expression or template evaluated to a scalar (e.g. {{$json.status}}). Must match one of cases[].value.',
             examples: ['{{$json.status}}', '{{$json.category}}', 'input.region'],
-            fillMode: { default: 'buildtime_ai_once', supportsRuntimeAI: true, supportsBuildtimeAI: true },
+            fillMode: { default: 'runtime_ai', supportsRuntimeAI: true, supportsBuildtimeAI: true },
+            runtimeContract: {
+              aiGeneratable: true,
+              validation: { format: 'non_empty' },
+            },
           },
           cases: {
             type: 'array',
@@ -2831,6 +2878,11 @@ export class NodeLibrary {
                 { value: 'pending', label: 'Pending' },
               ],
             ],
+            fillMode: { default: 'buildtime_ai_once', supportsRuntimeAI: true, supportsBuildtimeAI: true },
+            runtimeContract: {
+              aiGeneratable: true,
+              validation: { format: 'switch_cases' },
+            },
           },
           routingType: {
             type: 'string',
@@ -4135,6 +4187,14 @@ export class NodeLibrary {
             examples: ['john@example.com', 'john@example.com, jane@example.com'],
             // Required only when recipientSource is manual_entry
             requiredIf: { field: 'recipientSource', equals: 'manual_entry' },
+            fillMode: { default: 'runtime_ai', supportsRuntimeAI: true, supportsBuildtimeAI: true },
+            runtimeContract: {
+              aiGeneratable: true,
+              requiredWhen: [{ field: 'operation', equals: 'send' }],
+              validation: { format: 'email_list' },
+              repair: ['extract_email'],
+              invalidExamples: ['v', 'recipient@example'],
+            },
           },
           /** Fallback when upstream outputs have no extractable emails; same names as google_sheets for consistency. */
           spreadsheetId: {
@@ -4157,6 +4217,11 @@ export class NodeLibrary {
               'Optional A1 range within the sheet for inline fallback (e.g. A2:D500). Empty reads the whole tab. Same format as the Google Sheets node.',
             examples: ['A2:D100'],
             visibleIf: { field: 'recipientSource', equals: 'extract_from_sheet' },
+            runtimeContract: {
+              protected: true,
+              validation: { format: 'a1_range', allowEmpty: true },
+              repair: ['clear_invalid_optional'],
+            },
           },
           useAiRecipientMapping: {
             type: 'boolean',
@@ -4171,7 +4236,13 @@ export class NodeLibrary {
             examples: ['Hello', '{{$json.subject}}'],
             // ✅ This is a configurable input field
             requiredIf: { field: 'operation', equals: 'send' },
-            fillMode: { default: 'buildtime_ai_once', supportsRuntimeAI: true, supportsBuildtimeAI: true },
+            fillMode: { default: 'runtime_ai', supportsRuntimeAI: true, supportsBuildtimeAI: true },
+            runtimeContract: {
+              aiGeneratable: true,
+              requiredWhen: [{ field: 'operation', equals: 'send' }],
+              validation: { format: 'non_empty' },
+              repair: ['derive_title'],
+            },
           },
           body: {
             type: 'string',
@@ -4179,7 +4250,13 @@ export class NodeLibrary {
             examples: ['Email content', '{{$json.message}}'],
             // ✅ This is a configurable input field
             requiredIf: { field: 'operation', equals: 'send' },
-            fillMode: { default: 'buildtime_ai_once', supportsRuntimeAI: true, supportsBuildtimeAI: true },
+            fillMode: { default: 'runtime_ai', supportsRuntimeAI: true, supportsBuildtimeAI: true },
+            runtimeContract: {
+              aiGeneratable: true,
+              requiredWhen: [{ field: 'operation', equals: 'send' }],
+              validation: { format: 'non_empty' },
+              repair: ['derive_body'],
+            },
           },
           // ✅ CRITICAL: from is NOT a configurable input - OAuth account is used
           from: {

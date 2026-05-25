@@ -42,7 +42,10 @@ export function resolveEffectiveFieldFillMode(
         return (fieldDef.fillMode?.default as FieldFillMode | undefined) ?? 'manual_static';
       }
     }
-    return candidate;
+    if (candidate === 'runtime_ai' && fieldDef?.runtimeContract?.aiGeneratable === true) {
+      return candidate;
+    }
+    return coerceFieldFillModeByPolicy(fieldName, candidate, inputSchema, config).mode;
   }
 
   return coerceFieldFillModeByPolicy(fieldName, candidate, inputSchema, config).mode;
