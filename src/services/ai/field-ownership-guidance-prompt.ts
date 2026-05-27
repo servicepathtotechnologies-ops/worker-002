@@ -124,6 +124,8 @@ export function buildDeterministicFieldOwnershipGuidance(question: string, conte
   const isCredential = ownershipClass === 'credential' || text((schema as any).role).includes('credential') || /api[_-]?key|token|secret|credential/i.test(fieldName);
   const modeLabel = modeText(currentMode);
   const operationPhrase = operation && operation !== 'the selected' ? ` for the "${operation}" operation` : '';
+  const emptyBehavior = registryDescription?.emptyBehavior || 'If empty, this optional setting is not applied unless this workflow needs that extra behavior.';
+  const offBehavior = registryDescription?.offBehavior || 'If off, this field is left out of setup and the node continues only when the selected operation can run without it.';
 
   return {
     whatThisFieldDoes:
@@ -145,13 +147,13 @@ export function buildDeterministicFieldOwnershipGuidance(question: string, conte
       registryDescription?.needed ||
       (required
         ? 'Yes. This field must be resolved before the node can run successfully.'
-        : 'No. This field is optional for this operation unless your workflow logic specifically depends on it.'),
+        : `No. This field is optional for this operation unless your workflow logic specifically depends on it. ${emptyBehavior}`),
     whereToGetValue: where,
     nextStepExpectations:
       registryDescription?.dataImpact ||
       (isCredential
         ? 'After field ownership, go to Credentials and connect the provider account or paste the secret into the vault. The workflow runner will inject it securely at execution time.'
-        : 'After field ownership, manual fields appear in the configuration/credentials flow. AI build fields are generated during setup; AI runtime fields are resolved when the workflow executes.'),
+        : `${offBehavior} After field ownership, manual fields appear in the configuration flow. AI build fields are generated during setup and should be reviewed; AI runtime fields are resolved when the workflow executes.`),
   };
 }
 
@@ -167,6 +169,7 @@ export function buildFieldOwnershipGuidancePrompt(args: {
     "Use only provided context, selected node operation, field schema, credential rows, and node docs; avoid inventing facts.",
     "Be field-specific. If selectedField is present, answer only for that node + field.",
     "If runtime/build AI is unsupported, explain fallback behavior.",
+    "Never write vague phrases like 'configured default behavior'. If a field is empty or off, name the concrete result.",
     "For provider IDs/URLs/API keys/OAuth tokens, tell the user exactly where to copy/connect them.",
     "Return STRICT JSON object with keys:",
     "whatThisFieldDoes, ifYouChooseYou, ifYouChooseAIBuild, ifYouChooseAIRuntime, isActuallyRequired, whereToGetValue, nextStepExpectations.",
@@ -192,10 +195,10 @@ export function fallbackFieldOwnershipGuidance(): FieldOwnershipGuidanceSections
     ifYouChooseAIRuntime:
       "AI generates the value when the workflow runs. This option only works for fields that support runtime AI.",
     isActuallyRequired:
-      "Required fields must be resolved before execution. Optional fields can be skipped.",
+      "Required fields must be resolved before execution. Optional fields can be skipped when the selected operation does not need them.",
     whereToGetValue:
       "For credentials, get values from the provider account/app console (API keys, OAuth app, webhook settings).",
     nextStepExpectations:
-      "After Field Ownership, the Credentials step asks for missing secrets/connections and manual required values.",
+      "After Field Ownership, the Credentials step asks for missing secrets/connections and manual required values. AI Build values should be reviewed before running.",
   };
 }

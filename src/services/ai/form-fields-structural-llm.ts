@@ -57,7 +57,7 @@ export async function hydrateFormFieldsFromLlmIfEnabled(workflow: Workflow): Pro
         { role: 'user', content: userContent },
       ],
       {
-        model: process.env.STRUCTURAL_FORM_FIELDS_MODEL || 'gemini-2.5-flash',
+        model: process.env.STRUCTURAL_FORM_FIELDS_MODEL || 'gemini-3.5-flash',
         apiKey: process.env.GEMINI_API_KEY,
         temperature: 0.2,
       }

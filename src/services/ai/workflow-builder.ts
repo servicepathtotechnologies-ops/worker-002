@@ -163,7 +163,7 @@ export class AgenticWorkflowBuilder {
     };
 
     const raw = await geminiOrchestrator.processRequest('workflow-generation', input, {
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.5-flash',
       temperature: 0.2,
       cache: false,
     });

@@ -199,6 +199,9 @@ interface ExecutionLog {
   error?: string;
   resolvedInputs?: Record<string, unknown>;
   resolvedInputSources?: Record<string, string>;
+  runtimeInputAudit?: unknown;
+  runtimeInputHandoffAudit?: unknown;
+  runtimeResolutionAudit?: unknown;
 }
 
 export interface ScheduleWiseNodeParams {
@@ -5915,7 +5918,7 @@ export async function executeNodeLegacy(
           .filter((content: unknown) => typeof content === 'string' && content.trim())
           .join('\n');
       }
-      const model = getStringProperty(config, 'model', 'gemini-2.5-flash');
+      const model = getStringProperty(config, 'model', 'gemini-3.5-flash');
 
       // Resolve API key: user-selected connection → inline config key → server env var (via LLMAdapter)
       const geminiResolved = await resolveGeminiApiKeyForNode({ node, config, userId, currentUserId });
@@ -5967,11 +5970,11 @@ export async function executeNodeLegacy(
     }
 
     case 'ai_chat_model': {
-      // ✅ MIGRATED: Direct AI chat model call (defaults to Gemini 2.5 Flash)
+      // ✅ MIGRATED: Direct AI chat model call (defaults to Gemini 3.5 Flash)
       // Uses GEMINI_API_KEY from config - no provider/model selection needed
       const prompt = getStringProperty(config, 'prompt', '');
       const provider = 'gemini' as any; // Always use Gemini
-      const model = 'gemini-2.5-flash'; // Default to Gemini 2.5 Flash
+      const model = 'gemini-3.5-flash'; // Default to Gemini 3.5 Flash
       const systemPrompt = getStringProperty(config, 'systemPrompt', '');
       const responseFormat = getStringProperty(config, 'responseFormat', 'text');
       const temperatureRaw = getStringProperty(config, 'temperature', '0.7');
@@ -6080,7 +6083,7 @@ export async function executeNodeLegacy(
       const nextConfig = {
         ...config,
         provider: 'gemini',
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3.5-flash',
         prompt,
         temperature,
       };
@@ -6107,14 +6110,14 @@ export async function executeNodeLegacy(
     }
 
     case 'text_summarizer': {
-      // ✅ MIGRATED: Alias now uses Gemini 2.5 Flash
+      // ✅ MIGRATED: Alias now uses Gemini 3.5 Flash
       const text = getStringProperty(config, 'text', '');
       const maxLength = getStringProperty(config, 'maxLength', '');
       const prompt = `Summarize the following text${maxLength ? ` in <= ${maxLength} words` : ''}:\n\n${text}`;
       const nextConfig = {
         ...config,
         provider: 'gemini', // Changed to Gemini
-        model: 'gemini-2.5-flash', // Default to Gemini 2.5 Flash
+        model: 'gemini-3.5-flash', // Default to Gemini 3.5 Flash
         prompt,
       };
       const nextNode = {
@@ -6134,13 +6137,13 @@ export async function executeNodeLegacy(
     }
 
     case 'sentiment_analyzer': {
-      // ✅ MIGRATED: Minimal sentiment analyzer via ai_chat_model (uses Gemini 2.5 Flash)
+      // ✅ MIGRATED: Minimal sentiment analyzer via ai_chat_model (uses Gemini 3.5 Flash)
       const text = getStringProperty(config, 'text', '');
       const prompt = `Analyze the sentiment of the following text. Return JSON with keys: sentiment (positive|neutral|negative), score (0-1), summary.\n\nText:\n${text}`;
       const nextConfig = { 
         ...config, 
         provider: 'gemini', // Changed to Gemini
-        model: 'gemini-2.5-flash', // Default to Gemini 2.5 Flash
+        model: 'gemini-3.5-flash', // Default to Gemini 3.5 Flash
         prompt, 
         responseFormat: 'json' 
       };
@@ -6161,8 +6164,8 @@ export async function executeNodeLegacy(
     }
 
     case 'ai_service': {
-      // ✅ MIGRATED: Generic AI Service wrapper → ai_chat_model (uses Gemini 2.5 Flash)
-      // Provider/model selection removed - always uses Gemini 2.5 Flash
+      // ✅ MIGRATED: Generic AI Service wrapper → ai_chat_model (uses Gemini 3.5 Flash)
+      // Provider/model selection removed - always uses Gemini 3.5 Flash
       const prompt = getStringProperty(config, 'prompt', '');
       const inputData = getStringProperty(config, 'inputData', '');
       const serviceType = getStringProperty(config, 'serviceType', 'summarize');
@@ -6172,7 +6175,7 @@ export async function executeNodeLegacy(
       const nextConfig = {
         ...config,
         provider: 'gemini', // Always use Gemini
-        model: 'gemini-2.5-flash', // Default to Gemini 2.5 Flash
+        model: 'gemini-3.5-flash', // Default to Gemini 3.5 Flash
         temperature,
         maxTokens,
         prompt: effectivePrompt,
@@ -6643,14 +6646,14 @@ export async function executeNodeLegacy(
       
       // Default to Gemini (GEMINI_API_KEY)
       let provider: 'openai' | 'claude' | 'gemini' | 'ollama' = 'gemini';
-      let model = 'gemini-2.5-flash';
+      let model = 'gemini-3.5-flash';
       let apiKey: string | undefined;
       if (chatModelConfig.provider) {
         provider = chatModelConfig.provider as any;
       } else if (chatModelConfig.model) {
         provider = LLMAdapter.detectProvider(chatModelConfig.model);
       }
-      model = chatModelConfig.model || getStringProperty(config, 'model', 'gemini-2.5-flash');
+      model = chatModelConfig.model || getStringProperty(config, 'model', 'gemini-3.5-flash');
       apiKey = chatModelConfig.apiKey || process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY || process.env.GEMINI_API_KEY;
       const geminiResolvedForAgent = provider === 'gemini'
         ? await resolveGeminiApiKeyForNode({ node, config, userId, currentUserId })
@@ -13377,11 +13380,11 @@ export async function executeNodeLegacy(
     }
 
     case 'chat_model': {
-      // ✅ MIGRATED: Chat Model node - returns model configuration for AI Agent nodes (uses Gemini 2.5 Flash)
+      // ✅ MIGRATED: Chat Model node - returns model configuration for AI Agent nodes (uses Gemini 3.5 Flash)
       // This node is typically connected to AI Agent nodes via the chat_model port
-      // Provider/model selection removed - always uses Gemini 2.5 Flash
+      // Provider/model selection removed - always uses Gemini 3.5 Flash
       const provider = 'gemini'; // Always use Gemini
-      const model = 'gemini-2.5-flash'; // Default to Gemini 2.5 Flash
+      const model = 'gemini-3.5-flash'; // Default to Gemini 3.5 Flash
       const temperature = parseFloat(getStringProperty(config, 'temperature', '0.7')) || 0.7;
       
       return {
@@ -21092,15 +21095,38 @@ export default async function executeWorkflowHandler(req: Request, res: Response
     // Attach captured resolved-input metadata to logs before cache is cleared.
     logs = logs.map((log) => {
       const captured = nodeOutputs.get(EXECUTION_OBSERVABILITY_KEYS.resolvedInputs(log.nodeId)) as
-        | { fields?: Record<string, unknown>; sources?: Record<string, 'static_config' | 'template' | 'deterministic_runtime' | 'runtime_ai'> }
+        | { fields?: Record<string, unknown>; sources?: Record<string, string> }
+        | undefined;
+      const runtimeAudit = nodeOutputs.get(EXECUTION_OBSERVABILITY_KEYS.runtimeResolutionAudit(log.nodeId)) as
+        | {
+            fieldAudit?: unknown;
+            handoffAudit?: unknown;
+            validationErrors?: unknown;
+            blockedReason?: unknown;
+            capturedAt?: unknown;
+          }
         | undefined;
       if (!captured || typeof captured !== 'object') {
-        return log;
+        return runtimeAudit && typeof runtimeAudit === 'object'
+          ? {
+              ...log,
+              runtimeInputAudit: runtimeAudit.fieldAudit,
+              runtimeInputHandoffAudit: runtimeAudit.handoffAudit,
+              runtimeResolutionAudit: runtimeAudit,
+            }
+          : log;
       }
       return {
         ...log,
         resolvedInputs: captured.fields || {},
         resolvedInputSources: captured.sources || {},
+        ...(runtimeAudit && typeof runtimeAudit === 'object'
+          ? {
+              runtimeInputAudit: runtimeAudit.fieldAudit,
+              runtimeInputHandoffAudit: runtimeAudit.handoffAudit,
+              runtimeResolutionAudit: runtimeAudit,
+            }
+          : {}),
       };
     });
 

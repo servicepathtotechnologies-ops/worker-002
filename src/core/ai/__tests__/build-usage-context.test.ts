@@ -14,13 +14,13 @@ describe('build-usage-context', () => {
     await runWithBuildUsageTracking(async () => {
       recordLlmUsage({
         provider: 'gemini',
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3.5-flash',
         usage: { promptTokens: 10, completionTokens: 20, totalTokens: 30 },
         stage: 'test',
       });
       recordLlmUsage({
         provider: 'gemini',
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3.5-flash',
         usage: { promptTokens: 5, completionTokens: 5, totalTokens: 10 },
         stage: 'test',
       });

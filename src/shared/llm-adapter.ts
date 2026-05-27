@@ -4,6 +4,7 @@
 import { recordLlmUsage } from '../core/ai/build-usage-context';
 import { getGeminiWalletContext } from '../services/ai/gemini-wallet-context';
 import { geminiWalletService } from '../services/ai/gemini-wallet-service';
+import { GEMINI_MODELS, normalizeGeminiModel } from '../services/ai/gemini-models';
 
 export interface LLMMessage {
   role: 'system' | 'user' | 'assistant';
@@ -356,24 +357,7 @@ export class LLMAdapter {
       throw new Error('Gemini API key required. Please provide your API key in this node’s configuration (API Key field).');
     }
 
-    // Map model names to Gemini format
-    const modelMap: Record<string, string> = {
-      // Legacy aliases → modern defaults
-      'gemini-1.5-flash': 'gemini-2.5-flash',
-      'gemini-2.0-flash-lite': 'gemini-3-flash-preview',
-      // Supported models
-      'gemini-1.5-pro': 'gemini-2.5-pro',
-      'gemini-2.5-flash': 'gemini-2.5-flash',
-      'gemini-2.5-pro': 'gemini-2.5-pro',
-      'gemini-2.5-flash-lite': 'gemini-3-flash-preview',
-      'gemini-pro': 'gemini-2.5-pro',
-      'gemini-3-flash': 'gemini-2.5-flash',
-      'gemini-3.1-pro': 'gemini-2.5-pro',
-      'gemini-3.1-flash-lite': 'gemini-3-flash-preview',
-    };
-
-    // Default to gemini-2.5-flash for broad compatibility.
-    const model = modelMap[options.model] || options.model || 'gemini-2.5-flash';
+    const model = normalizeGeminiModel(options.model);
 
     // Convert messages to Gemini format
     const systemInstruction = messages.find(m => m.role === 'system')?.content;
@@ -538,7 +522,7 @@ export class LLMAdapter {
   }
 
   static getAvailableModels(provider: LLMProvider): string[] {
-    const geminiModels = ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3-flash-preview'];
+    const geminiModels = [...GEMINI_MODELS];
     switch (provider) {
       case 'openai':
         return ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-4', 'gpt-3.5-turbo'];

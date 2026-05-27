@@ -13,6 +13,7 @@
 import { Request, Response } from 'express';
 import { buildNodeCatalogText } from '../../services/ai/node-catalog-builder';
 import { runCapabilityStructuralPromptStage } from '../../services/ai/stages/capability-structural-prompt-stage';
+import { validateCapabilitySelections } from '../../services/ai/stages/capability-selection-validation';
 import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 import type { WorkflowNode, WorkflowEdge } from '../../core/types/ai-types';
 import { compileSummaryV2FromWorkflow } from '../../services/ai/summary-v2-compiler';
@@ -37,10 +38,6 @@ export default async function generateCapabilityWorkflow(req: Request, res: Resp
       res.status(400).json({ ok: false, code: 'MISSING_PROMPT', message: 'userPrompt is required', selections });
       return;
     }
-    if (!selections || Object.keys(selections).length === 0) {
-      res.status(400).json({ ok: false, code: 'MISSING_SELECTIONS', message: 'Select at least one integration before continuing.', selections });
-      return;
-    }
     if (!containers || containers.length === 0) {
       res.status(400).json({ ok: false, code: 'MISSING_CONTAINERS', message: 'containers is required', selections });
       return;
@@ -59,6 +56,20 @@ export default async function generateCapabilityWorkflow(req: Request, res: Resp
         code: 'INVALID_NODE_SELECTION',
         message: 'One or more selected nodes are not valid registry nodes.',
         missingContainerIds: missingOrInvalidSelections.map((container) => container.containerId),
+        selections,
+      });
+      return;
+    }
+
+    const selectionValidation = validateCapabilitySelections(containers, selections);
+    if (!selectionValidation.valid) {
+      res.status(422).json({
+        ok: false,
+        code: selectionValidation.code,
+        message: selectionValidation.message,
+        missingContainers: selectionValidation.missingIntentSteps,
+        triggerContainers: selectionValidation.triggerContainers,
+        selectedTriggerContainers: selectionValidation.selectedTriggerContainers,
         selections,
       });
       return;

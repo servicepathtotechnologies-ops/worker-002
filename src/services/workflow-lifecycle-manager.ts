@@ -1616,6 +1616,16 @@ export class WorkflowLifecycleManager {
           continue;
         }
 
+        const requiredForSelectedOperation = computeFieldRequiredBeforeExecution(
+          nodeType,
+          fieldName,
+          fieldDef as any,
+          existingConfig as Record<string, unknown>
+        );
+        if (!requiredForSelectedOperation) {
+          continue;
+        }
+
         const existingValue = existingConfig[fieldName];
         const hasConcreteValue =
           existingValue !== undefined &&
@@ -1641,12 +1651,7 @@ export class WorkflowLifecycleManager {
           placeholder: controlMetadata.placeholder,
           uiWidget: controlMetadata.uiWidget,
           description: fieldDef.description || fieldName,
-          required: computeFieldRequiredBeforeExecution(
-            nodeType,
-            fieldName,
-            fieldDef as any,
-            existingConfig as Record<string, unknown>
-          ),
+          required: requiredForSelectedOperation,
           defaultValue: fieldDef.default,
           examples: fieldDef.examples,
           ownership: fieldDef.ownership || 'value',

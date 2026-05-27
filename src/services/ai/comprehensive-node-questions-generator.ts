@@ -35,6 +35,7 @@ import {
 import { getInputControlMetadata } from '../../core/utils/schema-input-control';
 import { getCredentialVaultMetaForField, getPrimaryCredentialFieldForNode } from '../../core/utils/credential-field-vault-meta';
 import { computeFieldRequiredBeforeExecution } from '../../core/validation/registry-field-contract';
+import { resolveFieldPolicyForNode } from '../../core/operations/field-policy-resolver';
 import {
   analyzeSelectedWorkflowIntelligence,
   type SelectedWorkflowIntelligence,
@@ -167,14 +168,17 @@ function addMissingInputSchemaQuestionsForOwnership(
     const inputSchema = def?.inputSchema;
     if (!inputSchema) continue;
     const nodeLabel = node.data?.label || nodeType;
+    const config = (node.data?.config || {}) as Record<string, any>;
+    const fieldPolicy = resolveFieldPolicyForNode(def, config);
     for (const fieldName of Object.keys(inputSchema)) {
       const key = `${node.id}_${fieldName}`;
       if (byKey.has(key)) continue;
       const fieldDef = inputSchema[fieldName] as any;
       const vaultMeta = getCredentialVaultMetaForField(nodeType, fieldName);
       const credentialOwned = !!vaultMeta || isCredentialOwnership(fieldName, fieldDef);
-      const mode = resolveEffectiveFieldFillMode(fieldName, inputSchema, (node.data?.config || {}) as Record<string, any>);
-      const config = (node.data?.config || {}) as Record<string, any>;
+      const policy = fieldPolicy.fields[fieldName];
+      if (!credentialOwned && policy?.active === false) continue;
+      const mode = resolveEffectiveFieldFillMode(fieldName, inputSchema, config);
       const hasExplicitFillMode = config._fillMode?.[fieldName] !== undefined;
       const valueIsEmpty = isEmptyValue(config[fieldName]);
 
@@ -1412,12 +1416,18 @@ function generateConfigurationQuestions(
     const orderedQuestions = getOrderedQuestions(nodeType, answeredFields);
     
     const unifiedForOrdered = unifiedNodeRegistry.get(nodeType);
+    const fieldPolicyForOrdered = unifiedForOrdered
+      ? resolveFieldPolicyForNode(unifiedForOrdered, config as Record<string, unknown>)
+      : null;
     for (const qDef of orderedQuestions) {
       // Skip if already asked (credential or operation)
       if (qDef.type === 'credential' || qDef.field.toLowerCase().includes('operation')) {
         continue;
       }
       const orderedFd = unifiedForOrdered?.inputSchema?.[qDef.field];
+      if (fieldPolicyForOrdered?.fields[qDef.field]?.active === false) {
+        continue;
+      }
       if (orderedFd && isCredentialOwnership(qDef.field, orderedFd)) {
         continue;
       }
@@ -1515,6 +1525,9 @@ function generateConfigurationQuestions(
       : requiredFields;
     
     const unifiedForConfig = unifiedNodeRegistry.get(nodeType);
+    const fieldPolicyForConfig = unifiedForConfig
+      ? resolveFieldPolicyForNode(unifiedForConfig, config as Record<string, unknown>)
+      : null;
     for (const fieldName of fieldsToProcess) {
       // Skip credential and operation fields (already handled)
       const fieldLower = fieldName.toLowerCase();
@@ -1525,6 +1538,9 @@ function generateConfigurationQuestions(
         continue;
       }
       const cfgFd = unifiedForConfig?.inputSchema?.[fieldName];
+      if (fieldPolicyForConfig?.fields[fieldName]?.active === false) {
+        continue;
+      }
       if (cfgFd && isCredentialOwnership(fieldName, cfgFd)) {
         continue;
       }

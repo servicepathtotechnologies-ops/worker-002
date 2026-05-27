@@ -265,7 +265,7 @@ export const GoogleGeminiNodeConfigSchema = BaseNodeConfigSchema.extend({
     .min(1, 'Prompt is required'),
   model: z.string()
     .min(1, 'Model name is required')
-    .default('gemini-2.5-pro'),
+    .default('gemini-3.1-pro-preview'),
   temperature: z.number()
     .min(0)
     .max(2)

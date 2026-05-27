@@ -2,6 +2,7 @@ import type { UnifiedNodeDefinition, NodeExecutionContext, NodeExecutionResult, 
 import type { NodeSchema } from '../../../services/nodes/node-library';
 import { executeViaLegacyExecutor } from '../unified-node-registry-legacy-adapter';
 import { resolveRecipients } from '../../utils/recipient-resolver';
+import { getAuthoritativeInputs } from '../../execution/runtime-input-handoff';
 import { getGoogleAccessToken } from '../../../shared/google-sheets';
 import { fetchGoogleSheetReadRange } from '../../../shared/google-sheets-read-range';
 
@@ -43,8 +44,14 @@ async function executeGmailSend(context: NodeExecutionContext, schema: NodeSchem
   const filteredConfig = filterPlaceholderValues(resolvedConfig);
   const filteredBaseConfig = filterPlaceholderValues(context.config || {});
 
-  // Merge resolved inputs into config (inputs as fallback only)
-  const configWithResolvedInputs: any = { ...(context.inputs || {}), ...filteredBaseConfig, ...filteredConfig };
+  // Provider adapters consume final resolved inputs as authoritative.
+  // Static config remains provider metadata/defaults; it must not overwrite validated runtime_ai values.
+  const finalResolvedInputs = getAuthoritativeInputs(context);
+  const configWithResolvedInputs: any = {
+    ...filteredBaseConfig,
+    ...filteredConfig,
+    ...finalResolvedInputs,
+  };
 
   const op = typeof configWithResolvedInputs?.operation === 'string' ? String(configWithResolvedInputs.operation) : 'send';
   if (op !== 'send') {
@@ -56,16 +63,10 @@ async function executeGmailSend(context: NodeExecutionContext, schema: NodeSchem
   const upstreamList = Array.from(context.upstreamOutputs.values());
   const recipientSource = configWithResolvedInputs.recipientSource;
 
-  // ✅ CRITICAL FIX: Ensure recipientEmails is preserved even if it looks like a placeholder
-  // The field might contain a real email that was incorrectly filtered
-  let recipientEmails = configWithResolvedInputs.recipientEmails || 
-                        filteredBaseConfig.recipientEmails || 
-                        context.config?.recipientEmails;
+  let recipientEmails = configWithResolvedInputs.recipientEmails;
 
   // ✅ NEW: Check for recipientUrl field - extract email from URL if provided
-  const recipientUrl = configWithResolvedInputs.recipientUrl || 
-                       filteredBaseConfig.recipientUrl || 
-                       context.config?.recipientUrl;
+  const recipientUrl = configWithResolvedInputs.recipientUrl;
   
   if (recipientUrl && typeof recipientUrl === 'string' && recipientUrl.trim()) {
     try {
@@ -156,7 +157,7 @@ async function executeGmailSend(context: NodeExecutionContext, schema: NodeSchem
         return {
           success: true,
           output: {
-            ...(typeof context.inputs === 'object' && context.inputs !== null ? (context.inputs as any) : {}),
+            ...finalResolvedInputs,
             _error:
               'Gmail: inline Google Sheets fallback requires a connected Google account (same OAuth as Gmail, with Sheets API access).',
             _missingInputs: ['spreadsheetId'],
@@ -179,7 +180,7 @@ async function executeGmailSend(context: NodeExecutionContext, schema: NodeSchem
         return {
           success: true,
           output: {
-            ...(typeof context.inputs === 'object' && context.inputs !== null ? (context.inputs as any) : {}),
+            ...finalResolvedInputs,
             _error: `Gmail: could not read inline spreadsheet — ${fetched.error}`,
             _missingInputs: ['spreadsheetId'],
           },
@@ -223,10 +224,13 @@ async function executeGmailSend(context: NodeExecutionContext, schema: NodeSchem
     return {
       success: true,
       output: {
-        ...(typeof context.inputs === 'object' && context.inputs !== null ? (context.inputs as any) : {}),
+        ...finalResolvedInputs,
         _error:
           'Gmail: missing recipient email(s). For Extract from sheet: ensure a Google Sheets node upstream supplies rows with email-like columns, or set optional Spreadsheet ID + sheet on this node for fallback, or use manual recipients / prompt.',
-        _missingInputs: ['recipientEmails'],
+        _adapterDiagnostics: {
+          reason: 'recipient_resolution_empty_after_authoritative_inputs',
+          field: 'recipientEmails',
+        },
       },
     };
   }
@@ -298,16 +302,36 @@ async function executeGmailSend(context: NodeExecutionContext, schema: NodeSchem
     if (!bodyFinal && upstreamBody) bodyFinal = upstreamBody;
   }
 
-  // Note: subject/body are filled by the dynamic executor's resolveInputsWithAI() before this
-  // execute() is called (context.inputs carries the AI-resolved values). The merge at
-  // configWithResolvedInputs (line ~47) already brought them in. If still empty here, the
+  // Note: subject/body are filled by the dynamic executor before this execute() is called.
+  // finalResolvedInputs carries the validated runtime values, and configWithResolvedInputs already
+  // brought them in. If still empty here, the
   // upstream truly has no text content and the errors below are the correct user-facing result.
 
   if (!subjectFinal) {
-    return { success: true, output: { ...(context.inputs as any), _error: 'Gmail: "subject" is required', _missingInputs: ['subject'] } };
+    return {
+      success: true,
+      output: {
+        ...finalResolvedInputs,
+        _error: 'Gmail: "subject" is required',
+        _adapterDiagnostics: {
+          reason: 'subject_empty_after_authoritative_inputs',
+          field: 'subject',
+        },
+      },
+    };
   }
   if (!bodyFinal) {
-    return { success: true, output: { ...(context.inputs as any), _error: 'Gmail: "body" is required', _missingInputs: ['body'] } };
+    return {
+      success: true,
+      output: {
+        ...finalResolvedInputs,
+        _error: 'Gmail: "body" is required',
+        _adapterDiagnostics: {
+          reason: 'body_empty_after_authoritative_inputs',
+          field: 'body',
+        },
+      },
+    };
   }
 
   const { resolveGmailCredentials, sendGmailEmail } = await import('../../../shared/gmail-executor');
@@ -323,7 +347,7 @@ async function executeGmailSend(context: NodeExecutionContext, schema: NodeSchem
     return {
       success: true,
       output: {
-        ...(typeof context.inputs === 'object' && context.inputs !== null ? (context.inputs as any) : {}),
+        ...finalResolvedInputs,
         _error: 'Gmail: OAuth token not found. Please connect a Google account with Gmail permissions.',
       },
     };
@@ -346,7 +370,7 @@ async function executeGmailSend(context: NodeExecutionContext, schema: NodeSchem
   return {
     success: true,
     output: {
-      ...(typeof context.inputs === 'object' && context.inputs !== null ? (context.inputs as any) : {}),
+      ...finalResolvedInputs,
       success: failed.length === 0,
       subject: subjectFinal,
       to: recipients.length === 1 ? recipients[0] : recipients,
@@ -361,6 +385,50 @@ async function executeGmailSend(context: NodeExecutionContext, schema: NodeSchem
 
 export function overrideGoogleGmail(def: UnifiedNodeDefinition, schema: NodeSchema): UnifiedNodeDefinition {
   const baseSchema = ensureRecipientEmailsField(def.inputSchema);
+  const operationContracts: UnifiedNodeDefinition['operationContracts'] = [
+    {
+      operation: 'send',
+      label: 'Send Email',
+      requiredFields: ['operation', 'recipientSource', 'subject', 'body'],
+      optionalFields: ['recipientEmails', 'spreadsheetId', 'sheetName', 'range', 'useAiRecipientMapping'],
+      providerDefaultFields: ['range'],
+      emptyValuePolicy: { range: 'provider_default', spreadsheetId: 'optional', sheetName: 'optional' },
+      credentialProviders: ['google'],
+      outputFields: ['success', 'messageId', 'sentCount', 'failedCount', 'results'],
+      legacyAliases: ['send_email', 'gmail_send'],
+      status: 'implemented',
+    },
+    {
+      operation: 'list',
+      label: 'List Messages',
+      requiredFields: ['operation'],
+      optionalFields: ['query', 'maxResults'],
+      credentialProviders: ['google'],
+      outputFields: ['success', 'messages'],
+      legacyAliases: ['list_messages'],
+      status: 'implemented',
+    },
+    {
+      operation: 'get',
+      label: 'Get Message',
+      requiredFields: ['operation', 'messageId'],
+      optionalFields: [],
+      credentialProviders: ['google'],
+      outputFields: ['success', 'message'],
+      legacyAliases: ['get_message'],
+      status: 'implemented',
+    },
+    {
+      operation: 'search',
+      label: 'Search Messages',
+      requiredFields: ['operation', 'query'],
+      optionalFields: ['maxResults'],
+      credentialProviders: ['google'],
+      outputFields: ['success', 'messages'],
+      legacyAliases: ['search_messages'],
+      status: 'implemented',
+    },
+  ];
   const inputSchema: NodeInputSchema = {
     ...baseSchema,
     credentialId: baseSchema.credentialId
@@ -495,6 +563,7 @@ export function overrideGoogleGmail(def: UnifiedNodeDefinition, schema: NodeSche
   return {
     ...def,
     inputSchema,
+    operationContracts,
     tags: Array.from(new Set([...(def.tags || []), 'communication', 'output', 'sink'])),
     execute: async (context) => {
       return await executeGmailSend(context, schema);

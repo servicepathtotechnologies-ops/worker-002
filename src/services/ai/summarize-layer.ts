@@ -498,7 +498,7 @@ export class AIIntentClarifier {
         registryKnowledgeSummary: PipelineReasoningCoordinator.buildRegistryKnowledgeSummary(),
         priorStageOutputs: {},
       };
-      const coordinator = new PipelineReasoningCoordinator('gemini-2.5-pro', 'gemini-2.5-flash', pipelineContext);
+      const coordinator = new PipelineReasoningCoordinator('gemini-3.1-pro-preview', 'gemini-3.5-flash', pipelineContext);
 
       let geminiNodeTypes: string[] = [];
       try {

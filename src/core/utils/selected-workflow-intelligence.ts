@@ -6,6 +6,7 @@ import type {
 import { unifiedNodeRegistry } from '../registry/unified-node-registry';
 import { isEmptyValue } from './is-empty-value';
 import { resolveEffectiveFieldFillMode } from './fill-mode-resolver';
+import { resolveFieldPolicyForNode } from '../operations/field-policy-resolver';
 
 type WorkflowNodeLike = {
   id?: string;
@@ -177,12 +178,40 @@ function compactDownstream(node: WorkflowNodeLike, workflow: WorkflowLike): bool
 
 function emptyBehaviorFor(field: NodeInputField, relevance: FieldRelevanceResult['relevance']): string {
   const runtime = field.fieldIntelligence?.runtimeBehavior;
-  if (runtime?.whenEmpty) return runtime.whenEmpty;
-  if (runtime?.whenMissing) return runtime.whenMissing;
+  if (runtime?.whenEmpty && !/change behavior|produce incomplete output|optional setting|default behavior/i.test(runtime.whenEmpty)) return runtime.whenEmpty;
+  if (runtime?.whenMissing && !/backend\/default behavior|optional behavior|default behavior/i.test(runtime.whenMissing)) return runtime.whenMissing;
   if (relevance === 'not_applicable') return 'This value is ignored for the selected operation or dependency state.';
-  if (relevance === 'required') return 'The workflow cannot safely run this step without a value.';
-  if (riskForField(field) === 'high') return 'Leaving it empty can fail the step or produce unusable output.';
-  return 'Leaving it empty keeps this field at its configured default behavior.';
+  if (relevance === 'required') return 'The workflow cannot safely run this step without this exact value.';
+  if (riskForField(field) === 'high') return 'If empty, this step may use the wrong data, miss the needed data, or stop before it finishes.';
+  return 'If empty, this optional setting is skipped unless the selected operation needs it.';
+}
+
+function fieldRoleEmptyBehavior(fieldRole: string, nodeLabel: string, fieldName: string, field: NodeInputField, operation: string): string {
+  const hasDefault = Object.prototype.hasOwnProperty.call(field, 'default');
+  const defaultValue = hasDefault ? String(field.default) : '';
+  const opText = operation ? ` for the "${operation}" operation` : '';
+  const optional: Record<string, string> = {
+    credential: `If empty, ${nodeLabel} uses the connected account or credential selected in the Credentials step.`,
+    operation_selector: defaultValue
+      ? `If empty, ${nodeLabel} uses "${defaultValue}" as the action${opText}.`
+      : `If empty, ${nodeLabel} keeps the action already selected for this workflow.`,
+    resource_identifier: `If empty, ${nodeLabel} may use the resource already selected in setup. Enter this when the workflow must use one exact file, sheet, table, channel, or record.`,
+    range: `If empty, ${nodeLabel} may read or write a broad area instead of exact cells or records. Enter a range when only specific data should be used.`,
+    recipient: `If empty, ${nodeLabel} must get recipients from AI Runtime or earlier workflow data.`,
+    title: `If empty, ${nodeLabel} may create or send the result without a clear title or subject.`,
+    content: `If empty, ${nodeLabel} must use content from earlier workflow data or AI Runtime.`,
+    bound: defaultValue
+      ? `If empty, ${nodeLabel} uses ${defaultValue} as the limit.`
+      : `If empty, ${nodeLabel} may use an unsuitable size or count limit.`,
+    query: `If empty, ${nodeLabel} searches less specifically or uses incoming data as-is.`,
+    condition: `If empty, ${nodeLabel} has no clear rule for filtering or branching.`,
+    endpoint: `If empty, ${nodeLabel} has no custom URL or route to call.`,
+    payload: `If empty, ${nodeLabel} uses data from earlier steps when available.`,
+    selector: defaultValue
+      ? `If empty, ${nodeLabel} uses ${defaultValue} for ${fieldName}.`
+      : `If empty, ${nodeLabel} uses its standard mode or format for ${fieldName}.`,
+  };
+  return optional[fieldRole] || `If empty, ${nodeLabel} skips ${fieldName} unless this workflow needs it.`;
 }
 
 function wrongValueRiskFor(fieldRole: string, field: NodeInputField, nodeLabel: string): string {
@@ -243,7 +272,10 @@ function enrichResult(args: {
     operationRole: operationRole(args.operation),
     upstreamDependency,
     downstreamDependency,
-    emptyBehavior: emptyBehaviorFor(args.field, args.result.relevance),
+    emptyBehavior:
+      args.result.relevance === 'not_applicable' || args.result.relevance === 'required' || riskForField(args.field) === 'high'
+        ? emptyBehaviorFor(args.field, args.result.relevance)
+        : fieldRoleEmptyBehavior(role, nodeLabel, args.fieldName, args.field, args.operation),
     wrongValueRisk: wrongValueRiskFor(role, args.field, nodeLabel),
     userAction: userActionFor({
       relevance: args.result.relevance,
@@ -433,6 +465,19 @@ export function evaluateSelectedFieldRelevance(args: {
   const operation = getSelectedOperation(config, def);
   const done = (result: FieldRelevanceResult): FieldRelevanceResult =>
     enrichResult({ workflow, node, fieldName, field, operation, result });
+  const fieldPolicy = def ? resolveFieldPolicyForNode(def, config as Record<string, unknown>) : null;
+  const policyEntry = fieldPolicy?.fields[fieldName];
+
+  if (policyEntry && !policyEntry.active && field.ownership !== 'credential') {
+    return done({
+      relevance: 'not_applicable',
+      shouldAskUser: false,
+      shouldShowInOwnership: false,
+      reason: `${fieldName} is not active for the selected ${operation} configuration.`,
+      riskIfEmpty: 'none',
+      source: 'operation_contract',
+    });
+  }
 
   if (field.ui?.visibleIf && !conditionApplies(field.ui.visibleIf, config)) {
     return done({
@@ -442,6 +487,18 @@ export function evaluateSelectedFieldRelevance(args: {
       reason: `${fieldName} is hidden because its dependency condition is not active for this configuration.`,
       riskIfEmpty: 'none',
       source: 'dependency_rule',
+    });
+  }
+
+  if (policyEntry?.required) {
+    return done({
+      relevance: 'required',
+      shouldAskUser: true,
+      shouldShowInOwnership: true,
+      reason: `${fieldName} is required for the selected ${operation} configuration.`,
+      riskIfEmpty: 'high',
+      suggestedValue: firstSafeDefault(field),
+      source: 'operation_contract',
     });
   }
 

@@ -6,6 +6,7 @@
  */
 
 import type { NodeExecutionContext, UnifiedNodeDefinition } from '../../types/unified-node-contract';
+import { getAuthoritativeInputs, mergeAuthoritativeInputs } from '../../execution/runtime-input-handoff';
 import type { NodeSchema } from '../../../services/nodes/node-library';
 import { resolveCredential } from '../../../services/credential-resolver';
 
@@ -110,7 +111,7 @@ const operationContracts: UnifiedNodeDefinition['operationContracts'] = [
 ];
 
 function mergedInputs(context: NodeExecutionContext): Record<string, any> {
-  return { ...(context.config || {}), ...(context.inputs || {}) };
+  return mergeAuthoritativeInputs(context);
 }
 
 function stringValue(value: unknown): string {
@@ -144,7 +145,8 @@ function maxResults(value: unknown, fallback = 10): string {
 }
 
 async function getYouTubeAccessToken(context: NodeExecutionContext): Promise<string> {
-  const deprecatedRawToken = stringValue(context.inputs?.accessToken || context.config?.accessToken);
+  const authoritativeInputs = getAuthoritativeInputs(context);
+  const deprecatedRawToken = stringValue(authoritativeInputs.accessToken || context.config?.accessToken);
   if (deprecatedRawToken) return deprecatedRawToken;
 
   const userId = context.userId || context.currentUserId;

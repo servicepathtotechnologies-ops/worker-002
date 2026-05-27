@@ -502,14 +502,14 @@ describe('Preservation Example Test 6 — workflow returned regardless of creden
       ok: true,
       intent: SAMPLE_INTENT,
       durationMs: 1,
-      llmCall: { model: 'gemini-2.5-flash', temperature: 0.1, promptTokens: 10, completionTokens: 10 },
+      llmCall: { model: 'gemini-3.5-flash', temperature: 0.1, promptTokens: 10, completionTokens: 10 },
     });
 
     const nsSpy = jest.spyOn(nsModule, 'runNodeSelectionStage').mockResolvedValue({
       ok: true,
       selectedNodes: buildSelectedNodes(),
       durationMs: 1,
-      llmCall: { model: 'gemini-2.5-flash', temperature: 0.1, promptTokens: 10, completionTokens: 10 },
+      llmCall: { model: 'gemini-3.5-flash', temperature: 0.1, promptTokens: 10, completionTokens: 10 },
     });
 
     const erSpy = jest.spyOn(erModule, 'runEdgeReasoningStage').mockResolvedValue({
@@ -518,7 +518,7 @@ describe('Preservation Example Test 6 — workflow returned regardless of creden
       orderedNodeIds: ['node_trigger', 'node_slack'],
       edges: [{ source: 'node_trigger', target: 'node_slack', type: 'main' }],
       durationMs: 1,
-      llmCall: { model: 'gemini-2.5-flash', temperature: 0.1, promptTokens: 10, completionTokens: 10 },
+      llmCall: { model: 'gemini-3.5-flash', temperature: 0.1, promptTokens: 10, completionTokens: 10 },
     });
 
     const vsSpy = jest.spyOn(vsModule, 'runValidationStage').mockResolvedValue({
@@ -526,7 +526,7 @@ describe('Preservation Example Test 6 — workflow returned regardless of creden
       workflow: minimalWorkflow,
       validationIssues: [],
       durationMs: 1,
-      llmCall: { model: 'gemini-2.5-flash', temperature: 0.1, promptTokens: 10, completionTokens: 10 },
+      llmCall: { model: 'gemini-3.5-flash', temperature: 0.1, promptTokens: 10, completionTokens: 10 },
     });
 
     const { AiFirstPipeline } = require('../ai-first-pipeline');

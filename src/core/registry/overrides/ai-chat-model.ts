@@ -5,14 +5,14 @@ import { overrideAiNodeWithIntentAwareSelection } from './ai-shared';
 export function overrideAiChatModel(def: UnifiedNodeDefinition, schema: NodeSchema): UnifiedNodeDefinition {
   const baseDef = overrideAiNodeWithIntentAwareSelection(def, schema);
   
-  // ✅ MIGRATED: Always use Gemini 2.5 Flash (uses GEMINI_API_KEY)
+  // ✅ MIGRATED: Always use Gemini 3.5 Flash (uses GEMINI_API_KEY)
   // Provider/model selection removed - no longer needed
   const originalDefaultConfig = baseDef.defaultConfig;
   const fixedDefaultConfig = () => {
     const config = originalDefaultConfig();
-    // Always use Gemini 2.5 Flash
+    // Always use Gemini 3.5 Flash
     config.provider = 'gemini';
-    config.model = 'gemini-2.5-flash';
+    config.model = 'gemini-3.5-flash';
     return config;
   };
   
@@ -21,7 +21,7 @@ export function overrideAiChatModel(def: UnifiedNodeDefinition, schema: NodeSche
   const fixedValidateConfig = (config: Record<string, any>) => {
     // Ensure provider/model are set to Gemini (for backward compatibility)
     config.provider = 'gemini';
-    config.model = 'gemini-2.5-flash';
+    config.model = 'gemini-3.5-flash';
     return originalValidateConfig(config);
   };
   

@@ -7,6 +7,7 @@
 import type { UnifiedNodeDefinition } from '../../types/unified-node-contract';
 import type { NodeSchema } from '../../../services/nodes/node-library';
 import { runOdooNode } from '../../../services/database/odooNode';
+import { mergeAuthoritativeInputs } from '../../execution/runtime-input-handoff';
 
 export function overrideOdoo(
   def: UnifiedNodeDefinition,
@@ -92,7 +93,7 @@ export function overrideOdoo(
       credentialFields: ['username', 'password'],
     },
     execute: async (context) => {
-      const inputs = { ...(context.config || {}), ...(context.inputs || {}) };
+      const inputs = mergeAuthoritativeInputs(context);
       const result = await runOdooNode({ ...(context as any), inputs } as any);
       if (result?.success === false) {
         return {

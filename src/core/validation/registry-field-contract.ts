@@ -14,6 +14,13 @@ import {
   isCredentialOwnership,
   isStructuralOwnership,
 } from '../utils/field-ownership';
+import {
+  fieldAllowsEmptyValue,
+  fieldIsActiveForOperation,
+  fieldRequiredByOperationContract,
+  resolveOperationContract,
+} from '../operations/operation-contract-resolver';
+import { resolveFieldPolicyForNode } from '../operations/field-policy-resolver';
 
 export function isEmptyConfigValue(value: unknown): boolean {
   return (
@@ -31,6 +38,16 @@ function getNodeLibraryRequiredSet(nodeType: string): Set<string> {
   const schema = nodeLibrary.getSchema(nodeType);
   const req = schema?.configSchema?.required;
   return new Set(Array.isArray(req) ? req : []);
+}
+
+function conditionMatches(
+  condition: { field: string; equals?: unknown; notEquals?: unknown },
+  config: Record<string, unknown>
+): boolean {
+  const value = config[condition.field];
+  if ('equals' in condition) return value === condition.equals;
+  if ('notEquals' in condition) return value !== condition.notEquals;
+  return true;
 }
 
 /**
@@ -70,6 +87,39 @@ export function computeFieldRequiredBeforeExecution(
   }
 
   const def = unifiedNodeRegistry.get(nodeType);
+  if (def) {
+    const operationContract = resolveOperationContract(def, config);
+    const fieldPolicy = resolveFieldPolicyForNode(def, config);
+    const policy = fieldPolicy.fields[fieldName];
+    if (policy) {
+      return policy.required;
+    }
+    if (!fieldIsActiveForOperation(operationContract, fieldName)) {
+      return false;
+    }
+    if (fieldAllowsEmptyValue(operationContract, fieldName)) {
+      return false;
+    }
+    if (fieldRequiredByOperationContract(operationContract, fieldName)) {
+      return true;
+    }
+  }
+
+  if (fieldDef.ui?.visibleIf && !conditionMatches(fieldDef.ui.visibleIf, config)) {
+    return false;
+  }
+
+  if (fieldDef.ui?.requiredIf) {
+    return conditionMatches(fieldDef.ui.requiredIf, config);
+  }
+
+  if (Array.isArray(fieldDef.runtimeContract?.requiredWhen)) {
+    const requiredByOperation = fieldDef.runtimeContract.requiredWhen.some((condition) =>
+      conditionMatches(condition, config)
+    );
+    if (requiredByOperation) return true;
+  }
+
   const inputSchema = (def?.inputSchema || {}) as Record<string, NodeInputField>;
   const mode = resolveEffectiveFieldFillMode(
     fieldName,

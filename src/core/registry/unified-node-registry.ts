@@ -880,6 +880,7 @@ export class UnifiedNodeRegistry implements INodeRegistry {
       version: schema.schemaVersion || '1.0.0',
       inputSchema,
       outputSchema,
+      operationContracts: Array.isArray(schema.operationContracts) ? schema.operationContracts : undefined,
       credentialSchema,
       requiredInputs,
       defaultConfig,

@@ -156,8 +156,13 @@ export async function executeViaLegacyExecutor(args: {
       context && typeof (context as any).resolvedInputSources === 'object'
         ? ((context as any).resolvedInputSources as Record<string, string>)
         : {};
-    for (const [fieldName, value] of Object.entries(context.inputs || {})) {
-      if (inputSources[fieldName] === 'runtime_ai' || inputSources[fieldName] === 'deterministic_runtime') {
+    const finalResolvedInputs = ((context as any).finalResolvedInputs || context.inputs || {}) as Record<string, any>;
+    for (const [fieldName, value] of Object.entries(finalResolvedInputs)) {
+      if (
+        inputSources[fieldName] === 'runtime_ai' ||
+        inputSources[fieldName] === 'field_directive_ai' ||
+        inputSources[fieldName] === 'deterministic_runtime'
+      ) {
         mergedConfig[fieldName] = value;
         continue;
       }
@@ -178,7 +183,7 @@ export async function executeViaLegacyExecutor(args: {
       filteredBaseConfig,
       filteredConfig,
       mergedConfig,
-      executionInput: context.inputs || {},
+      executionInput: finalResolvedInputs,
     };
 
     if (hooks?.beforeExecute) {

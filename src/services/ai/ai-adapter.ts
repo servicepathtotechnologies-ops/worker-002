@@ -27,7 +27,7 @@ export class AIAdapter {
   async textGeneration(prompt: string, options: TextGenerationOptions = {}): Promise<string> {
     const input = options.system ? { system: options.system, message: prompt } : prompt;
     const result = await geminiOrchestrator.processRequest('chat-generation', input, {
-      model: options.model || 'gemini-2.5-flash',
+      model: options.model || 'gemini-3.5-flash',
       temperature: options.temperature ?? 0.7,
       max_tokens: options.max_tokens,
       cache: false,
@@ -41,7 +41,7 @@ export class AIAdapter {
       : 'You are an expert programmer. Generate clean, efficient, and well-commented code.';
     const fullPrompt = options.language ? `Write ${options.language} code for: ${prompt}` : prompt;
     const result = await geminiOrchestrator.processRequest('code-generation', { system: systemPrompt, message: fullPrompt }, {
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.5-flash',
       temperature: options.temperature ?? 0.3,
       cache: false,
     });
@@ -57,7 +57,7 @@ export class AIAdapter {
     options: { model?: string; temperature?: number } = {}
   ): Promise<string> {
     const response = await llmAdapter.chat('gemini', messages, {
-      model: options.model || 'gemini-2.5-flash',
+      model: options.model || 'gemini-3.5-flash',
       temperature: options.temperature ?? 0.7,
     });
     return response.content;

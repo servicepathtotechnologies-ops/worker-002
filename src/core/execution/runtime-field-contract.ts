@@ -24,6 +24,8 @@ export interface RuntimeFieldValidationContext extends RuntimeLineageContext {
 export interface RuntimeFieldAuditEntry {
   field: string;
   fillMode: FieldFillMode;
+  expectedRole?: string;
+  expectedCardinality?: string;
   source?: RuntimeInputSource;
   valid: boolean;
   repaired: boolean;
@@ -68,7 +70,10 @@ export function isRuntimeEmptyValue(value: unknown): boolean {
   if (typeof value === 'string') {
     const trimmed = value.trim();
     if (!trimmed) return true;
-    if (trimmed.length <= 80 && trimmed.toLowerCase() === 'v') return true;
+    const lower = trimmed.toLowerCase();
+    if (['v', 'n/a', 'na', 'none', 'null', 'undefined', 'not configured'].includes(lower)) {
+      return true;
+    }
     return PLACEHOLDER_TEXT_RE.test(trimmed);
   }
   if (Array.isArray(value)) return value.length === 0;
@@ -179,6 +184,19 @@ function validateFormat(value: unknown, format: RuntimeValidationFormat): string
   if (format === 'conditions' && !isValidConditions(value)) return 'conditions must be non-empty rules with field, operator, and value';
   if (format === 'switch_cases' && !isValidSwitchCases(value)) return 'switch cases must be non-empty objects with value';
   if (format === 'code' && (typeof value !== 'string' || value.trim().length < 10)) return 'code is missing or too short';
+  if (format === 'url') {
+    if (typeof value !== 'string') return 'URL must be a string';
+    try {
+      new URL(value);
+    } catch {
+      return 'URL is invalid';
+    }
+  }
+  if (format === 'number' && typeof value !== 'number') return 'value must be a number';
+  if (format === 'boolean' && typeof value !== 'boolean') return 'value must be a boolean';
+  if (format === 'array_min_length' && (!Array.isArray(value) || value.length === 0)) {
+    return 'array must contain at least one item';
+  }
   return undefined;
 }
 
@@ -321,14 +339,9 @@ export function enforceRuntimeFieldContracts(
 
   for (const [fieldName, fieldDef] of Object.entries(context.inputSchema || {})) {
     const fillMode = context.effectiveFillModes[fieldName] || 'manual_static';
-    const source = sources[fieldName];
     const required = fieldRequiredByContract(fieldName, fieldDef, resolved, context.config);
     const allowEmpty = fieldDef.runtimeContract?.validation?.allowEmpty === true;
     const protectedField = fieldDef.runtimeContract?.protected === true || fieldDef.ownership === 'credential';
-
-    if (protectedField && source === 'runtime_ai') {
-      errors.push(`${fieldName}: runtime AI cannot generate protected field`);
-    }
 
     const repair = repairField({ fieldName, fieldDef, resolved, context });
     if (repair.repaired) {
@@ -339,7 +352,17 @@ export function enforceRuntimeFieldContracts(
     warnings.push(...repair.warnings);
 
     const value = resolved[fieldName];
+    const source = sources[fieldName];
     const fieldErrors: string[] = [];
+    if (protectedField && (source === 'runtime_ai' || source === 'field_directive_ai')) {
+      fieldErrors.push(`${fieldName}: runtime AI cannot generate protected field`);
+    }
+    if (fillMode === 'runtime_ai' && source === 'static_config' && required) {
+      fieldErrors.push(`${fieldName}: runtime_ai field cannot be satisfied by static_config`);
+    }
+    if (fillMode === 'runtime_ai' && source === 'template' && required) {
+      fieldErrors.push(`${fieldName}: runtime_ai field cannot be satisfied by template`);
+    }
     const empty = isRuntimeEmptyValue(value) || fieldHasInvalidExample(value, fieldDef);
     if (empty && required && !allowEmpty && !groupSatisfied(fieldName, fieldDef, resolved, context.inputSchema)) {
       fieldErrors.push(`${fieldName} is required but empty or placeholder-like`);
@@ -362,6 +385,8 @@ export function enforceRuntimeFieldContracts(
     audit.push({
       field: fieldName,
       fillMode,
+      expectedRole: fieldDef.runtimeContract?.role || fieldDef.role,
+      expectedCardinality: fieldDef.runtimeContract?.cardinality,
       source,
       valid: fieldErrors.length === 0,
       repaired: repair.repaired,

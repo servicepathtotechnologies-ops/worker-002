@@ -20,6 +20,7 @@ import { geminiOrchestrator } from '../gemini-orchestrator';
 import { logger } from '../../../core/logger';
 import { unifiedNodeRegistry } from '../../../core/registry/unified-node-registry';
 import type { Workflow } from '../../../core/types/ai-types';
+import type { NodeInputField } from '../../../core/types/unified-node-contract';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -68,6 +69,104 @@ function tryParseJson(text: string): Record<string, unknown> | null {
     return parsed as Record<string, unknown>;
   } catch {
     return null;
+  }
+}
+
+// ─── Per-Field Directive Generation ─────────────────────────────────────────
+
+/**
+ * Generates per-field behavioral directives for every runtime_ai field in a node.
+ * Called once per node during property population (build time).
+ * Stored in node.data.config._fieldDirectives and used at execution time by
+ * the AI input resolver to produce semantically correct per-field content.
+ *
+ * Universal: works for any node type via registry field metadata (type, role, description).
+ * Non-blocking: returns {} on any failure.
+ */
+async function generateRuntimeFieldDirectives(params: {
+  nodeId: string;
+  nodeType: string;
+  runtimeAiFields: Array<{ fieldName: string; field: NodeInputField }>;
+  userIntent: string;
+  graphDigest: string;
+  correlationId?: string;
+}): Promise<Record<string, string>> {
+  const { nodeId, nodeType, runtimeAiFields, userIntent, graphDigest, correlationId } = params;
+
+  if (runtimeAiFields.length === 0) return {};
+
+  const systemPrompt =
+    'You are a workflow field directive generator. For each listed runtime_ai field, ' +
+    'write a precise 1-2 sentence instruction that tells an AI what this field must contain ' +
+    'at workflow execution time and what it must never contain.\n\n' +
+    'RULES:\n' +
+    '- title_like fields: instruct to write a concise human-readable label/subject (max 100 chars). ' +
+    'Never use spreadsheet ranges, row identifiers, or structural system keys as the value.\n' +
+    '- long_body fields: instruct to write professional prose derived from BUSINESS DATA ' +
+    '(form values, names, submitted text). Never use integration identifiers ' +
+    '(spreadsheet ranges like "job!A1:E2", row counts, API endpoints) as greeting names or body content.\n' +
+    '- recipient fields: instruct to extract a valid email address or identifier from upstream ' +
+    'form data using the specific upstream field name. Never substitute a sheet name or range.\n' +
+    '- Other fields: write a directive based on the field\'s description and semantic role.\n\n' +
+    'Return ONLY valid JSON: { "<fieldName>": "<directive string>" }. No markdown, no explanation.';
+
+  const fieldsSection = runtimeAiFields
+    .map(
+      ({ fieldName, field }) =>
+        `  - ${fieldName} (type: ${field.type}, role: ${field.role ?? 'unspecified'}): ${field.description}`,
+    )
+    .join('\n');
+
+  const userMessage =
+    `USER_INTENT:\n${userIntent}\n\n` +
+    `WORKFLOW_NODE_ORDER:\n${graphDigest}\n\n` +
+    `NODE_TYPE: ${nodeType}\n` +
+    `NODE_ID: ${nodeId}\n\n` +
+    `FIELDS NEEDING DIRECTIVES:\n${fieldsSection}\n\n` +
+    `Return a JSON object with exactly these field names as keys and directive strings as values.`;
+
+  try {
+    const result = await geminiOrchestrator.processRequest(
+      'field-directive-generation',
+      { system: systemPrompt, message: userMessage },
+      { model: 'gemini-3.5-flash', temperature: 0.1, cache: false },
+    );
+    const raw = typeof result === 'string' ? result : JSON.stringify(result);
+    const parsed = tryParseJson(raw);
+    if (!parsed) return {};
+
+    // Only keep entries that are string directives for known field names
+    const validKeys = new Set(runtimeAiFields.map((f) => f.fieldName));
+    const directives: Record<string, string> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (validKeys.has(key) && typeof value === 'string' && value.trim().length > 0) {
+        directives[key] = value.trim();
+      }
+    }
+
+    if (Object.keys(directives).length > 0) {
+      logger.info({
+        event: 'field_directives_generated',
+        stage: 'property_population',
+        correlationId,
+        nodeId,
+        nodeType,
+        fieldCount: Object.keys(directives).length,
+        fields: Object.keys(directives),
+      });
+    }
+
+    return directives;
+  } catch (err) {
+    logger.warn({
+      event: 'field_directives_skipped',
+      stage: 'property_population',
+      correlationId,
+      nodeId,
+      nodeType,
+      reason: err instanceof Error ? err.message : String(err),
+    });
+    return {};
   }
 }
 
@@ -296,7 +395,7 @@ export async function runPropertyPopulationStage(
         const result = await geminiOrchestrator.processRequest(
           'property-population',
           { system: systemPrompt, message: userMessage },
-          { model: 'gemini-2.5-flash', temperature: 0.1, cache: false },
+          { model: 'gemini-3.5-flash', temperature: 0.1, cache: false },
         );
         rawResponse = typeof result === 'string' ? result : JSON.stringify(result);
       } catch (llmErr) {
@@ -324,7 +423,7 @@ export async function runPropertyPopulationStage(
           const retryResult = await geminiOrchestrator.processRequest(
             'property-population',
             { system: systemPrompt, message: retryMessage },
-            { model: 'gemini-2.5-flash', temperature: 0.1, cache: false },
+            { model: 'gemini-3.5-flash', temperature: 0.1, cache: false },
           );
           const retryRaw = typeof retryResult === 'string' ? retryResult : JSON.stringify(retryResult);
           parsed = tryParseJson(retryRaw);
@@ -429,6 +528,32 @@ export async function runPropertyPopulationStage(
         ...filteredLlmValues,
         _fillMode: priorFillMode, // ← always write the stamped map
       };
+
+      // ── Generate per-field directives for runtime_ai fields ──────────────
+      // These are stored as _fieldDirectives in node config and used at
+      // execution time to give the AI resolver precise per-field instructions.
+      const runtimeAiFields = Object.entries(inputSchema)
+        .filter(
+          ([, field]) =>
+            field.fillMode?.default === 'runtime_ai' &&
+            field.ownership !== 'credential' &&
+            field.fillMode?.supportsRuntimeAI !== false,
+        )
+        .map(([fieldName, field]) => ({ fieldName, field: field as NodeInputField }));
+
+      if (runtimeAiFields.length > 0) {
+        const directives = await generateRuntimeFieldDirectives({
+          nodeId,
+          nodeType,
+          runtimeAiFields,
+          userIntent,
+          graphDigest,
+          correlationId,
+        });
+        if (Object.keys(directives).length > 0) {
+          node.data.config = { ...node.data.config, _fieldDirectives: directives };
+        }
+      }
 
       // ── 2.6 Summary tracking ─────────────────────────────────────────────
       const writtenFields = Object.keys(filteredLlmValues);

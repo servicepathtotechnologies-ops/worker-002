@@ -1,5 +1,13 @@
 // Model Manager - Gemini models only (uses GEMINI_API_KEY)
 
+import {
+  GEMINI_DEFAULT_MODEL,
+  GEMINI_MODELS,
+  GEMINI_PRO_MODEL,
+  getGeminiFallbackModels,
+  normalizeGeminiModel,
+} from './gemini-models';
+
 export interface ModelInfo {
   name: string;
   size: string;
@@ -8,12 +16,6 @@ export interface ModelInfo {
   lastUsed?: Date;
   usageCount: number;
 }
-
-const GEMINI_MODELS = [
-  'gemini-2.5-flash',
-  'gemini-3-flash-preview',
-  'gemini-2.5-pro',
-];
 
 /**
  * Model Manager - Gemini API models (no local loading)
@@ -49,16 +51,11 @@ export class ModelManager {
   }
 
   getRecommendedModels(): string[] {
-    return ['gemini-2.5-flash', 'gemini-2.5-pro'];
+    return [GEMINI_DEFAULT_MODEL, GEMINI_PRO_MODEL];
   }
 
   getFallbackModels(primaryModel: string): string[] {
-    const fallbackMap: Record<string, string[]> = {
-      'gemini-2.5-pro': ['gemini-2.5-flash', 'gemini-3-flash-preview'],
-      'gemini-2.5-flash': ['gemini-3-flash-preview', 'gemini-2.5-pro'],
-      'gemini-3-flash-preview': ['gemini-2.5-flash', 'gemini-2.5-pro'],
-    };
-    return fallbackMap[primaryModel] || ['gemini-2.5-flash'];
+    return getGeminiFallbackModels(normalizeGeminiModel(primaryModel));
   }
 
   async initialize(): Promise<void> {

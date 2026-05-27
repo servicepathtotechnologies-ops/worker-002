@@ -1,9 +1,14 @@
 import * as cheerio from 'cheerio';
 import type { UnifiedNodeDefinition } from '../../types/unified-node-contract';
 import type { NodeSchema } from '../../../services/nodes/node-library';
+import { mergeAuthoritativeInputs } from '../../execution/runtime-input-handoff';
 
-function mergeInputs(context: { config?: Record<string, any>; inputs?: Record<string, any> }): Record<string, any> {
-  return { ...(context.config || {}), ...(context.inputs || {}) };
+function mergeInputs(context: {
+  config?: Record<string, any>;
+  inputs?: Record<string, any>;
+  finalResolvedInputs?: Record<string, any>;
+}): Record<string, any> {
+  return mergeAuthoritativeInputs(context);
 }
 
 export function overrideHtml(def: UnifiedNodeDefinition, _schema: NodeSchema): UnifiedNodeDefinition {

@@ -1,4 +1,4 @@
-import { compactForAiPrompt } from '../ai-input-resolver';
+import { AIInputResolver, compactForAiPrompt } from '../ai-input-resolver';
 
 describe('AI input resolver prompt compaction', () => {
   it('summarizes large sheet-like arrays instead of serializing every row', () => {
@@ -16,5 +16,19 @@ describe('AI input resolver prompt compaction', () => {
     expect(compacted).toContain('"truncated": true');
     expect(compacted).not.toContain('Customer 99');
     expect(compacted.length).toBeLessThanOrEqual(1215);
+  });
+
+  it('extracts JSON from markdown-fenced AI responses', () => {
+    const resolver = new AIInputResolver() as any;
+    expect(resolver.extractJsonPayload('```json\n{"values":[["A"]]}\n```')).toBe(
+      '{"values":[["A"]]}'
+    );
+  });
+
+  it('requires requested runtime fields in JSON mode', () => {
+    const resolver = new AIInputResolver() as any;
+    expect(() =>
+      resolver.assertRequestedFieldsPresent({ recipientEmails: 'v' }, ['recipientEmails'], 'json')
+    ).toThrow(/missing or empty/);
   });
 });

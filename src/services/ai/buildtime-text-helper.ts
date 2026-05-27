@@ -53,7 +53,7 @@ export class BuildtimeTextHelper {
         { role: 'user', content: userContent },
       ],
       {
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3.5-flash',
         apiKey: process.env.GEMINI_API_KEY,
         temperature: 0.4,
       }

@@ -14,6 +14,7 @@
  */
 
 import type { UnifiedNodeDefinition, NodeExecutionContext, NodeExecutionResult, NodeInputSchema } from '../../types/unified-node-contract';
+import { getAuthoritativeInputs, mergeAuthoritativeInputs } from '../../execution/runtime-input-handoff';
 import type { NodeSchema } from '../../../services/nodes/node-library';
 import { resolveOAuthTokenString } from '../../../shared/credential-resolver';
 import { Client } from '@notionhq/client';
@@ -166,7 +167,8 @@ async function collectAll<T>(
 // ─── Token resolver ───────────────────────────────────────────────────────────
 
 async function getNotionToken(context: NodeExecutionContext): Promise<string> {
-  const direct = String(context.config?.accessToken || context.inputs?.accessToken || '').trim();
+  const authoritativeInputs = getAuthoritativeInputs(context);
+  const direct = String(authoritativeInputs.accessToken || context.config?.accessToken || '').trim();
   if (direct) return direct;
 
   const ids: string[] = [];
@@ -201,7 +203,7 @@ function bool(v: any, fallback = false): boolean {
 }
 
 function merged(context: NodeExecutionContext): Record<string, any> {
-  return { ...(context.config || {}), ...(context.inputs || {}) };
+  return mergeAuthoritativeInputs(context);
 }
 
 /**

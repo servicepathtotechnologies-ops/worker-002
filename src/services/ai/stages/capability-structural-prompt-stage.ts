@@ -23,7 +23,7 @@ import type {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const MODEL = 'gemini-2.5-flash';
+const MODEL = 'gemini-3.5-flash';
 const TEMPERATURE = 0.1;
 
 // ─── Node Hydration ───────────────────────────────────────────────────────────

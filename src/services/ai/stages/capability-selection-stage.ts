@@ -86,7 +86,7 @@ export async function runCapabilitySelectionStage(
       'node-suggestion',
       { system: systemPrompt, message: userMessage },
       {
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3.5-flash',
         temperature: 0.1,
         cache: false,
       },
@@ -125,7 +125,7 @@ export async function runCapabilitySelectionStage(
         'node-suggestion',
         { system: retryPrompt, message: userMessage },
         {
-          model: 'gemini-2.5-flash',
+          model: 'gemini-3.5-flash',
           temperature: 0.1,
           cache: false,
         },

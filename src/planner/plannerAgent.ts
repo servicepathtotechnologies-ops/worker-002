@@ -2,7 +2,7 @@ import { LLMAdapter } from '../shared/llm-adapter';
 import { config } from '../core/config';
 import { WorkflowSpec, PlannerResult } from './types';
 
-const DEFAULT_PLANNER_MODEL = 'gemini-2.5-pro'; // Use Pro for complex planning tasks
+const DEFAULT_PLANNER_MODEL = 'gemini-3.1-pro-preview'; // Use Pro for complex planning tasks
 
 /**
  * System prompt for the Smart Planner–Driven Workflow Orchestration System.

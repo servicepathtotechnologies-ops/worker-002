@@ -256,7 +256,7 @@ Return JSON:
         { role: 'system' as const, content: systemPrompt },
         { role: 'user' as const, content: 'Analyze the data flow mapping.' }
       ];
-      const response = await this.llmAdapter.chat('gemini', messages, { model: 'gemini-2.5-flash', apiKey: process.env.GEMINI_API_KEY });
+      const response = await this.llmAdapter.chat('gemini', messages, { model: 'gemini-3.5-flash', apiKey: process.env.GEMINI_API_KEY });
       const analysis = JSON.parse(response.content);
       
       return {
@@ -333,7 +333,7 @@ Return JSON array:
         { role: 'system' as const, content: systemPrompt },
         { role: 'user' as const, content: 'Analyze all input fields.' }
       ];
-      const response = await this.llmAdapter.chat('gemini', messages, { model: 'gemini-2.5-flash', apiKey: process.env.GEMINI_API_KEY });
+      const response = await this.llmAdapter.chat('gemini', messages, { model: 'gemini-3.5-flash', apiKey: process.env.GEMINI_API_KEY });
       const analysis = JSON.parse(response.content);
       
       return Array.isArray(analysis) ? analysis : [];
@@ -422,7 +422,7 @@ Return JSON:
         { role: 'system' as const, content: systemPrompt },
         { role: 'user' as const, content: 'Analyze field mappings.' }
       ];
-      const response = await this.llmAdapter.chat('gemini', messages, { model: 'gemini-2.5-flash', apiKey: process.env.GEMINI_API_KEY });
+      const response = await this.llmAdapter.chat('gemini', messages, { model: 'gemini-3.5-flash', apiKey: process.env.GEMINI_API_KEY });
       const analysis = JSON.parse(response.content);
       
       return [{
@@ -494,7 +494,7 @@ Return JSON:
         { role: 'system' as const, content: systemPrompt },
         { role: 'user' as const, content: 'Generate node configuration.' }
       ];
-      const response = await this.llmAdapter.chat('gemini', messages, { model: 'gemini-2.5-flash', apiKey: process.env.GEMINI_API_KEY });
+      const response = await this.llmAdapter.chat('gemini', messages, { model: 'gemini-3.5-flash', apiKey: process.env.GEMINI_API_KEY });
       const analysis = JSON.parse(response.content);
       
       return {

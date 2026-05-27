@@ -2,7 +2,7 @@
  * Pipeline Reasoning Coordinator
  *
  * Implements a Junior/Senior AI review pattern for workflow generation stages.
- * Junior AI (gemini-2.5-flash) executes each stage; Senior AI (gemini-2.5-pro)
+ * Junior AI (gemini-3.5-flash) executes each stage; Senior AI (gemini-3.1-pro-preview)
  * validates and optionally corrects the proposal before it is accepted.
  */
 

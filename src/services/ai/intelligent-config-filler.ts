@@ -58,7 +58,7 @@ Return a JSON object mapping each target field to exactly one upstream key. Exam
         { role: 'system', content: 'You suggest which upstream JSON keys should feed which target input fields. Reply with only valid JSON.' },
         { role: 'user', content: userContent },
       ], {
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3.5-flash',
         apiKey: process.env.GEMINI_API_KEY,
         temperature: 0.2,
       });

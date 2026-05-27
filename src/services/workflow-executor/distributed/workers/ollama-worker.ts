@@ -39,14 +39,14 @@ export class OllamaWorker extends NodeWorker {
     const prompt = (inputs.prompt as string) || (inputs.input as string) || '';
     if (!config.geminiApiKey) throw new Error('GEMINI_API_KEY not configured');
     const content = await geminiOrchestrator.processRequest('chat-generation', prompt, {
-      model: (inputs.model as string) || 'gemini-2.5-flash',
+      model: (inputs.model as string) || 'gemini-3.5-flash',
       cache: false,
     });
     const text = typeof content === 'string' ? content : (content?.content ?? JSON.stringify(content));
     return {
       outputs: {
         content: text,
-        model_used: (inputs.model as string) || 'gemini-2.5-flash',
+        model_used: (inputs.model as string) || 'gemini-3.5-flash',
       },
       metadata: { executionId },
     };

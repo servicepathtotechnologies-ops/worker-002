@@ -4,6 +4,7 @@ import { LRUNodeOutputsCache } from '../../cache/lru-node-outputs-cache';
 import { resolveConfigTemplates } from '../../utils/universal-template-resolver';
 import { filterPlaceholderValues, cleanOutputFromConfig } from '../../utils/placeholder-filter';
 import { executeLogOutputWithCache } from '../../execution/nodes/log-output-executor';
+import { getAuthoritativeInputs } from '../../execution/runtime-input-handoff';
 
 /**
  * ✅ UNIVERSAL FIX: Log Output Node Override
@@ -72,9 +73,9 @@ export function overrideLogOutput(def: UnifiedNodeDefinition, _schema: NodeSchem
         const filteredConfig = filterPlaceholderValues(resolvedConfig);
         const filteredBaseConfig = filterPlaceholderValues(context.config || {});
         const mergedConfig = {
-          ...(context.inputs || {}),
           ...filteredBaseConfig,
           ...filteredConfig,
+          ...getAuthoritativeInputs(context),
         } as Record<string, unknown>;
         const rawOut = executeLogOutputWithCache(mergedConfig, context.rawInput ?? {}, nodeOutputs);
         const cleaned = cleanOutputFromConfig(rawOut, filteredConfig);
@@ -92,4 +93,3 @@ export function overrideLogOutput(def: UnifiedNodeDefinition, _schema: NodeSchem
     },
   };
 }
-

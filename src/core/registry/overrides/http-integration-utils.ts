@@ -1,4 +1,5 @@
 import { extractProviderErrorMessage, readAcknowledgedHttpResponse } from '../../http/acknowledged-response';
+import { mergeAuthoritativeInputs } from '../../execution/runtime-input-handoff';
 
 export async function integrationJsonRequest(
   url: string,
@@ -26,6 +27,10 @@ export function stripTrailingSlash(value: string): string {
   return value.replace(/\/+$/, '');
 }
 
-export function mergeContextInputs(context: { config?: Record<string, any>; inputs?: Record<string, any> }): Record<string, any> {
-  return { ...(context.config || {}), ...(context.inputs || {}) };
+export function mergeContextInputs(context: {
+  config?: Record<string, any>;
+  inputs?: Record<string, any>;
+  finalResolvedInputs?: Record<string, any>;
+}): Record<string, any> {
+  return mergeAuthoritativeInputs(context);
 }

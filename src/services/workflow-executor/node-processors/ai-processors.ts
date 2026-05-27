@@ -1,4 +1,4 @@
-// ✅ MIGRATED: AI Node Processors - All AI operations use Gemini 1.5 Flash
+// ✅ MIGRATED: AI Node Processors - All AI operations use Gemini 3.5 Flash
 // Uses GEMINI_API_KEY from config - no model selection needed
 
 import { aiAdapter } from '../../../services/ai/ai-adapter';
@@ -42,8 +42,8 @@ export class TextAnalysisProcessor {
 
       const prompt = `Analyze this text (Analysis type: ${analysisType}):\n\n${text}\n\nProvide a detailed analysis.`;
 
-      // ✅ MIGRATED: Use Gemini 2.5 Flash by default
-      const defaultModel = 'gemini-2.5-flash';
+      // ✅ MIGRATED: Use Gemini 3.5 Flash by default
+      const defaultModel = 'gemini-3.5-flash';
       const cacheKey = performanceOptimizer.generateCacheKey(prompt, {
         analysisType,
         model: config.model || defaultModel,
@@ -69,7 +69,7 @@ export class TextAnalysisProcessor {
       };
     } catch (error) {
       const duration = Date.now() - startTime;
-      metricsTracker.trackRequest(config.model || 'gemini-2.5-flash', false, duration, 'text-analysis-error');
+      metricsTracker.trackRequest(config.model || 'gemini-3.5-flash', false, duration, 'text-analysis-error');
       throw error;
     }
   }
@@ -89,9 +89,9 @@ export class CodeGeneratorProcessor {
         throw new Error('Requirements are required for code generation');
       }
 
-      // ✅ MIGRATED: Use Gemini 2.5 Flash for code generation
+      // ✅ MIGRATED: Use Gemini 3.5 Flash for code generation
       // Note: codeGeneration doesn't support model parameter - uses default from aiAdapter
-      const defaultModel = 'gemini-2.5-flash';
+      const defaultModel = 'gemini-3.5-flash';
       const code = await aiAdapter.codeGeneration(requirements, {
         language: language || config.language,
         framework: framework || config.framework,
@@ -109,7 +109,7 @@ export class CodeGeneratorProcessor {
       };
     } catch (error) {
       const duration = Date.now() - startTime;
-      metricsTracker.trackRequest('gemini-2.5-flash', false, duration, 'code-generation-error');
+      metricsTracker.trackRequest('gemini-3.5-flash', false, duration, 'code-generation-error');
       throw error;
     }
   }
@@ -146,8 +146,8 @@ export class ChatProcessor {
         { role: 'user' as const, content: message },
       ];
 
-      // ✅ MIGRATED: Use Gemini 2.5 Flash by default
-      const defaultModel = 'gemini-2.5-flash';
+      // ✅ MIGRATED: Use Gemini 3.5 Flash by default
+      const defaultModel = 'gemini-3.5-flash';
       const response = await aiAdapter.chat(messages, {
         model: config.model || defaultModel,
         temperature: config.temperature ?? 0.7,
@@ -167,7 +167,7 @@ export class ChatProcessor {
       };
     } catch (error) {
       const duration = Date.now() - startTime;
-      const defaultModel = 'gemini-2.5-flash';
+      const defaultModel = 'gemini-3.5-flash';
       metricsTracker.trackRequest(config.model || defaultModel, false, duration, 'chat-error');
       throw error;
     }
@@ -194,8 +194,8 @@ export class DocumentAnalysisProcessor {
 
       const prompt = `Analyze this document:\n\n${documentText}\n\n${focusPrompt}\n\nProvide a comprehensive analysis.`;
 
-      // ✅ MIGRATED: Use Gemini 2.5 Flash by default
-      const defaultModel = 'gemini-2.5-flash';
+      // ✅ MIGRATED: Use Gemini 3.5 Flash by default
+      const defaultModel = 'gemini-3.5-flash';
       const analysis = await aiAdapter.textGeneration(prompt, {
         model: config.model || defaultModel,
         system: 'You are an expert document analyst. Provide detailed, structured analysis.',
@@ -220,7 +220,7 @@ export class DocumentAnalysisProcessor {
       };
     } catch (error) {
       const duration = Date.now() - startTime;
-      const defaultModel = 'gemini-2.5-flash';
+      const defaultModel = 'gemini-3.5-flash';
       metricsTracker.trackRequest(config.model || defaultModel, false, duration, 'document-analysis-error');
       throw error;
     }
@@ -241,8 +241,8 @@ export class SummarizationProcessor {
         throw new Error('Text input is required');
       }
 
-      // ✅ MIGRATED: Use Gemini 2.5 Flash by default
-      const defaultModel = 'gemini-2.5-flash';
+      // ✅ MIGRATED: Use Gemini 3.5 Flash by default
+      const defaultModel = 'gemini-3.5-flash';
       const summary = await aiAdapter.summarize(text, {
         maxLength: maxLength || config.maxLength,
         focus: focus || config.focus,
@@ -259,7 +259,7 @@ export class SummarizationProcessor {
       };
     } catch (error) {
       const duration = Date.now() - startTime;
-      metricsTracker.trackRequest('gemini-2.5-flash', false, duration, 'summarization-error');
+      metricsTracker.trackRequest('gemini-3.5-flash', false, duration, 'summarization-error');
       throw error;
     }
   }
@@ -279,8 +279,8 @@ export class TranslationProcessor {
         throw new Error('Text and target language are required');
       }
 
-      // ✅ MIGRATED: Use Gemini 2.5 Flash by default
-      const defaultModel = 'gemini-2.5-flash';
+      // ✅ MIGRATED: Use Gemini 3.5 Flash by default
+      const defaultModel = 'gemini-3.5-flash';
       const translation = await aiAdapter.translate(
         text,
         targetLanguage,
@@ -299,7 +299,7 @@ export class TranslationProcessor {
       };
     } catch (error) {
       const duration = Date.now() - startTime;
-      metricsTracker.trackRequest('gemini-2.5-flash', false, duration, 'translation-error');
+      metricsTracker.trackRequest('gemini-3.5-flash', false, duration, 'translation-error');
       throw error;
     }
   }
@@ -319,8 +319,8 @@ export class SentimentAnalysisProcessor {
         throw new Error('Text input is required');
       }
 
-      // ✅ MIGRATED: Use Gemini 2.5 Flash by default
-      const defaultModel = 'gemini-2.5-flash';
+      // ✅ MIGRATED: Use Gemini 3.5 Flash by default
+      const defaultModel = 'gemini-3.5-flash';
       const sentiment = await aiAdapter.sentimentAnalysis(text);
 
       const duration = Date.now() - startTime;
@@ -333,7 +333,7 @@ export class SentimentAnalysisProcessor {
       };
     } catch (error) {
       const duration = Date.now() - startTime;
-      metricsTracker.trackRequest('gemini-2.5-flash', false, duration, 'sentiment-analysis-error');
+      metricsTracker.trackRequest('gemini-3.5-flash', false, duration, 'sentiment-analysis-error');
       throw error;
     }
   }
@@ -353,8 +353,8 @@ export class SemanticSearchProcessor {
         throw new Error('Query and documents array are required');
       }
 
-      // ✅ MIGRATED: Use Gemini 2.5 Flash by default
-      const defaultModel = 'gemini-2.5-flash';
+      // ✅ MIGRATED: Use Gemini 3.5 Flash by default
+      const defaultModel = 'gemini-3.5-flash';
       const results = await aiAdapter.semanticSearch(query, documents, topK);
 
       const duration = Date.now() - startTime;
@@ -369,7 +369,7 @@ export class SemanticSearchProcessor {
       };
     } catch (error) {
       const duration = Date.now() - startTime;
-      metricsTracker.trackRequest('gemini-2.5-flash', false, duration, 'semantic-search-error');
+      metricsTracker.trackRequest('gemini-3.5-flash', false, duration, 'semantic-search-error');
       throw error;
     }
   }

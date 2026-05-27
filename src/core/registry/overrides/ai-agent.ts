@@ -1,5 +1,6 @@
 import type { UnifiedNodeDefinition } from '../../types/unified-node-contract';
 import type { NodeSchema } from '../../../services/nodes/node-library';
+import { getAuthoritativeInputs } from '../../execution/runtime-input-handoff';
 import { executeViaLegacyExecutor } from '../unified-node-registry-legacy-adapter';
 
 export function overrideAiAgent(def: UnifiedNodeDefinition, schema: NodeSchema): UnifiedNodeDefinition {
@@ -29,7 +30,7 @@ export function overrideAiAgent(def: UnifiedNodeDefinition, schema: NodeSchema):
   nextInputSchema.chat_model = {
     ...chatModelDef,
     required: false,
-    default: (chatModelDef as any).default || { provider: 'gemini', model: 'gemini-2.5-flash' },
+    default: (chatModelDef as any).default || { provider: 'gemini', model: 'gemini-3.5-flash' },
     fillMode: {
       default: 'buildtime_ai_once' as const,
       supportsRuntimeAI: false,
@@ -45,13 +46,14 @@ export function overrideAiAgent(def: UnifiedNodeDefinition, schema: NodeSchema):
     // Make AI Agent work as a normal AI service node: only text input is needed at runtime.
     requiredInputs: [],
     execute: async (context) => {
+      const authoritativeInputs = getAuthoritativeInputs(context);
       const raw = context.rawInput;
       const rawObj = typeof raw === 'object' && raw !== null && !Array.isArray(raw)
         ? raw as Record<string, unknown>
         : {};
 
       const resolvedUserInput =
-        (typeof context.inputs?.userInput === 'string' && context.inputs.userInput) ||
+        (typeof authoritativeInputs.userInput === 'string' && authoritativeInputs.userInput) ||
         (typeof rawObj.message === 'string' && rawObj.message) ||
         (typeof rawObj.text === 'string' && rawObj.text) ||
         (typeof rawObj.input === 'string' && rawObj.input) ||
@@ -59,9 +61,9 @@ export function overrideAiAgent(def: UnifiedNodeDefinition, schema: NodeSchema):
         '';
 
       const mergedInputs = {
-        ...context.inputs,
+        ...authoritativeInputs,
         userInput: resolvedUserInput,
-        chat_model: context.inputs?.chat_model || context.config?.chat_model || { provider: 'gemini', model: 'gemini-2.5-flash' },
+        chat_model: authoritativeInputs.chat_model || context.config?.chat_model || { provider: 'gemini', model: 'gemini-3.5-flash' },
       };
 
       // Keep memory/tool optional and disabled by default to avoid missing-field failures.

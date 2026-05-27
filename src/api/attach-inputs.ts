@@ -113,6 +113,8 @@ function hashAttachInputsPayload(params: {
   inputs: unknown;
   originalUserPrompt?: string;
   fieldOwnershipOverrides?: unknown;
+  fieldGuidanceApplied?: unknown;
+  fieldGuidanceBuildAiUsage?: unknown;
 }): string {
   return createHash('sha256')
     .update(stableStringifyForHash(params))
@@ -241,7 +243,23 @@ async function runAttachInputsPipeline(req: Request, res: Response): Promise<{ s
   try {
     // âœ… CRITICAL: Get workflowId from URL params (not body)
     const workflowId = req.params.workflowId || req.body.workflowId;
-    const { inputs, originalUserPrompt: originalUserPromptFromBody, fieldOwnershipOverrides } = req.body;
+    const {
+      inputs,
+      originalUserPrompt: originalUserPromptFromBody,
+      fieldOwnershipOverrides,
+      fieldGuidanceApplied,
+      fieldGuidanceBuildAiUsage,
+    } = req.body;
+    const appliedFieldGuidanceExamples = Array.isArray(fieldGuidanceApplied)
+      ? fieldGuidanceApplied
+          .map((entry: any) => ({
+            nodeId: String(entry?.nodeId || '').trim(),
+            fieldName: String(entry?.fieldName || '').trim(),
+            mode: String(entry?.mode || 'buildtime_ai_once').trim(),
+            source: String(entry?.source || 'ai_field_guidance').trim(),
+          }))
+          .filter((entry) => entry.nodeId && entry.fieldName)
+      : [];
 
     const trimmedOriginalFromRequest =
       typeof originalUserPromptFromBody === 'string' ? originalUserPromptFromBody.trim() : '';
@@ -387,6 +405,8 @@ async function runAttachInputsPipeline(req: Request, res: Response): Promise<{ s
       inputs: cleanInputs,
       originalUserPrompt: trimmedOriginalFromRequest,
       fieldOwnershipOverrides,
+      fieldGuidanceApplied: appliedFieldGuidanceExamples,
+      fieldGuidanceBuildAiUsage,
     });
     const currentGraphForIdempotency = resolveWorkflowGraphState(workflow as any);
     const currentTopologyForIdempotency = fingerprintWorkflowTopology(
@@ -1592,6 +1612,29 @@ async function runAttachInputsPipeline(req: Request, res: Response): Promise<{ s
         buildAiUsage: mergePersistedBuildAiUsage(metadataToPersist.buildAiUsage, usageSnap),
       };
     }
+    const guidanceUsage =
+      fieldGuidanceBuildAiUsage &&
+      typeof fieldGuidanceBuildAiUsage === 'object' &&
+      (fieldGuidanceBuildAiUsage as any)?.totals?.callCount > 0
+        ? fieldGuidanceBuildAiUsage
+        : null;
+    if (guidanceUsage) {
+      metadataToPersist = {
+        ...metadataToPersist,
+        buildAiUsage: mergePersistedBuildAiUsage(metadataToPersist.buildAiUsage, guidanceUsage as any),
+      };
+    }
+    if (appliedFieldGuidanceExamples.length > 0) {
+      const priorApplied = Array.isArray((metadataToPersist as any).fieldGuidanceAppliedFields)
+        ? ((metadataToPersist as any).fieldGuidanceAppliedFields as any[])
+        : [];
+      const mergedApplied = [...priorApplied, ...appliedFieldGuidanceExamples];
+      metadataToPersist = {
+        ...metadataToPersist,
+        fieldGuidanceAppliedCount: mergedApplied.length,
+        fieldGuidanceAppliedFields: mergedApplied,
+      };
+    }
 
     const structuralDiagnostics = getStructuralDiagnostics(materializedWorkflow as any);
     // Accumulate migrations from both normalization passes for idempotency tracking
@@ -2256,6 +2299,8 @@ async function runAttachInputsPipeline(req: Request, res: Response): Promise<{ s
             nextStatus,
             ownershipSummary,
             ownershipFieldsTouched: modeDiagnostics.appliedModes.length,
+            fieldGuidanceAppliedCount: appliedFieldGuidanceExamples.length,
+            fieldGuidanceAppliedFields: appliedFieldGuidanceExamples,
           },
           created_at: new Date().toISOString(),
         });

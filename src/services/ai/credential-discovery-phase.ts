@@ -233,7 +233,7 @@ export class CredentialDiscoveryPhase {
     const raw = await geminiOrchestrator.processRequest(
       'credential-guidance',
       { system: systemPrompt, message: userMessage },
-      { model: 'gemini-2.5-flash', temperature: 0.2, cache: false },
+      { model: 'gemini-3.5-flash', temperature: 0.2, cache: false },
     );
 
     const text = typeof raw === 'string' ? raw : JSON.stringify(raw);

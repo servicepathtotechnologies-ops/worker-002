@@ -8,49 +8,16 @@
 import { Request, Response } from 'express';
 import { nodeDefinitionRegistry } from '../core/types/node-definition';
 import { unifiedNodeRegistry } from '../core/registry/unified-node-registry';
+import { getOperationContractsForNode } from '../core/operations/operation-contract-resolver';
+import { resolveFieldPolicyForNode } from '../core/operations/field-policy-resolver';
 import type { UnifiedNodeDefinition } from '../core/types/unified-node-contract';
 
-type OperationContract = ReturnType<typeof getOperationContracts>[number];
+type OperationContract = ReturnType<typeof getOperationContractsForNode>[number];
 
-function optionValues(field: any): string[] {
-  const values: string[] = [];
-  const options = field?.ui?.options || field?.options || [];
-  if (Array.isArray(options)) {
-    for (const opt of options) {
-      if (typeof opt === 'string') values.push(opt);
-      else if (opt && typeof opt.value === 'string') values.push(opt.value);
-    }
-  }
-  if (typeof field?.default === 'string') values.push(field.default);
-  return Array.from(new Set(values.filter(Boolean)));
-}
-
-function getOperationContracts(nodeType: string) {
+function getOperationContracts(nodeType: string): OperationContract[] {
   const def = unifiedNodeRegistry.get(nodeType) as UnifiedNodeDefinition | undefined;
   if (!def) return [];
-  if (def.operationContracts?.length) return def.operationContracts;
-
-  const operationValues = optionValues((def.inputSchema || {}).operation);
-  const resourceValues = optionValues((def.inputSchema || {}).resource);
-  const requiredFields = def.requiredInputs || [];
-  const optionalFields = Object.keys(def.inputSchema || {}).filter((key) => !requiredFields.includes(key));
-  const credentialProviders = Array.from(new Set((def.credentialSchema?.requirements || []).map((r) => r.provider).filter(Boolean)));
-  const outputFields = Object.keys(def.outputSchema || {});
-
-  const operations = operationValues.length > 0 ? operationValues : ['default'];
-  const resources = resourceValues.length > 0 ? resourceValues : [undefined];
-
-  return resources.flatMap((resource) => operations.map((operation) => ({
-    resource,
-    operation,
-    label: operation === 'default' ? def.label : operation.replace(/_/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase()),
-    requiredFields,
-    optionalFields,
-    credentialProviders,
-    outputFields,
-    legacyAliases: [],
-    status: 'implemented' as const,
-  })));
+  return getOperationContractsForNode(def);
 }
 
 function labelForValue(value: string): string {
@@ -100,6 +67,27 @@ function filterSelectOptionsByContract(inputSchema: Record<string, any>, contrac
 function serializeNodeDefinition(definition: any) {
   const contracts = implementedContracts(definition.type);
   const inputSchema = filterSelectOptionsByContract(definition.inputSchema || {}, contracts);
+  const defaultConfig = definition.defaultConfig?.() || {};
+  const operationFieldPolicies = contracts.map((contract) => {
+    const config = {
+      ...defaultConfig,
+      resource: contract.resource ?? defaultConfig.resource,
+      operation: contract.operation,
+    };
+    const policy = resolveFieldPolicyForNode(definition, config);
+    return {
+      resource: contract.resource,
+      operation: contract.operation,
+      activeFields: policy.activeFields,
+      requiredFields: policy.requiredFields,
+      optionalFields: policy.optionalFields,
+      inactiveFields: policy.inactiveFields,
+      providerDefaultFields: policy.providerDefaultFields,
+      credentialFields: policy.credentialFields,
+      diagnostics: policy.diagnostics,
+      fields: policy.fields,
+    };
+  });
 
   return {
     type: definition.type,
@@ -111,6 +99,7 @@ function serializeNodeDefinition(definition: any) {
     outputSchema: definition.outputSchema,
     credentialSchema: definition.credentialSchema,
     operationContracts: contracts,
+    operationFieldPolicies,
     requiredInputs: definition.requiredInputs,
     outgoingPorts: definition.outgoingPorts,
     incomingPorts: definition.incomingPorts,

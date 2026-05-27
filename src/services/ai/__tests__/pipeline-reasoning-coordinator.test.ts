@@ -4,7 +4,7 @@
  */
 
 // Feature: ai-workflow-generation-engine, Property 40: Senior AI approval required before graph compilation
-// Feature: ai-workflow-generation-engine, Property 41: Senior AI uses gemini-2.5-pro; Junior AI uses gemini-2.5-flash
+// Feature: ai-workflow-generation-engine, Property 41: Senior AI uses gemini-3.1-pro-preview; Junior AI uses gemini-3.5-flash
 // Feature: ai-workflow-generation-engine, Property 42: Senior AI rejection produces corrected value, not empty
 
 import {
@@ -31,8 +31,8 @@ const mockContext: PipelineFullContext = {
 describe('Property 40: Senior AI approval required before graph compilation', () => {
   it('executeStage returns only after approval', async () => {
     const coordinator = new PipelineReasoningCoordinator(
-      'gemini-2.5-pro',
-      'gemini-2.5-flash',
+      'gemini-3.1-pro-preview',
+      'gemini-3.5-flash',
       mockContext
     );
 
@@ -66,8 +66,8 @@ describe('Property 40: Senior AI approval required before graph compilation', ()
 
   it('executeStage throws PipelineContractError when rejected twice', async () => {
     const coordinator = new PipelineReasoningCoordinator(
-      'gemini-2.5-pro',
-      'gemini-2.5-flash',
+      'gemini-3.1-pro-preview',
+      'gemini-3.5-flash',
       mockContext
     );
 
@@ -90,8 +90,8 @@ describe('Property 40: Senior AI approval required before graph compilation', ()
 
   it('executeStage returns immediately when Senior approves on first call', async () => {
     const coordinator = new PipelineReasoningCoordinator(
-      'gemini-2.5-pro',
-      'gemini-2.5-flash',
+      'gemini-3.1-pro-preview',
+      'gemini-3.5-flash',
       mockContext
     );
 
@@ -115,17 +115,17 @@ describe('Property 40: Senior AI approval required before graph compilation', ()
 
 // ─── Property 41: Model assignment ───────────────────────────────────────────
 
-describe('Property 41: Senior AI uses gemini-2.5-pro; Junior AI uses gemini-2.5-flash', () => {
+describe('Property 41: Senior AI uses gemini-3.1-pro-preview; Junior AI uses gemini-3.5-flash', () => {
   it('coordinator stores the correct model names', () => {
     const coordinator = new PipelineReasoningCoordinator(
-      'gemini-2.5-pro',
-      'gemini-2.5-flash',
+      'gemini-3.1-pro-preview',
+      'gemini-3.5-flash',
       mockContext
     );
 
     // Access private fields via bracket notation for testing
-    expect((coordinator as any).seniorModel).toBe('gemini-2.5-pro');
-    expect((coordinator as any).juniorModel).toBe('gemini-2.5-flash');
+    expect((coordinator as any).seniorModel).toBe('gemini-3.1-pro-preview');
+    expect((coordinator as any).juniorModel).toBe('gemini-3.5-flash');
   });
 
   it('can be constructed with any model strings', () => {
@@ -145,8 +145,8 @@ describe('Property 41: Senior AI uses gemini-2.5-pro; Junior AI uses gemini-2.5-
 describe('Property 42: Senior AI rejection produces corrected value, not empty', () => {
   it('ValidationResult with approved=false has non-null correctedValue and non-empty rejectionReason', async () => {
     const coordinator = new PipelineReasoningCoordinator(
-      'gemini-2.5-pro',
-      'gemini-2.5-flash',
+      'gemini-3.1-pro-preview',
+      'gemini-3.5-flash',
       mockContext
     );
 

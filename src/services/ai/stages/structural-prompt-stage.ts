@@ -68,7 +68,7 @@ export async function runStructuralPromptStage(
     inputSummary: `actions=${intent.actions.length}`,
   });
 
-  const model = 'gemini-2.5-flash';
+  const model = 'gemini-3.5-flash';
   const temperature = 0.2;
 
   const selectedNodes = (constraints?.selectedNodeConstraintsFlat || []).join(', ') || 'nodes from intent';

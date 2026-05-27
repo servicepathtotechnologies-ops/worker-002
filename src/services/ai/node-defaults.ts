@@ -90,7 +90,7 @@ export class NodeDefaultsSystem {
       }
       if (fieldNameLower === 'chat_model' || fieldNameLower === 'chatmodel') {
         // Will be connected via edge, but provide fallback
-        return 'gemini-2.5-pro';
+        return 'gemini-3.1-pro-preview';
       }
       if (fieldNameLower === 'memory') {
         return 'window_buffer';

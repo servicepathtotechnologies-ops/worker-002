@@ -7,6 +7,7 @@
 import type { UnifiedNodeDefinition } from '../../types/unified-node-contract';
 import type { NodeSchema } from '../../../services/nodes/node-library';
 import { readAcknowledgedHttpResponse } from '../../http/acknowledged-response';
+import { mergeAuthoritativeInputs } from '../../execution/runtime-input-handoff';
 
 function trimSlash(value: string): string {
   return value.replace(/\/+$/, '');
@@ -111,7 +112,7 @@ export function overrideSalesforce(
       credentialFields: ['accessToken'],
     },
     execute: async (context) => {
-      const inputs = { ...(context.config || {}), ...(context.inputs || {}) };
+      const inputs = mergeAuthoritativeInputs(context);
       const instanceUrl = String(inputs.instanceUrl || '').trim();
       const accessToken = String(inputs.accessToken || '').trim();
       const apiVersion = String(inputs.apiVersion || 'v59.0').trim();

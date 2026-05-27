@@ -1,5 +1,5 @@
 // Core Gemini Orchestrator
-// Unified model management & routing for all AI services using Google Gemini 2.5
+// Unified model management & routing for all AI services using Google Gemini 3
 // Performance optimization & caching
 // Fallback chains & error recovery
 
@@ -7,6 +7,13 @@ import { LLMAdapter } from '../../shared/llm-adapter';
 import { config } from '../../core/config';
 import { metricsTracker } from './metrics-tracker';
 import { aiPerformanceMonitor } from './performance-monitor';
+import {
+  GEMINI_DEFAULT_MODEL,
+  GEMINI_LITE_MODEL,
+  GEMINI_MODELS,
+  GEMINI_PRO_MODEL,
+  normalizeGeminiModel,
+} from './gemini-models';
 
 export type AIRequestType = 
   | 'chat-generation'
@@ -27,6 +34,7 @@ export type AIRequestType =
   | 'reasoning'
   | 'text-completion'
   | 'property-population'
+  | 'field-directive-generation'
   | 'credential-guidance';
 
 interface CacheEntry {
@@ -49,9 +57,9 @@ export class GeminiOrchestrator {
   
   // Model pricing (per 1M tokens)
   private readonly MODEL_PRICING = {
-    'gemini-2.5-pro': { input: 1.25, output: 5.00 },
-    'gemini-2.5-flash': { input: 0.075, output: 0.30 },
-    'gemini-3-flash-preview': { input: 0.0375, output: 0.15 },
+    [GEMINI_PRO_MODEL]: { input: 1.25, output: 5.00 },
+    [GEMINI_DEFAULT_MODEL]: { input: 0.075, output: 0.30 },
+    [GEMINI_LITE_MODEL]: { input: 0.0375, output: 0.15 },
   };
 
   constructor() {
@@ -60,8 +68,7 @@ export class GeminiOrchestrator {
   }
 
   private initializeModelPerformance() {
-    const models = ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-3-flash-preview'];
-    models.forEach(model => {
+    GEMINI_MODELS.forEach(model => {
       this.modelPerformance.set(model, {
         usageCount: 0,
         successRate: 100,
@@ -91,7 +98,7 @@ export class GeminiOrchestrator {
     }
   ): Promise<any> {
     const startTime = Date.now();
-    let selectedModel = options?.model || this.selectOptimalModel(type, input);
+    let selectedModel = normalizeGeminiModel(options?.model || this.selectOptimalModel(type, input));
     
     try {
       // Check cache first
@@ -160,12 +167,6 @@ export class GeminiOrchestrator {
 
       console.error(`[GeminiOrchestrator] Error processing ${type}:`, error);
       
-      // Retry with fallback model if Pro fails
-      if (selectedModel === 'gemini-2.5-pro' && !options?.model) {
-        console.log(`[GeminiOrchestrator] Retrying with Flash fallback...`);
-        return this.processRequest(type, input, { ...options, model: 'gemini-2.5-flash' });
-      }
-      
       throw error;
     }
   }
@@ -177,16 +178,16 @@ export class GeminiOrchestrator {
     // High complexity tasks → Pro
     if (['workflow-generation', 'code-generation', 'code-assistance', 
          'image-understanding', 'image-comparison', 'reasoning'].includes(type)) {
-      return 'gemini-2.5-pro';
+      return GEMINI_PRO_MODEL;
     }
     
     // Low complexity tasks → Flash Lite
-    if (['summarization', 'text-completion'].includes(type)) {
-      return 'gemini-3-flash-preview';
+    if (['summarization', 'translation', 'text-analysis', 'entity-extraction', 'text-completion'].includes(type)) {
+      return GEMINI_LITE_MODEL;
     }
     
     // Default → Flash (balanced)
-    return 'gemini-2.5-flash';
+    return GEMINI_DEFAULT_MODEL;
   }
 
   /**

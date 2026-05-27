@@ -119,6 +119,35 @@ describe('runtime-field-contract', () => {
     expect(result.resolvedInputs.recipientEmails).toEqual(['vusalashivakumar@gmail.com']);
   });
 
+  it('does not allow static config to satisfy required runtime_ai fields', () => {
+    const inputSchema: NodeInputSchema = {
+      operation: { type: 'string', description: 'operation', required: false },
+      recipientEmails: {
+        type: 'string',
+        description: 'emails',
+        required: false,
+        role: 'recipient',
+        runtimeContract: {
+          requiredWhen: [{ field: 'operation', equals: 'send' }],
+          validation: { format: 'email_list' },
+        },
+      },
+    };
+
+    const result = enforceRuntimeFieldContracts(
+      { operation: 'send', recipientEmails: 'someone@example.com' },
+      { operation: 'static_config', recipientEmails: 'static_config' },
+      {
+        inputSchema,
+        config: { operation: 'send' },
+        effectiveFillModes: { operation: 'manual_static', recipientEmails: 'runtime_ai' },
+        upstreamPayload: { email: 'runtime@example.com' },
+      }
+    );
+
+    expect(result.errors.some((error) => error.includes('static_config'))).toBe(true);
+  });
+
   it('blocks missing function code when code contract is required', () => {
     const inputSchema: NodeInputSchema = {
       description: { type: 'string', description: 'description', required: true },

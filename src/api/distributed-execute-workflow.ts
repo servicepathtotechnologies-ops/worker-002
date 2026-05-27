@@ -522,12 +522,20 @@ export default async function distributedExecuteWorkflow(
         const { default: executeWorkflow } = await import('./execute-workflow');
         await executeWorkflow(
           {
-            body: { workflowId, executionId, input },
+            body: { workflowId, executionId, input, useQueue: false },
             headers: { authorization: authHeader },
           } as any,
           {
-            json: () => {},
-            status: () => ({ json: () => {} }),
+            json: (_data: any) => {},
+            status: (code: number) => ({
+              json: (data: any) => {
+                if (code >= 400) {
+                  throw new Error(
+                    `[ExecuteWorkflow] preflight rejected (${code}): ${data?.message || data?.error || JSON.stringify(data)}`
+                  );
+                }
+              },
+            }),
             set: () => {},
             setHeader: () => {},
           } as any
@@ -547,15 +555,39 @@ export default async function distributedExecuteWorkflow(
             .single();
           if (currentExec?.status === 'running') {
             console.warn(`[DistributedExecute] ⚠️ Execution ${executionId} still "running" after execute-workflow returned — marking failed`);
+
+            // Look for a specific error in execution_steps before using a generic message
+            let failureError = 'Execution stopped unexpectedly. Please try again.';
+            try {
+              const { data: failedStep } = await db
+                .from('execution_steps')
+                .select('node_name, last_error, status')
+                .eq('execution_id', executionId)
+                .in('status', ['error', 'failed'])
+                .order('sequence', { ascending: false })
+                .limit(1)
+                .single();
+              if (failedStep?.last_error) {
+                failureError = `Node "${failedStep.node_name}" failed: ${failedStep.last_error}`;
+              }
+            } catch (_stepErr) { /* best-effort */ }
+
             await db
               .from('executions')
               .update({
                 status: 'failed',
-                error: 'Execution did not complete. Required account connections may be missing. Check the Connections page and try again.',
+                error: failureError,
                 finished_at: new Date().toISOString(),
               })
               .eq('id', executionId)
               .eq('status', 'running');
+
+            // Release the workflow lock so subsequent UI interactions aren't blocked
+            try {
+              const { releaseExecutionLock } = await import('../services/execution/execution-lock');
+              await releaseExecutionLock(db, workflowId, executionId);
+            } catch (_lockErr) { /* best-effort */ }
+
             await invalidateCache();
           }
         } catch (_) {}
@@ -572,6 +604,11 @@ export default async function distributedExecuteWorkflow(
             .eq('id', executionId)
             .eq('status', 'running');
         } catch (_) {}
+        // Release the workflow lock so subsequent UI interactions aren't blocked
+        try {
+          const { releaseExecutionLock } = await import('../services/execution/execution-lock');
+          await releaseExecutionLock(db, workflowId, executionId);
+        } catch (_lockErr) { /* best-effort */ }
         await invalidateCache();
       }
     });

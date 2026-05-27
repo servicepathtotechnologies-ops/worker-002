@@ -4,7 +4,7 @@ describe('pickPrimaryNarrativeStringFromUpstreamOutput', () => {
   test('uses declared string output property when registry has outputSchema (text_summarizer → response)', () => {
     const s = pickPrimaryNarrativeStringFromUpstreamOutput('text_summarizer', {
       response: 'This is the long summary text from the model.',
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.5-flash',
     });
     expect(s).toContain('summary');
     expect(s?.length).toBeGreaterThan(20);

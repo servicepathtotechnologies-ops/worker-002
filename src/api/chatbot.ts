@@ -355,7 +355,7 @@ export default async function chatbotHandler(req: Request, res: Response) {
           },
         ],
         {
-          model: 'gemini-2.5-flash', // Use Flash for fast chatbot responses
+          model: 'gemini-3.5-flash', // Use Flash for fast chatbot responses
           apiKey: config.geminiApiKey,
           temperature: 0.7,
           stream: false,

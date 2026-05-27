@@ -1159,10 +1159,17 @@ app.get('/api/workflows/:workflowId/last-resolved-inputs', asyncHandler(async (r
 
   const values: Record<string, Record<string, {
     value: unknown;
-    source?: 'static_config' | 'template' | 'deterministic_runtime' | 'runtime_ai';
+    source?: 'static_config' | 'template' | 'deterministic_runtime' | 'runtime_ai' | 'field_directive_ai' | 'credential' | 'system';
     executionId: string;
     startedAt: string;
   }>> = {};
+  const audits: Record<string, {
+    executionId: string;
+    startedAt: string;
+    runtimeInputAudit?: unknown;
+    runtimeInputHandoffAudit?: unknown;
+    runtimeResolutionAudit?: unknown;
+  }> = {};
 
   const executionStartedAt = new Map<string, string>();
   for (const execution of executions || []) {
@@ -1203,7 +1210,7 @@ app.get('/api/workflows/:workflowId/last-resolved-inputs', asyncHandler(async (r
    * Legacy fallback for older execution rows that predate execution_steps input_json.
    * Keep this bounded to the already-selected 10 execution ids.
    */
-  if (Object.keys(values).length === 0 && executionIds.length > 0) {
+  if (executionIds.length > 0) {
     const { data: executionLogs, error: logsError } = await db
       .from('executions')
       .select('id, started_at, logs')
@@ -1224,7 +1231,19 @@ app.get('/api/workflows/:workflowId/last-resolved-inputs', asyncHandler(async (r
       const resolvedInputSources = log.resolvedInputSources && typeof log.resolvedInputSources === 'object'
         ? log.resolvedInputSources
         : {};
-      if (!nodeId || !resolvedInputs) continue;
+      if (!nodeId) continue;
+
+      if (!audits[nodeId]) {
+        audits[nodeId] = {
+          executionId: execution.id,
+          startedAt: execution.started_at,
+          runtimeInputAudit: log.runtimeInputAudit,
+          runtimeInputHandoffAudit: log.runtimeInputHandoffAudit,
+          runtimeResolutionAudit: log.runtimeResolutionAudit,
+        };
+      }
+
+      if (!resolvedInputs) continue;
 
       if (!values[nodeId]) values[nodeId] = {};
       for (const [fieldName, value] of Object.entries(resolvedInputs)) {
@@ -1245,6 +1264,7 @@ app.get('/api/workflows/:workflowId/last-resolved-inputs', asyncHandler(async (r
   return res.json({
     workflowId,
     values,
+    audits,
     executionCountScanned: (executions || []).length,
   });
 }));
@@ -1501,7 +1521,7 @@ app.post('/api/ai/generate', distributedRateLimit({
     return res.status(503).json({ success: false, error: 'GEMINI_API_KEY not configured' });
   }
   const result = await geminiOrchestrator.processRequest('chat-generation', prompt, {
-    model: model || 'gemini-2.5-flash',
+    model: model || 'gemini-3.5-flash',
     temperature,
     max_tokens,
     cache: false,
@@ -1521,7 +1541,7 @@ app.post('/api/ai/chat', distributedRateLimit({
     return res.status(503).json({ success: false, error: 'GEMINI_API_KEY not configured' });
   }
   const response = await aiLlmAdapter.chat('gemini', messages, {
-    model: model || 'gemini-2.5-flash',
+    model: model || 'gemini-3.5-flash',
     temperature: temperature ?? 0.7,
   });
   res.json({ success: true, result: { content: response.content, usage: response.usage } });

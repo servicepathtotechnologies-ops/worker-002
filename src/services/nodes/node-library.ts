@@ -3,7 +3,7 @@
 // Based on the comprehensive guide
 
 import { getNodeOutputSchema, getNodeOutputType } from '../../core/types/node-output-types';
-import type { FieldIntelligence, RuntimeFieldContract } from '../../core/types/unified-node-contract';
+import type { FieldIntelligence, NodeOperationContract, RuntimeFieldContract } from '../../core/types/unified-node-contract';
 
 export interface NodeCapability {
   inputType: 'text' | 'array' | 'object' | ('text' | 'array' | 'object')[]; // What data types this node accepts
@@ -32,6 +32,7 @@ export interface NodeSchema {
   schemaVersion?: string; // e.g., "1.0"
   // ✅ Node Capability Registry: Data type capabilities
   nodeCapability?: NodeCapability; // Explicit capability definition
+  operationContracts?: NodeOperationContract[];
 }
 
 export interface ConfigSchema {
@@ -2239,6 +2240,68 @@ export class NodeLibrary {
           },
         },
       },
+      operationContracts: [
+        {
+          operation: 'read',
+          label: 'Read',
+          requiredFields: ['operation', 'spreadsheetId'],
+          optionalFields: ['sheetName', 'range', 'outputFormat'],
+          providerDefaultFields: ['sheetName', 'range'],
+          emptyValuePolicy: { sheetName: 'provider_default', range: 'provider_default' },
+          credentialProviders: ['google'],
+          outputFields: ['default'],
+          status: 'implemented',
+        },
+        {
+          operation: 'append',
+          label: 'Append',
+          requiredFields: ['operation', 'spreadsheetId', 'sheetName'],
+          optionalFields: ['range', 'outputFormat'],
+          payloadGroups: [{ name: 'google_sheets_write_payload', anyOf: ['values', 'data'] }],
+          providerDefaultFields: ['range'],
+          emptyValuePolicy: { range: 'provider_default' },
+          runtimeAiPolicy: {
+            values: { allowed: true, required: true },
+            data: { allowed: true, required: true },
+            range: { allowed: false },
+          },
+          credentialProviders: ['google'],
+          outputFields: ['default'],
+          status: 'implemented',
+        },
+        {
+          operation: 'write',
+          label: 'Write',
+          requiredFields: ['operation', 'spreadsheetId', 'sheetName'],
+          optionalFields: ['range', 'outputFormat'],
+          payloadGroups: [{ name: 'google_sheets_write_payload', anyOf: ['values', 'data'] }],
+          providerDefaultFields: ['range'],
+          emptyValuePolicy: { range: 'provider_default' },
+          runtimeAiPolicy: {
+            values: { allowed: true, required: true },
+            data: { allowed: true, required: true },
+            range: { allowed: false },
+          },
+          credentialProviders: ['google'],
+          outputFields: ['default'],
+          status: 'implemented',
+        },
+        {
+          operation: 'update',
+          label: 'Update',
+          requiredFields: ['operation', 'spreadsheetId', 'sheetName', 'range'],
+          optionalFields: ['outputFormat'],
+          payloadGroups: [{ name: 'google_sheets_write_payload', anyOf: ['values', 'data'] }],
+          runtimeAiPolicy: {
+            values: { allowed: true, required: true },
+            data: { allowed: true, required: true },
+            range: { allowed: false },
+          },
+          credentialProviders: ['google'],
+          outputFields: ['default'],
+          status: 'implemented',
+        },
+      ],
       aiSelectionCriteria: {
         whenToUse: [
           'User mentions Google Sheets',
@@ -5071,8 +5134,8 @@ export class NodeLibrary {
           model: {
             type: 'string',
             description: 'LLM model selection',
-            default: 'gemini-2.5-flash',
-            examples: ['gemini-2.5-flash', 'gemini-2.5-pro', 'claude-3-5-sonnet', 'gpt-4o'],
+            default: 'gemini-3.5-flash',
+            examples: ['gemini-3.5-flash', 'gemini-3.1-pro-preview', 'claude-3-5-sonnet', 'gpt-4o'],
           },
           memory: {
             type: 'object',
@@ -5121,7 +5184,7 @@ export class NodeLibrary {
       type: 'ai_chat_model',
       label: 'AI Chat Model',
       category: 'ai',
-      description: 'Call Gemini 1.5 Flash directly to generate a response (uses GEMINI_API_KEY)',
+      description: 'Call Gemini 3.5 Flash directly to generate a response (uses GEMINI_API_KEY)',
       configSchema: {
         required: ['prompt'],
         optional: {
@@ -5186,7 +5249,7 @@ export class NodeLibrary {
       type: 'ai_service',
       label: 'AI Service',
       category: 'ai',
-      description: 'Generic AI service for text processing, summarization, and data analysis (uses Gemini 1.5 Flash)',
+      description: 'Generic AI service for text processing, summarization, and data analysis (uses Gemini 3.5 Flash)',
       capabilities: [
         'ai.process',
         'ai.summarize',
@@ -7605,16 +7668,16 @@ export class NodeLibrary {
       category: 'ai',
       description: 'Google Gemini chat completion',
       configSchema: {
-        required: ['model', 'prompt', 'apiKey'],
+        required: ['prompt'],
         optional: {
           model: {
             type: 'string',
-            description: 'Model name',
-            examples: ['gemini-2.5-pro', 'gemini-2.5-flash'],
+            description: 'Model name (defaults to gemini-3.5-flash if not set)',
+            examples: ['gemini-3.1-pro-preview', 'gemini-3.5-flash'],
           },
           apiKey: {
             type: 'string',
-            description: 'Gemini API key (node-level, required for this node to run)',
+            description: 'Gemini API key (leave empty to use the server default GEMINI_API_KEY)',
             examples: ['AIza...'],
           },
           prompt: {
@@ -7656,13 +7719,13 @@ export class NodeLibrary {
   }
 
   private createOllamaSchema(): NodeSchema {
-    // ✅ MIGRATED: Ollama node now uses Gemini 1.5 Flash by default
+    // ✅ MIGRATED: Ollama node now uses Gemini 3.5 Flash by default
     // Model selection removed - uses GEMINI_API_KEY from config
     return {
       type: 'ollama',
       label: 'AI Chat (Gemini)',
       category: 'ai',
-      description: 'AI chat completion using Gemini 1.5 Flash (default LLM)',
+      description: 'AI chat completion using Gemini 3.5 Flash (default LLM)',
       configSchema: {
         required: ['prompt'],
         optional: {
@@ -7690,7 +7753,7 @@ export class NodeLibrary {
           'ollama llm', 'ai chat', 'ai model', 'llm chat'
         ],
         useCases: ['AI chat', 'Text generation'],
-        intentDescription: 'AI chat node that performs chat completion using Gemini 1.5 Flash. Uses the default GEMINI_API_KEY for all AI operations. Provides fast, cost-effective AI chat capabilities.',
+        intentDescription: 'AI chat node that performs chat completion using Gemini 3.5 Flash. Uses the default GEMINI_API_KEY for all AI operations. Provides fast, cost-effective AI chat capabilities.',
         intentCategories: ['ai_chat', 'text_generation', 'llm'],
       },
       commonPatterns: [],
@@ -7798,7 +7861,7 @@ export class NodeLibrary {
       type: 'chat_model',
       label: 'Chat Model',
       category: 'ai',
-      description: 'Chat model connector for AI Agent node (uses Gemini 1.5 Flash by default)',
+      description: 'Chat model connector for AI Agent node (uses Gemini 3.5 Flash by default)',
       configSchema: {
         required: [],
         optional: {
@@ -7819,7 +7882,7 @@ export class NodeLibrary {
           'llm chat model', 'chat model llm', 'model chat node', 'chat model api'
         ],
         useCases: ['AI Agent connection'],
-        intentDescription: 'Chat model connector node that provides chat model configuration for AI Agent nodes. Uses Gemini 1.5 Flash by default with GEMINI_API_KEY. Used for AI Agent connection, chat model configuration, and connecting AI agents to language models.',
+        intentDescription: 'Chat model connector node that provides chat model configuration for AI Agent nodes. Uses Gemini 3.5 Flash by default with GEMINI_API_KEY. Used for AI Agent connection, chat model configuration, and connecting AI agents to language models.',
         intentCategories: ['ai_connector', 'chat_model', 'ai_agent_support', 'model_configuration'],
       },
       commonPatterns: [],

@@ -1,6 +1,7 @@
 import type { NodeExecutionContext } from '../../types/unified-node-contract';
 import { getGoogleAccessToken } from '../../../shared/google-sheets';
 import { parseGoogleApiError } from '../../../shared/google-api-utils';
+import { getAuthoritativeInputs, mergeAuthoritativeInputs } from '../../execution/runtime-input-handoff';
 import {
   readAcknowledgedHttpResponse,
   type AcknowledgedHttpResponse,
@@ -10,8 +11,9 @@ export async function getGoogleTokenForContext(
   context: NodeExecutionContext,
   requiredScopes: string[],
 ): Promise<string> {
+  const authoritativeInputs = getAuthoritativeInputs(context);
   const directToken =
-    String(context.inputs?.accessToken || context.config?.accessToken || '').trim();
+    String(authoritativeInputs.accessToken || context.config?.accessToken || '').trim();
   if (directToken) return directToken;
 
   const userIdsToTry: string[] = [];
@@ -61,5 +63,5 @@ export async function googleApiRequestWithAcknowledgement(
 }
 
 export function mergedInputs(context: NodeExecutionContext): Record<string, any> {
-  return { ...(context.config || {}), ...(context.inputs || {}) };
+  return mergeAuthoritativeInputs(context);
 }

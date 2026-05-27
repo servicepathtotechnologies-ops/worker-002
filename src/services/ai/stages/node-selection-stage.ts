@@ -64,7 +64,7 @@ export async function runNodeSelectionStage(
     },
   });
 
-  const model = 'gemini-2.5-flash';
+  const model = 'gemini-3.5-flash';
   const temperature = 0.1;
 
   logger.info({ event: 'ai_pipeline_llm_call', stage: 'node_selection', correlationId, model, temperature });

@@ -24,6 +24,7 @@ import {
   mergeGuidanceWithDeterministic,
   type FieldGuidanceDescription,
 } from '../core/utils/node-field-intelligence';
+import { runWithBuildUsageTracking, snapshotBuildAiUsage } from '../core/ai/build-usage-context';
 import {
   resolveAiEditorPrincipal,
   requireCapability,
@@ -32,12 +33,26 @@ import {
 } from '../services/ai/ai-editor-rbac';
 import { logAiEditorEvent, hashDiff, readAiEditorAuditForWorkflow } from '../services/ai/ai-editor-audit';
 import { GeminiWalletError, geminiWalletService } from '../services/ai/gemini-wallet-service';
+import { GEMINI_MODELS } from '../services/ai/gemini-models';
 
 const router = Router();
 const llmAdapter = new LLMAdapter();
 const aiEditorVersioning = new WorkflowVersioning();
 const guideResponseCache = new Map<string, { expiresAt: number; guidance: FieldOwnershipGuidanceSections }>();
 const GUIDE_CACHE_TTL_MS = 10 * 60 * 1000;
+const FIELD_GUIDANCE_PRESENTATION_VERSION = 2;
+
+function buildFieldWalkContextKey(field: Record<string, any>): string {
+  return JSON.stringify({
+    guidancePresentationVersion: FIELD_GUIDANCE_PRESENTATION_VERSION,
+    operation: field.operation || '',
+    selectedMode: field.selectedMode || '',
+    fieldEnabled: field.fieldEnabled === true,
+    fillModeDefault: field.fillModeDefault || 'manual_static',
+    currentValue: field.currentValue ?? null,
+    options: normalizeFieldOptions(field.options),
+  });
+}
 
 async function hasGeminiAccess(req: Request): Promise<boolean> {
   if (config.geminiApiKey) return true;
@@ -48,6 +63,12 @@ async function hasGeminiAccess(req: Request): Promise<boolean> {
 function enrichFieldForGuidance(nodeType: string, rawField: any): any {
   const def = unifiedNodeRegistry.get(nodeType);
   const registryField = def?.inputSchema?.[String(rawField?.fieldName || '')];
+  const options = normalizeFieldOptions(
+    rawField?.options ||
+      rawField?.ui?.options ||
+      registryField?.ui?.options ||
+      (registryField as any)?.options
+  );
   return {
     ...(registryField || {}),
     ...(rawField || {}),
@@ -59,7 +80,26 @@ function enrichFieldForGuidance(nodeType: string, rawField: any): any {
     ownership: rawField?.ownership || registryField?.ownership || '',
     fieldIntelligence: registryField?.fieldIntelligence || rawField?.fieldIntelligence,
     fieldRelevance: rawField?.fieldRelevance,
+    options,
+    ui: {
+      ...(registryField?.ui || {}),
+      ...(rawField?.ui || {}),
+      ...(options.length ? { options } : {}),
+    },
   };
+}
+
+function normalizeFieldOptions(options: unknown): Array<{ label: string; value: string }> {
+  if (!Array.isArray(options)) return [];
+  return options
+    .map((option: any) => {
+      if (typeof option === 'string') return { label: option, value: option };
+      if (!option || typeof option !== 'object') return null;
+      const value = String(option.value ?? option.id ?? option.key ?? option.label ?? '').trim();
+      if (!value) return null;
+      return { label: String(option.label ?? value), value };
+    })
+    .filter(Boolean) as Array<{ label: string; value: string }>;
 }
 
 function buildDeterministicFieldDescriptions(args: {
@@ -220,7 +260,7 @@ router.post('/field-ownership-guide', async (req: Request, res: Response) => {
       return res.json({ success: true, guidance: cached.guidance, cached: true });
     }
     const raw = await geminiOrchestrator.processRequest('chat-generation', prompt, {
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.5-flash',
       temperature: 0.1,
     });
     const text = typeof raw === 'string' ? raw : (raw as any)?.content || '';
@@ -308,7 +348,7 @@ No bullet points. No headings. No technical jargon. Under 80 words total. Write 
     const raw = await geminiOrchestrator.processRequest(
       'chat-generation',
       { system: '', message: aiPrompt },
-      { model: 'gemini-2.5-flash', temperature: 0.2, cache: false }
+      { model: 'gemini-3.5-flash', temperature: 0.2, cache: false }
     );
 
     const text = (typeof raw === 'string' ? raw : (raw as any)?.content || '').trim();
@@ -339,6 +379,7 @@ router.post('/field-descriptions', async (req: Request, res: Response) => {
         fieldType: string;
         description?: string;
         example?: string;
+        options?: Array<{ label?: string; value?: string } | string>;
         required?: boolean;
         selectedMode?: string;
         fieldEnabled?: boolean;
@@ -347,6 +388,8 @@ router.post('/field-descriptions', async (req: Request, res: Response) => {
         fillModeDefault: string;
         ownership?: string;
         fieldRelevance?: unknown;
+        currentValue?: unknown;
+        operation?: string;
       }>;
     };
 
@@ -359,7 +402,7 @@ router.post('/field-descriptions', async (req: Request, res: Response) => {
       nodeType,
       nodeLabel,
       workflowOverview,
-      operation: undefined,
+      operation: typeof (fields[0] as any)?.operation === 'string' ? String((fields[0] as any).operation) : undefined,
       fields: enrichedFields,
     });
 
@@ -378,7 +421,7 @@ router.post('/field-descriptions', async (req: Request, res: Response) => {
     const fieldsText = enrichedFields
       .map(
         (f) =>
-          `- fieldName: "${f.fieldName}", label: "${f.label}", type: ${f.fieldType}, docs: "${f.description || ''}", example: "${f.example || ''}", required: ${f.required !== false}, enabledNow: ${f.fieldEnabled === true}, currentOwner: "${f.selectedMode || 'manual_static'}", supportsAIBuild: ${f.supportsBuildtimeAI}, supportsAIRun: ${f.supportsRuntimeAI}, intelligence: ${JSON.stringify(f.fieldIntelligence || {})}, relevance: ${JSON.stringify(f.fieldRelevance || {})}`
+          `- fieldName: "${f.fieldName}", label: "${f.label}", type: ${f.fieldType}, docs: "${f.description || ''}", example: "${f.example || ''}", options: ${JSON.stringify(f.options || [])}, required: ${f.required !== false}, enabledNow: ${f.fieldEnabled === true}, currentOwner: "${f.selectedMode || 'manual_static'}", supportsAIBuild: ${f.supportsBuildtimeAI}, supportsAIRun: ${f.supportsRuntimeAI}, intelligence: ${JSON.stringify(f.fieldIntelligence || {})}, relevance: ${JSON.stringify(f.fieldRelevance || {})}`
       )
       .join('\n');
 
@@ -396,6 +439,7 @@ You may make the wording friendlier, but do not contradict the registry guidance
 
 For each field below, generate a JSON object. Each field needs:
 - "what": 1 plain sentence explaining what this exact input field controls in this workflow use case. Use the docs text only to stay accurate.
+- "setupSummary": 2-4 short sentences that combine what this field does, whether it matters, empty/off behavior once, recommended owner, and example availability. Do not use separate "If off" and "If empty" wording. Keep it field-specific.
 - "needed": A direct action instruction — tell the user WHAT TO DO. If the field is needed for the workflow goal: say exactly what to toggle on and enter (e.g. 'Toggle this on and enter your Sheet ID like 1BxiMVz...'). If not needed: say what to leave alone and why (e.g. 'Leave this off — it is only used when writing data, not reading'). Max 2 short sentences.
 - "dataImpact": 1 plain sentence saying how enabling this field changes the data or result in later steps.
 - "you": If the user picks YOU — what exactly must they type or paste, where do they get it, and when should they use this mode? Include a realistic example like 'e.g. "..."'. Specific to this workflow's goal.
@@ -406,24 +450,45 @@ For each field below, generate a JSON object. Each field needs:
 Fields:
 ${fieldsText}
 
+Expanded guidance keys to include for each field:
+- "setupSummary": one concise paragraph for the UI summary block. It must not repeat the separate structured fields or contain vague phrases like "configured default behavior".
+- "offBehavior": what happens if the field toggle is off.
+- "emptyBehavior": what happens if the field is enabled but empty.
+- "defaultBehaviorLabel": short concrete fallback label, such as "Optional setting skipped", "Required value", or "Default: json".
+- "recommendedOwner": one of "You", "AI Build", or "AI Runtime".
+- "ownerReason": why that owner is recommended.
+- "validationConfidence": one of "high", "medium", or "low".
+- "warnings": array of short warning strings.
+- "safeValueSuggestion": string value if there is a safe suggested value, otherwise empty string.
+- "actionableExample": object with "value", "displayValue", "canApply", "applyMode", "reason", and "source". Only set canApply true for safe non-secret setup values. Never invent API keys, passwords, OAuth tokens, or credentials.
+
+Select/model rules:
+- If a field has options, examples and actionableExample.value must use one of the listed option "value" strings exactly.
+- For model fields, do not mention removed providers or unrelated API model IDs. Explain only the models/options attached to this current node field.
+- If no listed option is appropriate, set actionableExample.canApply to false and explain that the user must choose from the dropdown.
+
 Respond with ONLY valid JSON (no markdown, no code fences):
 {
-  "fieldName1": { "what": "...", "needed": "...", "dataImpact": "...", "you": "...", "aiBuild": "...", "aiRun": "...", "example": "..." },
+  "fieldName1": { "what": "...", "setupSummary": "...", "needed": "...", "dataImpact": "...", "you": "...", "aiBuild": "...", "aiRun": "...", "example": "...", "actionableExample": { "value": "...", "displayValue": "...", "canApply": true, "applyMode": "buildtime_ai_once", "reason": "...", "source": "ai_field_guidance" }, "offBehavior": "...", "emptyBehavior": "...", "defaultBehaviorLabel": "...", "recommendedOwner": "You", "ownerReason": "...", "validationConfidence": "high", "warnings": [], "safeValueSuggestion": "" },
   "fieldName2": { ... }
 }
 
-Rules: No technical jargon. Under 35 words per key (needed may use up to 2 sentences). Do not repeat the field label at the start. Use "you" to address the user directly.`;
+Rules: No technical jargon. Under 35 words per key (needed may use up to 2 sentences). Do not repeat the field label at the start. Use "you" to address the user directly. Never write "configured default behavior" or vague "default behavior" unless you name the actual default.`;
 
-    const raw = await geminiOrchestrator.processRequest(
-      'chat-generation',
-      { system: '', message: aiPrompt },
-      { model: 'gemini-2.5-flash', temperature: 0.2, cache: false }
-    );
+    const { raw, buildAiUsage } = await runWithBuildUsageTracking(async () => {
+      const raw = await geminiOrchestrator.processRequest(
+        'chat-generation',
+        { system: '', message: aiPrompt },
+        { model: 'gemini-3.5-flash', temperature: 0.2, cache: false, usageStage: 'field_guidance' }
+      );
+      return { raw, buildAiUsage: snapshotBuildAiUsage() };
+    });
 
     const text = (typeof raw === 'string' ? raw : (raw as any)?.content || '').trim();
 
     let descriptions: Record<string, {
       what: string;
+      setupSummary?: string;
       needed?: string;
       dataImpact?: string;
       you: string;
@@ -445,7 +510,7 @@ Rules: No technical jargon. Under 35 words per key (needed may use up to 2 sente
       merged[fieldName] = mergeGuidanceWithDeterministic(deterministic, descriptions[fieldName] as any);
     }
 
-    res.json({ success: true, descriptions: merged });
+    res.json({ success: true, descriptions: merged, buildAiUsage });
   } catch (error) {
     console.error('Field descriptions error:', error);
     res.status(200).json({ success: true, descriptions: {} });
@@ -478,6 +543,7 @@ router.post('/field-walk-step', async (req: Request, res: Response) => {
         fieldType: string;
         description?: string;
         example?: string;
+        options?: Array<{ label?: string; value?: string } | string>;
         required?: boolean;
         selectedMode?: string;
         fieldEnabled?: boolean;
@@ -486,6 +552,8 @@ router.post('/field-walk-step', async (req: Request, res: Response) => {
         fillModeDefault: string;
         ownership?: string;
         fieldRelevance?: unknown;
+        currentValue?: unknown;
+        operation?: string;
       };
     };
 
@@ -494,6 +562,7 @@ router.post('/field-walk-step', async (req: Request, res: Response) => {
     }
 
     const enrichedField = enrichFieldForGuidance(nodeType, field);
+    const fieldWalkContextKey = buildFieldWalkContextKey(field as any);
     const deterministicDescription = buildFieldGuidanceDescription({
       nodeType,
       nodeLabel,
@@ -506,7 +575,7 @@ router.post('/field-walk-step', async (req: Request, res: Response) => {
         fieldRelevance: (field as any).fieldRelevance,
       },
       workflowGoal: workflowOverview,
-      operation: undefined,
+      operation: field.operation,
       fieldRelevance: (field as any).fieldRelevance as any,
     });
 
@@ -524,11 +593,14 @@ router.post('/field-walk-step', async (req: Request, res: Response) => {
           .maybeSingle();
 
         if (cached?.description) {
-          return res.json({
-            success: true,
-            description: mergeGuidanceWithDeterministic(deterministicDescription, cached.description as any),
-            fromCache: true,
-          });
+          const cachedDescription = cached.description as any;
+          if (cachedDescription?._contextKey === fieldWalkContextKey) {
+            return res.json({
+              success: true,
+              description: mergeGuidanceWithDeterministic(deterministicDescription, cachedDescription),
+              fromCache: true,
+            });
+          }
         }
       } catch {
         // DB cache miss or error — fall through to Gemini
@@ -548,7 +620,7 @@ router.post('/field-walk-step', async (req: Request, res: Response) => {
       .join('\n');
 
     const f = enrichedField;
-    const fieldLine = `- fieldName: "${f.fieldName}", label: "${f.label}", type: ${f.fieldType}, docs: "${f.description || ''}", example: "${f.example || ''}", required: ${f.required !== false}, enabledNow: ${f.fieldEnabled === true}, currentOwner: "${f.selectedMode || 'manual_static'}", supportsAIBuild: ${f.supportsBuildtimeAI}, supportsAIRun: ${f.supportsRuntimeAI}, intelligence: ${JSON.stringify(f.fieldIntelligence || {})}, relevance: ${JSON.stringify(f.fieldRelevance || {})}`;
+    const fieldLine = `- fieldName: "${f.fieldName}", label: "${f.label}", type: ${f.fieldType}, docs: "${f.description || ''}", example: "${f.example || ''}", options: ${JSON.stringify(f.options || [])}, required: ${f.required !== false}, enabledNow: ${f.fieldEnabled === true}, currentOwner: "${f.selectedMode || 'manual_static'}", fillModeDefault: "${f.fillModeDefault || 'manual_static'}", currentValue: ${JSON.stringify((field as any).currentValue ?? null)}, operation: "${field.operation || ''}", supportsAIBuild: ${f.supportsBuildtimeAI}, supportsAIRun: ${f.supportsRuntimeAI}, intelligence: ${JSON.stringify(f.fieldIntelligence || {})}, relevance: ${JSON.stringify(f.fieldRelevance || {})}`;
 
     const aiPrompt = `You explain workflow automation field settings to non-technical users (business owners, students, HR managers).
 
@@ -564,6 +636,7 @@ You may make the wording friendlier, but do not contradict the registry guidance
 
 For the field below, generate a JSON object with keys:
 - "what": 1 plain sentence explaining what this exact input field controls in this workflow use case.
+- "setupSummary": 2-4 short sentences that combine what this field does, whether it matters, empty/off behavior once, recommended owner, and example availability. Do not use separate "If off" and "If empty" wording. Keep it field-specific.
 - "needed": A direct action instruction — tell the user WHAT TO DO. If the field is needed for the workflow goal: say exactly what to toggle on and enter (e.g. 'Toggle this on and enter your Sheet ID like 1BxiMVz...'). If not needed: say what to leave alone and why (e.g. 'Leave this off — it is only used when writing data, not reading'). Max 2 short sentences.
 - "dataImpact": 1 plain sentence saying how enabling this field changes the data or result in later steps.
 - "you": If the user picks YOU — what exactly must they type or paste, where do they get it, and when should they use this mode? Include a realistic example like 'e.g. "..."'. Specific to this workflow's goal.
@@ -574,16 +647,36 @@ For the field below, generate a JSON object with keys:
 Field:
 ${fieldLine}
 
+Expanded guidance keys to include:
+- "setupSummary": one concise paragraph for the UI summary block. It must not repeat the separate structured fields or contain vague phrases like "configured default behavior".
+- "offBehavior": what happens if the field toggle is off.
+- "emptyBehavior": what happens if the field is enabled but empty.
+- "defaultBehaviorLabel": short concrete fallback label, such as "Optional setting skipped", "Required value", or "Default: json".
+- "recommendedOwner": one of "You", "AI Build", or "AI Runtime".
+- "ownerReason": why that owner is recommended.
+- "validationConfidence": one of "high", "medium", or "low".
+- "warnings": array of short warning strings.
+- "safeValueSuggestion": string value if there is a safe suggested value, otherwise empty string.
+- "actionableExample": object with "value", "displayValue", "canApply", "applyMode", "reason", and "source". Only set canApply true for safe non-secret setup values. Never invent API keys, passwords, OAuth tokens, or credentials.
+
+Select/model rules:
+- If the field has options, examples and actionableExample.value must use one of the listed option "value" strings exactly.
+- For model fields, do not mention removed providers or unrelated API model IDs. Explain only the models/options attached to this current node field.
+- If no listed option is appropriate, set actionableExample.canApply to false and explain that the user must choose from the dropdown.
+
 Respond with ONLY valid JSON (no markdown, no code fences):
-{ "what": "...", "needed": "...", "dataImpact": "...", "you": "...", "aiBuild": "...", "aiRun": "...", "example": "..." }
+{ "what": "...", "setupSummary": "...", "needed": "...", "dataImpact": "...", "you": "...", "aiBuild": "...", "aiRun": "...", "example": "...", "actionableExample": { "value": "...", "displayValue": "...", "canApply": true, "applyMode": "buildtime_ai_once", "reason": "...", "source": "ai_field_guidance" }, "offBehavior": "...", "emptyBehavior": "...", "defaultBehaviorLabel": "...", "recommendedOwner": "You", "ownerReason": "...", "validationConfidence": "high", "warnings": [], "safeValueSuggestion": "" }
 
-Rules: No technical jargon. Under 35 words per key (needed may use up to 2 sentences). Do not repeat the field label at the start. Use "you" to address the user directly.`;
+Rules: No technical jargon. Under 35 words per key (needed may use up to 2 sentences). Do not repeat the field label at the start. Use "you" to address the user directly. Never write "configured default behavior" or vague "default behavior" unless you name the actual default.`;
 
-    const raw = await geminiOrchestrator.processRequest(
-      'chat-generation',
-      { system: '', message: aiPrompt },
-      { model: 'gemini-2.5-flash', temperature: 0.2, cache: false }
-    );
+    const { raw, buildAiUsage } = await runWithBuildUsageTracking(async () => {
+      const raw = await geminiOrchestrator.processRequest(
+        'chat-generation',
+        { system: '', message: aiPrompt },
+        { model: 'gemini-3.5-flash', temperature: 0.2, cache: false, usageStage: 'field_guidance' }
+      );
+      return { raw, buildAiUsage: snapshotBuildAiUsage() };
+    });
 
     const text = (typeof raw === 'string' ? raw : (raw as any)?.content || '').trim();
 
@@ -596,6 +689,7 @@ Rules: No technical jargon. Under 35 words per key (needed may use up to 2 sente
     }
 
     const finalDescription = mergeGuidanceWithDeterministic(deterministicDescription, description as any);
+    const cacheDescription = { ...finalDescription, _contextKey: fieldWalkContextKey };
 
     // -- Write to DB cache --
     if (finalDescription && workflowId && nodeId) {
@@ -608,7 +702,7 @@ Rules: No technical jargon. Under 35 words per key (needed may use up to 2 sente
               workflow_id: workflowId,
               node_id: nodeId,
               field_name: field.fieldName,
-              description: finalDescription,
+              description: cacheDescription,
               expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
             },
             { onConflict: 'workflow_id,node_id,field_name', ignoreDuplicates: false }
@@ -618,7 +712,7 @@ Rules: No technical jargon. Under 35 words per key (needed may use up to 2 sente
       }
     }
 
-    res.json({ success: true, description: finalDescription, fromCache: false });
+    res.json({ success: true, description: finalDescription, fromCache: false, buildAiUsage });
   } catch (error) {
     console.error('Field walk-step error:', error);
     res.status(200).json({ success: true, description: null });
@@ -1014,7 +1108,7 @@ router.post('/editor/analyze', async (req: Request, res: Response) => {
     }
 
     const rawResult = await geminiOrchestrator.processRequest('chat-generation', llmInput, {
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.5-flash',
       temperature: 0.4,
     });
 
@@ -1182,7 +1276,7 @@ router.post('/ollama/generate', async (req: Request, res: Response) => {
     const { model, prompt, options } = req.body;
     if (!prompt) return res.status(400).json({ error: 'Prompt is required' });
     const result = await geminiOrchestrator.processRequest('chat-generation', prompt, {
-      model: model || 'gemini-2.5-flash',
+      model: model || 'gemini-3.5-flash',
       ...options,
     });
     res.json({ success: true, result: typeof result === 'string' ? { content: result } : result });
@@ -1197,7 +1291,7 @@ router.post('/ollama/chat', async (req: Request, res: Response) => {
     if (!messages || !Array.isArray(messages)) return res.status(400).json({ error: 'Messages array is required' });
     if (!(await hasGeminiAccess(req))) return res.status(503).json({ success: false, error: 'GEMINI_API_KEY not configured' });
     const response = await llmAdapter.chat('gemini', messages, {
-      model: model || 'gemini-2.5-flash',
+      model: model || 'gemini-3.5-flash',
       temperature: options?.temperature ?? 0.7,
       maxTokens: options?.max_tokens,
     });
@@ -1209,11 +1303,7 @@ router.post('/ollama/chat', async (req: Request, res: Response) => {
 
 router.get('/ollama/models', async (req: Request, res: Response) => {
   try {
-    const models = [
-      { name: 'gemini-2.5-flash' },
-      { name: 'gemini-3-flash-preview' },
-      { name: 'gemini-2.5-pro' },
-    ];
+    const models = GEMINI_MODELS.map(name => ({ name }));
     res.json({ success: true, models });
   } catch (error) {
     res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });

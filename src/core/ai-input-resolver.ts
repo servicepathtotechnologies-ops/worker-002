@@ -29,6 +29,36 @@ import { summarizeFieldIntelligenceForPrompt } from './utils/node-field-intellig
 const PREVIOUS_OUTPUT_PREVIEW_BUDGET = 2000;
 const MAX_ARRAY_SAMPLE_ITEMS = 8;
 
+function inferRuntimeRole(fieldName: string, fieldDef: any): string {
+  if (fieldDef?.runtimeContract?.role) return fieldDef.runtimeContract.role;
+  if (fieldDef?.role === 'recipient') return 'recipient';
+  if (fieldDef?.role === 'title_like') return 'subject';
+  if (fieldDef?.role === 'long_body' || fieldDef?.role === 'content') return 'body';
+  const lower = fieldName.toLowerCase();
+  if (lower.includes('recipient') || lower === 'to' || lower.includes('email')) return 'recipient';
+  if (lower === 'subject' || lower === 'title' || lower === 'headline') return 'subject';
+  if (lower.includes('body') || lower.includes('message') || lower.includes('content')) return 'body';
+  if (lower === 'values' || lower.includes('rows')) return 'row_values';
+  if (lower === 'conditions') return 'condition';
+  if (lower === 'cases') return 'switch_cases';
+  if (lower === 'code') return 'code';
+  if (lower.includes('range')) return 'range';
+  if (lower.includes('id')) return 'identifier';
+  return fieldDef?.role || 'generic';
+}
+
+function inferRuntimeCardinality(fieldName: string, fieldDef: any): string {
+  if (fieldDef?.runtimeContract?.cardinality) return fieldDef.runtimeContract.cardinality;
+  const lower = fieldName.toLowerCase();
+  if (fieldDef?.type === 'array') {
+    if (lower === 'values' || lower.includes('rows')) return 'table_rows';
+    return 'list';
+  }
+  if (fieldDef?.type === 'object' || fieldDef?.type === 'json') return 'object';
+  if (lower === 'code') return 'code_string';
+  return 'single';
+}
+
 function truncateText(value: string, max = PREVIOUS_OUTPUT_PREVIEW_BUDGET): string {
   return value.length > max ? `${value.slice(0, max)}... [truncated]` : value;
 }
@@ -52,8 +82,8 @@ function compactValueForPrompt(value: any, depth = 0): any {
       type: 'array',
       count: value.length,
       fieldNames,
-      sample,
       truncated: value.length > sample.length,
+      sample,
     };
   }
 
@@ -99,6 +129,18 @@ export interface InputResolutionContext {
   fieldRelevance?: Record<string, FieldRelevanceResult>;
   /** When set, this is a retry after validation failure; prompt will include required fields that must be present. */
   retryRequiredFields?: string[];
+  /** Per-field behavioral directives generated at workflow build time.
+   *  Keys are field names; values are 1-2 sentence behavioral instructions.
+   *  When absent (old workflows), falls back to current generic prompt. */
+  fieldDirectives?: Record<string, string>;
+  /** Upstream payload split into business data and integration metadata.
+   *  Populated by separateUpstreamContext() in dynamic-node-executor. */
+  separatedUpstreamContext?: {
+    businessData: Record<string, unknown>;
+    integrationMetadata: Record<string, unknown>;
+    systemMetadata?: Record<string, unknown>;
+    errorData?: Record<string, unknown>;
+  };
 }
 
 export interface ResolvedInput {
@@ -152,6 +194,7 @@ export class AIInputResolver {
         const prompt = this.buildResolutionPrompt(retryContext, mode);
         const aiResponse = await this.callAIForInputResolution(prompt, mode, nodeInputSchema);
         const validatedInput = this.validateAndNormalize(aiResponse, nodeInputSchema, mode);
+        this.assertRequestedFieldsPresent(validatedInput, retryContext.retryRequiredFields || [], mode);
 
         return {
           mode,
@@ -228,7 +271,62 @@ export class AIInputResolver {
     const fieldIntelligenceStr = JSON.stringify(summarizeFieldIntelligenceForPrompt(nodeInputSchema), null, 2);
     const fieldRelevanceStr = JSON.stringify(context.fieldRelevance || {}, null, 2);
     const runtimeLineageStr = JSON.stringify(context.runtimeLineage || {}, null, 2);
-    
+    const runtimeFieldTasks = Object.entries(nodeInputSchema || {}).map(([fieldName, fieldDef]) => {
+      const def = fieldDef as any;
+      const validation = def.runtimeContract?.validation;
+      const formats = [
+        ...(validation?.format ? [validation.format] : []),
+        ...(Array.isArray(validation?.formats) ? validation.formats : []),
+      ];
+      return {
+        field: fieldName,
+        ownership: def.fillMode?.default || 'manual_static',
+        role: inferRuntimeRole(fieldName, def),
+        cardinality: inferRuntimeCardinality(fieldName, def),
+        type: def.type || 'string',
+        required: def.required === true,
+        description: def.description || '',
+        validation: formats,
+        sourcePolicy: def.runtimeContract?.sourcePolicy || {},
+        protected: def.runtimeContract?.protected === true || def.ownership === 'credential',
+        directive: context.fieldDirectives?.[fieldName] || def.runtimeDirectiveTemplate || '',
+      };
+    });
+    const runtimeFieldTasksStr = JSON.stringify(runtimeFieldTasks, null, 2);
+
+    let fieldDirectivesBlock = '';
+    if (context.fieldDirectives && Object.keys(context.fieldDirectives).length > 0) {
+      const lines = Object.entries(context.fieldDirectives)
+        .map(([fieldName, directive]) => `- ${fieldName}: ${directive}`)
+        .join('\n');
+      fieldDirectivesBlock = `\nPER-FIELD BEHAVIORAL DIRECTIVES (AUTHORITATIVE — follow these precisely):\n${lines}\n\n`;
+    }
+
+    let separatedContextBlock = '';
+    if (context.separatedUpstreamContext) {
+      const { businessData, integrationMetadata, systemMetadata, errorData } =
+        context.separatedUpstreamContext;
+      const hasBusinessData = Object.keys(businessData).length > 0;
+      const hasMeta = Object.keys(integrationMetadata).length > 0;
+      const hasSystemMeta = Object.keys(systemMetadata || {}).length > 0;
+      const hasErrors = Object.keys(errorData || {}).length > 0;
+      if (hasBusinessData || hasMeta || hasSystemMeta || hasErrors) {
+        separatedContextBlock = `\nUPSTREAM CONTEXT (separated):\n`;
+        if (hasBusinessData) {
+          separatedContextBlock += `BUSINESS DATA — use as content source (names, emails, text, form values):\n${JSON.stringify(businessData, null, 2)}\n\n`;
+        }
+        if (hasMeta) {
+          separatedContextBlock += `INTEGRATION METADATA — NEVER use as content (sheet ranges, row counts, API config):\n${JSON.stringify(integrationMetadata, null, 2)}\nWARNING: Values above are structural identifiers like "job!A1:E2". Never use them as names, greetings, or email content.\n\n`;
+        }
+        if (hasSystemMeta) {
+          separatedContextBlock += `SYSTEM METADATA — never use as customer-facing content unless the field explicitly asks for diagnostics:\n${JSON.stringify(systemMetadata, null, 2)}\n\n`;
+        }
+        if (hasErrors) {
+          separatedContextBlock += `UPSTREAM ERRORS — diagnostic only. Do not use as generated business content unless the target field is explicitly for error reporting:\n${JSON.stringify(errorData, null, 2)}\n\n`;
+        }
+      }
+    }
+
     let modeInstructions = '';
     switch (mode) {
       case 'message':
@@ -380,13 +478,15 @@ ${schemaStr}
 TARGET NODE FIELD INTELLIGENCE (authoritative runtime/default/risk guidance):
 ${fieldIntelligenceStr}
 
+RUNTIME FIELD TASKS (authoritative; generate each requested field independently):
+${runtimeFieldTasksStr}
+
 TARGET NODE FIELD RELEVANCE (authoritative selected-workflow applicability):
 ${fieldRelevanceStr}
 
 FULL WORKFLOW LINEAGE (use when previous output is empty, failed, or missing needed fields):
 ${runtimeLineageStr}
-
-${modeInstructions}
+${fieldDirectivesBlock}${separatedContextBlock}${modeInstructions}
 ${specialInstructions}
 
 ${context.retryRequiredFields?.length ? `
@@ -453,7 +553,7 @@ IMPORTANT:
       ];
       // TODO: when llmAdapter supports responseSchema/structuredOutput, pass _inputSchema for mode === 'json' to enforce schema
       const response = await this.llmAdapter.chat('gemini', messages, {
-        model: 'gemini-2.5-pro',
+        model: 'gemini-3.1-pro-preview',
         apiKey: process.env.GEMINI_API_KEY,
         temperature: 0.3,
         maxTokens: Number.parseInt(process.env.WORKFLOW_RUNTIME_AI_MAX_OUTPUT_TOKENS || '2000', 10) || 2000,
@@ -462,15 +562,7 @@ IMPORTANT:
       
       // Parse response based on mode
       if (mode === 'message') {
-        let content = response.content.trim();
-
-        // Strip markdown code blocks the LLM sometimes wraps output in
-        if (content.startsWith('```')) {
-          content = content
-            .replace(/^```(?:json|text|markdown)?\n?/i, '')
-            .replace(/\n?```\s*$/i, '')
-            .trim();
-        }
+        let content = this.stripMarkdownFence(response.content);
 
         // If LLM returned a JSON object despite being in message mode, extract the text field
         if (content.startsWith('{')) {
@@ -505,13 +597,7 @@ IMPORTANT:
         // JSON mode - parse JSON
         try {
           // Try to extract JSON from response (might have markdown code blocks)
-          let jsonStr = response.content.trim();
-          
-          // Remove markdown code blocks if present
-          if (jsonStr.startsWith('```')) {
-            jsonStr = jsonStr.replace(/^```(?:json)?\n?/i, '').replace(/\n?```$/i, '');
-          }
-          
+          const jsonStr = this.extractJsonPayload(response.content);
           return JSON.parse(jsonStr);
         } catch (parseError) {
           // If JSON parse fails, try to extract JSON object from text
@@ -527,6 +613,57 @@ IMPORTANT:
       console.error('[AIInputResolver] ❌ AI resolution failed:', error);
       throw new Error(`AI input resolution failed: ${error.message}`);
     }
+  }
+
+  private stripMarkdownFence(content: string): string {
+    let text = String(content || '').trim();
+    if (text.startsWith('```')) {
+      text = text
+        .replace(/^```(?:json|text|markdown|javascript|js)?\s*\r?\n?/i, '')
+        .replace(/\r?\n?```\s*$/i, '')
+        .trim();
+    }
+    return text;
+  }
+
+  private extractJsonPayload(content: string): string {
+    const stripped = this.stripMarkdownFence(content);
+    if (stripped.startsWith('{') || stripped.startsWith('[')) return stripped;
+    const objectMatch = stripped.match(/\{[\s\S]*\}/);
+    if (objectMatch) return objectMatch[0];
+    const arrayMatch = stripped.match(/\[[\s\S]*\]/);
+    if (arrayMatch) return arrayMatch[0];
+    return stripped;
+  }
+
+  private assertRequestedFieldsPresent(
+    value: any,
+    requestedFields: string[],
+    mode: 'message' | 'message+json' | 'json'
+  ): void {
+    if (mode !== 'json' || requestedFields.length === 0) return;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error(`AI response must be a JSON object with fields: ${requestedFields.join(', ')}`);
+    }
+    const missing = requestedFields.filter((fieldName) => this.isRuntimeEmptyValue(value[fieldName]));
+    if (missing.length > 0) {
+      throw new Error(`AI response missing or empty required runtime field(s): ${missing.join(', ')}`);
+    }
+  }
+
+  private isRuntimeEmptyValue(value: unknown): boolean {
+    if (value === undefined || value === null) return true;
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed) return true;
+      const lower = trimmed.toLowerCase();
+      if (lower === 'v' || lower === 'n/a' || lower === 'not configured') return true;
+      if (trimmed.includes('{{')) return true;
+      return this.isPlaceholderLikeString(trimmed);
+    }
+    if (Array.isArray(value)) return value.length === 0;
+    if (typeof value === 'object') return Object.keys(value as object).length === 0;
+    return false;
   }
   
   /**

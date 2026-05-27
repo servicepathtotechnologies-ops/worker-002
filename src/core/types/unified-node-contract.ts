@@ -23,8 +23,43 @@ export type RuntimeInputSource =
   | 'template'
   | 'deterministic_runtime'
   | 'runtime_ai'
+  | 'field_directive_ai'
   | 'credential'
   | 'system';
+
+export type FinalResolvedInputs = Record<string, unknown>;
+export type RuntimeInputOwnership =
+  | 'manual_static'
+  | 'buildtime_ai_once'
+  | 'runtime_ai'
+  | 'credential'
+  | 'system';
+
+export interface RuntimeInputHandoffAudit {
+  nodeId: string;
+  nodeType: string;
+  fieldName: string;
+  ownership: RuntimeInputOwnership;
+  expectedRole?: string;
+  resolvedSource?: RuntimeInputSource;
+  resolvedValuePreview: unknown;
+  finalProviderValuePreview: unknown;
+  validationStatus: 'valid' | 'invalid';
+  handoffStatus: 'delivered' | 'missing' | 'mismatch' | 'accepted_empty_provider_default' | 'not_applicable';
+  blockedReason?: string;
+}
+
+export interface ProviderExecutionContext {
+  finalResolvedInputs: FinalResolvedInputs;
+  resolvedInputSources: Record<string, RuntimeInputSource>;
+  fieldContracts?: NodeInputSchema;
+  operationContract?: NodeOperationContract;
+  operation?: string;
+  credentials?: Record<string, unknown>;
+  rawUpstreamInput?: unknown;
+  lineageContext?: Record<string, unknown>;
+  handoffAudit?: RuntimeInputHandoffAudit[];
+}
 export type RuntimeValidationFormat =
   | 'non_empty'
   | 'email_list'
@@ -33,7 +68,35 @@ export type RuntimeValidationFormat =
   | 'object_payload'
   | 'conditions'
   | 'switch_cases'
-  | 'code';
+  | 'code'
+  | 'url'
+  | 'enum'
+  | 'number'
+  | 'boolean'
+  | 'array_min_length';
+export type RuntimeValueRole =
+  | 'recipient'
+  | 'subject'
+  | 'body'
+  | 'row_values'
+  | 'object_payload'
+  | 'condition'
+  | 'switch_cases'
+  | 'code'
+  | 'query'
+  | 'filter'
+  | 'url'
+  | 'range'
+  | 'identifier'
+  | 'credential_ref'
+  | 'generic';
+export type RuntimeValueCardinality =
+  | 'single'
+  | 'list'
+  | 'table_rows'
+  | 'object'
+  | 'repeated_blocks'
+  | 'code_string';
 export type RuntimeRepairStrategy =
   | 'extract_email'
   | 'object_to_row_values'
@@ -122,6 +185,19 @@ export interface FieldIntelligence {
 }
 
 export interface RuntimeFieldContract {
+  /** Universal semantic role used by runtime AI field tasks and validation. */
+  role?: RuntimeValueRole;
+  /** Universal shape/cardinality expected at execution time. */
+  cardinality?: RuntimeValueCardinality;
+  /** Declarative source policy; the runtime engine interprets these generically. */
+  sourcePolicy?: {
+    businessDataAllowed?: boolean;
+    metadataForbidden?: boolean;
+    errorDataForbidden?: boolean;
+    credentialForbidden?: boolean;
+    systemOnly?: boolean;
+    manualOnly?: boolean;
+  };
   /** Whether runtime AI is allowed to create this value when the field is runtime-owned. */
   aiGeneratable?: boolean;
   /** Protected values are never invented by runtime AI. */
@@ -223,6 +299,12 @@ export interface NodeInputField {
   /** Universal runtime generation, validation, and repair contract for this field. */
   runtimeContract?: RuntimeFieldContract;
   /**
+   * Optional registry-level hint for the per-field directive generator at build time.
+   * Describes what this field must hold and what it must never contain.
+   * When present, enriches the directive generated for this field during workflow creation.
+   */
+  runtimeDirectiveTemplate?: string;
+  /**
    * UI hints for schema-driven Properties panel and GET /api/node-definitions.
    * Populated from NodeLibrary field definitions (options, requiredIf); not used for execution.
    */
@@ -302,6 +384,13 @@ export interface NodeOperationContract {
   label: string;
   requiredFields: string[];
   optionalFields: string[];
+  forbiddenFields?: string[];
+  conditionallyRequiredFields?: Array<{ field: string; when: Record<string, unknown> }>;
+  payloadGroups?: Array<{ name: string; anyOf: string[]; required?: boolean }>;
+  emptyValuePolicy?: Record<string, 'invalid' | 'optional' | 'provider_default' | 'allow_empty'>;
+  fieldSourcePolicy?: Record<string, RuntimeFieldContract['sourcePolicy']>;
+  runtimeAiPolicy?: Record<string, { allowed: boolean; required?: boolean }>;
+  providerDefaultFields?: string[];
   credentialProviders: string[];
   outputFields: string[];
   legacyAliases?: string[];
@@ -313,6 +402,14 @@ export interface NodeExecutionContext {
   nodeType: string;
   config: Record<string, any>;
   inputs: Record<string, any>; // Resolved input values
+  finalResolvedInputs?: FinalResolvedInputs;
+  resolvedInputSources?: Record<string, RuntimeInputSource>;
+  runtimeInputHandoffAudit?: RuntimeInputHandoffAudit[];
+  fieldContracts?: NodeInputSchema;
+  operation?: string;
+  rawUpstreamInput?: unknown;
+  lineageContext?: Record<string, unknown>;
+  providerContext?: ProviderExecutionContext;
   rawInput: unknown; // Raw incoming data payload from upstream (what the node "receives")
   upstreamOutputs: Map<string, any>; // nodeId -> output
   workflowId: string;

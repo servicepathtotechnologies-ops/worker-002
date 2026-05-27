@@ -136,6 +136,9 @@ describe('selected workflow intelligence', () => {
     expect(fields.has('messageId')).toBe(false);
     expect(fields.has('query')).toBe(false);
     expect(fields.has('maxResults')).toBe(false);
+    expect(fields.has('spreadsheetId')).toBe(false);
+    expect(fields.has('sheetName')).toBe(false);
+    expect(fields.has('range')).toBe(false);
   });
 
   it('keeps the universal engine free of node-specific type branches', () => {

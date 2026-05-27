@@ -36,6 +36,12 @@ export interface NodeQuestionConfig {
   credentialProvider?: string;
 }
 
+const GEMINI_MODEL_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash' },
+  { value: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro Preview' },
+  { value: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash-Lite' },
+];
+
 /**
  * Central registry of question order for all nodes
  * Questions are ordered by askOrder (ascending)
@@ -227,12 +233,8 @@ export const NODE_QUESTION_CONFIGS: Record<string, NodeQuestionConfig> = {
         type: 'select',
         required: true,
         askOrder: 3,
-        options: [
-          { value: 'qwen2.5:14b-instruct-q4_K_M', label: 'Qwen 2.5 14B (General Purpose)' },
-          { value: 'qwen2.5:7b-instruct-q4_K_M', label: 'Qwen 2.5 7B (Fast)' },
-          { value: 'qwen2.5-coder:7b-instruct-q4_K_M', label: 'Qwen 2.5 Coder 7B (Code Generation)' },
-        ],
-        default: 'qwen2.5:14b-instruct-q4_K_M',
+        options: GEMINI_MODEL_OPTIONS,
+        default: 'gemini-3.5-flash',
       },
       {
         id: 'ai_agent_user_input',
@@ -266,13 +268,8 @@ export const NODE_QUESTION_CONFIGS: Record<string, NodeQuestionConfig> = {
         type: 'select',
         required: false,
         askOrder: 1,
-        options: [
-          { value: 'qwen2.5:14b-instruct-q4_K_M', label: 'Qwen 2.5 14B (General Purpose)' },
-          { value: 'qwen2.5:7b-instruct-q4_K_M', label: 'Qwen 2.5 7B (Fast)' },
-          { value: 'qwen2.5-coder:7b-instruct-q4_K_M', label: 'Qwen 2.5 Coder 7B (Code Generation)' },
-          { value: 'ctrlchecks-workflow-builder', label: 'CtrlChecks Workflow Builder (Fine-Tuned)' },
-        ],
-        default: 'qwen2.5:14b-instruct-q4_K_M',
+        options: GEMINI_MODEL_OPTIONS,
+        default: 'gemini-3.5-flash',
       },
       {
         id: 'ai_prompt',
@@ -322,13 +319,10 @@ export const NODE_QUESTION_CONFIGS: Record<string, NodeQuestionConfig> = {
         required: false,
         askOrder: 1,
         options: [
-          { value: 'ollama', label: 'Ollama (local / self-hosted - No API key needed)' },
-          { value: 'openai', label: 'OpenAI' },
-          { value: 'claude', label: 'Anthropic Claude' },
           { value: 'gemini', label: 'Google Gemini' },
         ],
-        default: 'ollama',
-        description: 'Ollama runs locally and does not require an API key. Other providers require API keys.',
+        default: 'gemini',
+        description: 'This workflow backend is configured to use Gemini models for chat execution.',
       },
       {
         id: 'chat_model',
@@ -337,28 +331,18 @@ export const NODE_QUESTION_CONFIGS: Record<string, NodeQuestionConfig> = {
         type: 'select',
         required: true,
         askOrder: 2,
-        options: [
-          { value: 'qwen2.5:14b-instruct-q4_K_M', label: 'Qwen 2.5 14B (General Purpose)' },
-          { value: 'qwen2.5:7b-instruct-q4_K_M', label: 'Qwen 2.5 7B (Fast)' },
-          { value: 'qwen2.5-coder:7b-instruct-q4_K_M', label: 'Qwen 2.5 Coder 7B (Code Generation)' },
-          { value: 'ctrlchecks-workflow-builder', label: 'CtrlChecks Workflow Builder (Fine-Tuned)' },
-        ],
-        default: 'qwen2.5:14b-instruct-q4_K_M',
+        options: GEMINI_MODEL_OPTIONS,
+        default: 'gemini-3.5-flash',
       },
       {
         id: 'chat_api_key',
         field: 'apiKey',
-        prompt: 'API Key (required for cloud providers)',
-        description: 'API key is only required for OpenAI, Claude, and Gemini. Not needed for Ollama.',
+        prompt: 'Gemini API key',
+        description: 'API key for Gemini-backed chat execution.',
         type: 'string',
         required: false,
         askOrder: 2.5,
         placeholder: 'Enter your API key...',
-        dependsOn: {
-          field: 'provider',
-          operator: 'notEquals',
-          value: 'ollama',
-        },
       },
       {
         id: 'chat_temperature',

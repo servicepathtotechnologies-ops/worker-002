@@ -56,7 +56,7 @@ export async function runEdgeReasoningStage(
     inputSummary: `nodes=${selectedNodes.length}`,
   });
 
-  const model = 'gemini-2.5-flash';
+  const model = 'gemini-3.5-flash';
   const temperature = 0.1;
 
   const { systemPrompt } = systemPromptBuilder.build({

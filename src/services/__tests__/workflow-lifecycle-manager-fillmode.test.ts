@@ -66,4 +66,61 @@ describe('workflow lifecycle manager fill-mode-aware missing inputs', () => {
     const structuralFields = result.inputs.filter((i) => i.fieldName === 'fields' || i.fieldName === 'conditions');
     expect(structuralFields.length).toBe(0);
   });
+
+  it('does not emit fields from inactive operation branches', () => {
+    const manager = new WorkflowLifecycleManager();
+    const workflow: any = {
+      nodes: [
+        {
+          id: 'gmail_1',
+          type: 'custom',
+          data: {
+            type: 'google_gmail',
+            label: 'Gmail',
+            config: {
+              operation: 'send',
+            },
+          },
+        },
+      ],
+      edges: [],
+    };
+
+    const result = manager.discoverNodeInputs(workflow);
+    const fieldNames = result.inputs.map((input) => input.fieldName);
+
+    expect(fieldNames).not.toContain('messageId');
+    expect(fieldNames).not.toContain('query');
+    expect(fieldNames).not.toContain('from');
+  });
+
+  it('does not emit Gmail sheet fallback inputs for manual-recipient send', () => {
+    const manager = new WorkflowLifecycleManager();
+    const workflow: any = {
+      nodes: [
+        {
+          id: 'gmail_1',
+          type: 'custom',
+          data: {
+            type: 'google_gmail',
+            label: 'Gmail',
+            config: {
+              operation: 'send',
+              recipientSource: 'manual_entry',
+              subject: '',
+              body: '',
+            },
+          },
+        },
+      ],
+      edges: [],
+    };
+
+    const result = manager.discoverNodeInputs(workflow);
+    const fieldNames = result.inputs.map((input) => input.fieldName);
+
+    expect(fieldNames).not.toContain('spreadsheetId');
+    expect(fieldNames).not.toContain('sheetName');
+    expect(fieldNames).not.toContain('range');
+  });
 });

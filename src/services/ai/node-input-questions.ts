@@ -178,10 +178,10 @@ export const NODE_QUESTIONS: Record<string, NodeQuestion[]> = {
     },
     {
       id: 'ai_model',
-      prompt: 'Which Ollama model should we use? (default: qwen2.5:14b-instruct-q4_K_M)',
+      prompt: 'Which Gemini model should we use? (default: gemini-3.5-flash)',
       target: 'model',
       type: 'select',
-      options: ['qwen2.5:14b-instruct-q4_K_M', 'qwen2.5:7b-instruct-q4_K_M', 'qwen2.5-coder:7b-instruct-q4_K_M', 'ctrlchecks-workflow-builder'],
+      options: ['gemini-3.5-flash', 'gemini-3.1-pro-preview', 'gemini-3.1-flash-lite'],
       required: false,
     },
   ],
