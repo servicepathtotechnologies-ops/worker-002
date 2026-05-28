@@ -1859,9 +1859,7 @@
       "result"
     ],
     "requiredConfig": [
-      "model",
-      "prompt",
-      "apiKey"
+      "prompt"
     ],
     "optionalConfig": [
       "model",

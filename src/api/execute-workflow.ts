@@ -12935,10 +12935,16 @@ export async function executeNodeLegacy(
 
       // Handle different operations
       try {
-        // Get personUrn - try from config, or fetch from token if not provided
-        let personUrn = getStringProperty(config, 'personUrn', '');
-        if (!personUrn && (operation === 'post' || operation === 'create_post' || operation === 'get_posts')) {
-          // Try to get personUrn from token
+        // Get personUrn - validate from config first, then auto-resolve from OAuth token.
+        // A valid LinkedIn member ID is a short numeric string or a proper URN — never
+        // contains spaces or newlines. This guards against the AI workflow builder
+        // accidentally storing a long text value (e.g. upstream Gemini output) in this field.
+        const rawPersonUrn = getStringProperty(config, 'personUrn', '').trim();
+        const isValidLinkedInId = (v: string) =>
+          v.length > 0 && v.length < 200 && /^(urn:li:(person|member):-?\d+|\d+)$/i.test(v);
+        let personUrn = isValidLinkedInId(rawPersonUrn) ? rawPersonUrn : '';
+        const needsPersonUrn = ['post', 'create_post', 'get_posts', 'create_post_media', 'create_article'].includes(operation);
+        if (!personUrn && needsPersonUrn) {
           try {
             personUrn = await getPersonUrnFromToken(accessToken);
           } catch (err) {

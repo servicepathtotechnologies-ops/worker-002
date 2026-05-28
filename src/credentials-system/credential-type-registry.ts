@@ -4,6 +4,7 @@ import type {
   CredentialGuide,
   CredentialTypeDefinition,
 } from './types';
+import { specificGuides } from './credential-guides';
 
 const providerBase = process.env.PUBLIC_WORKER_URL || process.env.WORKER_PUBLIC_URL || 'http://localhost:3001';
 
@@ -164,50 +165,74 @@ function buildFieldGuide(field: CredentialFieldSchema, definition: CredentialTyp
 function buildGuide(definition: CredentialTypeDefinitionInput): CredentialGuide {
   const service = providerLabel(definition.provider);
   const isOAuth = definition.authType === 'oauth2';
+  const specific = specificGuides[definition.id];
+
+  // Per-field guide: priority = field.guide > inline fieldGuides[name] > specific fieldGuides[name] (merged) > auto
   const fieldGuides = Object.fromEntries(
-    definition.inputFields.map((field) => [
-      field.name,
-      field.guide || buildFieldGuide(field, definition),
-    ]),
+    definition.inputFields.map((field) => {
+      const autoField = buildFieldGuide(field, definition);
+      const specificField = specific?.fieldGuides?.[field.name];
+      const inlineField = definition.guide?.fieldGuides?.[field.name];
+      const resolved: CredentialFieldGuide =
+        field.guide ||
+        inlineField ||
+        (specificField ? { ...autoField, ...specificField } as CredentialFieldGuide : null) ||
+        autoField;
+      return [field.name, resolved];
+    }),
   );
 
+  const autoSummary = isOAuth
+    ? `Connect ${service} with OAuth so CtrlChecks can request permission without asking you to paste secret tokens.`
+    : `Use this guide to collect the ${definition.displayName} values required to create a reusable CtrlChecks connection.`;
+
+  const autoPrerequisites = isOAuth
+    ? [
+        `An active ${service} account you can sign in to.`,
+        'Permission to approve the requested scopes for your workspace or account.',
+        'Popups and redirects allowed for this CtrlChecks session.',
+      ]
+    : [
+        `Access to the ${service} account, developer console, admin settings, or server connection details.`,
+        'Permission to create or view API credentials for the account.',
+        'A least-privilege credential dedicated to automation when the provider supports it.',
+      ];
+
+  const autoSteps = isOAuth
+    ? [
+        `Click ${definition.form.oauthButtonLabel || `Connect ${service}`}.`,
+        `Sign in to ${service} in the authorization window.`,
+        'Review the requested permissions and approve only if they match this workflow.',
+        'Return to CtrlChecks and confirm the connection appears as connected.',
+      ]
+    : [
+        `Open your ${service} account, developer console, admin settings, or database connection page.`,
+        'Create a new API key, token, app password, webhook, or database user when possible.',
+        'Copy each value into the matching field in this form.',
+        'Save the connection, then test it before using it in production workflows.',
+      ];
+
+  const autoSecurityNotes = [
+    'Never paste personal passwords when the provider offers API keys, app passwords, or tokens.',
+    'Use the minimum scopes and permissions needed for the workflows that will use this connection.',
+    'Rotate the credential immediately if it is shared outside CtrlChecks or exposed in logs.',
+    'CtrlChecks stores saved secret fields encrypted and masks them in the UI.',
+  ];
+
+  // Inline definition.guide (Airtable-style overrides) take highest priority
+  const { fieldGuides: inlineFieldGuides, ...inlineRest } = definition.guide ?? {};
+
   return {
-    summary: isOAuth
-      ? `Connect ${service} with OAuth so CtrlChecks can request permission without asking you to paste secret tokens.`
-      : `Use this guide to collect the ${definition.displayName} values required to create a reusable CtrlChecks connection.`,
-    prerequisites: isOAuth
-      ? [
-          `An active ${service} account you can sign in to.`,
-          'Permission to approve the requested scopes for your workspace or account.',
-          'Popups and redirects allowed for this CtrlChecks session.',
-        ]
-      : [
-          `Access to the ${service} account, developer console, admin settings, or server connection details.`,
-          'Permission to create or view API credentials for the account.',
-          'A least-privilege credential dedicated to automation when the provider supports it.',
-        ],
-    steps: isOAuth
-      ? [
-          `Click ${definition.form.oauthButtonLabel || `Connect ${service}`}.`,
-          `Sign in to ${service} in the authorization window.`,
-          'Review the requested permissions and approve only if they match this workflow.',
-          'Return to CtrlChecks and confirm the connection appears as connected.',
-        ]
-      : [
-          `Open your ${service} account, developer console, admin settings, or database connection page.`,
-          'Create a new API key, token, app password, webhook, or database user when possible.',
-          'Copy each value into the matching field in this form.',
-          'Save the connection, then test it before using it in production workflows.',
-        ],
-    fieldGuides,
-    securityNotes: [
-      'Never paste personal passwords when the provider offers API keys, app passwords, or tokens.',
-      'Use the minimum scopes and permissions needed for the workflows that will use this connection.',
-      'Rotate the credential immediately if it is shared outside CtrlChecks or exposed in logs.',
-      'CtrlChecks stores saved secret fields encrypted and masks them in the UI.',
-    ],
-    docsUrl: providerDocsUrls[definition.provider],
-    ...definition.guide,
+    summary:          inlineRest.summary          ?? specific?.summary          ?? autoSummary,
+    prerequisites:    inlineRest.prerequisites    ?? specific?.prerequisites    ?? autoPrerequisites,
+    steps:            inlineRest.steps            ?? specific?.steps            ?? autoSteps,
+    securityNotes:    inlineRest.securityNotes    ?? specific?.securityNotes    ?? autoSecurityNotes,
+    docsUrl:          inlineRest.docsUrl          ?? specific?.docsUrl          ?? providerDocsUrls[definition.provider],
+    troubleshooting:  inlineRest.troubleshooting  ?? specific?.troubleshooting,
+    fieldGuides: {
+      ...fieldGuides,
+      ...(inlineFieldGuides ?? {}),
+    },
   };
 }
 

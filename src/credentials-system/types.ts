@@ -44,6 +44,7 @@ export interface CredentialGuide {
   fieldGuides: Record<string, CredentialFieldGuide>;
   securityNotes: string[];
   docsUrl?: string;
+  troubleshooting?: string[];
 }
 
 export interface CredentialTestRequest {
