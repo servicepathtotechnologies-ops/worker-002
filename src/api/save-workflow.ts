@@ -176,22 +176,32 @@ export default async function saveWorkflowHandler(req: Request, res: Response) {
       : { ...incomingPlain };
 
     // 5. Prepare workflow data
-    const workflowData: Record<string, unknown> = {
+    // setup_completed, setup_stage, setup_completed_at are ONLY written on INSERT (new manual workflow).
+    // For UPDATE, these fields are preserved from the DB — the sole authority to change them
+    // is POST /api/workflows/:id/commit-setup (workflow-setup-lifecycle.ts).
+    // This prevents save-workflow from making half-configured wizard workflows visible in the UI.
+    const baseWorkflowData: Record<string, unknown> = {
       name,
       nodes: normalized.nodes,
       edges: normalized.edges,
       updated_at: new Date().toISOString(),
-      schema_version: 2, // Current schema version
-      // ✅ CRITICAL: Include settings, graph, and metadata with safe defaults
+      schema_version: 2,
       settings: (req.body.settings || {}),
       graph: buildSyncedGraphPayload(normalized.nodes, normalized.edges, mergedMetadata),
       metadata: mergedMetadata,
-      setup_completed: true,
-      setup_stage: 'complete',
-      setup_completed_at: new Date().toISOString(),
+      user_id: authenticatedUserId,
     };
 
-    workflowData.user_id = authenticatedUserId;
+    // New manually-built workflows (no workflowId) are immediately visible.
+    // Wizard-created workflows earn visibility only via commit-setup.
+    const workflowData: Record<string, unknown> = workflowId
+      ? baseWorkflowData
+      : {
+          ...baseWorkflowData,
+          setup_completed: true,
+          setup_stage: 'complete',
+          setup_completed_at: new Date().toISOString(),
+        };
 
     // 6. Save or update workflow
     let savedWorkflow;

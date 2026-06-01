@@ -58,6 +58,17 @@ function buildCompactGraphDigest(workflow: Workflow): string {
     .join('\n');
 }
 
+/** True when the stored value equals the registry default — no explicit choice was made yet. */
+function isAtRegistryDefault(storedValue: unknown, fieldDefault: unknown): boolean {
+  if (storedValue === undefined || storedValue === null) return true;
+  if (fieldDefault === undefined || fieldDefault === null) return false;
+  try {
+    return JSON.stringify(storedValue) === JSON.stringify(fieldDefault);
+  } catch {
+    return storedValue === fieldDefault;
+  }
+}
+
 function tryParseJson(text: string): Record<string, unknown> | null {
   try {
     const cleaned = stripMarkdownFences(text);
@@ -89,9 +100,10 @@ async function generateRuntimeFieldDirectives(params: {
   runtimeAiFields: Array<{ fieldName: string; field: NodeInputField }>;
   userIntent: string;
   graphDigest: string;
+  upstreamFieldNames?: string[];
   correlationId?: string;
 }): Promise<Record<string, string>> {
-  const { nodeId, nodeType, runtimeAiFields, userIntent, graphDigest, correlationId } = params;
+  const { nodeId, nodeType, runtimeAiFields, userIntent, graphDigest, upstreamFieldNames, correlationId } = params;
 
   if (runtimeAiFields.length === 0) return {};
 
@@ -107,6 +119,9 @@ async function generateRuntimeFieldDirectives(params: {
     '(spreadsheet ranges like "job!A1:E2", row counts, API endpoints) as greeting names or body content.\n' +
     '- recipient fields: instruct to extract a valid email address or identifier from upstream ' +
     'form data using the specific upstream field name. Never substitute a sheet name or range.\n' +
+    '- values/data/payload fields: instruct to build a structured payload using the upstream field ' +
+    'names provided (e.g. [[{{$json.Name}}, {{$json.Email}}]] for an array row, or an object for ' +
+    'key-value pairs). Reference ONLY the upstream field names listed in UPSTREAM_FIELDS.\n' +
     '- Other fields: write a directive based on the field\'s description and semantic role.\n\n' +
     'Return ONLY valid JSON: { "<fieldName>": "<directive string>" }. No markdown, no explanation.';
 
@@ -117,12 +132,19 @@ async function generateRuntimeFieldDirectives(params: {
     )
     .join('\n');
 
+  const upstreamSection =
+    upstreamFieldNames && upstreamFieldNames.length > 0
+      ? `\nUPSTREAM_FIELDS (reference these by name at runtime using {{$json.<name>}}):\n` +
+        upstreamFieldNames.map((f) => `  - ${f}`).join('\n') + '\n'
+      : '';
+
   const userMessage =
     `USER_INTENT:\n${userIntent}\n\n` +
     `WORKFLOW_NODE_ORDER:\n${graphDigest}\n\n` +
     `NODE_TYPE: ${nodeType}\n` +
-    `NODE_ID: ${nodeId}\n\n` +
-    `FIELDS NEEDING DIRECTIVES:\n${fieldsSection}\n\n` +
+    `NODE_ID: ${nodeId}\n` +
+    upstreamSection +
+    `\nFIELDS NEEDING DIRECTIVES:\n${fieldsSection}\n\n` +
     `Return a JSON object with exactly these field names as keys and directive strings as values.`;
 
   try {
@@ -236,14 +258,29 @@ export async function runPropertyPopulationStage(
       }
 
       const inputSchema = nodeDef.inputSchema;
+      const existingConfig = (node.data?.config || {}) as Record<string, any>;
+
       const eligibleFields = Object.entries(inputSchema).filter(
-        ([, field]) =>
-          field.fillMode?.default === 'buildtime_ai_once' &&
-          field.ownership !== 'credential',
+        ([fieldName, field]) => {
+          if (field.ownership === 'credential') return false;
+          // Primary: buildtime_ai_once fields are always eligible
+          if (field.fillMode?.default === 'buildtime_ai_once') return true;
+          // Secondary: manual_static fields where the registry signals AI can suggest
+          // a value (supportsBuildtimeAI: true) AND the field is still at its
+          // registry default — meaning no explicit user or prior AI choice was made.
+          // This lets the LLM infer operation/method/action from intent without
+          // adding per-node special cases anywhere in the pipeline.
+          if (
+            field.fillMode?.default === 'manual_static' &&
+            field.fillMode?.supportsBuildtimeAI === true &&
+            isAtRegistryDefault(existingConfig[fieldName], (field as any).default)
+          ) return true;
+          return false;
+        },
       );
 
       if (eligibleFields.length === 0) {
-        // No buildtime_ai_once fields — leave config unchanged
+        // No eligible fields — leave config unchanged
         continue;
       }
 
@@ -374,16 +411,98 @@ export async function runPropertyPopulationStage(
           `For "long_body" fields: reference upstream data using {{$json.<field>}} template syntax.\n`;
       }
 
+      // ── Upstream data flow context (full upstream chain) ────────────────
+      // Walk ALL upstream nodes via edges so the LLM sees the complete data
+      // shape arriving at this node — not just the immediate predecessor.
+      let upstreamDataFlowHint = '';
+      try {
+        const upstreamChain: Array<{ nodeType: string; nodeLabel: string; outputFields: string[] }> = [];
+        const visited = new Set<string>();
+        const queue = [nodeId];
+        while (queue.length > 0) {
+          const currentId = queue.shift()!;
+          if (visited.has(currentId)) continue;
+          visited.add(currentId);
+          for (const edge of workflow.edges) {
+            if (edge.target !== currentId || visited.has(edge.source)) continue;
+            const upNode = workflow.nodes.find((n) => n.id === edge.source);
+            if (!upNode) continue;
+            const upType = String(upNode.type ?? upNode.data?.type ?? '');
+            const upDef = unifiedNodeRegistry.get(upType);
+            const upLabel = String(upNode.data?.label || upType);
+            const outputFields: string[] = [];
+            if (upDef?.outputSchema) {
+              outputFields.push(...Object.keys(upDef.outputSchema));
+            }
+            // Form nodes surface their configured fields as output
+            if (upType === 'form' || upType === 'form_trigger') {
+              const formFields = (upNode.data?.config as any)?.fields;
+              if (Array.isArray(formFields)) {
+                for (const f of formFields) {
+                  const key = f.name ?? f.key ?? f.label ?? f.id;
+                  if (key && typeof key === 'string' && !outputFields.includes(key)) {
+                    outputFields.push(key);
+                  }
+                }
+              }
+            }
+            upstreamChain.push({ nodeType: upType, nodeLabel: upLabel, outputFields });
+            queue.push(edge.source);
+          }
+        }
+        if (upstreamChain.length > 0) {
+          upstreamDataFlowHint =
+            `\nUPSTREAM_DATA_FLOW (nodes feeding data into this node, use {{$json.<field>}} to reference):\n` +
+            upstreamChain
+              .map((n) =>
+                `  - ${n.nodeLabel} (${n.nodeType})` +
+                (n.outputFields.length > 0 ? `: outputs [${n.outputFields.join(', ')}]` : ''),
+              )
+              .join('\n') + '\n';
+        }
+      } catch {
+        // non-blocking
+      }
+
+      // ── Operation options hint for AI-suggestible manual_static fields ──
+      // When the LLM must infer an operation from intent, give it the exact
+      // valid values from the node's operation contracts rather than guessing.
+      let operationOptionsHint = '';
+      for (const [fieldName, field] of eligibleFields) {
+        if (
+          field.fillMode?.default === 'manual_static' &&
+          field.fillMode?.supportsBuildtimeAI === true
+        ) {
+          const contracts = (nodeDef as any).operationContracts;
+          if (Array.isArray(contracts) && contracts.length > 0) {
+            const validOps = contracts
+              .map((c: any) => c.operation)
+              .filter((op: any) => typeof op === 'string');
+            if (validOps.length > 0) {
+              operationOptionsHint +=
+                `\nFOR FIELD "${fieldName}": choose the value that matches the user's intent.\n` +
+                `  Valid values: [${validOps.join(', ')}]\n` +
+                `  Hint — "append" = inserting new rows/records, "read" = fetching/retrieving data, ` +
+                `"write" = overwriting, "update" = editing existing rows, ` +
+                `"create" = creating new resources, "send" = sending messages.\n` +
+                `  User intent says: "${userIntent.slice(0, 200)}"\n`;
+            }
+          }
+        }
+      }
+
       const userMessage =
         `USER_INTENT:\n${userIntent}\n\n` +
         `WORKFLOW_BLUEPRINT:\n${structuralPrompt}\n\n` +
         `WORKFLOW_NODE_ORDER:\n${graphDigest}\n\n` +
         `NODE_TYPE: ${nodeType}\n` +
         `NODE_ID: ${nodeId}\n` +
+        upstreamDataFlowHint +
         upstreamFormFieldsHint +
         switchHint +
         upstreamFieldsHint +
         fieldRolesHint +
+        operationOptionsHint +
         `\nFIELDS_TO_POPULATE:\n${fieldsText}\n\n` +
         `Return a JSON object with keys matching the field names above.\n` +
         `For array/object fields, return valid JSON values (not strings).\n` +
@@ -456,7 +575,12 @@ export async function runPropertyPopulationStage(
         if (fieldDef.fillMode?.supportsBuildtimeAI === false) continue;
         // Gate 2: Skip fields where fillMode.default is runtime_ai (defer to runtime)
         if (fieldDef.fillMode?.default === 'runtime_ai') continue;
-        if (fieldDef.fillMode?.default !== 'buildtime_ai_once') continue;
+        // Gate 3: Allow buildtime_ai_once AND manual_static+supportsBuildtimeAI fields
+        const isBuildtimeAi = fieldDef.fillMode?.default === 'buildtime_ai_once';
+        const isAiSuggestableManual =
+          fieldDef.fillMode?.default === 'manual_static' &&
+          fieldDef.fillMode?.supportsBuildtimeAI === true;
+        if (!isBuildtimeAi && !isAiSuggestableManual) continue;
         if (fieldDef.ownership === 'credential') continue;
 
         // For array/object fields: if LLM returned a string, try JSON.parse
@@ -542,12 +666,50 @@ export async function runPropertyPopulationStage(
         .map(([fieldName, field]) => ({ fieldName, field: field as NodeInputField }));
 
       if (runtimeAiFields.length > 0) {
+        // Collect all upstream field names (form fields + registry output fields)
+        // so the directive LLM can generate precise {{$json.<name>}} references.
+        const allUpstreamFieldNames: string[] = [];
+        try {
+          const visitedForDirectives = new Set<string>();
+          const q2 = [nodeId];
+          while (q2.length > 0) {
+            const cid = q2.shift()!;
+            if (visitedForDirectives.has(cid)) continue;
+            visitedForDirectives.add(cid);
+            for (const edge of workflow.edges) {
+              if (edge.target !== cid || visitedForDirectives.has(edge.source)) continue;
+              const upN = workflow.nodes.find((n) => n.id === edge.source);
+              if (!upN) continue;
+              const upT = String(upN.type ?? upN.data?.type ?? '');
+              const upD = unifiedNodeRegistry.get(upT);
+              if (upD?.outputSchema) {
+                allUpstreamFieldNames.push(...Object.keys(upD.outputSchema));
+              }
+              if (upT === 'form' || upT === 'form_trigger') {
+                const ff = (upN.data?.config as any)?.fields;
+                if (Array.isArray(ff)) {
+                  for (const f of ff) {
+                    const k = f.name ?? f.key ?? f.label ?? f.id;
+                    if (k && typeof k === 'string' && !allUpstreamFieldNames.includes(k)) {
+                      allUpstreamFieldNames.push(k);
+                    }
+                  }
+                }
+              }
+              q2.push(edge.source);
+            }
+          }
+        } catch {
+          // non-blocking
+        }
+
         const directives = await generateRuntimeFieldDirectives({
           nodeId,
           nodeType,
           runtimeAiFields,
           userIntent,
           graphDigest,
+          upstreamFieldNames: allUpstreamFieldNames.length > 0 ? allUpstreamFieldNames : undefined,
           correlationId,
         });
         if (Object.keys(directives).length > 0) {

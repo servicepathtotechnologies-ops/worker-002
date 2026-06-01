@@ -8,6 +8,7 @@
  * This phase runs AFTER workflow generation but BEFORE execution.
  */
 
+import { createHash } from 'crypto';
 import { WorkflowNode, Workflow } from '../../core/types/ai-types';
 import { nodeLibrary } from '../nodes/node-library';
 import { unifiedNormalizeNodeType } from '../../core/utils/unified-node-type-normalizer';
@@ -16,6 +17,7 @@ import { unifiedNodeRegistry } from '../../core/registry/unified-node-registry';
 import { isCredentialSatisfiedByNodeConfig } from './credential-config-satisfaction';
 import { geminiOrchestrator } from './gemini-orchestrator';
 import { queryAsService } from '../../core/database/db-pool';
+import { getCacheRedisClient } from '../../middleware/redisGetCache';
 
 export interface CredentialRequirement {
   provider: string;
@@ -188,7 +190,21 @@ export class CredentialDiscoveryPhase {
       return `${c.displayName} (${c.satisfied ? '✅' : '❌'}) - nodes: [${nodeIds.join(', ')}] (${nodeTypes.join(', ')})`;
     }).join(', '));
 
-    // Enrich credentials with AI-generated guidance (non-blocking)
+    // Skip AI enrichment when all credentials are already satisfied — no guidance needed
+    const hasMissingCredentials = allCredentials.some(c => !c.satisfied && c.required);
+    if (!hasMissingCredentials) {
+      console.log('[CredentialDiscovery] All credentials satisfied — skipping AI enrichment');
+      return {
+        requiredCredentials: allCredentials,
+        satisfiedCredentials,
+        missingCredentials: [],
+        allDiscovered,
+        errors,
+        warnings,
+      };
+    }
+
+    // Enrich missing credentials with AI-generated guidance (Redis-cached)
     const enrichedCredentials = await this.enrichWithAIGuidance(allCredentials).catch(() => allCredentials);
 
     const enrichedSatisfied = enrichedCredentials.filter(c => c.satisfied === true);
@@ -213,6 +229,32 @@ export class CredentialDiscoveryPhase {
     credentials: CredentialRequirement[],
   ): Promise<CredentialRequirement[]> {
     if (credentials.length === 0) return credentials;
+
+    // Stable cache key: sorted credential type signatures — same types always get same descriptions
+    const cacheKey = `credential-guidance:${createHash('sha256')
+      .update(credentials.map(c => `${c.displayName}:${c.type}`).sort().join('|'))
+      .digest('hex')}`;
+
+    // Check Redis cache before calling Gemini
+    try {
+      const redisUrl = process.env.REDIS_URL || 'redis://redis:6379';
+      const redis = await getCacheRedisClient(redisUrl);
+      if (redis) {
+        const cached = await redis.get(cacheKey);
+        if (cached) {
+          console.log('[CredentialDiscovery] Enrichment cache hit — skipping Gemini call');
+          const parsedCache = JSON.parse(cached) as Array<{ simpleDescription?: string; technicalDescription?: string; howToObtain?: string }>;
+          return credentials.map((c, i) => ({
+            ...c,
+            simpleDescription: parsedCache[i]?.simpleDescription || c.simpleDescription,
+            technicalDescription: parsedCache[i]?.technicalDescription || c.technicalDescription,
+            howToObtain: parsedCache[i]?.howToObtain || c.howToObtain,
+          }));
+        }
+      }
+    } catch {
+      // Redis unavailable — proceed to Gemini
+    }
 
     const credList = credentials
       .map((c, i) => `${i + 1}. displayName="${c.displayName}", type="${c.type}", nodeTypes=[${c.nodeTypes.join(', ')}]`)
@@ -245,6 +287,15 @@ export class CredentialDiscoveryPhase {
       parsed = JSON.parse(jsonMatch[0]);
     } catch {
       return credentials;
+    }
+
+    // Cache result for 24 hours — descriptions don't change for the same credential types
+    try {
+      const redisUrl = process.env.REDIS_URL || 'redis://redis:6379';
+      const redis = await getCacheRedisClient(redisUrl);
+      if (redis) await redis.setEx(cacheKey, 86400, JSON.stringify(parsed));
+    } catch {
+      // Non-fatal
     }
 
     return credentials.map((c, i) => ({

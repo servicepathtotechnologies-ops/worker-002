@@ -459,42 +459,25 @@ async function runAttachInputsPipeline(req: Request, res: Response): Promise<{ s
       }
     }
 
-    // âœ… CRITICAL: Phase locking - prevent duplicate attach calls
-    // Check phase field first (for execution phases), then fall back to status (for lifecycle)
+    // Phase check: only block phases where attaching inputs is genuinely unsafe.
+    // Blocklist approach — any unrecognised phase is allowed so new phases never silently break the UI.
     const currentPhase = workflow.phase || workflow.status || 'draft';
-    const allowedPhases = ['draft', 'active', 'ready', 'configuring_inputs', 'configuring_credentials', 'discover_inputs', 'discover_credentials', 'ready_for_execution', 'complete', 'completed'];
-    
-    // Allow 'ready_for_execution' to be reset to 'configuring_inputs' when re-attaching inputs
-    // This allows users to update inputs even after workflow is ready
-    if (!allowedPhases.includes(currentPhase)) {
-      if (currentPhase === 'executing') {
-        return { statusCode: 409, body: (
-          createError(
-            ErrorCode.PHASE_LOCKED,
-            'Workflow not in input configuration phase',
-            { 
-              currentPhase,
-              workflowId,
-              message: 'Workflow is currently executing. Cannot attach inputs.',
-            },
-            true // Recoverable - user can refresh
-          )
-        ) };
-      } else {
-        return { statusCode: 400, body: (
-          createError(
-            ErrorCode.INVALID_PHASE,
-            'Workflow not in valid phase for input attachment',
-            { 
-              currentPhase,
-              workflowId,
-              allowedPhases,
-              workflowStatus: workflow.status,
-              workflowPhase: workflow.phase,
-            }
-          )
-        ) };
-      }
+    const executingPhases = new Set(['executing', 'running']);
+    console.log(`[AttachInputs] Current workflow phase: "${currentPhase}" (phase=${workflow.phase}, status=${workflow.status})`);
+
+    if (executingPhases.has(currentPhase)) {
+      return { statusCode: 409, body: (
+        createError(
+          ErrorCode.PHASE_LOCKED,
+          'Workflow is currently executing. Cannot attach inputs.',
+          {
+            currentPhase,
+            workflowId,
+            message: 'Workflow is currently executing. Cannot attach inputs.',
+          },
+          true // Recoverable - user can refresh
+        )
+      ) };
     }
 
     // âœ… ATOMIC PHASE FIX: Do NOT update phase here.

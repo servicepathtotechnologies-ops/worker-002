@@ -114,6 +114,63 @@ export async function invalidateWorkflowDbCache(client: RedisClientType): Promis
 }
 
 /**
+ * Invalidates all Redis cache keys for a specific workflow's missing-items endpoint.
+ * Call this after saving credentials so the frontend sees the updated connection status immediately.
+ */
+export async function invalidateMissingItemsCache(workflowId: string, client: RedisClientType): Promise<void> {
+  const pattern = `/api/workflows/${workflowId}/missing-items:*`;
+  const keysToDelete: string[] = [];
+
+  if (typeof (client as any).scanIterator === 'function') {
+    for await (const key of (client as any).scanIterator({ MATCH: pattern })) {
+      keysToDelete.push(key);
+    }
+  } else {
+    let cursor = 0;
+    do {
+      const result: { cursor: number; keys: string[] } = await (client as any).scan(cursor, { MATCH: pattern, COUNT: 100 });
+      cursor = result.cursor;
+      keysToDelete.push(...result.keys);
+    } while (cursor !== 0);
+  }
+
+  for (const key of keysToDelete) {
+    await client.del(key);
+  }
+
+  console.log(`[RedisGetCache] invalidated ${keysToDelete.length} missing-items cache key(s) for workflow ${workflowId}`);
+}
+
+/**
+ * Invalidates ALL missing-items cache keys across all workflows.
+ * Use this after API-key credential saves where the specific workflowId is not available.
+ * Safe to call — missing-items is now fast (< 300ms) so cache rebuilds quickly.
+ */
+export async function invalidateAllMissingItemsCaches(client: RedisClientType): Promise<void> {
+  const pattern = `/api/workflows/*/missing-items:*`;
+  const keysToDelete: string[] = [];
+
+  if (typeof (client as any).scanIterator === 'function') {
+    for await (const key of (client as any).scanIterator({ MATCH: pattern })) {
+      keysToDelete.push(key);
+    }
+  } else {
+    let cursor = 0;
+    do {
+      const result: { cursor: number; keys: string[] } = await (client as any).scan(cursor, { MATCH: pattern, COUNT: 100 });
+      cursor = result.cursor;
+      keysToDelete.push(...result.keys);
+    } while (cursor !== 0);
+  }
+
+  for (const key of keysToDelete) {
+    await client.del(key);
+  }
+
+  console.log(`[RedisGetCache] invalidated ${keysToDelete.length} missing-items cache key(s) across all workflows`);
+}
+
+/**
  * Caches successful JSON GET responses with a cache-aside Redis pattern.
  */
 export function redisGetCache(options: CacheOptions = {}) {

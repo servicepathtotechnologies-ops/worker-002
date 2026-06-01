@@ -176,8 +176,14 @@ export class GeminiOrchestrator {
    */
   private selectOptimalModel(type: AIRequestType, input: any): string {
     // High complexity tasks → Pro
-    if (['workflow-generation', 'code-generation', 'code-assistance', 
-         'image-understanding', 'image-comparison', 'reasoning'].includes(type)) {
+    if ([
+      'workflow-generation', 'code-generation', 'code-assistance',
+      'image-understanding', 'image-comparison', 'reasoning',
+      // Catalog-level reasoning: picking from 100+ node types requires deep understanding
+      'node-suggestion',
+      // Field population makes critical structural decisions (operation, template wiring)
+      'property-population',
+    ].includes(type)) {
       return GEMINI_PRO_MODEL;
     }
     

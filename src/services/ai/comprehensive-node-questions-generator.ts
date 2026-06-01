@@ -131,6 +131,7 @@ function filterQuestionsBySelectedWorkflowIntelligence(
 ): ComprehensiveNodeQuestion[] {
   return questions.filter((q) => {
     if (q.category === 'credential') return true;
+    if (q.aiUsesRuntime || q.aiFilledAtBuildTime || q.aiBuildTimePending) return true;
     if (!q.fieldRelevance) return true;
     return q.fieldRelevance.shouldShowInOwnership !== false;
   });
@@ -177,7 +178,9 @@ function addMissingInputSchemaQuestionsForOwnership(
       const vaultMeta = getCredentialVaultMetaForField(nodeType, fieldName);
       const credentialOwned = !!vaultMeta || isCredentialOwnership(fieldName, fieldDef);
       const policy = fieldPolicy.fields[fieldName];
-      if (!credentialOwned && policy?.active === false) continue;
+      const fillMode = fieldDef?.fillMode?.default;
+      const isAiOwned = fillMode === 'runtime_ai' || fillMode === 'buildtime_ai_once';
+      if (!credentialOwned && policy?.active === false && !isAiOwned) continue;
       const mode = resolveEffectiveFieldFillMode(fieldName, inputSchema, config);
       const hasExplicitFillMode = config._fillMode?.[fieldName] !== undefined;
       const valueIsEmpty = isEmptyValue(config[fieldName]);
@@ -1413,7 +1416,10 @@ function generateConfigurationQuestions(
   // Use node-question-order system if available
   const questionConfig = getQuestionConfig(nodeType);
   if (questionConfig) {
-    const orderedQuestions = getOrderedQuestions(nodeType, answeredFields);
+    // Merge node config as the base so dependsOn conditions evaluate against
+    // actual stored values (e.g. operation='append'), not empty answeredFields.
+    const effectiveAnsweredFields = { ...config, ...answeredFields };
+    const orderedQuestions = getOrderedQuestions(nodeType, effectiveAnsweredFields);
     
     const unifiedForOrdered = unifiedNodeRegistry.get(nodeType);
     const fieldPolicyForOrdered = unifiedForOrdered

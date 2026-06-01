@@ -4,6 +4,7 @@ import { authInjectionEngine } from '../credentials-system/execution-auth';
 import type { CredentialAuthRequest } from '../credentials-system/execution-auth-middleware';
 import { nodeRegistryService } from '../credentials-system/node-registry-service';
 import { oauthService } from '../credentials-system/oauth-service';
+import { getCacheRedisClient, invalidateMissingItemsCache, invalidateAllMissingItemsCaches } from '../middleware/redisGetCache';
 
 function userId(req: Request): string {
   const id = (req as any).user?.id || req.query.user_id || req.body?.userId;
@@ -63,6 +64,11 @@ export async function createConnectionHandler(req: Request, res: Response) {
     credentials: req.body.credentials || {},
     metadata: req.body.metadata || {},
   });
+  // Invalidate all missing-items caches so the frontend sees connected status immediately
+  const redisUrl = process.env.REDIS_URL || 'redis://redis:6379';
+  getCacheRedisClient(redisUrl).then(redis => {
+    if (redis) invalidateAllMissingItemsCaches(redis).catch(() => {});
+  }).catch(() => {});
   res.status(201).json({ connection });
 }
 
@@ -72,6 +78,11 @@ export async function updateConnectionHandler(req: Request, res: Response) {
     credentials: req.body.credentials,
     metadata: req.body.metadata,
   });
+  // Invalidate all missing-items caches on credential update
+  const redisUrl = process.env.REDIS_URL || 'redis://redis:6379';
+  getCacheRedisClient(redisUrl).then(redis => {
+    if (redis) invalidateAllMissingItemsCaches(redis).catch(() => {});
+  }).catch(() => {});
   res.json({ connection });
 }
 
@@ -132,6 +143,16 @@ export async function oauthCallbackHandler(req: Request, res: Response) {
     }
     throw error;
   }
+  // Invalidate missing-items cache so the frontend sees the connected status immediately
+  const returnTo = result.returnTo || '';
+  const workflowIdMatch = returnTo.match(/\/workflow\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
+  if (workflowIdMatch) {
+    const redisUrl = process.env.REDIS_URL || 'redis://redis:6379';
+    getCacheRedisClient(redisUrl).then(redis => {
+      if (redis) invalidateMissingItemsCache(workflowIdMatch[1], redis).catch(() => {});
+    }).catch(() => {});
+  }
+
   if (req.method === 'GET') {
     return res.send(oauthCallbackHtml({
       type: 'oauth-success',
