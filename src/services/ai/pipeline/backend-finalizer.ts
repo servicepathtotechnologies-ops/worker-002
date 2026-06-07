@@ -22,6 +22,7 @@ import { unifiedGraphOrchestrator } from '../../../core/orchestration/unified-gr
 import { unifiedNodeRegistry } from '../../../core/registry/unified-node-registry';
 import { buildNodeCatalogText } from '../node-catalog-builder';
 import { runEdgeReasoningStage } from '../stages/edge-reasoning-stage';
+import { runEdgeReasoningStageRemote } from '../stages/edge-reasoning-stage-client';
 import { runValidationStage } from '../stages/validation-stage';
 import { runPropertyPopulationStage } from '../stages/property-population-stage';
 import { runCredentialDiscoveryStage } from '../stages/credential-discovery-stage';
@@ -134,13 +135,21 @@ export class BackendFinalizer {
         llmCall: { model: 'deterministic_linear', temperature: 0, promptTokens: 0, completionTokens: 0 },
       });
     } else {
-      const erResult = await runEdgeReasoningStage(
-        selectedNodes,
-        nodeCatalog,
-        userIntent,
-        correlationId,
-        structuralPrompt,
-      );
+      const erResult =
+        (await runEdgeReasoningStageRemote(
+          selectedNodes,
+          nodeCatalog,
+          userIntent,
+          correlationId,
+          structuralPrompt,
+        )) ??
+        await runEdgeReasoningStage(
+          selectedNodes,
+          nodeCatalog,
+          userIntent,
+          correlationId,
+          structuralPrompt,
+        );
       stageTrace.push({
         stage: 'edge_reasoning',
         startedAt: erStart,
