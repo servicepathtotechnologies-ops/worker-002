@@ -18,8 +18,11 @@ import { logger } from '../../../core/logger';
 import { buildNodeCatalogText } from '../node-catalog-builder';
 import { runIntentStage } from '../stages/intent-stage';
 import { runCapabilitySelectionStage } from '../stages/capability-selection-stage';
+import { runCapabilitySelectionStageRemote } from '../stages/capability-stage-client';
 import { runStructuralPromptStage } from '../stages/structural-prompt-stage';
+import { runStructuralPromptStageRemote } from '../stages/structural-prompt-stage-client';
 import { runNodeSelectionStage } from '../stages/node-selection-stage';
+import { runNodeSelectionStageRemote } from '../stages/node-selection-stage-client';
 import { StructuralPromptGenerator } from '../stages/structural-prompt-generator';
 import { BackendFinalizer } from './backend-finalizer';
 import { unifiedNodeRegistry } from '../../../core/registry/unified-node-registry';
@@ -91,7 +94,9 @@ export class WorkflowGenerationPipeline {
 
       // ── Stage 1b: Capability Selection ───────────────────────────────────
       const csStart = Date.now();
-      const csResult = await runCapabilitySelectionStage(intentResult.intent, correlationId);
+      const csResult =
+        (await runCapabilitySelectionStageRemote(intentResult.intent, nodeCatalog, correlationId)) ??
+        await runCapabilitySelectionStage(intentResult.intent, correlationId);
       stageTrace.push({
         stage: 'capability_selection',
         startedAt: csStart,
@@ -143,10 +148,13 @@ export class WorkflowGenerationPipeline {
       }
 
       const spStart = Date.now();
-      const spResult = await runStructuralPromptStage(intentResult.intent, nodeCatalog, correlationId, {
+      const structuralPromptConstraints = {
         selectedNodeConstraintsByStep: appliedSelections.byStep,
         selectedNodeConstraintsFlat: appliedSelections.flat,
-      });
+      };
+      const spResult =
+        (await runStructuralPromptStageRemote(intentResult.intent, nodeCatalog, correlationId, structuralPromptConstraints)) ??
+        await runStructuralPromptStage(intentResult.intent, nodeCatalog, correlationId, structuralPromptConstraints);
       stageTrace.push({
         stage: 'structural_prompt',
         startedAt: spStart,
@@ -166,17 +174,26 @@ export class WorkflowGenerationPipeline {
 
       // ── Stage 1d: Node Selection (Gemini) ─────────────────────────────────
       const nsStart = Date.now();
-      const nsResult = await runNodeSelectionStage(
-        intentResult.intent,
-        nodeCatalog,
-        correlationId,
-        rawStructuralPrompt,
-        {
-          selectedNodeConstraintsByStep: appliedSelections.byStep,
-          selectedNodeConstraintsFlat: appliedSelections.flat,
-          requiredNodeTypes: appliedSelections.flat,
-        },
-      );
+      const nodeSelectionConstraints = {
+        selectedNodeConstraintsByStep: appliedSelections.byStep,
+        selectedNodeConstraintsFlat: appliedSelections.flat,
+        requiredNodeTypes: appliedSelections.flat,
+      };
+      const nsResult =
+        (await runNodeSelectionStageRemote(
+          intentResult.intent,
+          nodeCatalog,
+          correlationId,
+          rawStructuralPrompt,
+          nodeSelectionConstraints,
+        )) ??
+        await runNodeSelectionStage(
+          intentResult.intent,
+          nodeCatalog,
+          correlationId,
+          rawStructuralPrompt,
+          nodeSelectionConstraints,
+        );
       stageTrace.push({
         stage: 'node_selection',
         startedAt: nsStart,

@@ -14,10 +14,14 @@ import { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 import { WorkflowGenerationPipeline } from '../services/ai/pipeline/workflow-generation-pipeline';
 import { runIntentStage } from '../services/ai/stages/intent-stage';
+import { runIntentStageRemote } from '../services/ai/stages/intent-stage-client';
 import type { StructuredIntent } from '../services/ai/stages/intent-stage';
 import { runCapabilitySelectionStage } from '../services/ai/stages/capability-selection-stage';
+import { runCapabilitySelectionStageRemote } from '../services/ai/stages/capability-stage-client';
 import { runStructuralPromptStage } from '../services/ai/stages/structural-prompt-stage';
+import { runStructuralPromptStageRemote } from '../services/ai/stages/structural-prompt-stage-client';
 import { runNodeSelectionStage } from '../services/ai/stages/node-selection-stage';
+import { runNodeSelectionStageRemote } from '../services/ai/stages/node-selection-stage-client';
 import { buildNodeCatalogText } from '../services/ai/node-catalog-builder';
 import { generateComprehensiveNodeQuestions } from '../services/ai/comprehensive-node-questions-generator';
 import {
@@ -170,10 +174,12 @@ export default async function generateWorkflow(req: Request, res: Response): Pro
       const providedIntentSnapshot = parseStructuredIntentSnapshot(body.intentSnapshot);
 
       const terminalFallback = resolvePreferredTerminalNodeType();
-      // Stage 1: extract structured intent (or reuse frozen snapshot from previous analyze)
+      // Stage 1: extract structured intent (or reuse frozen snapshot from previous analyze).
+      // Delegates to ai-generator when AI_GENERATOR_URL is set; falls back to in-process.
       const intentFromLlm = providedIntentSnapshot
         ? undefined
-        : await runIntentStage(userPrompt, nodeCatalog, correlationId);
+        : (await runIntentStageRemote(userPrompt, nodeCatalog, correlationId)) ??
+          await runIntentStage(userPrompt, nodeCatalog, correlationId);
 
       if (!providedIntentSnapshot && intentFromLlm && !intentFromLlm.ok) {
         res.json({
@@ -203,7 +209,9 @@ export default async function generateWorkflow(req: Request, res: Response): Pro
       }
 
       // Stage 2: capability options from registry
-      const capabilityResult = await runCapabilitySelectionStage(intentForAnalyze, correlationId);
+      const capabilityResult =
+        (await runCapabilitySelectionStageRemote(intentForAnalyze, nodeCatalog, correlationId)) ??
+        await runCapabilitySelectionStage(intentForAnalyze, correlationId);
       const capabilityOptions = capabilityResult.ok ? capabilityResult.steps : [];
       const resolvedSelections = resolveAnalyzeCapabilitySelections(capabilityOptions, analyzeCapabilitySelectionsByStep);
       if (!resolvedSelections.ok) {
@@ -221,25 +229,37 @@ export default async function generateWorkflow(req: Request, res: Response): Pro
       const selectedNodeConstraintsFlat = resolvedSelections.flat;
 
       // Stage 3: generate structural blueprint
-      const spResult = await runStructuralPromptStage(intentForAnalyze, nodeCatalog, correlationId, {
+      const structuralPromptConstraints = {
         selectedNodeConstraintsByStep,
         selectedNodeConstraintsFlat,
-      });
+      };
+      const spResult =
+        (await runStructuralPromptStageRemote(intentForAnalyze, nodeCatalog, correlationId, structuralPromptConstraints)) ??
+        await runStructuralPromptStage(intentForAnalyze, nodeCatalog, correlationId, structuralPromptConstraints);
       const structuredSummary = spResult.ok ? spResult.structuralPrompt : intentForAnalyze.intent;
       const structuralForSelection = spResult.ok ? spResult.structuralPrompt : undefined;
 
       // Stage 4: same node selection as full pipeline — registry-grounded chain (no fixed log_output suffix)
-      const nsResult = await runNodeSelectionStage(
-        intentForAnalyze,
-        nodeCatalog,
-        correlationId,
-        structuralForSelection,
-        {
-          selectedNodeConstraintsByStep,
-          selectedNodeConstraintsFlat,
-          requiredNodeTypes: selectedNodeConstraintsFlat,
-        },
-      );
+      const nodeSelectionConstraints = {
+        selectedNodeConstraintsByStep,
+        selectedNodeConstraintsFlat,
+        requiredNodeTypes: selectedNodeConstraintsFlat,
+      };
+      const nsResult =
+        (await runNodeSelectionStageRemote(
+          intentForAnalyze,
+          nodeCatalog,
+          correlationId,
+          structuralForSelection,
+          nodeSelectionConstraints,
+        )) ??
+        await runNodeSelectionStage(
+          intentForAnalyze,
+          nodeCatalog,
+          correlationId,
+          structuralForSelection,
+          nodeSelectionConstraints,
+        );
 
       let proposedNodeChain: string[];
       if (nsResult.ok && nsResult.selectedNodes.length > 0) {

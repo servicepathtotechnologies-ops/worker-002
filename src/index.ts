@@ -174,6 +174,7 @@ import * as workflowVersioningRoutes from './api/workflow-versioning';
 import memoryRoutes from './api/memory';
 import distributedExecuteWorkflow, { getExecutionStatus } from './api/distributed-execute-workflow';
 import nodeDefinitionsHandler from './api/node-definitions';
+import { nodesCatalogHandler } from './api/nodes-catalog';
 import {
   createConnectionHandler,
   credentialTypesHandler,
@@ -681,6 +682,7 @@ app.delete('/api/credentials/:key', asyncHandler(authenticateUser), asyncHandler
 // ✅ Node Definitions API - Backend is source of truth for node schemas
 import './nodes/definitions'; // Register all node definitions
 app.get('/api/node-definitions', asyncHandler(nodeDefinitionsHandler));
+app.get('/api/nodes/catalog', asyncHandler(nodesCatalogHandler));
 app.get('/api/credential-connections/registry/nodes', asyncHandler(registryNodesHandler));
 app.get('/api/credential-connections/credential-types', asyncHandler(credentialTypesHandler));
 app.get('/api/credential-connections/connections', asyncHandler(authenticateUser), asyncHandler(listConnectionsHandler));
