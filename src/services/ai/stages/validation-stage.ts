@@ -1,5 +1,5 @@
 /**
- * Validation Stage — AI-First Pipeline
+ * Validation Stage - AI-First Pipeline
  *
  * The LLM validates the assembled workflow graph on four dimensions:
  * 1. Structural validity (DAG, reachability, edge types)
@@ -21,8 +21,9 @@ import { logger } from '../../../core/logger';
 import type { Workflow } from '../../../core/types/ai-types';
 import type { NodeCatalogText } from '../node-catalog-builder';
 import { validateWorkflowNodeIntelligence } from '../../../core/utils/node-field-intelligence';
+import { runValidationStageRemote } from './validation-stage-client';
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+// Types
 
 export interface ValidationResult {
   ok: true;
@@ -43,7 +44,27 @@ export interface ValidationError {
 
 export type ValidationOutput = ValidationResult | ValidationError;
 
-// ─── Validation Stage ─────────────────────────────────────────────────────────
+export interface ValidationLlmSuccess {
+  ok: true;
+  status: 'pass' | 'fail';
+  issues: ValidationIssue[];
+  durationMs: number;
+  llmCall: { model: string; temperature: number; promptTokens: number; completionTokens: number };
+}
+
+export interface ValidationLlmError {
+  ok: false;
+  code: 'INVALID_LLM_RESPONSE';
+  rawResponse?: string;
+  durationMs: number;
+}
+
+export type ValidationLlmOutput = ValidationLlmSuccess | ValidationLlmError;
+
+const MODEL = 'gemini-3.5-flash';
+const TEMPERATURE = 0.1;
+
+// Validation Stage
 
 export async function runValidationStage(
   workflow: Workflow,
@@ -62,9 +83,62 @@ export async function runValidationStage(
     inputSummary: `nodes=${workflow.nodes.length}, edges=${workflow.edges.length}`,
   });
 
-  const model = 'gemini-3.5-flash';
-  const temperature = 0.1;
+  let llmResult = await runValidationStageRemote(
+    workflow,
+    nodeCatalog,
+    userIntent,
+    selectedNodes,
+    proposedEdges,
+    correlationId,
+    structuralPrompt,
+  );
 
+  if (!llmResult) {
+    llmResult = await runValidationLlmLocally(
+      workflow,
+      nodeCatalog,
+      userIntent,
+      selectedNodes,
+      proposedEdges,
+      correlationId,
+      structuralPrompt,
+    );
+  }
+
+  if (!llmResult.ok) {
+    logger.warn({
+      event: 'ai_pipeline_stage_error',
+      stage: 'validation',
+      correlationId,
+      error: llmResult.code,
+      message: llmResult.rawResponse,
+      note: 'Falling through to orchestrator safety net',
+    });
+    return runOrchestratorSafetyNet(workflow, MODEL, TEMPERATURE, 0, 0, startedAt, correlationId);
+  }
+
+  return processValidationResult(
+    { status: llmResult.status, issues: llmResult.issues },
+    workflow,
+    correlationId,
+    llmResult.llmCall.model,
+    llmResult.llmCall.temperature,
+    llmResult.llmCall.promptTokens,
+    llmResult.llmCall.completionTokens,
+    startedAt,
+  );
+}
+
+async function runValidationLlmLocally(
+  workflow: Workflow,
+  nodeCatalog: NodeCatalogText,
+  userIntent: string,
+  selectedNodes?: SelectedNode[],
+  proposedEdges?: ProposedEdge[],
+  correlationId?: string,
+  structuralPrompt?: string,
+): Promise<ValidationLlmOutput> {
+  const startedAt = Date.now();
   const { systemPrompt } = systemPromptBuilder.build({
     stage: 'validation',
     nodeCatalog,
@@ -72,30 +146,34 @@ export async function runValidationStage(
     stageContext: { selectedNodes, edgeList: proposedEdges },
   });
 
-  logger.info({ event: 'ai_pipeline_llm_call', stage: 'validation', correlationId, model, temperature });
+  logger.info({ event: 'ai_pipeline_llm_call', stage: 'validation', correlationId, model: MODEL, temperature: TEMPERATURE });
 
   const message = `USER_INTENT:\n${userIntent}${structuralPrompt ? `\n\nWORKFLOW_BLUEPRINT:\n${structuralPrompt}` : ''}\n\nWORKFLOW_GRAPH:\n${JSON.stringify({ nodes: workflow.nodes, edges: workflow.edges }, null, 2)}`;
 
   let text: string;
+  let promptTokens = Math.ceil(systemPrompt.length / 4);
+  let completionTokens = 0;
+
   try {
     const raw = await geminiOrchestrator.processRequest(
       'workflow-analysis',
       { system: systemPrompt, message },
-      { model, temperature, cache: false },
+      { model: MODEL, temperature: TEMPERATURE, cache: false },
     );
     text = typeof raw === 'string' ? raw : JSON.stringify(raw);
+    completionTokens = Math.ceil(text.length / 4);
   } catch (err) {
-    logger.warn({ event: 'ai_pipeline_stage_error', stage: 'validation', correlationId, error: 'LLM_CALL_FAILED', message: String(err), note: 'Falling through to orchestrator safety net' });
-    return runOrchestratorSafetyNet(workflow, model, temperature, 0, 0, startedAt, correlationId);
+    return {
+      ok: false,
+      code: 'INVALID_LLM_RESPONSE',
+      rawResponse: String(err),
+      durationMs: Date.now() - startedAt,
+    };
   }
-
-  const promptTokens = Math.ceil(systemPrompt.length / 4);
-  const completionTokens = Math.ceil(text.length / 4);
 
   let parsed = tryParseValidationResult(text);
 
   if (!parsed) {
-    // Retry once with explicit JSON reminder
     logger.warn({ event: 'ai_pipeline_stage_retry', stage: 'validation', correlationId, reason: 'JSON parse failed on first attempt' });
     let text2: string;
     try {
@@ -103,32 +181,57 @@ export async function runValidationStage(
       const raw2 = await geminiOrchestrator.processRequest(
         'workflow-analysis',
         { system: retryPrompt, message },
-        { model, temperature, cache: false },
+        { model: MODEL, temperature: TEMPERATURE, cache: false },
       );
       text2 = typeof raw2 === 'string' ? raw2 : JSON.stringify(raw2);
+      promptTokens = Math.ceil(retryPrompt.length / 4);
+      completionTokens = Math.ceil(text2.length / 4);
     } catch (err) {
-      logger.warn({ event: 'ai_pipeline_stage_error', stage: 'validation', correlationId, error: 'LLM_RETRY_FAILED', message: String(err), note: 'Falling through to orchestrator safety net' });
-      return runOrchestratorSafetyNet(workflow, model, temperature, promptTokens, completionTokens, startedAt, correlationId);
+      return {
+        ok: false,
+        code: 'INVALID_LLM_RESPONSE',
+        rawResponse: String(err),
+        durationMs: Date.now() - startedAt,
+      };
     }
     parsed = tryParseValidationResult(text2);
 
     if (!parsed) {
-      // Both attempts failed — fall through to orchestrator safety net
       logger.warn({ event: 'ai_pipeline_validation_parse_failed', stage: 'validation', correlationId, note: 'Falling through to orchestrator safety net' });
-      return runOrchestratorSafetyNet(workflow, model, temperature, promptTokens, completionTokens, startedAt, correlationId);
+      return {
+        ok: false,
+        code: 'INVALID_LLM_RESPONSE',
+        rawResponse: text2,
+        durationMs: Date.now() - startedAt,
+      };
     }
   }
 
-  return processValidationResult(
-    parsed, workflow, nodeCatalog, userIntent,
-    selectedNodes, proposedEdges, correlationId,
-    model, temperature, promptTokens, completionTokens, startedAt,
+  const finalParsed = await maybeRepairAndRevalidate(
+    parsed,
+    workflow,
+    nodeCatalog,
+    userIntent,
+    selectedNodes,
+    proposedEdges,
+    correlationId,
   );
+
+  return {
+    ok: true,
+    status: finalParsed.status,
+    issues: finalParsed.issues,
+    durationMs: Date.now() - startedAt,
+    llmCall: {
+      model: MODEL,
+      temperature: TEMPERATURE,
+      promptTokens,
+      completionTokens,
+    },
+  };
 }
 
-// ─── processValidationResult ──────────────────────────────────────────────────
-
-async function processValidationResult(
+async function maybeRepairAndRevalidate(
   parsed: { status: 'pass' | 'fail'; issues: ValidationIssue[] },
   workflow: Workflow,
   nodeCatalog: NodeCatalogText,
@@ -136,63 +239,79 @@ async function processValidationResult(
   selectedNodes: SelectedNode[] | undefined,
   proposedEdges: ProposedEdge[] | undefined,
   correlationId: string | undefined,
+): Promise<{ status: 'pass' | 'fail'; issues: ValidationIssue[] }> {
+  const errorIssues = parsed.issues.filter((i) => i.severity === 'error');
+
+  if (parsed.status !== 'fail' || errorIssues.length === 0) {
+    return parsed;
+  }
+
+  logger.info({ event: 'ai_pipeline_repair_pass', stage: 'validation', correlationId, errorCount: errorIssues.length });
+
+  const { systemPrompt: repairPrompt } = systemPromptBuilder.build({
+    stage: 'repair',
+    nodeCatalog,
+    userIntent,
+    stageContext: { selectedNodes, edgeList: proposedEdges, validationIssues: errorIssues },
+  });
+
+  try {
+    const rawRepair = await geminiOrchestrator.processRequest(
+      'workflow-analysis',
+      { system: repairPrompt, message: `USER_INTENT:\n${userIntent}` },
+      { model: MODEL, temperature: TEMPERATURE, cache: false },
+    );
+    const textRepair: string = typeof rawRepair === 'string' ? rawRepair : JSON.stringify(rawRepair);
+    const repairedGraph = tryParseRepairedGraph(textRepair);
+
+    if (!repairedGraph) {
+      logger.warn({ event: 'ai_pipeline_repair_incomplete', stage: 'validation', correlationId, remainingErrors: errorIssues.length });
+      return parsed;
+    }
+
+    const revalidatePrompt = systemPromptBuilder.build({
+      stage: 'validation',
+      nodeCatalog,
+      userIntent,
+      stageContext: { selectedNodes, edgeList: repairedGraph.edges },
+    });
+
+    try {
+      const rawRevalidate = await geminiOrchestrator.processRequest(
+        'workflow-analysis',
+        { system: revalidatePrompt.systemPrompt, message: `USER_INTENT:\n${userIntent}\n\nWORKFLOW_GRAPH:\n${JSON.stringify({ nodes: workflow.nodes, edges: workflow.edges }, null, 2)}` },
+        { model: MODEL, temperature: TEMPERATURE, cache: false },
+      );
+      const textRevalidate: string = typeof rawRevalidate === 'string' ? rawRevalidate : JSON.stringify(rawRevalidate);
+      const revalidated = tryParseValidationResult(textRevalidate);
+      const remainingErrors = revalidated?.issues.filter((i) => i.severity === 'error') ?? errorIssues;
+      if (remainingErrors.length > 0) {
+        logger.warn({ event: 'ai_pipeline_repair_incomplete', stage: 'validation', correlationId, remainingErrors: remainingErrors.length });
+      }
+      return revalidated ?? parsed;
+    } catch (err) {
+      logger.warn({ event: 'ai_pipeline_revalidate_failed', stage: 'validation', correlationId, message: String(err) });
+      return parsed;
+    }
+  } catch (err) {
+    logger.warn({ event: 'ai_pipeline_repair_failed', stage: 'validation', correlationId, message: String(err) });
+    return parsed;
+  }
+}
+
+// processValidationResult
+
+async function processValidationResult(
+  parsed: { status: 'pass' | 'fail'; issues: ValidationIssue[] },
+  workflow: Workflow,
+  correlationId: string | undefined,
   model: string,
   temperature: number,
   promptTokens: number,
   completionTokens: number,
   startedAt: number,
 ): Promise<ValidationOutput> {
-  const errorIssues = parsed.issues.filter((i) => i.severity === 'error');
   const currentWorkflow = workflow;
-
-  if (parsed.status === 'fail' && errorIssues.length > 0) {
-    // Attempt exactly one repair pass
-    logger.info({ event: 'ai_pipeline_repair_pass', stage: 'validation', correlationId, errorCount: errorIssues.length });
-
-    const { systemPrompt: repairPrompt } = systemPromptBuilder.build({
-      stage: 'repair',
-      nodeCatalog,
-      userIntent,
-      stageContext: { selectedNodes, edgeList: proposedEdges, validationIssues: errorIssues },
-    });
-
-    try {
-      const rawRepair = await geminiOrchestrator.processRequest(
-        'workflow-analysis',
-        { system: repairPrompt, message: `USER_INTENT:\n${userIntent}` },
-        { model, temperature, cache: false },
-      );
-      const textRepair: string = typeof rawRepair === 'string' ? rawRepair : JSON.stringify(rawRepair);
-      const repairedGraph = tryParseRepairedGraph(textRepair);
-
-      if (repairedGraph) {
-        const revalidatePrompt = systemPromptBuilder.build({
-          stage: 'validation',
-          nodeCatalog,
-          userIntent,
-          stageContext: { selectedNodes, edgeList: repairedGraph.edges },
-        });
-        try {
-          const rawRevalidate = await geminiOrchestrator.processRequest(
-            'workflow-analysis',
-            { system: revalidatePrompt.systemPrompt, message: `USER_INTENT:\n${userIntent}\n\nWORKFLOW_GRAPH:\n${JSON.stringify({ nodes: workflow.nodes, edges: workflow.edges }, null, 2)}` },
-            { model, temperature, cache: false },
-          );
-          const textRevalidate: string = typeof rawRevalidate === 'string' ? rawRevalidate : JSON.stringify(rawRevalidate);
-          const revalidated = tryParseValidationResult(textRevalidate);
-          const remainingErrors = revalidated?.issues.filter((i) => i.severity === 'error') ?? errorIssues;
-          if (remainingErrors.length > 0) {
-            logger.warn({ event: 'ai_pipeline_repair_incomplete', stage: 'validation', correlationId, remainingErrors: remainingErrors.length });
-          }
-        } catch (err) {
-          logger.warn({ event: 'ai_pipeline_revalidate_failed', stage: 'validation', correlationId, message: String(err) });
-        }
-      }
-    } catch (err) {
-      logger.warn({ event: 'ai_pipeline_repair_failed', stage: 'validation', correlationId, message: String(err) });
-      // Repair failed — fall through to orchestrator safety net below
-    }
-  }
 
   // Always call UnifiedGraphOrchestrator.validateWorkflow as structural safety net
   const orchestratorValidation = unifiedGraphOrchestrator.validateWorkflow(currentWorkflow);
@@ -240,7 +359,7 @@ async function processValidationResult(
   };
 }
 
-// ─── runOrchestratorSafetyNet ─────────────────────────────────────────────────
+// runOrchestratorSafetyNet
 
 function runOrchestratorSafetyNet(
   workflow: Workflow,
@@ -273,7 +392,7 @@ function runOrchestratorSafetyNet(
   return { ok: true, workflow, validationIssues: intelligenceIssues, durationMs: Date.now() - startedAt, llmCall: { model, temperature, promptTokens, completionTokens } };
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// Helpers
 
 function stripMarkdownFences(text: string): string {
   return text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
