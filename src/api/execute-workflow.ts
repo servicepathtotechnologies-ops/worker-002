@@ -18,6 +18,7 @@ import { safeParse, safeDeepClone } from '../shared/safe-json';
 import { getNodeOutputSchema, getNodeOutputType } from '../core/types/node-output-types';
 // TypeConverter removed - not used in this file
 import { unifiedNormalizeNodeType, unifiedNormalizeNodeTypeString } from '../core/utils/unified-node-type-normalizer';
+import { runInSandbox } from '../core/utils/sandbox-executor';
 import { resolveNodeType } from '../core/utils/node-type-resolver-util';
 import { getMemoryManager } from '../memory';
 import { ErrorCode } from '../core/utils/error-codes';
@@ -7303,162 +7304,47 @@ export async function executeNodeLegacy(
       const safeTimeout = Math.min(timeout, maxTimeout);
 
       try {
-        // Import vm2 for secure sandboxing
-        const { VM } = require('vm2');
-        
-        // Create vm2 sandbox with strict security settings
-        const vm = new VM({
-          timeout: safeTimeout, // Execution timeout in milliseconds
-          sandbox: {
-            // Safe context variables (read-only copies)
-            input: (() => {
-              try {
-                return JSON.parse(JSON.stringify(inputObj)); // Deep clone
-              } catch {
-                return inputObj; // Fallback if cloning fails
-              }
-            })(),
-            $json: (() => {
-              try {
-                return JSON.parse(JSON.stringify(inputObj)); // Deep clone
-              } catch {
-                return inputObj; // Fallback if cloning fails
-              }
-            })(),
-            json: (() => {
-              try {
-                return JSON.parse(JSON.stringify(inputObj)); // Deep clone
-              } catch {
-                return inputObj; // Fallback if cloning fails
-              }
-            })(),
-            
-            // Read-only access to nodeOutputs via getter function
-            // This prevents direct modification of nodeOutputs
-            getNodeOutput: (nodeId: string) => {
-              const output = nodeOutputs.get(nodeId);
-              if (output === null || output === undefined) {
-                return undefined;
-              }
-              try {
-                // Return deep clone to prevent modification
-                // Note: We keep the existing deep clone logic here even though cache has cloneOnGet option
-                // This ensures consistent behavior and handles edge cases
-                return JSON.parse(JSON.stringify(output));
-              } catch {
-                // If circular reference or non-serializable, return undefined
-                return undefined;
-              }
-            },
-            
-            // Safe built-in objects
-            Math: Math,
-            JSON: JSON,
-            Date: Date,
-            Array: Array,
-            Object: Object,
-            String: String,
-            Number: Number,
-            Boolean: Boolean,
-            RegExp: RegExp,
-            
-            // Limited console for debugging
-            console: {
-              log: (...args: unknown[]) => console.log('[JS Node]', ...args),
-              error: (...args: unknown[]) => console.error('[JS Node]', ...args),
-              warn: (...args: unknown[]) => console.warn('[JS Node]', ...args),
-            },
-          },
-          
-          // Additional security settings
-          eval: false, // Disable eval() inside sandbox
-          wasm: false, // Disable WebAssembly
-          fixAsync: true, // Fix async/await support
+        let inputClone: Record<string, unknown>;
+        try { inputClone = JSON.parse(JSON.stringify(inputObj)); } catch { inputClone = inputObj as Record<string, unknown>; }
+
+        const wrappedCode = `(function() {
+  const $input = input;
+  const $json = input;
+  ${code}
+  return typeof result !== 'undefined' ? result : input;
+})()`;
+
+        const result = await runInSandbox({
+          code: wrappedCode,
+          vars: { input: inputClone, $json: inputClone, json: inputClone },
+          nodeOutputsSnapshot: nodeOutputs.getAll(),
+          timeout: safeTimeout,
+          label: 'JS Node',
         });
 
-        // Wrap user code in IIFE to ensure proper return handling
-        // Provide both 'input' and '$input' for compatibility
-        const wrappedCode = `
-          (function() {
-            const $input = input; // Alias for $input (n8n-style)
-            const $json = input;  // Alias for $json (n8n-style)
-            
-            ${code}
-            
-            // If code doesn't return anything, return input
-            return typeof result !== 'undefined' ? result : input;
-          })()
-        `;
-
-        // Execute code in sandbox
-        const result = vm.run(wrappedCode);
-        
-        // ✅ REFACTORED: JavaScript node with output schema validation
-        // Validate output matches expected schema if provided
         const outputSchema = getStringProperty(config, 'outputSchema', '');
         if (outputSchema) {
           try {
             const schema = JSON.parse(outputSchema);
-            // Basic schema validation - check type matches
             if (schema.type) {
-              const expectedType = schema.type;
               const actualType = typeof result;
-              
-              // Type validation
-              if (expectedType === 'number' && actualType !== 'number') {
-                console.warn(`[JavaScript Node] Output type mismatch: expected ${expectedType}, got ${actualType}`);
-              } else if (expectedType === 'string' && actualType !== 'string') {
-                console.warn(`[JavaScript Node] Output type mismatch: expected ${expectedType}, got ${actualType}`);
-              } else if (expectedType === 'boolean' && actualType !== 'boolean') {
-                console.warn(`[JavaScript Node] Output type mismatch: expected ${expectedType}, got ${actualType}`);
-              } else if (expectedType === 'object' && (actualType !== 'object' || result === null || Array.isArray(result))) {
-                console.warn(`[JavaScript Node] Output type mismatch: expected ${expectedType}, got ${actualType}`);
-              } else if (expectedType === 'array' && !Array.isArray(result)) {
-                console.warn(`[JavaScript Node] Output type mismatch: expected ${expectedType}, got ${actualType}`);
+              if (schema.type !== actualType && !(schema.type === 'array' && Array.isArray(result))) {
+                console.warn(`[JavaScript Node] Output type mismatch: expected ${schema.type}, got ${actualType}`);
               }
             }
-          } catch (schemaError) {
-            console.warn('[JavaScript Node] Invalid output schema, skipping validation:', schemaError);
-          }
+          } catch { /* invalid schema — skip validation */ }
         }
-        
-        // Log successful execution (for monitoring)
+
         console.log(`[Security] JavaScript node executed successfully (timeout: ${safeTimeout}ms)`);
-        
-        // ✅ REFACTORED: Return result directly - no wrapping
         return result;
       } catch (error) {
-        // Provide detailed error information
         const errorMessage = error instanceof Error ? error.message : String(error);
-        
-        // Log security-related errors separately
-        if (errorMessage.includes('require') || 
-            errorMessage.includes('process') || 
-            errorMessage.includes('global') ||
-            errorMessage.includes('__dirname') ||
-            errorMessage.includes('__filename')) {
-          console.error('[Security] JavaScript node attempted to access restricted APIs:', errorMessage);
-          return {
-            ...inputObj,
-            _error: `Security violation: Code attempted to access restricted Node.js APIs. ${errorMessage}`,
-          };
-        }
-        
-        // Log timeout errors
         if (errorMessage.includes('timeout') || errorMessage.includes('Script execution timed out')) {
           console.error('[Security] JavaScript node execution timed out');
-          return {
-            ...inputObj,
-            _error: `Execution timeout: Code exceeded ${safeTimeout}ms execution limit`,
-          };
+          return { ...inputObj, _error: `Execution timeout: Code exceeded ${safeTimeout}ms execution limit` };
         }
-        
-        // Handle other errors
         console.error('JavaScript execution error:', error);
-        return {
-          ...inputObj,
-          _error: errorMessage,
-        };
+        return { ...inputObj, _error: errorMessage };
       }
     }
 
@@ -7489,135 +7375,35 @@ export async function executeNodeLegacy(
       const safeTimeout = Math.min(timeout, maxTimeout);
 
       try {
-        // Import vm2 for secure sandboxing
-        const { VM } = require('vm2');
-        
-        // Create vm2 sandbox with strict security settings
-        const vm = new VM({
+        let inputClone: Record<string, unknown>;
+        try { inputClone = JSON.parse(JSON.stringify(inputObj)); } catch { inputClone = inputObj as Record<string, unknown>; }
+
+        const wrappedCode = `(function() {
+  const $input = input;
+  const $json = input;
+  const $data = data;
+  ${code}
+  return typeof result !== 'undefined' ? result : input;
+})()`;
+
+        const result = await runInSandbox({
+          code: wrappedCode,
+          vars: { input: inputClone, data: inputClone, $json: inputClone, json: inputClone },
+          nodeOutputsSnapshot: nodeOutputs.getAll(),
           timeout: safeTimeout,
-          sandbox: {
-            // Safe context variables (read-only copies)
-            input: (() => {
-              try {
-                return JSON.parse(JSON.stringify(inputObj));
-              } catch {
-                return inputObj;
-              }
-            })(),
-            data: (() => {
-              try {
-                return JSON.parse(JSON.stringify(inputObj));
-              } catch {
-                return inputObj;
-              }
-            })(),
-            $json: (() => {
-              try {
-                return JSON.parse(JSON.stringify(inputObj));
-              } catch {
-                return inputObj;
-              }
-            })(),
-            json: (() => {
-              try {
-                return JSON.parse(JSON.stringify(inputObj));
-              } catch {
-                return inputObj;
-              }
-            })(),
-            
-            // Read-only access to nodeOutputs
-            getNodeOutput: (nodeId: string) => {
-              const output = nodeOutputs.get(nodeId);
-              if (output === null || output === undefined) {
-                return undefined;
-              }
-              try {
-                return JSON.parse(JSON.stringify(output));
-              } catch {
-                return undefined;
-              }
-            },
-            
-            // Safe built-in objects
-            Math: Math,
-            JSON: JSON,
-            Date: Date,
-            Array: Array,
-            Object: Object,
-            String: String,
-            Number: Number,
-            Boolean: Boolean,
-            RegExp: RegExp,
-            
-            // Limited console for debugging
-            console: {
-              log: (...args: unknown[]) => console.log('[Function Node]', ...args),
-              error: (...args: unknown[]) => console.error('[Function Node]', ...args),
-              warn: (...args: unknown[]) => console.warn('[Function Node]', ...args),
-            },
-          },
-          
-          // Additional security settings
-          eval: false,
-          wasm: false,
-          fixAsync: true,
+          label: 'Function Node',
         });
 
-        // Wrap user code in IIFE to ensure proper return handling
-        const wrappedCode = `
-          (function() {
-            const $input = input;
-            const $json = input;
-            const $data = data;
-            
-            ${code}
-            
-            // If code doesn't return anything, return input
-            return typeof result !== 'undefined' ? result : input;
-          })()
-        `;
-
-        // Execute code in sandbox
-        const result = vm.run(wrappedCode);
-        
-        // Log successful execution
         console.log(`[Security] Function node executed successfully (timeout: ${safeTimeout}ms)`);
-        
-        // Return result directly
         return result;
       } catch (error) {
-        // Provide detailed error information
         const errorMessage = error instanceof Error ? error.message : String(error);
-        
-        // Log security-related errors separately
-        if (errorMessage.includes('require') || 
-            errorMessage.includes('process') || 
-            errorMessage.includes('global') ||
-            errorMessage.includes('__dirname') ||
-            errorMessage.includes('__filename')) {
-          console.error('[Security] Function node attempted to access restricted APIs:', errorMessage);
-          return {
-            ...inputObj,
-            _error: `Security violation: Code attempted to access restricted Node.js APIs. ${errorMessage}`,
-          };
-        }
-        
-        // Log timeout errors
         if (errorMessage.includes('timeout') || errorMessage.includes('Script execution timed out')) {
           console.error('[Security] Function node execution timed out');
-          return {
-            ...inputObj,
-            _error: `Execution timeout: Code exceeded ${safeTimeout}ms execution limit`,
-          };
+          return { ...inputObj, _error: `Execution timeout: Code exceeded ${safeTimeout}ms execution limit` };
         }
-        
-        // Handle other errors
         console.error('Function execution error:', error);
-        return {
-          ...inputObj,
-          _error: errorMessage,
-        };
+        return { ...inputObj, _error: errorMessage };
       }
     }
 
@@ -7652,44 +7438,24 @@ export async function executeNodeLegacy(
       const safeTimeout = Math.min(timeout, 30000);
 
       try {
-        const { VM } = require('vm2');
+        // Run all items in a single sandbox call to share vm context (matches vm2 behavior).
+        const batchCode = `items.map(function(item) {
+  return (function() {
+    var input = item, data = item, $json = item, json = item, $input = item;
+    ${code}
+    return typeof result !== 'undefined' ? result : item;
+  })();
+})`;
 
-        const wrappedPerItem = (item: any) => `
-          (function() {
-            const input = ${JSON.stringify(item)};
-            const data = input;
-            const $json = input;
-            const json = input;
-            const $input = input;
-            ${code}
-            return typeof result !== 'undefined' ? result : input;
-          })()
-        `;
+        let safeItems: unknown[];
+        try { safeItems = JSON.parse(JSON.stringify(items)); } catch { safeItems = items; }
 
-        const vm = new VM({
+        const mapped = await runInSandbox({
+          code: batchCode,
+          vars: { items: safeItems },
           timeout: safeTimeout,
-          sandbox: {
-            Math,
-            JSON,
-            Date,
-            Array,
-            Object,
-            String,
-            Number,
-            Boolean,
-            RegExp,
-            console: {
-              log: (...args: unknown[]) => console.log('[Function Item]', ...args),
-              error: (...args: unknown[]) => console.error('[Function Item]', ...args),
-              warn: (...args: unknown[]) => console.warn('[Function Item]', ...args),
-            },
-          },
-          eval: false,
-          wasm: false,
-          fixAsync: true,
+          label: 'Function Item',
         });
-
-        const mapped = items.map((item: any) => vm.run(wrappedPerItem(item)));
         return { ...inputObj, items: mapped };
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
@@ -14323,46 +14089,24 @@ export async function executeNodeLegacy(
       }
 
       try {
-        const { VM } = require('vm2');
-        const vm = new VM({
+        // Run all items through the filter expression in a single sandbox call.
+        const filterCode = `items.filter(function(item) {
+  try { return Boolean(${conditionExpr}); } catch { return false; }
+})`;
+
+        let safeItems: unknown[];
+        try { safeItems = JSON.parse(JSON.stringify(items)); } catch { safeItems = items; }
+        let inputClone: Record<string, unknown>;
+        try { inputClone = JSON.parse(JSON.stringify(inputObj)); } catch { inputClone = inputObj as Record<string, unknown>; }
+
+        const filtered = await runInSandbox({
+          code: filterCode,
+          vars: { items: safeItems, input: inputClone },
           timeout: 2000,
-          sandbox: {
-            Math,
-            JSON,
-            Date,
-            Array,
-            Object,
-            String,
-            Number,
-            Boolean,
-            RegExp,
-            input: (() => {
-              try { return JSON.parse(JSON.stringify(inputObj)); } catch { return inputObj; }
-            })(),
-          },
-          eval: false,
-          wasm: false,
-          fixAsync: true,
+          label: 'Filter',
         });
 
-        const filtered = items.filter((item: any) => {
-          const wrapped = `
-            (function() {
-              const item = ${JSON.stringify(item)};
-              return (${conditionExpr});
-            })()
-          `;
-          try {
-            return Boolean(vm.run(wrapped));
-          } catch {
-            return false;
-          }
-        });
-
-        return {
-          ...inputObj,
-          items: filtered,
-        };
+        return { ...inputObj, items: filtered };
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         return { ...inputObj, _error: `Filter error: ${msg}` };
