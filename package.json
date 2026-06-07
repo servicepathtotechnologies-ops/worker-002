@@ -5,7 +5,7 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "node --max-old-space-size=8192 scripts/startup-validation.js && nodemon --watch src --exec \"node --max-old-space-size=8192 -r ts-node/register src/index.ts\"",
-    "build": "tsc && npm run export:schemas && npm run copy:data",
+    "build": "node --max-old-space-size=6144 ./node_modules/typescript/bin/tsc && npm run export:schemas && npm run copy:data",
     "copy:data": "node scripts/copy-data-files.js",
     "start": "node dist/index.js",
     "start:kafka-worker": "node dist/workers/kafkaRequestConsumer.js",
