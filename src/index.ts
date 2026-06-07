@@ -238,8 +238,9 @@ import { metricsHandler, requestMetricsMiddleware } from './middleware/highScale
 import { redisGetCache } from './middleware/redisGetCache';
 import { tokenBucketRateLimiter } from './middleware/redisTokenBucket';
 import { kafkaWriteQueueMiddleware } from './middleware/kafkaRequestQueue';
-import { 
-  refreshTokenEndpoint, 
+import { requestIdMiddleware } from './core/middleware/request-id';
+import {
+  refreshTokenEndpoint,
   getSessionInfo, 
   invalidateCurrentSession, 
   invalidateAllSessions, 
@@ -256,6 +257,9 @@ app.set('trust proxy', true);
 logConnectionConfigReadiness();
 console.log('[ServerStartup] ✅ Express app created');
 
+// === REQUEST ID MIDDLEWARE (must be first) ===
+app.use(requestIdMiddleware);
+
 // === ENHANCED LOGGING MIDDLEWARE ===
 app.use((req: Request, res: Response, next) => {
   const start = Date.now();
@@ -263,13 +267,13 @@ app.use((req: Request, res: Response, next) => {
     const duration = Date.now() - start;
     const origin = req.headers.origin || 'no-origin';
     const logLevel = config.logLevel || 'INFO';
-    
-    // Only log in development or if log level allows
+    const rid = req.requestId || '-';
+
     if (!config.isProduction || logLevel === 'DEBUG' || logLevel === 'INFO') {
       if (res.statusCode >= 400) {
-        console.error(`${req.method} ${req.originalUrl} - ${res.statusCode} - ${duration}ms [${origin}]`);
+        console.error(`[${rid}] ${req.method} ${req.originalUrl} - ${res.statusCode} - ${duration}ms [${origin}]`);
       } else if (logLevel === 'DEBUG' || !config.isProduction) {
-        console.log(`${req.method} ${req.originalUrl} - ${res.statusCode} - ${duration}ms [${origin}]`);
+        console.log(`[${rid}] ${req.method} ${req.originalUrl} - ${res.statusCode} - ${duration}ms [${origin}]`);
       }
     }
   });

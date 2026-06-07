@@ -14,7 +14,8 @@ export function errorHandler(
   res: Response,
   next: NextFunction
 ) {
-  console.error('Error:', err);
+  const requestId = (req as any).requestId as string | undefined;
+  console.error(`[Error] requestId=${requestId || 'unknown'} ${req.method} ${req.originalUrl}:`, err);
 
   const statusCode = err.statusCode || 500;
   const message = err.message || 'Internal Server Error';
@@ -22,6 +23,7 @@ export function errorHandler(
   res.status(statusCode).json({
     error: message,
     code: err.code,
+    requestId,
     ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
   });
 }
