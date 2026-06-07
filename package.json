@@ -18,7 +18,7 @@
     "test": "jest --coverage",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
-    "test:contracts": "jest src/core/contracts/ --passWithNoTests",
+    "test:contracts": "jest src/core/contracts/ src/core/registry/__tests__/unified-node-registry-contract.test.ts src/core/registry/__tests__/registry-frontend-parity.test.ts --passWithNoTests --runInBand",
     "test:compiler": "jest test/stage5-compiler.test.ts --passWithNoTests",
     "test:e2e": "jest test/e2e/ --passWithNoTests",
     "test:integration": "jest src/services/ai/__tests__/end-to-end-workflow-integration.test.ts src/services/ai/__tests__/workflow-execution-integration.test.ts --passWithNoTests",
