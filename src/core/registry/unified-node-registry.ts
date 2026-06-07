@@ -88,6 +88,9 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     'gmail_send': 'google_gmail',
     'email_send': 'google_gmail',
     'google_gmail': 'google_gmail',
+    'email notification': 'google_gmail',
+    'email_notification': 'google_gmail',
+    'send notification': 'google_gmail',
     // ── Outlook / SMTP ───────────────────────────────────────────────────────
     'outlook': 'outlook',
     'microsoft_mail': 'outlook',
@@ -108,6 +111,9 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     'slack_send': 'slack_message',
     'send_slack': 'slack_message',
     'slack_message': 'slack_message',
+    'slack webhook': 'slack_webhook',
+    'slack_webhook': 'slack_webhook',
+    'send via slack webhook': 'slack_webhook',
     // ── Google Sheets ────────────────────────────────────────────────────────
     'sheets': 'google_sheets',
     'gsheets': 'google_sheets',
@@ -174,6 +180,9 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     'telegram_send': 'telegram',
     'discord': 'discord',
     'discord_send': 'discord',
+    'discord webhook': 'discord_webhook',
+    'discord_webhook': 'discord_webhook',
+    'send via discord webhook': 'discord_webhook',
     'microsoft_teams': 'microsoft_teams',
     'teams': 'microsoft_teams',
     'ms_teams': 'microsoft_teams',
@@ -336,6 +345,18 @@ export class UnifiedNodeRegistry implements INodeRegistry {
     // ── E-commerce ───────────────────────────────────────────────────────────
     'shopify': 'shopify',
     'stripe': 'stripe',
+    // ── Cache ─────────────────────────────────────────────────────────────────
+    'cache_get': 'cache_get',
+    'cache_set': 'cache_set',
+    'cache node': 'cache_get',
+    'cache value': 'cache_get',
+    'get cache': 'cache_get',
+    'read cache': 'cache_get',
+    'cache data': 'cache_set',
+    'set cache': 'cache_set',
+    'write cache': 'cache_set',
+    'store in cache': 'cache_set',
+    'cache store': 'cache_set',
     // ── Data manipulation ────────────────────────────────────────────────────
     'set_variable': 'set_variable',
     'javascript': 'javascript',

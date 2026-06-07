@@ -18752,9 +18752,34 @@ export default async function executeWorkflowHandler(req: Request, res: Response
         // Auth is optional
       }
       
-      // Generate execution ID if not provided
-      const executionId = providedExecutionId || `exec_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-      
+      // Generate execution ID if not provided — must be UUID so DB INSERT works
+      const executionId = providedExecutionId || (require('crypto') as typeof import('crypto')).randomUUID();
+
+      // Pre-create execution record so status polling works immediately after 202.
+      // The job-runner will UPDATE this row to 'running' / 'success' / 'failed'.
+      const nowIso = new Date().toISOString();
+      try {
+        await db
+          .from('executions')
+          .insert({
+            id: executionId,
+            workflow_id: workflowId,
+            user_id: userId ?? null,
+            status: 'queued',
+            trigger: 'manual',
+            input,
+            logs: [],
+            started_at: nowIso,
+            last_heartbeat: nowIso,
+            timeout_seconds: 3600,
+          });
+      } catch (dbErr: any) {
+        // Unique violation (23505) means the execution already exists — safe to ignore.
+        if (dbErr?.code !== '23505') {
+          console.warn('[ExecuteWorkflow] Could not pre-create execution record:', dbErr?.message);
+        }
+      }
+
       // Enqueue job
       const jobId = await queue.enqueue(workflowId, executionId, input, {
         userId,

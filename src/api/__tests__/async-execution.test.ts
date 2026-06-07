@@ -19,6 +19,7 @@ jest.mock('../../services/execution-queue', () => ({
 
 const mockDbChain = {
   update: (jest.fn() as any).mockReturnThis(),
+  insert: (jest.fn() as any).mockResolvedValue({ data: null, error: null }),
   eq: (jest.fn() as any).mockResolvedValue({ data: null, error: null }),
   select: (jest.fn() as any).mockReturnThis(),
   single: (jest.fn() as any).mockResolvedValue({ data: null, error: null }),
@@ -175,6 +176,24 @@ describe('POST /api/execute-workflow — async queue path', () => {
 
     // useQueue: false explicitly disables the queue path
     expect(mockGetExecutionQueue).not.toHaveBeenCalled();
+  });
+
+  it('pre-creates execution record with status=queued before enqueuing', async () => {
+    process.env.ENABLE_EXECUTION_QUEUE = 'true';
+    const req = makeReq({ workflowId: 'wf-precreate-test' });
+    const res = makeRes();
+
+    await executeWorkflowHandler(req, res);
+
+    expect(res._status).toBe(202);
+    // DB insert must have been called (pre-create execution row)
+    expect(mockDbFrom).toHaveBeenCalledWith('executions');
+    expect(mockDbChain.insert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workflow_id: 'wf-precreate-test',
+        status: 'queued',
+      }),
+    );
   });
 });
 

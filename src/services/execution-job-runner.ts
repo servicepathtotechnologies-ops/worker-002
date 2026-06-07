@@ -101,6 +101,7 @@ export async function runExecutionJob(job: ExecutionJob): Promise<JobRunResult> 
         duration_ms: durationMs,
         error: executionError ?? null,
         current_node: null,
+        finished_at: new Date().toISOString(),
       })
       .eq('id', job.executionId);
   } catch (dbErr) {
