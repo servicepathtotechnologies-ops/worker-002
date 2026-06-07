@@ -403,6 +403,28 @@ app.get('/health', asyncHandler(async (req: Request, res: Response) => {
 }));
 console.log('[ServerStartup] ✅ /health endpoint registered');
 
+// Gemini key-pool health — safe metrics only (no key values)
+app.get('/api/health/gemini', asyncHandler(async (_req: Request, res: Response) => {
+  try {
+    const { getGeminiKeyPool } = await import('./services/ai/gemini-key-pool');
+    const pool = getGeminiKeyPool();
+    const metrics = pool.getMetrics();
+    const allHealthy = metrics.every(m => m.healthy && !m.inCooldown);
+    res.json({
+      status: allHealthy ? 'healthy' : 'degraded',
+      keyCount: pool.size,
+      keys: metrics,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err: any) {
+    res.status(503).json({
+      status: 'unavailable',
+      error: err?.message || 'Gemini key pool not initialised',
+      timestamp: new Date().toISOString(),
+    });
+  }
+}));
+
 // Cache-clear endpoint — clears the Gemini in-memory cache so fresh prompts are re-analyzed
 app.post('/api/admin/clear-cache', asyncHandler(async (req: Request, res: Response) => {
   const { geminiOrchestrator } = require('./services/ai/gemini-orchestrator');
@@ -1652,9 +1674,16 @@ async function startServer() {
         const stateManager = getExecutionStateManager();
         const visualizationService = new VisualizationService(stateManager);
         visualizationService.initialize(server);
-        
+
         console.log('📡 WebSocket server initialized for real-time execution visualization');
         console.log(`   WebSocket endpoint: ws://localhost:${PORT}/ws/executions`);
+
+        // Start Redis bridge so execution events reach clients on other replicas
+        import('./services/ws-redis-bridge').then(({ initWsRedisBridge }) => {
+          initWsRedisBridge(visualizationService).catch((err: any) => {
+            console.warn('[WsRedisBridge] Init failed (non-fatal):', err?.message);
+          });
+        }).catch(() => {});
       } catch (wsError: any) {
         console.warn('⚠️  WebSocket initialization failed:', wsError?.message || wsError);
         console.log('⚠️  Real-time visualization may be unavailable');

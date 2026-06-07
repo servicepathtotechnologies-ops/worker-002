@@ -8,6 +8,7 @@ import type { NodeInputSchema, RuntimeInputSource } from '../../types/unified-no
 import type { NormalizedOperationContract } from '../../operations/operation-contract-resolver';
 import { unifiedNodeRegistry } from '../../registry/unified-node-registry';
 import { resolveFieldPolicyForNode } from '../../operations/field-policy-resolver';
+import { buildEffectiveFillModes } from '../../utils/fill-mode-resolver';
 
 describe('runtime-input-handoff', () => {
   const inputSchema: NodeInputSchema = {
@@ -284,6 +285,61 @@ describe('runtime-input-handoff', () => {
 
     expect(result.valid).toBe(true);
     expect(result.audit.find((entry) => entry.fieldName === 'range')?.handoffStatus)
+      .toBe('not_applicable');
+  });
+
+  it('ignores HTTP GET body handoff when body is a stale runtime_ai field', () => {
+    const definition = unifiedNodeRegistry.get('http_request');
+    expect(definition).toBeDefined();
+
+    const baseConfig = {
+      url: 'https://example.com/api/items',
+      method: 'GET',
+      body: {},
+      _fillMode: { body: 'runtime_ai' },
+    };
+    const effectiveFillModes = buildEffectiveFillModes(definition!.inputSchema, baseConfig);
+    const fieldPolicy = resolveFieldPolicyForNode(definition!, baseConfig, effectiveFillModes);
+
+    expect(fieldPolicy.fields.body.active).toBe(false);
+    expect(resolveFieldPolicyForNode(definition!, { ...baseConfig, method: 'POST' }, effectiveFillModes)
+      .fields.body.active).toBe(true);
+
+    const finalResolvedInputs = {
+      url: 'https://example.com/api/items',
+      method: 'GET',
+      body: {},
+    };
+    const inputSources: Record<string, RuntimeInputSource> = {
+      url: 'static_config',
+      method: 'static_config',
+      body: 'runtime_ai',
+    };
+    const { config: providerConfig } = buildFinalProviderConfig({
+      baseConfig,
+      finalResolvedInputs,
+      inputSources,
+      inputSchema: definition!.inputSchema,
+      effectiveFillModes,
+      fieldPolicy,
+    });
+
+    expect(providerConfig).not.toHaveProperty('body');
+
+    const result = validateRuntimeInputHandoff({
+      nodeId: 'http_1',
+      nodeType: 'http_request',
+      finalResolvedInputs,
+      providerConfig,
+      inputSources,
+      inputSchema: definition!.inputSchema,
+      effectiveFillModes,
+      operationContract: fieldPolicy.operationContract,
+      fieldPolicy,
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.audit.find((entry) => entry.fieldName === 'body')?.handoffStatus)
       .toBe('not_applicable');
   });
 });

@@ -6,21 +6,6 @@
  */
 
 import { NodeExecutionContext } from '../../core/types/node-definition';
-import {
-  runSQLServerNode,
-  runMongoDBNode,
-  runMySQLNode,
-  runPostgresNode,
-  runRedisNode,
-  runSnowflakeNode,
-  runSQLiteNode,
-  runSupabaseNode,
-  runTimescaleDBNode,
-  runIntuitSmesNode,
-  runOdooNode,
-  runFirebaseNode,
-  runGCSNode,
-} from './index';
 
 /**
  * Execute a database node by type
@@ -31,47 +16,73 @@ export async function executeDatabaseNode(
 ): Promise<any> {
   switch (nodeType) {
     case 'sql_server':
-    case 'mssql':
+    case 'mssql': {
+      const { runSQLServerNode } = await import('./sqlServerNode');
       return await runSQLServerNode(context);
+    }
 
-    case 'mongodb':
+    case 'mongodb': {
+      const { runMongoDBNode } = await import('./mongoDBNode');
       return await runMongoDBNode(context);
+    }
 
-    case 'mysql':
+    case 'mysql': {
+      const { runMySQLNode } = await import('./mysqlNode');
       return await runMySQLNode(context);
+    }
 
     case 'postgres':
-    case 'postgresql':
+    case 'postgresql': {
+      const { runPostgresNode } = await import('./postgresNode');
       return await runPostgresNode(context);
+    }
 
-    case 'redis':
+    case 'redis': {
+      const { runRedisNode } = await import('./redisNode');
       return await runRedisNode(context);
+    }
 
-    case 'snowflake':
+    case 'snowflake': {
+      const { runSnowflakeNode } = await import('./snowflakeNode');
       return await runSnowflakeNode(context);
+    }
 
-    case 'sqlite':
+    case 'sqlite': {
+      const { runSQLiteNode } = await import('./sqliteNode');
       return await runSQLiteNode(context);
+    }
 
-    case 'db':
+    case 'db': {
+      const { runSupabaseNode } = await import('./supabaseNode');
       return await runSupabaseNode(context);
+    }
 
     case 'timescaledb':
-    case 'timescale':
+    case 'timescale': {
+      const { runTimescaleDBNode } = await import('./timescaleDBNode');
       return await runTimescaleDBNode(context);
+    }
 
     case 'intuit_smes':
-    case 'intuit':
+    case 'intuit': {
+      const { runIntuitSmesNode } = await import('./intuitSmesNode');
       return await runIntuitSmesNode(context);
+    }
 
-    case 'odoo':
+    case 'odoo': {
+      const { runOdooNode } = await import('./odooNode');
       return await runOdooNode(context);
+    }
 
-    case 'firebase':
+    case 'firebase': {
+      const { runFirebaseNode } = await import('./firebaseNode');
       return await runFirebaseNode(context);
+    }
 
-    case 'google_cloud_storage':
+    case 'google_cloud_storage': {
+      const { runGCSNode } = await import('./gcsNode');
       return await runGCSNode(context);
+    }
 
     default:
       return {

@@ -334,11 +334,12 @@ export class VisualizationService extends EventEmitter {
   }
 
   /**
-   * Broadcast message to all clients watching an execution
+   * Broadcast message to all clients watching an execution.
+   * Emits 'broadcast' so the Redis bridge can forward it to other replicas.
    */
   private broadcastToExecution(executionId: string, message: any): void {
     let sentCount = 0;
-    
+
     this.clients.forEach((connection, clientId) => {
       if (connection.executionIds.has(executionId)) {
         if (this.sendToClient(clientId, message)) {
@@ -350,6 +351,18 @@ export class VisualizationService extends EventEmitter {
     if (sentCount > 0) {
       this.emit('broadcast', { executionId, message, clientCount: sentCount });
     }
+  }
+
+  /**
+   * Broadcast a message received from another replica (via Redis bridge).
+   * Does NOT emit 'broadcast' to prevent Redis re-publish loops.
+   */
+  broadcastExternal(executionId: string, message: any): void {
+    this.clients.forEach((connection, clientId) => {
+      if (connection.executionIds.has(executionId)) {
+        this.sendToClient(clientId, message);
+      }
+    });
   }
 
   /**

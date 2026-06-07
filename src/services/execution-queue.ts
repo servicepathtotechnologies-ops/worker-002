@@ -288,6 +288,15 @@ export class ExecutionQueue extends EventEmitter {
       this.pollInterval = undefined;
     }
   }
+
+  /**
+   * Start the polling loop. Call this from a dedicated worker process.
+   * Works for both Redis and in-memory backends (in-memory auto-starts via initialize()).
+   */
+  startWorker(): void {
+    this.startPolling();
+    console.log(`[ExecutionQueue] Worker started (poll interval: ${this.config.pollInterval}ms, max concurrent: ${this.config.maxConcurrent})`);
+  }
   
   /**
    * Add job to queue
@@ -396,126 +405,62 @@ export class ExecutionQueue extends EventEmitter {
   }
   
   /**
-   * Execute job
+   * Execute job — delegates lifecycle to execution-job-runner.ts
    */
   private async executeJob(job: ExecutionJob): Promise<void> {
     const startTime = Date.now();
-    
+
     try {
       console.log(`[ExecutionQueue] Executing job: ${job.id} (workflow: ${job.workflowId})`);
-      
-      // Import execute workflow handler
-      const executeWorkflowHandler = (await import('../api/execute-workflow')).default;
-      
-      // Create request/response objects
-      let executionResult: any = null;
-      let executionError: any = null;
-      let responseStatus = 200;
-      
-      const req = {
-        body: {
-          workflowId: job.workflowId,
-          executionId: job.executionId,
-          input: job.input,
-          useQueue: false, // Prevent recursive queueing
-        },
-        headers: {
-          authorization: job.metadata?.authToken ? `Bearer ${job.metadata.authToken}` : undefined,
-          // Preserve internal execution headers from metadata
-          ...(job.metadata?.headers || {}),
-        },
-      } as any;
-      
-      const res = {
-        statusCode: 200,
-        status: (code: number) => {
-          responseStatus = code;
-          return res;
-        },
-        json: (data: any) => {
-          executionResult = data;
-          if (responseStatus >= 200 && responseStatus < 300) {
-            job.result = data;
-            job.status = 'completed';
-          } else {
-            job.status = 'failed';
-            job.error = data.error || data.message || 'Execution failed';
-          }
-          return res;
-        },
-        send: (data: any) => {
-          executionResult = data;
-          if (responseStatus >= 200 && responseStatus < 300) {
-            job.result = data;
-            job.status = 'completed';
-          } else {
-            job.status = 'failed';
-            job.error = typeof data === 'string' ? data : (data?.error || 'Execution failed');
-          }
-          return res;
-        },
-      } as any;
-      
-      // Execute workflow
-      try {
-        await executeWorkflowHandler(req, res);
-        
-        // Check if execution was successful
-        if (responseStatus >= 200 && responseStatus < 300 && !executionResult) {
-          // Handler might have sent response but not set executionResult
-          job.result = { status: 'success' };
-          job.status = 'completed';
-        }
-      } catch (error: any) {
-        executionError = error;
-        job.error = error.message || String(error);
-        throw error;
-      }
-      
-      // Update job status
+
+      const { runExecutionJob } = await import('./execution-job-runner');
+      const runResult = await runExecutionJob(job);
+
       job.completedAt = Date.now();
       const executionTime = job.completedAt - (job.startedAt || startTime);
       this.stats.executionTimes.push(executionTime);
-      this.stats.completed++;
-      this.stats.totalProcessed++;
-      
-      await this.backend.updateJob(job);
-      this.emit('job:completed', job);
-      
-      console.log(`[ExecutionQueue] Job completed: ${job.id} (${executionTime}ms)`);
-      
+
+      if (runResult.status === 'success') {
+        job.status = 'completed';
+        job.result = runResult.result;
+        this.stats.completed++;
+        this.stats.totalProcessed++;
+        await this.backend.updateJob(job);
+        this.emit('job:completed', job);
+        console.log(`[ExecutionQueue] Job completed: ${job.id} (${executionTime}ms)`);
+      } else {
+        job.error = runResult.error;
+        throw new Error(runResult.error || 'Execution failed');
+      }
+
     } catch (error: any) {
       console.error(`[ExecutionQueue] Job failed: ${job.id}`, error);
-      
+
       job.error = error.message || String(error);
       job.retryCount++;
-      
-      // Check if should retry
+
       if (job.retryCount <= (job.maxRetries || this.config.maxRetries)) {
         job.status = 'retrying';
         this.emit('job:retrying', job);
-        
-        // Re-queue with delay
+
         setTimeout(async () => {
           job.status = 'queued';
-          job.createdAt = Date.now(); // Reset creation time for wait time calculation
+          job.createdAt = Date.now();
           await this.backend.enqueue(job);
           this.stats.pending++;
-          
           if (!this.isProcessing && this.running.size < this.config.maxConcurrent) {
             this.processNextJob();
           }
         }, job.retryDelay || this.config.retryDelay);
-        
+
       } else {
-        // Max retries exceeded
         job.status = 'failed';
         job.completedAt = Date.now();
         this.stats.failed++;
         this.stats.totalProcessed++;
         this.emit('job:failed', job);
       }
-      
+
       await this.backend.updateJob(job);
     }
   }

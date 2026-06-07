@@ -80,7 +80,27 @@ export class LLMAdapter {
         if (blockingError) throw blockingError;
       }
     }
-    apiKey = apiKey || (effectiveProvider === 'gemini' ? process.env.GEMINI_API_KEY : undefined);
+
+    // System-level Gemini call (no wallet, no explicit key): use the key pool
+    // with automatic retry across keys on rate-limit or auth failures.
+    if (!apiKey && effectiveProvider === 'gemini') {
+      const { withGeminiKey } = await import('../services/ai/gemini-key-pool');
+      return withGeminiKey(async (poolKey) => {
+        const res = await this.chatGemini(messages, { ...options, apiKey: poolKey });
+        if (res.usage) {
+          recordLlmUsage({
+            provider: 'gemini',
+            model: res.model || options.model || '',
+            usage: res.usage,
+            stage: options.usageStage,
+            source: 'LLMAdapter.chat',
+          });
+        }
+        return res;
+      });
+    }
+
+    // Wallet user or explicit key — single attempt, existing wallet tracking.
     let result: LLMResponse;
     try {
       switch (effectiveProvider) {
@@ -91,7 +111,7 @@ export class LLMAdapter {
           result = await this.chatClaude(messages, options);
           break;
         case 'gemini':
-          result = await this.chatGemini(messages, { ...options, apiKey: apiKey || options.apiKey });
+          result = await this.chatGemini(messages, { ...options, apiKey });
           break;
         default:
           throw new Error(`Unsupported provider: ${provider}`);

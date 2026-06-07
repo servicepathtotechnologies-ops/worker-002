@@ -1771,7 +1771,7 @@ export class NodeLibrary {
             type: 'string',
             description: 'Full URL to request',
             examples: ['https://api.example.com/data', '{{$json.apiUrl}}/users'],
-            fillMode: { default: 'runtime_ai', supportsRuntimeAI: true, supportsBuildtimeAI: true },
+            fillMode: { default: 'manual_static', supportsRuntimeAI: true, supportsBuildtimeAI: true },
           },
           method: {
             type: 'string',
@@ -1789,6 +1789,7 @@ export class NodeLibrary {
           body: {
             type: 'object',
             description: 'Request body for POST/PUT/PATCH',
+            visibleIf: { field: 'method', equals: ['POST', 'PUT', 'PATCH'] },
           },
           qs: {
             type: 'object',

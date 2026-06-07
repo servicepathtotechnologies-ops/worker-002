@@ -40,17 +40,6 @@ import {
   normalizeIfElseConditions as normalizeIfElseConditionsCanonical,
   validateCanonicalIfElseConditions,
 } from '../core/utils/if-else-conditions';
-import { executeClickUpNode } from '../executors/clickup.executor';
-import Airtable from 'airtable';
-import FormData from 'form-data';
-import { PipedriveApiClient } from '../services/pipedrive/pipedrive-api-client';
-import { Client } from '@notionhq/client';
-import { getNotionAccessToken } from '../shared/notion-token-manager';
-import { TwitterApi } from 'twitter-api-v2';
-import { getTwitterAccessToken } from '../shared/twitter-token-manager';
-import { getInstagramAccessToken, getInstagramBusinessAccountId } from '../shared/instagram-token-manager';
-import { getWhatsAppAccessToken, getWhatsAppBusinessAccountId } from '../shared/whatsapp-token-manager';
-import { executeDatabaseNode } from '../services/database/database-node-handler';
 import { EXECUTION_OBSERVABILITY_KEYS } from '../core/execution/dynamic-node-executor';
 import { circuitBreakerManager } from '../services/workflow-executor/distributed/reliability/circuit-breaker';
 import { getProviderCircuitKeyFromNodeType } from '../core/reliability/provider-circuit-key';
@@ -5818,6 +5807,7 @@ export async function executeNodeLegacy(
         }
       }
 
+      const { executeClickUpNode } = await import('../executors/clickup.executor');
       result = await executeClickUpNode(node as any, inputObj, clickupCredentials);
       break;
     }
@@ -7152,6 +7142,7 @@ export async function executeNodeLegacy(
           status: response.status,
           statusText: response.statusText,
           headers: Object.fromEntries(response.headers.entries()),
+          body: responseData,
           data: responseData,
           url: resolvedUrl,
           acknowledgementStatus: acknowledgedResponse.acknowledgementStatus,
@@ -8383,6 +8374,7 @@ export async function executeNodeLegacy(
 
       try {
         // Initialize Airtable with API key
+        const { default: Airtable } = await import('airtable');
         const base = new Airtable({ apiKey: resolvedApiKey }).base(resolvedBaseId);
         const table = base(resolvedTableName);
 
@@ -8937,6 +8929,7 @@ export async function executeNodeLegacy(
         : String(resolveTypedValue(apiToken, execContext));
 
       try {
+        const { PipedriveApiClient } = await import('../services/pipedrive/pipedrive-api-client');
         const client = new PipedriveApiClient(resolvedApiToken);
 
         // Helper to get number property
@@ -9774,7 +9767,8 @@ export async function executeNodeLegacy(
       if (userId) userIdsToTry.push(userId);
       if (currentUserId && currentUserId !== userId) userIdsToTry.push(currentUserId);
 
-      const resolvedApiToken = userIdsToTry.length > 0 
+      const { getNotionAccessToken } = await import('../shared/notion-token-manager');
+      const resolvedApiToken = userIdsToTry.length > 0
         ? await getNotionAccessToken(db, userIdsToTry)
         : null;
 
@@ -9794,6 +9788,7 @@ export async function executeNodeLegacy(
 
       try {
         // Initialize Notion client
+        const { Client } = await import('@notionhq/client');
         const notion = new Client({
           auth: resolvedApiToken,
         });
@@ -10298,12 +10293,13 @@ export async function executeNodeLegacy(
       if (userId) userIdsToTry.push(userId);
       if (currentUserId && currentUserId !== userId) userIdsToTry.push(currentUserId);
 
-      const resolvedAccessToken = userIdsToTry.length > 0 
+      const { getTwitterAccessToken } = await import('../shared/twitter-token-manager');
+      const resolvedAccessToken = userIdsToTry.length > 0
         ? await getTwitterAccessToken(db, userIdsToTry)
         : null;
 
       if (!resolvedAccessToken) {
-        const ownerMessage = userId 
+        const ownerMessage = userId
           ? `The workflow owner (user ${userId}) does not have a Twitter account connected.`
           : 'No workflow owner found.';
         const currentUserMessage = currentUserId && currentUserId !== userId
@@ -10318,6 +10314,7 @@ export async function executeNodeLegacy(
 
       try {
         // Initialize Twitter client
+        const { TwitterApi } = await import('twitter-api-v2');
         const client = new TwitterApi(resolvedAccessToken);
         const twitter = client.readWrite;
 
@@ -11172,12 +11169,13 @@ export async function executeNodeLegacy(
       if (userId) userIdsToTry.push(userId);
       if (currentUserId && currentUserId !== userId) userIdsToTry.push(currentUserId);
 
-      const resolvedAccessToken = userIdsToTry.length > 0 
+      const { getInstagramAccessToken, getInstagramBusinessAccountId } = await import('../shared/instagram-token-manager');
+      const resolvedAccessToken = userIdsToTry.length > 0
         ? await getInstagramAccessToken(db, userIdsToTry)
         : null;
 
       if (!resolvedAccessToken) {
-        const ownerMessage = userId 
+        const ownerMessage = userId
           ? `The workflow owner (user ${userId}) does not have an Instagram/Facebook account connected.`
           : 'No workflow owner found.';
         const currentUserMessage = currentUserId && currentUserId !== userId
@@ -11911,12 +11909,13 @@ export async function executeNodeLegacy(
       if (userId) userIdsToTry.push(userId);
       if (currentUserId && currentUserId !== userId) userIdsToTry.push(currentUserId);
 
-      const resolvedAccessToken = userIdsToTry.length > 0 
+      const { getWhatsAppAccessToken, getWhatsAppBusinessAccountId } = await import('../shared/whatsapp-token-manager');
+      const resolvedAccessToken = userIdsToTry.length > 0
         ? await getWhatsAppAccessToken(db, userIdsToTry)
         : null;
 
       if (!resolvedAccessToken) {
-        const ownerMessage = userId 
+        const ownerMessage = userId
           ? `The workflow owner (user ${userId}) does not have a WhatsApp/Facebook account connected.`
           : 'No workflow owner found.';
         const currentUserMessage = currentUserId && currentUserId !== userId
@@ -12395,6 +12394,7 @@ export async function executeNodeLegacy(
             }
 
             // Upload to WhatsApp
+            const { default: FormData } = await import('form-data');
             const formData = new FormData();
             formData.append('file', fileBuffer!, {
               filename: 'file',
@@ -15344,6 +15344,7 @@ export async function executeNodeLegacy(
           const dataBase64 = (getStringProperty(config, 'dataBase64', '') || getStringProperty(config, 'content', '')).trim();
           if (!dataBase64) return { ...inputObj, _error: 'box upload: dataBase64 (or content) is required' };
           const buf = Buffer.from(dataBase64, 'base64');
+          const { default: FormData } = await import('form-data');
           const form = new FormData();
           form.append('attributes', JSON.stringify({ name: fileName, parent: { id: folderId } }));
           form.append('file', new Blob([buf]), fileName);
@@ -15434,6 +15435,7 @@ export async function executeNodeLegacy(
         nodeId: node.id,
         userId: userId || currentUserId,
       };
+      const { executeDatabaseNode } = await import('../services/database/database-node-handler');
       const intuitResult = await executeDatabaseNode('intuit_smes', nodeContext);
       if (intuitResult.success === false) {
         return {
@@ -15869,6 +15871,7 @@ export async function executeNodeLegacy(
       };
 
       try {
+        const { executeDatabaseNode } = await import('../services/database/database-node-handler');
         const dbResult = await executeDatabaseNode(type, nodeContext);
         
         // If the result has success: false, return error
