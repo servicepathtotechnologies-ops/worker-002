@@ -22,6 +22,10 @@ jest.mock('../../gemini-orchestrator', () => ({
   },
 }));
 
+jest.mock('../property-population-stage-client', () => ({
+  runPropertyPopulationJsonRemote: jest.fn(),
+}));
+
 jest.mock('../../../../core/registry/unified-node-registry', () => ({
   unifiedNodeRegistry: {
     get: jest.fn(),
@@ -37,6 +41,7 @@ import type { Workflow } from '../../../../core/types/ai-types';
 import { logger } from '../../../../core/logger';
 import { geminiOrchestrator } from '../../gemini-orchestrator';
 import { unifiedNodeRegistry } from '../../../../core/registry/unified-node-registry';
+import { runPropertyPopulationJsonRemote } from '../property-population-stage-client';
 
 // ─── Typed mock helpers ───────────────────────────────────────────────────────
 
@@ -44,6 +49,7 @@ const mockLoggerInfo = logger.info as jest.Mock;
 const mockLoggerWarn = logger.warn as jest.Mock;
 const mockProcessRequest = geminiOrchestrator.processRequest as jest.Mock;
 const mockRegistryGet = unifiedNodeRegistry.get as jest.Mock;
+const mockRunPropertyPopulationJsonRemote = runPropertyPopulationJsonRemote as jest.Mock;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -71,6 +77,7 @@ function makeWorkflow(overrides?: Partial<Workflow>): Workflow {
 describe('runPropertyPopulationStage', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockRunPropertyPopulationJsonRemote.mockResolvedValue(null);
   });
 
   // ── 8.1: stage emits ai_pipeline_stage_start and ai_pipeline_stage_end ──────
@@ -234,5 +241,84 @@ describe('runPropertyPopulationStage', () => {
     // node config must not have the LLM-supplied apiKey value
     const node = result.workflow.nodes[0];
     expect(node.data.config.apiKey).not.toBe('should-not-be-written');
+  });
+
+  it('delegates property-value JSON generation to ai-generator and skips local Gemini on remote success', async () => {
+    mockRunPropertyPopulationJsonRemote.mockResolvedValue({
+      ok: true,
+      values: { conditions: [{ field: '$json.status', operator: 'equals', value: 'active' }] },
+      durationMs: 12,
+      llmCall: { model: 'gemini-3.5-flash', temperature: 0.1, promptTokens: 1, completionTokens: 1 },
+    });
+    mockRegistryGet.mockReturnValue({
+      inputSchema: {
+        conditions: {
+          type: 'array',
+          description: 'Conditions',
+          fillMode: { default: 'buildtime_ai_once' },
+          ownership: 'value',
+        },
+      },
+      defaultConfig: () => ({ conditions: [] }),
+    });
+
+    const result = await runPropertyPopulationStage({
+      workflow: makeWorkflow(),
+      userIntent: 'filter active users',
+      structuralPrompt: 'blueprint',
+      correlationId: 'remote-success',
+    });
+
+    expect(result.propertyPopulationSummary.node_1).toEqual(['conditions']);
+    expect(result.workflow.nodes[0].data.config.conditions).toEqual([
+      { field: '$json.status', operator: 'equals', value: 'active' },
+    ]);
+    expect(mockProcessRequest).not.toHaveBeenCalled();
+    expect(mockRunPropertyPopulationJsonRemote).toHaveBeenCalledWith(
+      expect.objectContaining({
+        purpose: 'property_population',
+        allowedKeys: ['conditions'],
+        correlationId: 'remote-success',
+        nodeId: 'node_1',
+        nodeType: 'set_variable',
+      }),
+    );
+  });
+
+  it('falls back to local Gemini when ai-generator returns an invalid JSON response', async () => {
+    mockRunPropertyPopulationJsonRemote.mockResolvedValue({
+      ok: false,
+      code: 'INVALID_LLM_RESPONSE',
+      rawResponse: 'not json',
+      durationMs: 9,
+    });
+    mockProcessRequest.mockResolvedValue(
+      JSON.stringify({ conditions: [{ field: '$json.status', operator: 'equals', value: 'active' }] }),
+    );
+    mockRegistryGet.mockReturnValue({
+      inputSchema: {
+        conditions: {
+          type: 'array',
+          description: 'Conditions',
+          fillMode: { default: 'buildtime_ai_once' },
+          ownership: 'value',
+        },
+      },
+      defaultConfig: () => ({ conditions: [] }),
+    });
+
+    const result = await runPropertyPopulationStage({
+      workflow: makeWorkflow(),
+      userIntent: 'filter active users',
+      structuralPrompt: 'blueprint',
+      correlationId: 'remote-invalid',
+    });
+
+    expect(result.propertyPopulationSummary.node_1).toEqual(['conditions']);
+    expect(mockProcessRequest).toHaveBeenCalledWith(
+      'property-population',
+      expect.objectContaining({ system: expect.any(String), message: expect.any(String) }),
+      expect.objectContaining({ model: 'gemini-3.5-flash', temperature: 0.1, cache: false }),
+    );
   });
 });

@@ -16,7 +16,11 @@
  * Requirements: 1.1–1.5, 2.1–2.5, 3.1–3.6, 4.1–4.6, 5.1, 6.1–6.3, 7.1–7.5
  */
 
-import { geminiOrchestrator } from '../gemini-orchestrator';
+import { geminiOrchestrator, type AIRequestType } from '../gemini-orchestrator';
+import {
+  runPropertyPopulationJsonRemote,
+  type PropertyPopulationJsonPurpose,
+} from './property-population-stage-client';
 import { logger } from '../../../core/logger';
 import { unifiedNodeRegistry } from '../../../core/registry/unified-node-registry';
 import type { Workflow } from '../../../core/types/ai-types';
@@ -81,6 +85,75 @@ function tryParseJson(text: string): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+async function requestJsonObjectWithRemoteFallback(params: {
+  purpose: PropertyPopulationJsonPurpose;
+  localRequestName: AIRequestType;
+  systemPrompt: string;
+  message: string;
+  allowedKeys?: string[];
+  correlationId?: string;
+  nodeId?: string;
+  nodeType?: string;
+  logStage: string;
+}): Promise<Record<string, unknown> | null> {
+  const remote = await runPropertyPopulationJsonRemote({
+    purpose: params.purpose,
+    systemPrompt: params.systemPrompt,
+    message: params.message,
+    allowedKeys: params.allowedKeys,
+    correlationId: params.correlationId,
+    nodeId: params.nodeId,
+    nodeType: params.nodeType,
+  });
+
+  if (remote?.ok) {
+    return remote.values;
+  }
+
+  if (remote && !remote.ok) {
+    logger.warn({
+      event: 'ai_pipeline_stage_warn',
+      stage: params.logStage,
+      correlationId: params.correlationId,
+      nodeId: params.nodeId,
+      nodeType: params.nodeType,
+      reason: `ai-generator returned ${remote.code} — falling back to local`,
+    });
+  }
+
+  const result = await geminiOrchestrator.processRequest(
+    params.localRequestName,
+    { system: params.systemPrompt, message: params.message },
+    { model: 'gemini-3.5-flash', temperature: 0.1, cache: false },
+  );
+  const raw = typeof result === 'string' ? result : JSON.stringify(result);
+  let parsed = tryParseJson(raw);
+  if (parsed) return parsed;
+
+  logger.warn({
+    event: 'ai_pipeline_stage_warn',
+    stage: params.logStage,
+    correlationId: params.correlationId,
+    nodeId: params.nodeId,
+    nodeType: params.nodeType,
+    reason: 'LLM returned unparseable JSON — retrying',
+  });
+
+  const retryMessage =
+    params.message +
+    '\n\nCRITICAL: Your previous response was not valid JSON. ' +
+    'Return ONLY the JSON object, nothing else. No markdown fences.';
+  const retryResult = await geminiOrchestrator.processRequest(
+    params.localRequestName,
+    { system: params.systemPrompt, message: retryMessage },
+    { model: 'gemini-3.5-flash', temperature: 0.1, cache: false },
+  );
+  const retryRaw = typeof retryResult === 'string' ? retryResult : JSON.stringify(retryResult);
+  parsed = tryParseJson(retryRaw);
+
+  return parsed;
 }
 
 // ─── Per-Field Directive Generation ─────────────────────────────────────────
@@ -148,13 +221,17 @@ async function generateRuntimeFieldDirectives(params: {
     `Return a JSON object with exactly these field names as keys and directive strings as values.`;
 
   try {
-    const result = await geminiOrchestrator.processRequest(
-      'field-directive-generation',
-      { system: systemPrompt, message: userMessage },
-      { model: 'gemini-3.5-flash', temperature: 0.1, cache: false },
-    );
-    const raw = typeof result === 'string' ? result : JSON.stringify(result);
-    const parsed = tryParseJson(raw);
+    const parsed = await requestJsonObjectWithRemoteFallback({
+      purpose: 'field_directive_generation',
+      localRequestName: 'field-directive-generation',
+      systemPrompt,
+      message: userMessage,
+      allowedKeys: runtimeAiFields.map((f) => f.fieldName),
+      correlationId,
+      nodeId,
+      nodeType,
+      logStage: 'property_population',
+    });
     if (!parsed) return {};
 
     // Only keep entries that are string directives for known field names
@@ -509,61 +586,31 @@ export async function runPropertyPopulationStage(
         `REMINDER: Never return empty arrays for conditions, cases, or items fields.`;
 
       // ── 2.4 LLM call, JSON parsing, fillMode gate ────────────────────────
-      let rawResponse: string;
-      try {
-        const result = await geminiOrchestrator.processRequest(
-          'property-population',
-          { system: systemPrompt, message: userMessage },
-          { model: 'gemini-3.5-flash', temperature: 0.1, cache: false },
-        );
-        rawResponse = typeof result === 'string' ? result : JSON.stringify(result);
-      } catch (llmErr) {
-        throw llmErr; // caught by outer per-node try/catch (2.5)
-      }
-
-      let parsed = tryParseJson(rawResponse);
+      const parsed = await requestJsonObjectWithRemoteFallback({
+        purpose: 'property_population',
+        localRequestName: 'property-population',
+        systemPrompt,
+        message: userMessage,
+        allowedKeys: eligibleFields.map(([fieldName]) => fieldName),
+        correlationId,
+        nodeId,
+        nodeType,
+        logStage: 'property_population',
+      });
 
       if (!parsed) {
-        // One retry with explicit JSON reminder
+        // Second failure — fall back to defaultConfig for this node
         logger.warn({
           event: 'ai_pipeline_stage_warn',
           stage: 'property_population',
           correlationId,
           nodeId,
           nodeType,
-          reason: 'LLM returned unparseable JSON — retrying',
+          reason: 'LLM returned unparseable JSON on retry — using defaultConfig',
         });
-
-        try {
-          const retryMessage =
-            userMessage +
-            '\n\nCRITICAL: Your previous response was not valid JSON. ' +
-            'Return ONLY the JSON object, nothing else. No markdown fences.';
-          const retryResult = await geminiOrchestrator.processRequest(
-            'property-population',
-            { system: systemPrompt, message: retryMessage },
-            { model: 'gemini-3.5-flash', temperature: 0.1, cache: false },
-          );
-          const retryRaw = typeof retryResult === 'string' ? retryResult : JSON.stringify(retryResult);
-          parsed = tryParseJson(retryRaw);
-        } catch (retryErr) {
-          throw retryErr; // caught by outer per-node try/catch (2.5)
-        }
-
-        if (!parsed) {
-          // Second failure — fall back to defaultConfig for this node
-          logger.warn({
-            event: 'ai_pipeline_stage_warn',
-            stage: 'property_population',
-            correlationId,
-            nodeId,
-            nodeType,
-            reason: 'LLM returned unparseable JSON on retry — using defaultConfig',
-          });
-          const prior = node.data?.config && typeof node.data.config === 'object' ? node.data.config : {};
-          node.data.config = { ...nodeDef.defaultConfig(), ...prior };
-          continue;
-        }
+        const prior = node.data?.config && typeof node.data.config === 'object' ? node.data.config : {};
+        node.data.config = { ...nodeDef.defaultConfig(), ...prior };
+        continue;
       }
 
       // Apply fillMode gate: only keep keys that are buildtime_ai_once and non-credential
