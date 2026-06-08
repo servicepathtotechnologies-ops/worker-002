@@ -3,6 +3,7 @@ import { unifiedNodeRegistry } from '../../../core/registry/unified-node-registr
 import { geminiOrchestrator } from '../gemini-orchestrator';
 import { systemPromptBuilder } from '../system-prompt-builder';
 import { buildNodeCatalogText } from '../node-catalog-builder';
+import { runCapabilitySelectionJsonRemote } from './capability-stage-client';
 import type { StructuredIntent } from './intent-stage';
 
 export type CapabilityIntentClass =
@@ -79,39 +80,62 @@ export async function runCapabilitySelectionStage(
     inputSummary: `actions=${intent.actions.length}`,
   });
 
-  let raw: unknown;
+  let raw: unknown = null;
   let text = '';
-  try {
-    raw = await geminiOrchestrator.processRequest(
-      'node-suggestion',
-      { system: systemPrompt, message: userMessage },
-      {
-        model: 'gemini-3.5-flash',
-        temperature: 0.1,
-        cache: false,
-      },
-    );
-    text = typeof raw === 'string' ? raw : JSON.stringify(raw);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    logger.error({
-      event: 'ai_pipeline_stage_error',
-      stage: 'capability_selection',
-      correlationId,
-      error: 'CAPABILITY_SELECTION_FAILED',
-      message,
-    });
-    logger.warn({
-      event: 'ai_pipeline_stage_fallback',
-      stage: 'capability_selection',
-      correlationId,
-      reason: 'LLM_CALL_FAILED',
-    });
-    raw = null;
-    text = message;
+  let parsed: CapabilityOptionStep[] | null = null;
+
+  const remote = await runCapabilitySelectionJsonRemote({
+    systemPrompt,
+    message: userMessage,
+    correlationId,
+  });
+
+  if (remote?.ok) {
+    parsed = remote.steps;
+    text = JSON.stringify({ steps: remote.steps });
+  } else {
+    if (remote && !remote.ok) {
+      logger.warn({
+        event: 'ai_pipeline_stage_warn',
+        stage: 'capability_selection',
+        correlationId,
+        reason: `ai-generator returned ${remote.code} - falling back to local`,
+      });
+    }
+
+    try {
+      raw = await geminiOrchestrator.processRequest(
+        'node-suggestion',
+        { system: systemPrompt, message: userMessage },
+        {
+          model: 'gemini-3.5-flash',
+          temperature: 0.1,
+          cache: false,
+        },
+      );
+      text = typeof raw === 'string' ? raw : JSON.stringify(raw);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error({
+        event: 'ai_pipeline_stage_error',
+        stage: 'capability_selection',
+        correlationId,
+        error: 'CAPABILITY_SELECTION_FAILED',
+        message,
+      });
+      logger.warn({
+        event: 'ai_pipeline_stage_fallback',
+        stage: 'capability_selection',
+        correlationId,
+        reason: 'LLM_CALL_FAILED',
+      });
+      raw = null;
+      text = message;
+    }
+
+    parsed = parseCapabilitySelection(raw) ?? parseCapabilitySelection(text);
   }
 
-  let parsed = parseCapabilitySelection(raw) ?? parseCapabilitySelection(text);
   if (!parsed) {
     logger.warn({
       event: 'ai_pipeline_stage_retry',

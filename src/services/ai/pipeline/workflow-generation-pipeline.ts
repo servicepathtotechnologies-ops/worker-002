@@ -18,7 +18,6 @@ import { logger } from '../../../core/logger';
 import { buildNodeCatalogText } from '../node-catalog-builder';
 import { runIntentStage } from '../stages/intent-stage';
 import { runCapabilitySelectionStage } from '../stages/capability-selection-stage';
-import { runCapabilitySelectionStageRemote } from '../stages/capability-stage-client';
 import { runStructuralPromptStage } from '../stages/structural-prompt-stage';
 import { runStructuralPromptStageRemote } from '../stages/structural-prompt-stage-client';
 import { runNodeSelectionStage } from '../stages/node-selection-stage';
@@ -94,9 +93,7 @@ export class WorkflowGenerationPipeline {
 
       // ── Stage 1b: Capability Selection ───────────────────────────────────
       const csStart = Date.now();
-      const csResult =
-        (await runCapabilitySelectionStageRemote(intentResult.intent, nodeCatalog, correlationId)) ??
-        await runCapabilitySelectionStage(intentResult.intent, correlationId);
+      const csResult = await runCapabilitySelectionStage(intentResult.intent, correlationId);
       stageTrace.push({
         stage: 'capability_selection',
         startedAt: csStart,

@@ -17,7 +17,6 @@ import { runIntentStage } from '../services/ai/stages/intent-stage';
 import { runIntentStageRemote } from '../services/ai/stages/intent-stage-client';
 import type { StructuredIntent } from '../services/ai/stages/intent-stage';
 import { runCapabilitySelectionStage } from '../services/ai/stages/capability-selection-stage';
-import { runCapabilitySelectionStageRemote } from '../services/ai/stages/capability-stage-client';
 import { runStructuralPromptStage } from '../services/ai/stages/structural-prompt-stage';
 import { runStructuralPromptStageRemote } from '../services/ai/stages/structural-prompt-stage-client';
 import { runNodeSelectionStage } from '../services/ai/stages/node-selection-stage';
@@ -209,9 +208,7 @@ export default async function generateWorkflow(req: Request, res: Response): Pro
       }
 
       // Stage 2: capability options from registry
-      const capabilityResult =
-        (await runCapabilitySelectionStageRemote(intentForAnalyze, nodeCatalog, correlationId)) ??
-        await runCapabilitySelectionStage(intentForAnalyze, correlationId);
+      const capabilityResult = await runCapabilitySelectionStage(intentForAnalyze, correlationId);
       const capabilityOptions = capabilityResult.ok ? capabilityResult.steps : [];
       const resolvedSelections = resolveAnalyzeCapabilitySelections(capabilityOptions, analyzeCapabilitySelectionsByStep);
       if (!resolvedSelections.ok) {
