@@ -52,6 +52,42 @@ describe('evaluateSwitchRoutingExpression', () => {
     expect(v).toBe(true);
   });
 
+  it('resolves $input.item.json as a plain routing expression', () => {
+    const ctx = createExecutionContext({});
+    ctx.variables.$json = { status: 'paid' };
+    ctx.variables.json = ctx.variables.$json;
+
+    const v = evaluateSwitchRoutingExpression('{{$input.item.json.status}}', ctx);
+
+    expect(v).toBe('paid');
+  });
+
+  it('evaluates $input.first().json in JS expressions', () => {
+    const ctx = createExecutionContext({});
+    ctx.variables.$json = { total: 250 };
+    ctx.variables.json = ctx.variables.$json;
+
+    const v = evaluateSwitchRoutingExpression(
+      "{{$input.first().json.total >= 200 ? 'large' : 'small'}}",
+      ctx
+    );
+
+    expect(v).toBe('large');
+  });
+
+  it('evaluates $input.all()[0].json in JS expressions', () => {
+    const ctx = createExecutionContext({});
+    ctx.variables.$json = { priority: 'high' };
+    ctx.variables.json = ctx.variables.$json;
+
+    const v = evaluateSwitchRoutingExpression(
+      "{{$input.all()[0].json.priority === 'high'}}",
+      ctx
+    );
+
+    expect(v).toBe(true);
+  });
+
   it('returns null for invalid JS expressions', () => {
     const ctx = createExecutionContext({});
     ctx.variables.$json = { score: 82 };
