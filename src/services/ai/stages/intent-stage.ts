@@ -12,6 +12,7 @@ import { systemPromptBuilder } from '../system-prompt-builder';
 import { buildNodeCatalogText } from '../node-catalog-builder';
 import { logger } from '../../../core/logger';
 import type { NodeCatalogText } from '../node-catalog-builder';
+import { runIntentStageRemote } from './intent-stage-client';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -56,6 +57,26 @@ export async function runIntentStage(
   const inputSummary = `prompt_len=${userPrompt.length}, catalog_nodes=${catalogNodeCount}`;
 
   logger.info({ event: 'ai_pipeline_stage_start', stage: 'intent', correlationId, inputSummary });
+
+  // ── Try remote ai-generator first ────────────────────────────────────────────
+  const remote = await runIntentStageRemote(userPrompt, catalog, correlationId);
+
+  if (remote?.ok) {
+    logger.info({ event: 'ai_pipeline_stage_end', stage: 'intent', correlationId, source: 'remote', durationMs: Date.now() - startedAt });
+    return {
+      ...remote,
+      intent: { ...remote.intent, originalPrompt: userPrompt },
+    };
+  }
+
+  if (remote && !remote.ok) {
+    logger.warn({
+      event: 'ai_pipeline_stage_warn',
+      stage: 'intent',
+      correlationId,
+      reason: `ai-generator returned ${remote.code} — falling back to local`,
+    });
+  }
 
   const { systemPrompt } = systemPromptBuilder.build({
     stage: 'intent',
