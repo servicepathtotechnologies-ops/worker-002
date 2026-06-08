@@ -1,4 +1,5 @@
-import type { ProposedEdge } from '../system-prompt-builder';
+import type { ProposedEdge, SelectedNode } from '../system-prompt-builder';
+import type { EdgeReasoningOutput } from './edge-reasoning-stage';
 
 const AI_GENERATOR_URL = process.env.AI_GENERATOR_URL?.replace(/\/$/, '');
 
@@ -57,6 +58,50 @@ export async function runEdgeReasoningJsonRemote(params: {
     return res.json() as Promise<EdgeReasoningJsonOutput>;
   } catch (err) {
     console.warn('[edge-reasoning-stage-client] remote call failed - falling back to local:', err);
+    return null;
+  }
+}
+
+// ─── Full Stage Remote (Day 42) ───────────────────────────────────────────────
+
+/**
+ * Delegates the full edge-reasoning stage (LLM call + JSON parsing + cycle detection +
+ * partial materialization) to the ai-generator service. Returns null when
+ * AI_GENERATOR_URL is unset or the remote call fails, so callers can fall back to the
+ * JSON-only remote or local LLM path.
+ *
+ * The worker uses orderedNodeIds + edges from the result to re-materialize the
+ * workflow with the real registry (defaultConfig, port resolution, etc.).
+ */
+export async function runEdgeReasoningStageRemote(params: {
+  selectedNodes: SelectedNode[];
+  catalog: string;
+  userIntent: string;
+  correlationId?: string;
+  structuralPrompt?: string;
+}): Promise<EdgeReasoningOutput | null> {
+  if (!AI_GENERATOR_URL) return null;
+
+  try {
+    const serviceKey = process.env.AI_GENERATOR_SERVICE_KEY ?? '';
+    const res = await fetch(`${AI_GENERATOR_URL}/generate/edge-reasoning`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(serviceKey ? { 'x-service-key': serviceKey } : {}),
+      },
+      body: JSON.stringify(params),
+      signal: AbortSignal.timeout(30_000),
+    });
+
+    if (!res.ok) {
+      console.warn(`[edge-reasoning-stage-client] ai-generator /edge-reasoning returned ${res.status} - falling back`);
+      return null;
+    }
+
+    return res.json() as Promise<EdgeReasoningOutput>;
+  } catch (err) {
+    console.warn('[edge-reasoning-stage-client] stage remote call failed - falling back:', err);
     return null;
   }
 }

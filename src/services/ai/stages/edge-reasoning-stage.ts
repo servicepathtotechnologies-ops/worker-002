@@ -18,7 +18,7 @@ import { logger } from '../../../core/logger';
 import type { Workflow, WorkflowNode } from '../../../core/types/ai-types';
 import type { ExecutionOrder } from '../../../core/orchestration/execution-order-manager';
 import type { NodeCatalogText } from '../node-catalog-builder';
-import { runEdgeReasoningJsonRemote } from './edge-reasoning-stage-client';
+import { runEdgeReasoningJsonRemote, runEdgeReasoningStageRemote } from './edge-reasoning-stage-client';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -72,27 +72,51 @@ export async function runEdgeReasoningStage(
   const promptTokens = Math.ceil(systemPrompt.length / 4);
   let llmCall = { model, temperature, promptTokens, completionTokens: 0 };
 
-  // ── Try remote JSON endpoint first (LLM call + retry + cycle detection) ──────
+  // ── Try full stage remote first (ai-generator handles LLM + parse + cycle detection) ──
   let parsed: { orderedNodes: string[]; edges: ProposedEdge[] } | null = null;
 
-  const remote = await runEdgeReasoningJsonRemote({ systemPrompt, message, correlationId });
+  const stageRemote = await runEdgeReasoningStageRemote({
+    selectedNodes,
+    catalog: nodeCatalog,
+    userIntent,
+    correlationId,
+    structuralPrompt,
+  });
 
-  if (remote?.ok) {
-    parsed = { orderedNodes: remote.orderedNodes, edges: remote.edges };
-    llmCall = remote.llmCall;
+  if (stageRemote?.ok) {
+    parsed = { orderedNodes: stageRemote.orderedNodeIds, edges: stageRemote.edges };
+    llmCall = stageRemote.llmCall;
   } else {
-    if (remote && !remote.ok) {
+    if (stageRemote && !stageRemote.ok) {
       logger.warn({
         event: 'ai_pipeline_stage_warn',
         stage: 'edge_reasoning',
         correlationId,
-        reason: `ai-generator returned ${remote.code} - falling back to local`,
+        reason: `ai-generator stage returned ${stageRemote.code} — falling back to JSON remote`,
       });
-      // If the remote definitively detected a cycle (after its own retry), propagate immediately.
-      if (remote.code === 'CYCLE_DETECTED') {
-        return { ok: false, code: 'CYCLE_DETECTED', rawResponse: remote.rawResponse ?? '', durationMs: Date.now() - startedAt };
+      if (stageRemote.code === 'CYCLE_DETECTED') {
+        return { ok: false, code: 'CYCLE_DETECTED', rawResponse: stageRemote.rawResponse ?? '', durationMs: Date.now() - startedAt };
       }
     }
+
+    // ── Try JSON remote (Day 37 fallback — LLM call + cycle detection only) ──────
+    const remote = await runEdgeReasoningJsonRemote({ systemPrompt, message, correlationId });
+
+    if (remote?.ok) {
+      parsed = { orderedNodes: remote.orderedNodes, edges: remote.edges };
+      llmCall = remote.llmCall;
+    } else {
+      if (remote && !remote.ok) {
+        logger.warn({
+          event: 'ai_pipeline_stage_warn',
+          stage: 'edge_reasoning',
+          correlationId,
+          reason: `ai-generator returned ${remote.code} - falling back to local`,
+        });
+        if (remote.code === 'CYCLE_DETECTED') {
+          return { ok: false, code: 'CYCLE_DETECTED', rawResponse: remote.rawResponse ?? '', durationMs: Date.now() - startedAt };
+        }
+      }
 
     // ── Local LLM path (fallback when AI_GENERATOR_URL unset or remote failed) ──
     logger.info({ event: 'ai_pipeline_llm_call', stage: 'edge_reasoning', correlationId, model, temperature });
@@ -166,6 +190,7 @@ export async function runEdgeReasoningStage(
         return { ok: false, code: 'CYCLE_DETECTED', rawResponse: text3, durationMs: Date.now() - startedAt };
       }
       parsed = parsed3;
+    }
     }
   }
 

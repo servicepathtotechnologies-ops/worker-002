@@ -15,7 +15,7 @@ jest.mock('../../gemini-orchestrator', () => ({
 
 jest.mock('../edge-reasoning-stage-client', () => ({
   runEdgeReasoningJsonRemote: jest.fn(),
-  runEdgeReasoningStageRemote: jest.fn().mockResolvedValue(null),
+  runEdgeReasoningStageRemote: jest.fn(),
 }));
 
 jest.mock('../../system-prompt-builder', () => ({
@@ -45,34 +45,36 @@ import { geminiOrchestrator } from '../../gemini-orchestrator';
 import { unifiedNodeRegistry } from '../../../../core/registry/unified-node-registry';
 import { unifiedGraphOrchestrator } from '../../../../core/orchestration/unified-graph-orchestrator';
 import { runEdgeReasoningStage } from '../edge-reasoning-stage';
-import { runEdgeReasoningJsonRemote } from '../edge-reasoning-stage-client';
+import { runEdgeReasoningJsonRemote, runEdgeReasoningStageRemote } from '../edge-reasoning-stage-client';
 import type { SelectedNode } from '../../system-prompt-builder';
 
 const mockProcessRequest = geminiOrchestrator.processRequest as jest.Mock;
 const mockRegistryGet = unifiedNodeRegistry.get as jest.Mock;
 const mockInitializeWorkflow = unifiedGraphOrchestrator.initializeWorkflow as jest.Mock;
 const mockRunEdgeReasoningJsonRemote = runEdgeReasoningJsonRemote as jest.Mock;
+const mockRunEdgeReasoningStageRemote = runEdgeReasoningStageRemote as jest.Mock;
 
 const selectedNodes: SelectedNode[] = [
   { type: 'manual_trigger', role: 'trigger', reason: 'Starts the workflow', nodeId: 'node_manual_trigger_1' },
   { type: 'google_gmail', role: 'terminal', reason: 'Send email', nodeId: 'node_google_gmail_1' },
 ];
 
-const remoteSuccess = {
-  ok: true,
-  orderedNodes: ['node_manual_trigger_1', 'node_google_gmail_1'],
+const stageRemoteSuccess = {
+  ok: true as const,
+  orderedNodeIds: ['node_manual_trigger_1', 'node_google_gmail_1'],
   edges: [{ source: 'node_manual_trigger_1', target: 'node_google_gmail_1', type: 'main' }],
+  workflow: { nodes: [], edges: [] },
   durationMs: 22,
-  llmCall: { model: 'gemini-3.5-flash', temperature: 0.1, promptTokens: 5, completionTokens: 12 },
+  llmCall: { model: 'gemini-3.5-flash', temperature: 0.1, promptTokens: 7, completionTokens: 14 },
 };
 
 function mockRegistryDefinitions() {
   mockRegistryGet.mockImplementation((type: string) => {
     if (type === 'manual_trigger') {
-      return { type, label: 'Manual Trigger', category: 'trigger', defaultConfig: () => ({}) };
+      return { type, label: 'Manual Trigger', category: 'trigger', isBranching: false, defaultConfig: () => ({}) };
     }
     if (type === 'google_gmail') {
-      return { type, label: 'Gmail', category: 'communication', defaultConfig: () => ({}) };
+      return { type, label: 'Gmail', category: 'communication', isBranching: false, defaultConfig: () => ({}) };
     }
     return undefined;
   });
@@ -82,14 +84,14 @@ function mockOrchestratorInit(nodes: unknown[], edges: unknown[]) {
   mockInitializeWorkflow.mockReturnValue({ workflow: { nodes, edges } });
 }
 
-describe('runEdgeReasoningStage remote JSON delegation', () => {
+describe('runEdgeReasoningStage full-stage remote delegation', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockRegistryDefinitions();
   });
 
-  it('uses ai-generator parsed nodes+edges and builds workflow without calling local Gemini', async () => {
-    mockRunEdgeReasoningJsonRemote.mockResolvedValue(remoteSuccess);
+  it('uses ai-generator stage result and skips JSON remote and local Gemini on stage remote success', async () => {
+    mockRunEdgeReasoningStageRemote.mockResolvedValue(stageRemoteSuccess);
     mockOrchestratorInit(
       selectedNodes.map((n) => ({ id: n.nodeId, type: n.type, data: { type: n.type, label: n.type, category: 'action', config: {} } })),
       [],
@@ -99,91 +101,30 @@ describe('runEdgeReasoningStage remote JSON delegation', () => {
       selectedNodes,
       '[]',
       'Send email when triggered',
-      'remote-success',
+      'stage-remote-success',
       'blueprint',
     );
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-
-    expect(result.orderedNodeIds).toEqual(remoteSuccess.orderedNodes);
-    expect(result.edges).toEqual(remoteSuccess.edges);
-    expect(result.llmCall.model).toBe('gemini-3.5-flash');
-    expect(result.llmCall.promptTokens).toBe(5);
-    expect(result.llmCall.completionTokens).toBe(12);
+    expect(result.orderedNodeIds).toEqual(stageRemoteSuccess.orderedNodeIds);
+    expect(result.edges).toEqual(stageRemoteSuccess.edges);
+    expect(result.llmCall.promptTokens).toBe(7);
+    expect(result.llmCall.completionTokens).toBe(14);
 
     expect(mockProcessRequest).not.toHaveBeenCalled();
-    expect(mockRunEdgeReasoningJsonRemote).toHaveBeenCalledWith({
-      systemPrompt: 'EDGE_REASONING_SYSTEM_PROMPT',
-      message: expect.stringContaining('SELECTED_NODES:'),
-      correlationId: 'remote-success',
+    expect(mockRunEdgeReasoningJsonRemote).not.toHaveBeenCalled();
+    expect(mockRunEdgeReasoningStageRemote).toHaveBeenCalledWith({
+      selectedNodes,
+      catalog: '[]',
+      userIntent: 'Send email when triggered',
+      correlationId: 'stage-remote-success',
+      structuralPrompt: 'blueprint',
     });
   });
 
-  it('workflow contains the seeded edges from the remote response on success', async () => {
-    mockRunEdgeReasoningJsonRemote.mockResolvedValue(remoteSuccess);
-    mockOrchestratorInit(
-      selectedNodes.map((n) => ({ id: n.nodeId, type: n.type, data: { type: n.type, label: n.type, category: 'action', config: {} } })),
-      [],
-    );
-
-    const result = await runEdgeReasoningStage(selectedNodes, '[]', 'intent', 'corr-1');
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    const edgeSources = result.workflow.edges.map((e: any) => e.source);
-    expect(edgeSources).toContain('node_manual_trigger_1');
-  });
-
-  it('falls back to local Gemini when ai-generator returns INVALID_LLM_RESPONSE', async () => {
-    mockRunEdgeReasoningJsonRemote.mockResolvedValue({
-      ok: false,
-      code: 'INVALID_LLM_RESPONSE',
-      rawResponse: 'not json',
-      durationMs: 9,
-    });
-
-    const localResponse = {
-      orderedNodes: ['node_manual_trigger_1', 'node_google_gmail_1'],
-      edges: [{ source: 'node_manual_trigger_1', target: 'node_google_gmail_1', type: 'main' }],
-    };
-    mockProcessRequest.mockResolvedValue(JSON.stringify(localResponse));
-    mockOrchestratorInit(
-      selectedNodes.map((n) => ({ id: n.nodeId, type: n.type, data: { type: n.type, label: n.type, category: 'action', config: {} } })),
-      [],
-    );
-
-    const result = await runEdgeReasoningStage(selectedNodes, '[]', 'intent', 'remote-invalid');
-
-    expect(result.ok).toBe(true);
-    expect(mockProcessRequest).toHaveBeenCalledWith(
-      'workflow-generation',
-      expect.objectContaining({
-        system: 'EDGE_REASONING_SYSTEM_PROMPT',
-        message: expect.stringContaining('SELECTED_NODES:'),
-      }),
-      expect.objectContaining({ model: 'gemini-3.5-flash', temperature: 0.1, cache: false }),
-    );
-  });
-
-  it('propagates CYCLE_DETECTED immediately when remote reports a cycle without calling local Gemini', async () => {
-    mockRunEdgeReasoningJsonRemote.mockResolvedValue({
-      ok: false,
-      code: 'CYCLE_DETECTED',
-      rawResponse: 'cyclic graph json',
-      durationMs: 14,
-    });
-
-    const result = await runEdgeReasoningStage(selectedNodes, '[]', 'intent', 'remote-cycle');
-
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.code).toBe('CYCLE_DETECTED');
-    expect(mockProcessRequest).not.toHaveBeenCalled();
-  });
-
-  it('falls back to local Gemini when remote returns null (AI_GENERATOR_URL unset)', async () => {
+  it('falls back to JSON remote then local Gemini when stage remote returns null', async () => {
+    mockRunEdgeReasoningStageRemote.mockResolvedValue(null);
     mockRunEdgeReasoningJsonRemote.mockResolvedValue(null);
 
     const localResponse = {
@@ -199,6 +140,50 @@ describe('runEdgeReasoningStage remote JSON delegation', () => {
     const result = await runEdgeReasoningStage(selectedNodes, '[]', 'intent', 'no-url');
 
     expect(result.ok).toBe(true);
+    expect(mockRunEdgeReasoningJsonRemote).toHaveBeenCalled();
     expect(mockProcessRequest).toHaveBeenCalled();
+  });
+
+  it('falls back to JSON remote then local Gemini when stage remote returns INVALID_LLM_RESPONSE', async () => {
+    mockRunEdgeReasoningStageRemote.mockResolvedValue({
+      ok: false as const,
+      code: 'INVALID_LLM_RESPONSE' as const,
+      rawResponse: 'not json',
+      durationMs: 5,
+    });
+    mockRunEdgeReasoningJsonRemote.mockResolvedValue(null);
+
+    const localResponse = {
+      orderedNodes: ['node_manual_trigger_1', 'node_google_gmail_1'],
+      edges: [{ source: 'node_manual_trigger_1', target: 'node_google_gmail_1', type: 'main' }],
+    };
+    mockProcessRequest.mockResolvedValue(JSON.stringify(localResponse));
+    mockOrchestratorInit(
+      selectedNodes.map((n) => ({ id: n.nodeId, type: n.type, data: { type: n.type, label: n.type, category: 'action', config: {} } })),
+      [],
+    );
+
+    const result = await runEdgeReasoningStage(selectedNodes, '[]', 'intent', 'stage-invalid');
+
+    expect(result.ok).toBe(true);
+    expect(mockRunEdgeReasoningJsonRemote).toHaveBeenCalled();
+    expect(mockProcessRequest).toHaveBeenCalled();
+  });
+
+  it('propagates CYCLE_DETECTED from stage remote without calling JSON remote or local Gemini', async () => {
+    mockRunEdgeReasoningStageRemote.mockResolvedValue({
+      ok: false as const,
+      code: 'CYCLE_DETECTED' as const,
+      rawResponse: 'cyclic graph json',
+      durationMs: 10,
+    });
+
+    const result = await runEdgeReasoningStage(selectedNodes, '[]', 'intent', 'stage-cycle');
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe('CYCLE_DETECTED');
+    expect(mockProcessRequest).not.toHaveBeenCalled();
+    expect(mockRunEdgeReasoningJsonRemote).not.toHaveBeenCalled();
   });
 });
