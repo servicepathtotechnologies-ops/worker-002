@@ -7,6 +7,10 @@ import type { ExecutionContext } from '../execution/typed-execution-context';
 import { getContextValue } from '../execution/typed-execution-context';
 import { isBareFieldPathString, resolveTypedValue } from '../execution/typed-value-resolver';
 
+function looksLikeJavaScriptExpression(expression: string): boolean {
+  return /(?:[!=<>]=?|&&|\|\||[+\-*/%]|\[|\]|\b(?:true|false|null|undefined)\b|['"])/.test(expression);
+}
+
 /**
  * Evaluate Switch `expression` config against the current execution context.
  * Used only by the `switch` case in execute-workflow legacy executor.
@@ -32,7 +36,7 @@ export function evaluateSwitchRoutingExpression(
     return resolved;
   }
 
-  if (single && /[?:()]/.test(inner)) {
+  if (single && (/[?:()]/.test(inner) || looksLikeJavaScriptExpression(inner))) {
     try {
       const $json =
         (context.variables.$json as Record<string, unknown> | undefined) ??

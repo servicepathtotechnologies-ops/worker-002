@@ -21,4 +21,44 @@ describe('evaluateSwitchRoutingExpression', () => {
     );
     expect(v).toBe('question');
   });
+
+  it('evaluates comparison expressions for routing', () => {
+    const ctx = createExecutionContext({});
+    ctx.variables.$json = { score: 82 };
+    ctx.variables.json = ctx.variables.$json;
+
+    const v = evaluateSwitchRoutingExpression('{{$json.score >= 80}}', ctx);
+
+    expect(v).toBe(true);
+  });
+
+  it('evaluates logical expressions for routing', () => {
+    const ctx = createExecutionContext({});
+    ctx.variables.$json = { paid: true, total: 125 };
+    ctx.variables.json = ctx.variables.$json;
+
+    const v = evaluateSwitchRoutingExpression('{{$json.paid && $json.total > 0}}', ctx);
+
+    expect(v).toBe(true);
+  });
+
+  it('supports bracket property access in JS expressions', () => {
+    const ctx = createExecutionContext({});
+    ctx.variables.$json = { 'case-status': 'open' };
+    ctx.variables.json = ctx.variables.$json;
+
+    const v = evaluateSwitchRoutingExpression("{{$json['case-status'] === 'open'}}", ctx);
+
+    expect(v).toBe(true);
+  });
+
+  it('returns null for invalid JS expressions', () => {
+    const ctx = createExecutionContext({});
+    ctx.variables.$json = { score: 82 };
+    ctx.variables.json = ctx.variables.$json;
+
+    const v = evaluateSwitchRoutingExpression('{{$json.score >}}', ctx);
+
+    expect(v).toBeNull();
+  });
 });
