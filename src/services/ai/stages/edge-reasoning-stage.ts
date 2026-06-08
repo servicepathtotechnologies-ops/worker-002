@@ -18,6 +18,7 @@ import { logger } from '../../../core/logger';
 import type { Workflow, WorkflowNode } from '../../../core/types/ai-types';
 import type { ExecutionOrder } from '../../../core/orchestration/execution-order-manager';
 import type { NodeCatalogText } from '../node-catalog-builder';
+import { runEdgeReasoningJsonRemote } from './edge-reasoning-stage-client';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -66,79 +67,106 @@ export async function runEdgeReasoningStage(
     stageContext: { selectedNodes },
   });
 
-  logger.info({ event: 'ai_pipeline_llm_call', stage: 'edge_reasoning', correlationId, model, temperature });
-
   const message = `SELECTED_NODES:\n${JSON.stringify(selectedNodes, null, 2)}\n\nUSER_INTENT:\n${userIntent}${structuralPrompt ? `\n\nWORKFLOW_BLUEPRINT:\n${structuralPrompt}` : ''}`;
 
-  let text: string;
-  try {
-    const raw = await geminiOrchestrator.processRequest(
-      'workflow-generation',
-      { system: systemPrompt, message },
-      { model, temperature, cache: false },
-    );
-    text = typeof raw === 'string' ? raw : JSON.stringify(raw);
-  } catch (err) {
-    logger.error({ event: 'ai_pipeline_stage_error', stage: 'edge_reasoning', correlationId, error: 'LLM_CALL_FAILED', message: String(err) });
-    return { ok: false, code: 'INVALID_LLM_RESPONSE', rawResponse: String(err), durationMs: Date.now() - startedAt };
-  }
-
   const promptTokens = Math.ceil(systemPrompt.length / 4);
+  let llmCall = { model, temperature, promptTokens, completionTokens: 0 };
 
-  let parsed = tryParseEdgeReasoning(text);
+  // ── Try remote JSON endpoint first (LLM call + retry + cycle detection) ──────
+  let parsed: { orderedNodes: string[]; edges: ProposedEdge[] } | null = null;
 
-  if (!parsed) {
-    let text2: string;
+  const remote = await runEdgeReasoningJsonRemote({ systemPrompt, message, correlationId });
+
+  if (remote?.ok) {
+    parsed = { orderedNodes: remote.orderedNodes, edges: remote.edges };
+    llmCall = remote.llmCall;
+  } else {
+    if (remote && !remote.ok) {
+      logger.warn({
+        event: 'ai_pipeline_stage_warn',
+        stage: 'edge_reasoning',
+        correlationId,
+        reason: `ai-generator returned ${remote.code} - falling back to local`,
+      });
+      // If the remote definitively detected a cycle (after its own retry), propagate immediately.
+      if (remote.code === 'CYCLE_DETECTED') {
+        return { ok: false, code: 'CYCLE_DETECTED', rawResponse: remote.rawResponse ?? '', durationMs: Date.now() - startedAt };
+      }
+    }
+
+    // ── Local LLM path (fallback when AI_GENERATOR_URL unset or remote failed) ──
+    logger.info({ event: 'ai_pipeline_llm_call', stage: 'edge_reasoning', correlationId, model, temperature });
+
+    let text: string;
     try {
-      const retryPrompt = systemPrompt + '\n\nCRITICAL: Return ONLY valid JSON. No markdown, no explanation.';
-      const raw2 = await geminiOrchestrator.processRequest(
+      const raw = await geminiOrchestrator.processRequest(
         'workflow-generation',
-        { system: retryPrompt, message },
+        { system: systemPrompt, message },
         { model, temperature, cache: false },
       );
-      text2 = typeof raw2 === 'string' ? raw2 : JSON.stringify(raw2);
+      text = typeof raw === 'string' ? raw : JSON.stringify(raw);
     } catch (err) {
-      logger.error({ event: 'ai_pipeline_stage_error', stage: 'edge_reasoning', correlationId, error: 'LLM_RETRY_FAILED', message: String(err) });
+      logger.error({ event: 'ai_pipeline_stage_error', stage: 'edge_reasoning', correlationId, error: 'LLM_CALL_FAILED', message: String(err) });
       return { ok: false, code: 'INVALID_LLM_RESPONSE', rawResponse: String(err), durationMs: Date.now() - startedAt };
     }
-    parsed = tryParseEdgeReasoning(text2);
+
+    parsed = tryParseEdgeReasoning(text);
+
     if (!parsed) {
-      logger.error({ event: 'ai_pipeline_stage_error', stage: 'edge_reasoning', correlationId, error: 'INVALID_LLM_RESPONSE', llmResponse: text2 });
-      return { ok: false, code: 'INVALID_LLM_RESPONSE', rawResponse: text2, durationMs: Date.now() - startedAt };
-    }
-  }
-
-  // DFS cycle detection
-  const cycleInfo = detectCycle(parsed.orderedNodes, parsed.edges);
-  if (cycleInfo) {
-    logger.warn({ event: 'ai_pipeline_cycle_detected', stage: 'edge_reasoning', correlationId, cycleInfo });
-
-    const { systemPrompt: reprompt } = systemPromptBuilder.build({
-      stage: 'edge_reasoning',
-      nodeCatalog,
-      userIntent,
-      stageContext: { selectedNodes, cycleInfo },
-    });
-
-    let text3: string;
-    try {
-      const raw3 = await geminiOrchestrator.processRequest(
-        'workflow-generation',
-        { system: reprompt, message },
-        { model, temperature, cache: false },
-      );
-      text3 = typeof raw3 === 'string' ? raw3 : JSON.stringify(raw3);
-    } catch (err) {
-      logger.error({ event: 'ai_pipeline_stage_error', stage: 'edge_reasoning', correlationId, error: 'CYCLE_REPROMPT_FAILED', message: String(err) });
-      return { ok: false, code: 'CYCLE_DETECTED', rawResponse: String(err), durationMs: Date.now() - startedAt };
+      let text2: string;
+      try {
+        const retryPrompt = systemPrompt + '\n\nCRITICAL: Return ONLY valid JSON. No markdown, no explanation.';
+        const raw2 = await geminiOrchestrator.processRequest(
+          'workflow-generation',
+          { system: retryPrompt, message },
+          { model, temperature, cache: false },
+        );
+        text2 = typeof raw2 === 'string' ? raw2 : JSON.stringify(raw2);
+      } catch (err) {
+        logger.error({ event: 'ai_pipeline_stage_error', stage: 'edge_reasoning', correlationId, error: 'LLM_RETRY_FAILED', message: String(err) });
+        return { ok: false, code: 'INVALID_LLM_RESPONSE', rawResponse: String(err), durationMs: Date.now() - startedAt };
+      }
+      parsed = tryParseEdgeReasoning(text2);
+      if (!parsed) {
+        logger.error({ event: 'ai_pipeline_stage_error', stage: 'edge_reasoning', correlationId, error: 'INVALID_LLM_RESPONSE', llmResponse: text2 });
+        return { ok: false, code: 'INVALID_LLM_RESPONSE', rawResponse: text2, durationMs: Date.now() - startedAt };
+      }
     }
 
-    const parsed3 = tryParseEdgeReasoning(text3);
-    if (!parsed3 || detectCycle(parsed3.orderedNodes, parsed3.edges)) {
-      logger.error({ event: 'ai_pipeline_stage_error', stage: 'edge_reasoning', correlationId, error: 'CYCLE_DETECTED', llmResponse: text3 });
-      return { ok: false, code: 'CYCLE_DETECTED', rawResponse: text3, durationMs: Date.now() - startedAt };
+    llmCall = { model, temperature, promptTokens, completionTokens: Math.ceil(message.length / 4) };
+
+    // DFS cycle detection (local path only — remote handles its own cycle detection)
+    const cycleInfo = detectCycle(parsed.orderedNodes, parsed.edges);
+    if (cycleInfo) {
+      logger.warn({ event: 'ai_pipeline_cycle_detected', stage: 'edge_reasoning', correlationId, cycleInfo });
+
+      const { systemPrompt: reprompt } = systemPromptBuilder.build({
+        stage: 'edge_reasoning',
+        nodeCatalog,
+        userIntent,
+        stageContext: { selectedNodes, cycleInfo },
+      });
+
+      let text3: string;
+      try {
+        const raw3 = await geminiOrchestrator.processRequest(
+          'workflow-generation',
+          { system: reprompt, message },
+          { model, temperature, cache: false },
+        );
+        text3 = typeof raw3 === 'string' ? raw3 : JSON.stringify(raw3);
+      } catch (err) {
+        logger.error({ event: 'ai_pipeline_stage_error', stage: 'edge_reasoning', correlationId, error: 'CYCLE_REPROMPT_FAILED', message: String(err) });
+        return { ok: false, code: 'CYCLE_DETECTED', rawResponse: String(err), durationMs: Date.now() - startedAt };
+      }
+
+      const parsed3 = tryParseEdgeReasoning(text3);
+      if (!parsed3 || detectCycle(parsed3.orderedNodes, parsed3.edges)) {
+        logger.error({ event: 'ai_pipeline_stage_error', stage: 'edge_reasoning', correlationId, error: 'CYCLE_DETECTED', llmResponse: text3 });
+        return { ok: false, code: 'CYCLE_DETECTED', rawResponse: text3, durationMs: Date.now() - startedAt };
+      }
+      parsed = parsed3;
     }
-    parsed = parsed3;
   }
 
   // ✅ FIX Bug 5: Deduplicate nodeIds before building nodeMap.
@@ -326,7 +354,6 @@ export async function runEdgeReasoningStage(
   }
 
   const durationMs = Date.now() - startedAt;
-  const completionTokens = Math.ceil(text.length / 4);
 
   logger.info({
     event: 'ai_pipeline_stage_end',
@@ -342,7 +369,7 @@ export async function runEdgeReasoningStage(
     orderedNodeIds: parsed.orderedNodes,
     edges: parsed.edges,
     durationMs,
-    llmCall: { model, temperature, promptTokens, completionTokens },
+    llmCall,
   };
 }
 

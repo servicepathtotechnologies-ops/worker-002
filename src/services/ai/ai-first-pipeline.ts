@@ -17,7 +17,6 @@ import { runCapabilitySelectionStage, type CapabilityOptionStep } from './stages
 import { runStructuralPromptStage } from './stages/structural-prompt-stage';
 import { runNodeSelectionStage } from './stages/node-selection-stage';
 import { runEdgeReasoningStage } from './stages/edge-reasoning-stage';
-import { runEdgeReasoningStageRemote } from './stages/edge-reasoning-stage-client';
 import { runValidationStage } from './stages/validation-stage';
 import { runPropertyPopulationStage } from './stages/property-population-stage';
 import { runCredentialDiscoveryStage } from './stages/credential-discovery-stage';
@@ -465,21 +464,13 @@ export class AiFirstPipeline {
         },
       };
     } else {
-      erResult =
-        (await runEdgeReasoningStageRemote(
-          selectedForGraph,
-          nodeCatalog,
-          intentResult.intent.intent,
-          correlationId,
-          structuralPrompt,
-        )) ??
-        await runEdgeReasoningStage(
-          selectedForGraph,
-          nodeCatalog,
-          intentResult.intent.intent,
-          correlationId,
-          structuralPrompt,
-        );
+      erResult = await runEdgeReasoningStage(
+        selectedForGraph,
+        nodeCatalog,
+        intentResult.intent.intent,
+        correlationId,
+        structuralPrompt,
+      );
     }
 
     stageTrace.push({
