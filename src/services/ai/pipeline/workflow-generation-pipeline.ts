@@ -21,7 +21,6 @@ import { runCapabilitySelectionStage } from '../stages/capability-selection-stag
 import { runStructuralPromptStage } from '../stages/structural-prompt-stage';
 import { runStructuralPromptStageRemote } from '../stages/structural-prompt-stage-client';
 import { runNodeSelectionStage } from '../stages/node-selection-stage';
-import { runNodeSelectionStageRemote } from '../stages/node-selection-stage-client';
 import { StructuralPromptGenerator } from '../stages/structural-prompt-generator';
 import { BackendFinalizer } from './backend-finalizer';
 import { unifiedNodeRegistry } from '../../../core/registry/unified-node-registry';
@@ -176,21 +175,13 @@ export class WorkflowGenerationPipeline {
         selectedNodeConstraintsFlat: appliedSelections.flat,
         requiredNodeTypes: appliedSelections.flat,
       };
-      const nsResult =
-        (await runNodeSelectionStageRemote(
-          intentResult.intent,
-          nodeCatalog,
-          correlationId,
-          rawStructuralPrompt,
-          nodeSelectionConstraints,
-        )) ??
-        await runNodeSelectionStage(
-          intentResult.intent,
-          nodeCatalog,
-          correlationId,
-          rawStructuralPrompt,
-          nodeSelectionConstraints,
-        );
+      const nsResult = await runNodeSelectionStage(
+        intentResult.intent,
+        nodeCatalog,
+        correlationId,
+        rawStructuralPrompt,
+        nodeSelectionConstraints,
+      );
       stageTrace.push({
         stage: 'node_selection',
         startedAt: nsStart,

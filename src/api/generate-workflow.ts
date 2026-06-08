@@ -20,7 +20,6 @@ import { runCapabilitySelectionStage } from '../services/ai/stages/capability-se
 import { runStructuralPromptStage } from '../services/ai/stages/structural-prompt-stage';
 import { runStructuralPromptStageRemote } from '../services/ai/stages/structural-prompt-stage-client';
 import { runNodeSelectionStage } from '../services/ai/stages/node-selection-stage';
-import { runNodeSelectionStageRemote } from '../services/ai/stages/node-selection-stage-client';
 import { buildNodeCatalogText } from '../services/ai/node-catalog-builder';
 import { generateComprehensiveNodeQuestions } from '../services/ai/comprehensive-node-questions-generator';
 import {
@@ -242,21 +241,13 @@ export default async function generateWorkflow(req: Request, res: Response): Pro
         selectedNodeConstraintsFlat,
         requiredNodeTypes: selectedNodeConstraintsFlat,
       };
-      const nsResult =
-        (await runNodeSelectionStageRemote(
-          intentForAnalyze,
-          nodeCatalog,
-          correlationId,
-          structuralForSelection,
-          nodeSelectionConstraints,
-        )) ??
-        await runNodeSelectionStage(
-          intentForAnalyze,
-          nodeCatalog,
-          correlationId,
-          structuralForSelection,
-          nodeSelectionConstraints,
-        );
+      const nsResult = await runNodeSelectionStage(
+        intentForAnalyze,
+        nodeCatalog,
+        correlationId,
+        structuralForSelection,
+        nodeSelectionConstraints,
+      );
 
       let proposedNodeChain: string[];
       if (nsResult.ok && nsResult.selectedNodes.length > 0) {

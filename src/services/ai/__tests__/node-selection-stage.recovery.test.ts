@@ -15,6 +15,7 @@ describe('node-selection-stage contract hardening', () => {
     actions: ['send email'],
     dataFlows: [],
     constraints: [],
+    originalPrompt: 'Send an email when manually triggered',
   };
 
   beforeEach(() => {

@@ -9,6 +9,7 @@ const SAMPLE_INTENT: StructuredIntent = {
   actions: ['get sheet rows', 'send email'],
   dataFlows: [],
   constraints: [],
+  originalPrompt: 'Get sheet rows and send email',
 };
 
 describe('NodeSelectionStage capability constraints', () => {
@@ -47,4 +48,3 @@ describe('NodeSelectionStage capability constraints', () => {
     }
   });
 });
-

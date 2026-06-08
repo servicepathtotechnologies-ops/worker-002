@@ -15,6 +15,7 @@ import { logger } from '../../../core/logger';
 import type { StructuredIntent } from './intent-stage';
 import type { NodeCatalogText } from '../node-catalog-builder';
 import { incrementPipelineCounter } from '../pipeline-observability';
+import { runNodeSelectionJsonRemote } from './node-selection-stage-client';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -71,32 +72,62 @@ export async function runNodeSelectionStage(
 
   const message = `STRUCTURED_INTENT:\n${JSON.stringify(intent, null, 2)}${structuralPrompt ? `\n\nWORKFLOW_BLUEPRINT:\n${structuralPrompt}` : ''}`;
 
-  let text: string;
-  let structuredResponse: unknown;
-  try {
-    const raw = await geminiOrchestrator.processRequest(
-      'node-suggestion',
-      { system: systemPrompt, message },
-      {
-        model,
-        temperature,
-        cache: false,
-        structuredOutput: {
-          mimeType: 'application/json',
-          schema: NODE_SELECTION_OUTPUT_SCHEMA as Record<string, unknown>,
-        },
-      },
-    );
-    structuredResponse = raw;
-    text = typeof raw === 'string' ? raw : JSON.stringify(raw);
-  } catch (err) {
-    logger.error({ event: 'ai_pipeline_stage_error', stage: 'node_selection', correlationId, error: 'LLM_CALL_FAILED', message: String(err) });
-    return { ok: false, code: 'INVALID_LLM_RESPONSE', rawResponse: String(err), durationMs: Date.now() - startedAt };
-  }
-
   const promptTokens = Math.ceil(systemPrompt.length / 4);
+  let llmCall = { model, temperature, promptTokens, completionTokens: 0 };
 
-  let parsed = parseNodeSelection(structuredResponse) ?? parseNodeSelection(text);
+  let text = '';
+  let structuredResponse: unknown = null;
+  let parsed: Array<{ type: string; role: SelectedNode['role']; reason: string }> | null = null;
+
+  const remote = await runNodeSelectionJsonRemote({
+    systemPrompt,
+    message,
+    correlationId,
+  });
+
+  if (remote?.ok) {
+    parsed = remote.selectedNodes;
+    text = JSON.stringify({ selectedNodes: remote.selectedNodes });
+    llmCall = remote.llmCall;
+  } else {
+    if (remote && !remote.ok) {
+      logger.warn({
+        event: 'ai_pipeline_stage_warn',
+        stage: 'node_selection',
+        correlationId,
+        reason: `ai-generator returned ${remote.code} - falling back to local`,
+      });
+    }
+
+    try {
+      const raw = await geminiOrchestrator.processRequest(
+        'node-suggestion',
+        { system: systemPrompt, message },
+        {
+          model,
+          temperature,
+          cache: false,
+          structuredOutput: {
+            mimeType: 'application/json',
+            schema: NODE_SELECTION_OUTPUT_SCHEMA as Record<string, unknown>,
+          },
+        },
+      );
+      structuredResponse = raw;
+      text = typeof raw === 'string' ? raw : JSON.stringify(raw);
+    } catch (err) {
+      logger.error({ event: 'ai_pipeline_stage_error', stage: 'node_selection', correlationId, error: 'LLM_CALL_FAILED', message: String(err) });
+      return { ok: false, code: 'INVALID_LLM_RESPONSE', rawResponse: String(err), durationMs: Date.now() - startedAt };
+    }
+
+    parsed = parseNodeSelection(structuredResponse) ?? parseNodeSelection(text);
+    llmCall = {
+      model,
+      temperature,
+      promptTokens,
+      completionTokens: Math.ceil(text.length / 4),
+    };
+  }
 
   if (!parsed) {
     incrementPipelineCounter('node_selection_structured_decode_fail');
@@ -125,17 +156,34 @@ export async function runNodeSelectionStage(
       return { ok: false, code: 'INVALID_LLM_RESPONSE', rawResponse: String(err), durationMs: Date.now() - startedAt };
     }
     parsed = parseNodeSelection(raw2) ?? parseNodeSelection(text2);
+    llmCall = {
+      model,
+      temperature,
+      promptTokens,
+      completionTokens: Math.ceil(text2.length / 4),
+    };
 
     if (!parsed) {
       logger.error({ event: 'ai_pipeline_stage_error', stage: 'node_selection', correlationId, error: 'INVALID_LLM_RESPONSE', llmResponse: text2 });
-      return { ok: false, code: 'INVALID_LLM_RESPONSE', rawResponse: text2, durationMs: Date.now() - startedAt };
+      logger.warn({
+        event: 'ai_pipeline_stage_fallback',
+        stage: 'node_selection',
+        correlationId,
+        reason: 'DETERMINISTIC_RECOVERY_FROM_INTENT_AND_REQUIRED_TYPES',
+      });
+      incrementPipelineCounter('node_selection_deterministic_recovery_used');
+      parsed = buildDeterministicSelectionFromIntent(intent, constraints);
+      text = text2;
+
+      if (!parsed) {
+        return { ok: false, code: 'INVALID_LLM_RESPONSE', rawResponse: text2, durationMs: Date.now() - startedAt };
+      }
     }
   }
 
   const validNodes = enforceRegistrySelectionContract(parsed, correlationId, constraints);
 
   const durationMs = Date.now() - startedAt;
-  const completionTokens = Math.ceil(text.length / 4);
 
   if (validNodes.length === 0) {
     // No fallback to keyword matching — return structured error
@@ -155,7 +203,7 @@ export async function runNodeSelectionStage(
     ok: true,
     selectedNodes: validNodes,
     durationMs,
-    llmCall: { model, temperature, promptTokens, completionTokens },
+    llmCall,
   };
 }
 
@@ -199,6 +247,42 @@ function validateNodeSelectionObject(
     parsed.push({ type, role, reason });
   }
   return parsed.length > 0 ? parsed : null;
+}
+
+function buildDeterministicSelectionFromIntent(
+  intent: StructuredIntent,
+  constraints?: NodeSelectionConstraints,
+): Array<{ type: string; role: SelectedNode['role']; reason: string }> | null {
+  const selected: Array<{ type: string; role: SelectedNode['role']; reason: string }> = [];
+  const seen = new Set<string>();
+
+  const triggerType = resolveTriggerType(intent.triggerType);
+  if (triggerType) {
+    selected.push({
+      type: triggerType,
+      role: 'trigger',
+      reason: 'Recovered trigger from structured intent',
+    });
+    seen.add(triggerType);
+  }
+
+  for (const rawType of constraints?.requiredNodeTypes || []) {
+    const canonical = unifiedNodeRegistry.resolveAlias(rawType) || rawType;
+    const def = unifiedNodeRegistry.get(canonical);
+    if (!def) continue;
+
+    const isBranching = def.isBranching === true;
+    if (!isBranching && seen.has(canonical)) continue;
+
+    selected.push({
+      type: canonical,
+      role: deriveNodeRole(canonical),
+      reason: 'Recovered from user-confirmed capability selection',
+    });
+    seen.add(canonical);
+  }
+
+  return selected.length > 0 ? selected : null;
 }
 
 export function enforceRegistrySelectionContract(
@@ -280,4 +364,16 @@ function deriveNodeRole(nodeType: string): SelectedNode['role'] {
   // Use registry flag instead of hardcoded type name
   if (unifiedNodeRegistry.get(nodeType)?.workflowBehavior?.alwaysTerminal === true) return 'terminal';
   return 'action';
+}
+
+function resolveTriggerType(triggerType: StructuredIntent['triggerType']): string | null {
+  const canonical = unifiedNodeRegistry.resolveAlias(triggerType) || triggerType;
+  if (unifiedNodeRegistry.isTrigger(canonical) && unifiedNodeRegistry.get(canonical)) {
+    return canonical;
+  }
+
+  const manual = unifiedNodeRegistry.resolveAlias('manual_trigger') || 'manual_trigger';
+  return unifiedNodeRegistry.isTrigger(manual) && unifiedNodeRegistry.get(manual)
+    ? manual
+    : null;
 }
