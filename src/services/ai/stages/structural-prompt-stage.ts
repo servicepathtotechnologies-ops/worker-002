@@ -15,6 +15,7 @@ import { geminiOrchestrator } from '../gemini-orchestrator';
 import { logger } from '../../../core/logger';
 import type { StructuredIntent } from './intent-stage';
 import type { NodeCatalogText } from '../node-catalog-builder';
+import { runStructuralPromptStageRemote } from './structural-prompt-stage-client';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -67,6 +68,23 @@ export async function runStructuralPromptStage(
     correlationId,
     inputSummary: `actions=${intent.actions.length}`,
   });
+
+  // ── Try remote ai-generator first ────────────────────────────────────────────
+  const remote = await runStructuralPromptStageRemote(intent, nodeCatalog, correlationId, constraints);
+
+  if (remote?.ok) {
+    logger.info({ event: 'ai_pipeline_stage_end', stage: 'structural_prompt', correlationId, source: 'remote', durationMs: Date.now() - startedAt });
+    return remote;
+  }
+
+  if (remote && !remote.ok) {
+    logger.warn({
+      event: 'ai_pipeline_stage_warn',
+      stage: 'structural_prompt',
+      correlationId,
+      reason: `ai-generator returned ${remote.code} — falling back to local`,
+    });
+  }
 
   const model = 'gemini-3.5-flash';
   const temperature = 0.2;
