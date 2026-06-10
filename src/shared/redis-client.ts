@@ -42,10 +42,18 @@ async function connectRedis(): Promise<Redis | null> {
   try {
     const client = new Redis(REDIS_URL, {
       retryStrategy: (times) => {
-        const delay = Math.min(times * 50, 2000);
-        return delay;
+        if (times > 20) return null; // stop retrying after ~20 attempts (~40s total)
+        return Math.min(times * 50, 2000);
+      },
+      reconnectOnError: (err) => {
+        // Reconnect on socket-level errors (ECONNRESET, EPIPE) so a dropped
+        // TCP connection is healed without a process restart.
+        const msg = err.message.toUpperCase();
+        return msg.includes('ECONNRESET') || msg.includes('EPIPE');
       },
       maxRetriesPerRequest: 3,
+      enableOfflineQueue: true,  // queue commands during reconnect (default)
+      lazyConnect: false,
     });
 
     client.on('error', (err) => {

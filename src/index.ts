@@ -432,35 +432,29 @@ app.get('/health/ready', asyncHandler(async (_req: Request, res: Response) => {
   const checks: Record<string, 'ok' | 'fail'> = {};
   let allOk = true;
 
-  // DB check
+  // DB check — real SELECT 1 via existing pool (honours circuit breaker)
   try {
-    const { getPoolStats } = await import('./core/database/db-pool');
-    const pool = getPoolStats();
-    checks.db = pool.totalCount >= 0 ? 'ok' : 'fail';
+    const { isDatabaseReachable } = await import('./core/database/db-pool');
+    const ok = await Promise.race([
+      isDatabaseReachable(),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 4000)),
+    ]);
+    checks.db = ok ? 'ok' : 'fail';
+    if (!ok) allOk = false;
   } catch {
     checks.db = 'fail';
     allOk = false;
   }
 
-  // Redis check
+  // Redis check — reuses the shared ioredis singleton (no new connection per request)
   try {
-    const { createClient } = await import('redis');
-    const redisUrl = process.env.REDIS_URL;
-    if (!redisUrl) {
-      checks.redis = 'fail';
-      allOk = false;
-    } else {
-      const probe = createClient({ url: redisUrl });
-      probe.on('error', () => { /* handled below */ });
-      const connectPromise = probe.connect();
-      await Promise.race([
-        connectPromise,
-        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 2000)),
-      ]);
-      await probe.ping();
-      await probe.disconnect();
-      checks.redis = 'ok';
-    }
+    const { isRedisAvailable } = await import('./shared/redis-client');
+    const ok = await Promise.race([
+      isRedisAvailable(),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 2000)),
+    ]);
+    checks.redis = ok ? 'ok' : 'fail';
+    if (!ok) allOk = false;
   } catch {
     checks.redis = 'fail';
     allOk = false;

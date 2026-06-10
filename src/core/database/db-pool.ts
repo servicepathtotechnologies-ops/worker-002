@@ -9,11 +9,20 @@ let pool: Pool | null = null;
 
 export function getDbPool(): Pool {
   if (!pool) {
-    // Append connect_timeout so the TCP handshake fails in 4s rather than the
-    // OS default (~2 min). This keeps latency low when RDS is unreachable.
-    const connStr = (process.env.DATABASE_URL || '').includes('connect_timeout')
-      ? process.env.DATABASE_URL!
-      : `${process.env.DATABASE_URL}${process.env.DATABASE_URL?.includes('?') ? '&' : '?'}connect_timeout=4`;
+    // Route through PgBouncer when PGBOUNCER_URL is set; direct RDS otherwise.
+    // PgBouncer MUST be in session mode (not transaction mode) because:
+    //   - queryAsUser() issues SET LOCAL commands (not valid in transaction mode)
+    //   - statement_timeout is a session-level setting
+    // If switching to transaction mode later, remove statement_timeout and
+    // convert queryAsUser() to pass userId as a query parameter instead.
+    const rawUrl = process.env.PGBOUNCER_URL || process.env.DATABASE_URL || '';
+    const connStr = rawUrl.includes('connect_timeout')
+      ? rawUrl
+      : `${rawUrl}${rawUrl.includes('?') ? '&' : '?'}connect_timeout=4`;
+
+    if (process.env.PGBOUNCER_URL) {
+      console.log('[DB] Routing connections through PgBouncer (session mode)');
+    }
 
     pool = new Pool({
       connectionString: connStr,
