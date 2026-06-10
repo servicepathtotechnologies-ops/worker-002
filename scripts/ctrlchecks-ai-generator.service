@@ -1,0 +1,29 @@
+[Unit]
+Description=CtrlChecks AI Generator Service
+Documentation=https://github.com/ctrlchecks/ctrlchecks-ai-workflow-os
+After=network.target ctrlchecks-worker.service
+Wants=ctrlchecks-worker.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/ctrlchecks-ai-generator
+ExecStart=/usr/bin/node dist/index.js
+EnvironmentFile=/opt/ctrlchecks-ai-generator/.env
+Restart=always
+RestartSec=10
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+# Memory safety
+MemoryMax=1G
+LimitNOFILE=65536
+
+# Stdout/stderr go to journald
+# View logs: sudo journalctl -u ctrlchecks-ai-generator -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ctrlchecks-ai-generator
+
+[Install]
+WantedBy=multi-user.target
