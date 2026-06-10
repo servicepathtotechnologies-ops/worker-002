@@ -1,112 +1,103 @@
-// CORS Middleware for Express
+/**
+ * CORS middleware — production-strict.
+ *
+ * Production allowlist (NODE_ENV=production):
+ *   - Hardcoded: ctrlchecks.ai domains only
+ *   - Env-driven: FRONTEND_URL + ALLOWED_ORIGINS (comma-separated)
+ *   - NO wildcard origins; NO Vercel preview URLs
+ *
+ * Development: localhost variants + Vercel preview wildcard are also allowed.
+ *
+ * Blocked origins in production receive 403 (not a silent passthrough).
+ * Requests with no Origin header are allowed (mobile / curl / server-to-server).
+ */
 
 import { Request, Response, NextFunction } from 'express';
 import { corsHeaders } from '../../shared/cors';
 import { config } from '../config';
 
-// Allowed origins - can be configured via environment variables
-const getAllowedOrigins = (): string[] => {
-  const isProduction = config.isProduction || process.env.NODE_ENV === 'production';
-  
-  // In production, use environment variables + hardcoded production defaults
-  if (isProduction) {
-    const origins: string[] = [
-      // Hardcoded production defaults (always allowed)
-      'https://ctrlchecks.ai',
-      'https://www.ctrlchecks.ai',
-      'https://*.vercel.app',
-      'http://localhost:5173',
-      'http://localhost:8080',
-      'http://127.0.0.1:5173',
-    ];
+const isProduction = config.isProduction || process.env.NODE_ENV === 'production';
 
-    if (config.corsOrigin) {
-      const envOrigins = config.corsOrigin.split(',').map((o: string) => o.trim()).filter(Boolean);
-      origins.push(...envOrigins);
-    }
-
-    if (process.env.ALLOWED_ORIGINS) {
-      const envOrigins = process.env.ALLOWED_ORIGINS.split(',').map((o: string) => o.trim()).filter(Boolean);
-      origins.push(...envOrigins);
-    }
-
-    return [...new Set(origins)];
-  }
-  
-  // Development: Include localhost origins and common deployment URLs
-  const origins = [
-    'http://localhost:5173',  // Vite dev server (default)
-    'http://127.0.0.1:5173',
-    'http://localhost:3000',
-    'http://localhost:8080',  // Alternative Vite port
-    'http://127.0.0.1:8080',
-    'http://localhost:8081',  // Additional dev port
-    'http://127.0.0.1:8081',
-    // Common deployment URLs (also allow in development for testing)
-    'https://ctrl-checks-black.vercel.app',
-    'https://*.vercel.app',  // Allow all Vercel preview deployments
+function buildAllowedOrigins(): string[] {
+  const origins: string[] = [
+    'https://ctrlchecks.ai',
+    'https://www.ctrlchecks.ai',
+    'https://app.ctrlchecks.ai',
   ];
 
-  // Add environment variable origins
+  if (!isProduction) {
+    origins.push(
+      'http://localhost:5173',
+      'http://localhost:3000',
+      'http://localhost:8080',
+      'http://localhost:8081',
+      'http://127.0.0.1:5173',
+      'http://127.0.0.1:8080',
+      'https://ctrl-checks-black.vercel.app',
+      'https://*.vercel.app'
+    );
+  }
+
+  // Env-driven additions (works in both environments)
+  const envOrigins: string[] = [];
   if (config.corsOrigin) {
-    const envOrigins = config.corsOrigin.split(',').map((o: string) => o.trim()).filter(Boolean);
-    origins.push(...envOrigins);
+    envOrigins.push(...config.corsOrigin.split(',').map((o: string) => o.trim()).filter(Boolean));
   }
-
+  if (process.env.FRONTEND_URL) {
+    envOrigins.push(process.env.FRONTEND_URL.trim());
+  }
   if (process.env.ALLOWED_ORIGINS) {
-    const envOrigins = process.env.ALLOWED_ORIGINS.split(',').map((o: string) => o.trim()).filter(Boolean);
-    origins.push(...envOrigins);
+    envOrigins.push(...process.env.ALLOWED_ORIGINS.split(',').map((o: string) => o.trim()).filter(Boolean));
   }
 
-  // Remove duplicates
-  return [...new Set(origins)];
-};
+  return [...new Set([...origins, ...envOrigins])];
+}
 
-// Export for use in index.ts
-export { getAllowedOrigins };
+function matchesPattern(origin: string, pattern: string): boolean {
+  if (!pattern.includes('*')) return origin === pattern;
+  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+  return new RegExp(`^${escaped}$`).test(origin);
+}
 
-const allowedOrigins = getAllowedOrigins();
-const allowAllOrigins = allowedOrigins.includes('*');
+// Evaluate at module load; env does not change after startup.
+const allowedOrigins = buildAllowedOrigins();
+
+// Exported as a function to preserve the public API used by index.ts.
+export function getAllowedOrigins(): string[] {
+  return allowedOrigins;
+}
 
 export function corsMiddleware(req: Request, res: Response, next: NextFunction) {
   const origin = req.headers.origin;
 
-  // Helper function to check if origin matches a pattern (e.g., *.vercel.app)
-  const matchesPattern = (origin: string, pattern: string): boolean => {
-    if (pattern.includes('*')) {
-      // Convert wildcard pattern to regex (e.g., https://*.vercel.app -> https://.*\.vercel\.app)
-      const escapedPattern = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
-      const regex = new RegExp(`^${escapedPattern}$`);
-      return regex.test(origin);
-    }
-    return origin === pattern;
-  };
-
-  // Check if origin is allowed
-  if (allowAllOrigins) {
-    // If wildcard is enabled, allow all origins
-    res.setHeader('Access-Control-Allow-Origin', origin || '*');
-  } else if (origin && (allowedOrigins.includes(origin) || allowedOrigins.some(pattern => matchesPattern(origin, pattern)))) {
-    // Origin matches exactly or matches a wildcard pattern
-    res.setHeader('Access-Control-Allow-Origin', origin);
-  } else if (!origin) {
-    // Allow requests with no origin (like mobile apps or curl requests)
+  if (!origin) {
+    // No Origin header — non-browser (mobile app, curl, server-to-server). Allow.
     res.setHeader('Access-Control-Allow-Origin', '*');
+  } else if (allowedOrigins.some((pattern) => matchesPattern(origin, pattern))) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
   } else {
-    // Log blocked origin for debugging
-    console.warn(`⚠️  CORS: Blocked origin ${origin}. Allowed origins: ${allowedOrigins.join(', ')}`);
-    // Still allow the request but with first allowed origin (for development/testing)
-    res.setHeader('Access-Control-Allow-Origin', allowedOrigins[0] || '*');
+    // Unknown origin — block in production; warn in development.
+    if (isProduction) {
+      console.warn(`[CORS] Blocked origin: ${origin}`);
+      return res.status(403).json({
+        error: 'Forbidden',
+        message: 'Origin not in allowlist',
+        code: 'CORS_BLOCKED',
+      });
+    }
+    // Dev: allow but warn so developers notice configuration gaps.
+    console.warn(`[CORS] Warning — unknown origin in dev: ${origin}`);
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
   }
 
-  // Set other CORS headers
   res.setHeader('Access-Control-Allow-Headers', corsHeaders['Access-Control-Allow-Headers']);
   res.setHeader('Access-Control-Allow-Methods', corsHeaders['Access-Control-Allow-Methods']);
   res.setHeader('Access-Control-Allow-Credentials', corsHeaders['Access-Control-Allow-Credentials']);
 
-  // Handle preflight requests
   if (req.method === 'OPTIONS') {
-    return res.status(200).end();
+    return res.status(204).end();
   }
 
   next();

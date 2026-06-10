@@ -13,6 +13,16 @@
 // before any other code (especially config.ts) tries to read process.env
 import './core/env-loader';
 
+// ✅ FAIL-FAST: Validate required environment variables immediately after loading.
+// Missing required vars cause process.exit(1) with a clear diagnostic list.
+import { assertEnv } from './core/config/env-validator';
+assertEnv();
+
+// ✅ ERROR TRACKING: Initialize Sentry immediately after env validation.
+// No-op when SENTRY_DSN is absent (dev / test).
+import { initSentry } from './core/sentry';
+initSentry();
+
 // ✅ CRITICAL: Initialize NodeLibrary early to ensure schemas are loaded
 // This ensures nodeLibrary is initialized before any validators try to use it
 import { nodeLibrary } from './services/nodes/node-library';
@@ -234,6 +244,7 @@ import { checkWorkflowLimitEndpoint, requireWorkflowCapacityForAi } from './core
 import { geminiWalletContextMiddleware } from './core/middleware/gemini-wallet-context-middleware';
 import { geminiWalletService } from './services/ai/gemini-wallet-service';
 import { distributedRateLimit } from './core/middleware/distributed-rate-limit';
+import { tierRateLimit } from './core/middleware/tier-rate-limit';
 import { tracingMiddleware } from './core/observability/distributed-tracing';
 import { metricsHandler, requestMetricsMiddleware } from './middleware/highScaleMetrics';
 import { redisGetCache } from './middleware/redisGetCache';
@@ -408,6 +419,61 @@ app.get('/health', asyncHandler(async (req: Request, res: Response) => {
 }));
 console.log('[ServerStartup] ✅ /health endpoint registered');
 
+// ── Kubernetes-style liveness probe ──────────────────────────────────────────
+// Always returns 200 while the process is alive.  Restart policy uses this.
+app.get('/health/live', (_req: Request, res: Response) => {
+  res.status(200).json({ status: 'live', timestamp: new Date().toISOString() });
+});
+
+// ── Readiness probe ───────────────────────────────────────────────────────────
+// Returns 200 only when DB + Redis are reachable.  Load-balancers use this
+// to stop routing traffic during startup or dependency outages.
+app.get('/health/ready', asyncHandler(async (_req: Request, res: Response) => {
+  const checks: Record<string, 'ok' | 'fail'> = {};
+  let allOk = true;
+
+  // DB check
+  try {
+    const { getPoolStats } = await import('./core/database/db-pool');
+    const pool = getPoolStats();
+    checks.db = pool.totalCount >= 0 ? 'ok' : 'fail';
+  } catch {
+    checks.db = 'fail';
+    allOk = false;
+  }
+
+  // Redis check
+  try {
+    const { createClient } = await import('redis');
+    const redisUrl = process.env.REDIS_URL;
+    if (!redisUrl) {
+      checks.redis = 'fail';
+      allOk = false;
+    } else {
+      const probe = createClient({ url: redisUrl });
+      probe.on('error', () => { /* handled below */ });
+      const connectPromise = probe.connect();
+      await Promise.race([
+        connectPromise,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 2000)),
+      ]);
+      await probe.ping();
+      await probe.disconnect();
+      checks.redis = 'ok';
+    }
+  } catch {
+    checks.redis = 'fail';
+    allOk = false;
+  }
+
+  const status = allOk ? 200 : 503;
+  res.status(status).json({
+    status: allOk ? 'ready' : 'not_ready',
+    checks,
+    timestamp: new Date().toISOString(),
+  });
+}));
+
 // Gemini key-pool health — safe metrics only (no key values)
 app.get('/api/health/gemini', asyncHandler(async (_req: Request, res: Response) => {
   try {
@@ -499,6 +565,7 @@ app.post(
     globalLimit: 1200,
     windowMs: 60_000,
   }),
+  tierRateLimit('execute'),
   asyncHandler(executeWorkflowRoute)
 );
 
@@ -1058,6 +1125,7 @@ app.post(
     globalLimit: 300,
     windowMs: 60_000,
   }),
+  tierRateLimit('generate'),
   asyncHandler(authenticateUser),
   asyncHandler(geminiWalletContextMiddleware),
   asyncHandler(requireWorkflowCapacityForAi),

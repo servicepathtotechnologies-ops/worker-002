@@ -85,6 +85,7 @@
     "@notionhq/client": "^2.3.0",
     "@octokit/rest": "^20.1.2",
     "@prisma/client": "^5.7.1",
+    "@sentry/node": "^10.57.0",
     "@types/nodemailer": "^8.0.0",
     "airtable": "^0.12.2",
     "amqplib": "^0.10.3",

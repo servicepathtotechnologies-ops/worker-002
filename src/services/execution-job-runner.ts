@@ -14,6 +14,7 @@
 
 import { getDbClient } from '../core/database/aws-db-client';
 import { publishExecutionEvent } from './ws-redis-bridge';
+import { sendExecutionCompleted, sendExecutionFailed } from './notifications/email-service';
 import type { ExecutionJob } from './execution-queue';
 
 export interface JobRunResult {
@@ -121,6 +122,27 @@ export async function runExecutionJob(job: ExecutionJob): Promise<JobRunResult> 
   }).catch(() => { /* non-fatal */ });
 
   console.log(`[JobRunner] ${finalStatus.toUpperCase()}: execution ${job.executionId} (${durationMs}ms)`);
+
+  // ── 6. Email notification (non-blocking, non-fatal) ───────────────────────
+  if (job.userId) {
+    setImmediate(async () => {
+      try {
+        const wfRow = await db
+          .from('workflows')
+          .select('name')
+          .eq('id', job.workflowId)
+          .single();
+        const workflowName = (wfRow.data as any)?.name ?? job.workflowId;
+        if (succeeded) {
+          await sendExecutionCompleted(job.userId!, workflowName, job.executionId);
+        } else {
+          await sendExecutionFailed(job.userId!, workflowName, executionError ?? 'Unknown error');
+        }
+      } catch {
+        // email is best-effort — never let it bubble up
+      }
+    });
+  }
 
   return {
     status: finalStatus,
